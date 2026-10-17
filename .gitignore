@@ -1,3 +1,68 @@
+# ==============================================================================
+# Jarvis 2.0 Git Ignore Specification
+# ==============================================================================
 
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# C / C++ build artifacts
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Large binaries & model weights (Kokoro, Whisper, ONNX)
 data/models/
 *.onnx
+
+# Browser debug runtime profiles & cache (99MB+ runtime user data)
+data/browser_debug_profile/
+
+# Runtime SQLite WAL & Shared Memory locks
+*.db-wal
+*.db-shm
+*.db-journal
+data/test_memory.db
+
+# Runtime screenshots & temporary workspaces
+data/screenshots/
+data/agy_runtime_workspace/
+.agy_lock
+
+# Repository dumps & Repomix outputs
+repomix-output.xml
+jarvis_codebase.txt
+jarvis_core_src.txt
+*.repomix*
+
+# Release archives
+release/*.zip
+
+# OS / Editor clutter
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+*.log
