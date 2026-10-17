@@ -1,0 +1,113 @@
+# ==============================================================================
+# Jarvis 3.0 Configuration
+# ==============================================================================
+
+llm:
+  provider: "antigravity"              # Providers: "hybrid", "antigravity" (Google AI Pro), "github" (GitHub Copilot CLI), "ollama", "groq", "gemini", "openrouter"
+  antigravity_model: "gemini-3.8-flash-low" # Google AI Pro Models: "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high", "claude-sonnet-4-6", "claude-opus-4-6-thinking"
+  antigravity_effort: "low"        # Reasoning effort: "low" (sub-50ms voice, token-efficient), "medium" (standard tasks), "high" (deep reasoning)
+  github_copilot_path: ""            # Optional explicit path to the GitHub Copilot CLI executable
+  github_copilot_timeout_seconds: 120
+  antigravity_auto_tiering: true   # Automatically route prompt to Flash Low (weather/speed), Medium (tasks), High (reasoning), Claude (code)
+  ollama_base_url: "http://127.0.0.1:11434/v1"
+  ollama_model: "qwen3.5:2b-q4_K_M" # Compact local vision/tool model for 4 GB GPUs
+  ollama_timeout_seconds: 180
+  ollama_code_reasoning_effort: "low" # Extra reasoning for multi-step code work; regular voice turns stay fast
+  stop_existing_local_services_on_exit: true # Adopt matching local model/gateway services used by Jarvis and stop them on exit
+  omniroute_base_url: "http://127.0.0.1:20128/v1" # Optional hosted-provider gateway
+  omniroute_model: "antigravity/claude-sonnet-4-6" # Existing OmniRoute route; used only if selected as primary
+  groq_model: "qwen/qwen3.8-27b" # Legacy optional Groq provider; not used in local mode
+  grok_model: "grok-4.6"         # Optional xAI provider; metered API
+  model: "gemini-3.8-flash"      # Gemini model for explicit provider mode
+  # OpenRouter free endpoints; availability and rate limits vary by model/account.
+  openrouter_model: "nvidia/nemotron-3.5-super-vl:free"
+
+  specialists:
+    enabled: true                # Specialists are invoked only with "consult <provider>: ..."
+    allow_metered_api_calls: false # Grok/Claude developer APIs are not assumed free (Antigravity handles Claude at $0)
+    models:
+      antigravity: "gemini-3.8-flash-low"    # Google AI Pro via local authenticated CLI session
+      pro: "gemini-3.8-flash-high"           # Re-routed to Gemini 3.8 Flash High (Max Reasoning)
+      gemini: "gemini-3.8-flash-low"
+      flash: "gemini-3.8-flash-low"
+      claude: "claude-sonnet-4-6" # Powered by local Antigravity session at $0
+      github: "copilot" # GitHub Copilot CLI; requires an active Copilot subscription and `copilot login`
+      groq: "qwen/qwen3.8-27b"
+      grok: "grok-4.6"
+  temperature: 0.3
+  max_output_tokens: 512
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  wake_word: "hey jarvis"
+  wake_word_threshold: 0.55
+  wake_word_energy_threshold: 0.0035 # Sub-microsecond RMS energy gate to skip idle ONNX inferences (0% idle CPU)
+  ptt_trigger: "fin"              # Hold Fin (End) key to speak, release to send
+  ptt_key: "fin"                  # Backward compatibility alias
+  ptt_mode: "hold"                # "hold" (hold key to speak) or "toggle" (tap once to start, tap again to finish)
+  silence_threshold_seconds: 1.4  # Base conversational pause duration for concise commands
+  thinking_pause_seconds: 3.2     # Dynamic extended pause allowance when thinking mid-utterance (prevents cutoff)
+  max_record_seconds: 35.0        # Maximum allowable utterance length for compound thoughts
+  initial_timeout_seconds: 3.5    # Window to begin speaking after wake word chime
+  hesitation_damping: true        # Damps silence accumulation on trailing murmurs, breathing, and vocal hesitations
+
+stt:
+  model_size: "small.en"          # "small.en" (high-accuracy English 244M model, ~67ms latency on CUDA), or "base.en" (74M)
+  device: "cuda"                  # "cuda" with RTX 3050, or "cpu" fallback
+  compute_type: "int8_float16"    # "int8_float16" (quantized INT8 weights with FP16 compute for RTX Tensor Cores), or "int8" for CPU
+  cpu_threads: 4                  # Limit STT threads on CPU to prevent CPU saturation
+  language: "en"
+  beam_size: 2                    # Beam search size: 2 for high accuracy without latency penalty (~80ms), 1 for greedy
+  trim_silence: true              # Pre-trim leading/trailing silence before Whisper
+  vad_filter: false               # Wake/PTT capture already trims silence; skip duplicate VAD work for faster commands
+  initial_prompt: "Jarvis, Sir, open a Brave tab, browser window, Chrome, VS Code, Python, YouTube, terminal, search, volume, screen, weather, system, fast, task."
+
+tts:
+  engine: "kokoro"                # "kokoro" (movie-grade neural voice), "sapi5", or "edge"
+  kokoro_voice: "jarvis_bettany"  # "jarvis_bettany" (Paul Bettany blend: 50% fable, 30% george, 20% daniel), "jarvis_classic", "bm_george"
+  kokoro_speed: 1.03              # Speech speed multiplier (0.8 - 1.5; 1.03x calibrated for Bettany diction)
+  kokoro_lang: "en-gb"            # "en-gb" (British English)
+  dsp_filter: true                # Cinematic MCU J.A.R.V.I.S. DSP chain (110Hz HPF + 7.5ms holographic sheen)
+  cpu_threads: 4                  # Limit Kokoro ONNX synthesis threads to prevent 100% CPU spikes
+  sapi_voice: "David"             # SAPI5 fallback voice
+  sapi_rate: 1                    # SAPI5 fallback speech rate
+
+sounds:
+  enabled: true
+  dir: "data/sounds"
+  wake: "data/sounds/wake.wav"
+  think: "data/sounds/think.wav"
+  done: "data/sounds/done.wav"
+  alert: "data/sounds/alert.wav"
+
+safety:
+  confirm_destructive: true       # Prompt voice confirmation for dangerous actions
+
+memory:
+  db_path: "data/jarvis_memory.db"
+  background_learning: true       # Asynchronous reflection daemon for persistent context and preference retention
+
+performance:
+  aggressive_working_set_trim: false # Keep Ollama and TTS pages resident for faster next-turn latency
+
+mcp:
+  config_path: "config/mcp_servers.json"
+
+heartbeat:
+  enabled: true
+  tick_interval_seconds: 30
+  auto_morning_briefing: true
+  calendar_alerts: true
+  battery_alerts: true
+  ergonomic_reminders: true
+  email_notifications: true
+
+ui:
+  enabled: true                   # Holographic Web HUD interface
+  host: "127.0.0.1"
+  port: 20129
+  auto_open: false                # Automatically launch browser on startup
+
+hud:
+  desktop_overlay: false          # Floating desktop transparent Tkinter overlay (disabled by default to prevent screen overlap)

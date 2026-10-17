@@ -1,0 +1,4374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JARVIS 4.0 // Sovereign Command Bridge</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800;900&family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #050811;
+      --panel-bg: rgba(8, 14, 26, 0.78);
+      --panel-border: rgba(0, 240, 255, 0.28);
+      --holo-cyan: #00f0ff;
+      --holo-blue: #00b4d8;
+      --holo-amber: #ffaa00;
+      --holo-emerald: #00e199;
+      --holo-crimson: #ff3366;
+      --text-main: #e2f1f8;
+      --text-dim: #7a92a3;
+      --glow-cyan: 0 0 15px rgba(0, 240, 255, 0.45);
+      --glow-amber: 0 0 18px rgba(255, 170, 0, 0.55);
+      --glow-emerald: 0 0 18px rgba(0, 225, 153, 0.55);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      background-image: 
+        radial-gradient(circle at 50% 50%, rgba(0, 180, 216, 0.08) 0%, transparent 70%),
+        linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
+      background-size: 100% 100%, 36px 36px, 36px 36px;
+      color: var(--text-main);
+      font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    /* Scanline effect */
+    body::after {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%);
+      background-size: 100% 4px;
+      z-index: 100;
+      pointer-events: none;
+      opacity: 0.45;
+    }
+
+    /* Header Bar */
+    header {
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+      border-bottom: 1px solid var(--panel-border);
+      background: rgba(5, 9, 18, 0.85);
+      backdrop-filter: blur(12px);
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-logo {
+      width: 28px;
+      height: 28px;
+      border: 2px solid var(--holo-cyan);
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      box-shadow: var(--glow-cyan);
+    }
+
+    .brand-logo-inner {
+      width: 10px;
+      height: 10px;
+      background: var(--holo-cyan);
+      border-radius: 50%;
+    }
+
+    .brand-title {
+      font-family: 'Orbitron', sans-serif;
+      font-weight: 800;
+      font-size: 1.15rem;
+      letter-spacing: 2px;
+      color: var(--holo-cyan);
+      text-shadow: var(--glow-cyan);
+    }
+
+    .brand-sub {
+      font-size: 0.82rem;
+      letter-spacing: 1.5px;
+      color: var(--text-dim);
+      border-left: 1px solid var(--panel-border);
+      padding-left: 12px;
+      margin-left: 6px;
+    }
+
+    .header-pills {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+    }
+
+    .pill {
+      background: rgba(0, 240, 255, 0.08);
+      border: 1px solid var(--panel-border);
+      padding: 6px 14px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      letter-spacing: 1px;
+    }
+
+    .pill-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--holo-emerald);
+      box-shadow: 0 0 8px var(--holo-emerald);
+    }
+
+    /* Main Grid Layout */
+    main {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(280px, 330px) minmax(320px, 1fr) minmax(340px, 420px);
+      grid-template-rows: minmax(0, 1fr) auto;
+      gap: 16px;
+      padding: 16px 20px 14px 20px;
+      overflow: hidden;
+      z-index: 10;
+    }
+
+    /* Card Panels */
+    .hud-card {
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: 6px;
+      backdrop-filter: blur(14px);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+      height: 100%;
+      min-height: 0;
+      contain: layout paint style;
+      will-change: transform;
+    }
+
+    .hud-card::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; width: 14px; height: 14px;
+      border-top: 2px solid var(--holo-cyan);
+      border-left: 2px solid var(--holo-cyan);
+    }
+
+    .hud-card::after {
+      content: "";
+      position: absolute;
+      bottom: 0; right: 0; width: 14px; height: 14px;
+      border-bottom: 2px solid var(--holo-cyan);
+      border-right: 2px solid var(--holo-cyan);
+    }
+
+    .card-header {
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--panel-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.82rem;
+      letter-spacing: 1.5px;
+      color: var(--holo-cyan);
+      background: rgba(0, 240, 255, 0.04);
+      flex: 0 0 auto;
+    }
+
+    .card-body {
+      flex: 1;
+      min-height: 0;
+      padding: 16px;
+      overflow-y: auto;
+    }
+
+    /* Telemetry Panel */
+    .telemetry-section-header {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.68rem;
+      letter-spacing: 1.5px;
+      color: var(--holo-blue);
+      padding: 10px 0 4px 0;
+      border-bottom: 1px solid rgba(0, 240, 255, 0.2);
+      margin-top: 4px;
+      text-transform: uppercase;
+      opacity: 0.9;
+    }
+
+    .telemetry-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px dashed rgba(0, 240, 255, 0.12);
+      font-size: 0.92rem;
+    }
+
+    .telemetry-row:last-child {
+      border-bottom: none;
+    }
+
+    .telemetry-label {
+      color: var(--text-dim);
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    .telemetry-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 600;
+      color: var(--holo-cyan);
+    }
+
+    .meter-bar-container {
+      width: 100%;
+      height: 8px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 4px;
+      margin-top: 6px;
+      overflow: hidden;
+      border: 1px solid rgba(0, 240, 255, 0.2);
+    }
+
+    .meter-bar {
+      height: 100%;
+      width: 100%;
+      background: linear-gradient(90deg, var(--holo-blue), var(--holo-cyan));
+      transform: scaleX(0);
+      transform-origin: left;
+      will-change: transform;
+      transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 0 8px var(--holo-cyan);
+    }
+
+    /* Center Stage (Arc Reactor Core) */
+    .center-stage {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      height: 100%;
+      min-height: 0;
+      gap: 8px;
+      contain: layout paint style;
+      will-change: transform;
+    }
+
+    #reactorCanvas {
+      width: 100%;
+      height: auto;
+      max-width: 440px;
+      max-height: 440px;
+      aspect-ratio: 1 / 1;
+      contain: layout paint style;
+      will-change: transform;
+      filter: drop-shadow(0 0 25px rgba(0, 240, 255, 0.2));
+    }
+
+    /* Docked Stark Pill (UPGRADE 4) */
+    #starkDockedPill {
+      display: none;
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 760px;
+      max-width: 95vw;
+      height: 48px;
+      background: rgba(6, 11, 20, 0.94);
+      border: 1px solid var(--panel-border);
+      border-radius: 24px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.75), 0 0 22px rgba(0, 240, 255, 0.35);
+      backdrop-filter: blur(16px);
+      z-index: 99999;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      gap: 12px;
+      font-family: 'Rajdhani', sans-serif;
+      contain: layout paint style;
+      will-change: transform;
+    }
+
+    body.mode-docked header,
+    body.mode-docked main {
+      display: none !important;
+    }
+
+    body.mode-docked #starkDockedPill {
+      display: flex !important;
+    }
+
+    body.mode-mini header {
+      display: none !important;
+    }
+    body.mode-mini main {
+      grid-template-columns: 1fr !important;
+    }
+    body.mode-mini .col-left,
+    body.mode-mini .col-right {
+      display: none !important;
+    }
+
+    .status-hud-box {
+      margin-top: -15px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .status-badge {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 1.05rem;
+      font-weight: 800;
+      letter-spacing: 3px;
+      color: var(--holo-cyan);
+      text-shadow: var(--glow-cyan);
+      padding: 6px 18px;
+      border: 1px solid var(--panel-border);
+      border-radius: 4px;
+      background: rgba(0, 240, 255, 0.06);
+      transition: all 0.3s ease;
+    }
+
+    .sub-status {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      letter-spacing: 1px;
+    }
+
+    /* Mission Log / Chat */
+    .chat-container {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      height: 100%;
+    }
+
+    .chat-bubble {
+      padding: 10px 14px;
+      border-radius: 4px;
+      font-size: 0.92rem;
+      line-height: 1.45;
+      animation: fadeIn 0.3s ease-out;
+      border-left: 3px solid;
+      background: rgba(255, 255, 255, 0.03);
+      user-select: text;
+    }
+
+    .chat-user {
+      border-left-color: var(--holo-amber);
+      background: rgba(255, 170, 0, 0.05);
+    }
+
+    .chat-jarvis {
+      border-left-color: var(--holo-cyan);
+      background: rgba(0, 240, 255, 0.05);
+    }
+
+    .bubble-author {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.72rem;
+      letter-spacing: 1px;
+      margin-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .bubble-author.user { color: var(--holo-amber); }
+    .bubble-author.jarvis { color: var(--holo-cyan); }
+
+    .bubble-text {
+      color: var(--text-main);
+      word-break: break-word;
+    }
+
+    /* Bottom Command Deck */
+    /* Bottom Command Deck */
+    .command-deck {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-width: 0;
+      padding: 12px 18px;
+      box-sizing: border-box;
+      width: 100%;
+    }
+
+    .deck-top-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      width: 100%;
+    }
+
+    .quick-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .deck-status-hint {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      letter-spacing: 1px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .btn-action {
+      background: rgba(0, 240, 255, 0.08);
+      border: 1px solid var(--panel-border);
+      color: var(--holo-cyan);
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.73rem;
+      letter-spacing: 1px;
+      padding: 8px 13px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .btn-action:hover {
+      background: rgba(0, 240, 255, 0.22);
+      box-shadow: var(--glow-cyan);
+      border-color: var(--holo-cyan);
+      transform: translateY(-1px);
+    }
+
+    .btn-action:active {
+      transform: translateY(1px);
+    }
+
+    .btn-action.muted {
+      border-color: var(--holo-crimson);
+      color: var(--holo-crimson);
+      background: rgba(255, 51, 102, 0.1);
+    }
+
+    .input-wrapper {
+      width: 100%;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      background: rgba(4, 8, 16, 0.9);
+      border: 1px solid var(--panel-border);
+      border-radius: 4px;
+      padding: 4px 8px;
+      box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.6);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      box-sizing: border-box;
+    }
+
+    .input-wrapper:focus-within {
+      border-color: var(--holo-cyan);
+      box-shadow: 0 0 12px rgba(0, 240, 255, 0.35), inset 0 2px 8px rgba(0, 0, 0, 0.6);
+    }
+
+    .cmd-prefix {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: var(--holo-cyan);
+      letter-spacing: 1.5px;
+      padding-left: 8px;
+      padding-right: 4px;
+      user-select: none;
+      opacity: 0.85;
+      white-space: nowrap;
+    }
+
+    .cmd-input {
+      flex: 1;
+      width: 100%;
+      min-width: 0;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--holo-cyan);
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 1.15rem;
+      font-weight: 600;
+      letter-spacing: 1px;
+      padding: 7px 10px;
+    }
+
+    .cmd-input::placeholder {
+      color: rgba(122, 146, 163, 0.5);
+      font-weight: 500;
+    }
+
+    .btn-transmit {
+      background: linear-gradient(135deg, rgba(0, 240, 255, 0.25), rgba(0, 180, 216, 0.45));
+      border: 1px solid var(--holo-cyan);
+      color: #ffffff;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      padding: 9px 20px;
+      border-radius: 3px;
+      cursor: pointer;
+      box-shadow: var(--glow-cyan);
+      transition: all 0.2s ease;
+      white-space: nowrap;
+    }
+
+    .btn-transmit:hover {
+      background: linear-gradient(135deg, rgba(0, 240, 255, 0.45), rgba(0, 180, 216, 0.7));
+      transform: translateY(-1px);
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.2); }
+    ::-webkit-scrollbar-thumb { background: rgba(0, 240, 255, 0.3); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--holo-cyan); }
+
+    /* Responsive Layout for Narrow, Split, or Docked Windows */
+    @media (max-width: 840px) {
+      body {
+        overflow-y: auto;
+        height: auto;
+        min-height: 100vh;
+      }
+      main {
+        display: flex;
+        flex-direction: column;
+        height: auto;
+        padding: 12px;
+        gap: 14px;
+        overflow-y: visible;
+      }
+      .center-stage {
+        order: 1;
+        min-height: 280px;
+      }
+      #reactorCanvas {
+        max-width: 280px;
+        max-height: 280px;
+      }
+      .hud-card {
+        order: 2;
+        min-height: 320px;
+      }
+      .command-deck {
+        order: 3;
+        flex-direction: column;
+        align-items: stretch;
+        padding: 12px;
+        gap: 10px;
+        height: auto;
+      }
+      .deck-top-row {
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+      }
+      .deck-status-hint {
+        display: none;
+      }
+      .quick-actions {
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      .btn-action {
+        flex: 1 1 45%;
+        justify-content: center;
+        padding: 10px 12px;
+      }
+      .input-wrapper {
+        width: 100%;
+      }
+    }
+
+    .thermal-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.74rem;
+      padding: 2px 7px;
+      border-radius: 3px;
+      border: 1px solid var(--holo-amber);
+      color: var(--holo-amber);
+      background: rgba(255, 170, 0, 0.12);
+      box-shadow: 0 0 6px rgba(255, 170, 0, 0.3);
+    }
+
+    .staged-doc-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      margin-top: 12px;
+      background: rgba(0, 255, 157, 0.12);
+      border: 1px solid var(--holo-emerald);
+      border-radius: 20px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.78rem;
+      color: var(--holo-emerald);
+      box-shadow: 0 0 12px rgba(0, 255, 157, 0.35);
+      cursor: pointer;
+      animation: pulse-staged 2s infinite ease-in-out;
+      transition: all 0.2s ease;
+    }
+    .staged-doc-pill:hover {
+      background: rgba(0, 255, 157, 0.22);
+      box-shadow: 0 0 20px rgba(0, 255, 157, 0.7);
+      transform: scale(1.03);
+    }
+    @keyframes pulse-staged {
+      0%, 100% { box-shadow: 0 0 8px rgba(0, 255, 157, 0.3); }
+      50% { box-shadow: 0 0 18px rgba(0, 255, 157, 0.7); }
+    }
+
+    /* Slide-out Holographic HUD Drawer */
+    .hud-drawer {
+      position: fixed;
+      top: 60px;
+      right: -440px;
+      width: 420px;
+      height: calc(100vh - 60px);
+      background: rgba(6, 11, 20, 0.95);
+      border-left: 1px solid var(--panel-border);
+      backdrop-filter: blur(20px);
+      z-index: 1000;
+      transition: right 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      flex-direction: column;
+      box-shadow: -15px 0 35px rgba(0, 0, 0, 0.75);
+    }
+    .hud-drawer.open {
+      right: 0;
+    }
+    .drawer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--panel-border);
+      background: rgba(0, 240, 255, 0.04);
+    }
+    .drawer-title {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--holo-cyan);
+      letter-spacing: 2px;
+      text-shadow: var(--glow-cyan);
+    }
+    .drawer-close-btn {
+      background: transparent;
+      border: 1px solid var(--panel-border);
+      color: var(--text-dim);
+      border-radius: 3px;
+      padding: 4px 8px;
+      cursor: pointer;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      transition: all 0.2s;
+    }
+    .drawer-close-btn:hover {
+      border-color: var(--holo-crimson);
+      color: var(--holo-crimson);
+    }
+    .drawer-tabs {
+      display: flex;
+      gap: 6px;
+      padding: 10px 14px;
+      border-bottom: 1px dashed rgba(0, 240, 255, 0.15);
+      background: rgba(0, 0, 0, 0.2);
+      flex-wrap: wrap;
+    }
+    .drawer-tab {
+      padding: 6px 11px;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.7rem;
+      background: transparent;
+      border: 1px solid var(--panel-border);
+      color: var(--text-dim);
+      border-radius: 3px;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .drawer-tab.active {
+      border-color: var(--holo-cyan);
+      color: var(--holo-cyan);
+      background: rgba(0, 240, 255, 0.1);
+      box-shadow: 0 0 10px rgba(0, 240, 255, 0.25);
+    }
+    .drawer-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .drawer-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      border-left: 3px solid var(--holo-cyan);
+      padding: 12px 14px;
+      border-radius: 4px;
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+    .drawer-card-header {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.74rem;
+      color: var(--text-dim);
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+    }
+    .drawer-card-timer {
+      border-left-color: var(--holo-amber);
+    }
+
+    /* Starboard Edge Toggle Button */
+    .flank-toggle-edge-btn {
+      position: fixed;
+      right: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      background: rgba(6, 11, 20, 0.94);
+      border: 1px solid var(--holo-cyan);
+      border-right: none;
+      border-radius: 8px 0 0 8px;
+      padding: 14px 6px;
+      color: var(--holo-cyan);
+      cursor: pointer;
+      z-index: 999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      box-shadow: -4px 0 18px rgba(0, 240, 255, 0.35);
+      transition: all 0.25s ease;
+      backdrop-filter: blur(12px);
+    }
+    .flank-toggle-edge-btn:hover {
+      background: rgba(0, 240, 255, 0.25);
+      box-shadow: -6px 0 28px rgba(0, 240, 255, 0.6);
+      padding-left: 10px;
+    }
+    .edge-icon {
+      font-size: 0.95rem;
+    }
+    .edge-text {
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.66rem;
+      letter-spacing: 2px;
+      font-weight: 700;
+    }
+
+    /* Flank Controls Grid & Widgets */
+    .flank-section-title {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.72rem;
+      letter-spacing: 1.5px;
+      color: var(--holo-blue);
+      margin-top: 4px;
+      margin-bottom: 2px;
+      text-transform: uppercase;
+      border-bottom: 1px dashed rgba(0, 240, 255, 0.2);
+      padding-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .flank-btn-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .flank-btn {
+      background: rgba(0, 240, 255, 0.08);
+      border: 1px solid var(--panel-border);
+      color: var(--holo-cyan);
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.7rem;
+      letter-spacing: 1px;
+      padding: 10px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+      text-align: center;
+      transition: all 0.2s ease;
+    }
+    .flank-btn:hover {
+      background: rgba(0, 240, 255, 0.22);
+      border-color: var(--holo-cyan);
+      box-shadow: var(--glow-cyan);
+      transform: translateY(-1px);
+    }
+    .flank-btn:active {
+      transform: translateY(1px);
+    }
+    .flank-btn-icon {
+      font-size: 1.1rem;
+    }
+    .flank-slider-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      border-radius: 4px;
+      padding: 10px 12px;
+    }
+    .flank-slider-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.78rem;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-dim);
+    }
+    .flank-volume-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.1);
+      outline: none;
+      transition: background 0.2s;
+    }
+    .flank-volume-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--holo-cyan);
+      cursor: pointer;
+      box-shadow: 0 0 8px var(--holo-cyan);
+    }
+    .flank-presets {
+      display: flex;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .flank-preset-btn {
+      flex: 1;
+      padding: 4px 6px;
+      background: rgba(0, 240, 255, 0.06);
+      border: 1px solid rgba(0, 240, 255, 0.2);
+      border-radius: 3px;
+      color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.15s ease;
+    }
+    .flank-preset-btn:hover {
+      background: rgba(0, 240, 255, 0.2);
+      color: var(--holo-cyan);
+      border-color: var(--holo-cyan);
+    }
+
+    /* Holographic Tactical Calendar Modal */
+    .calendar-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(3, 7, 14, 0.88);
+      backdrop-filter: blur(14px);
+      z-index: 2500;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      opacity: 0;
+      transition: opacity 0.25s ease;
+    }
+    .calendar-modal-backdrop.open {
+      display: flex;
+      opacity: 1;
+    }
+    .calendar-modal-dialog {
+      width: 100%;
+      max-width: 1320px;
+      max-height: 92vh;
+      background: rgba(7, 12, 22, 0.95);
+      border: 1px solid var(--holo-cyan);
+      box-shadow: 0 0 50px rgba(0, 240, 255, 0.3), inset 0 0 25px rgba(0, 240, 255, 0.06);
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      animation: modal-appear 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes modal-appear {
+      from { transform: scale(0.96) translateY(15px); opacity: 0; }
+      to { transform: scale(1) translateY(0); opacity: 1; }
+    }
+    .cal-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 24px;
+      background: rgba(0, 240, 255, 0.05);
+      border-bottom: 1px solid var(--panel-border);
+    }
+    .cal-header-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .cal-icon {
+      font-size: 1.8rem;
+      filter: drop-shadow(0 0 8px rgba(0, 240, 255, 0.6));
+    }
+    .cal-title {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--holo-cyan);
+      letter-spacing: 2px;
+      text-shadow: var(--glow-cyan);
+    }
+    .cal-subtitle {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      letter-spacing: 1px;
+    }
+    .cal-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .cal-btn-outline {
+      background: rgba(0, 240, 255, 0.08);
+      border: 1px solid var(--holo-cyan);
+      color: var(--holo-cyan);
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+    }
+    .cal-btn-outline:hover {
+      background: rgba(0, 240, 255, 0.2);
+      box-shadow: 0 0 12px rgba(0, 240, 255, 0.5);
+    }
+    .cal-close-btn {
+      background: transparent;
+      border: 1px solid rgba(255, 51, 102, 0.4);
+      color: var(--holo-crimson);
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.82rem;
+      padding: 6px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .cal-close-btn:hover {
+      background: rgba(255, 51, 102, 0.2);
+      box-shadow: 0 0 12px rgba(255, 51, 102, 0.5);
+    }
+    .cal-shelf-section {
+      padding: 12px 24px;
+      background: rgba(4, 8, 16, 0.75);
+      border-bottom: 1px solid var(--panel-border);
+    }
+    .cal-shelf-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+    .cal-pills-container {
+      display: flex;
+      gap: 10px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+    .cal-pill {
+      flex: 0 0 auto;
+      background: rgba(0, 240, 255, 0.06);
+      border: 1px solid var(--panel-border);
+      color: var(--text-main);
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+    }
+    .cal-pill:hover {
+      border-color: var(--holo-cyan);
+      background: rgba(0, 240, 255, 0.12);
+    }
+    .cal-pill.active {
+      background: rgba(0, 240, 255, 0.18);
+      border-color: var(--holo-cyan);
+      color: var(--holo-cyan);
+      box-shadow: 0 0 12px rgba(0, 240, 255, 0.4);
+    }
+    .cal-pill-tag {
+      font-size: 0.68rem;
+      font-family: 'JetBrains Mono', monospace;
+      padding: 1px 6px;
+      border-radius: 3px;
+      background: rgba(0, 255, 157, 0.15);
+      color: var(--holo-emerald);
+      border: 1px solid rgba(0, 255, 157, 0.4);
+    }
+    .cal-info-bar {
+      padding: 10px 24px;
+      background: rgba(0, 180, 216, 0.05);
+      border-bottom: 1px solid var(--panel-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .active-cal-name {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.88rem;
+      color: var(--holo-amber);
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+    .active-cal-desc {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.74rem;
+      color: var(--text-dim);
+    }
+    .cal-grid-scroll {
+      flex: 1 1 auto;
+      overflow-y: auto;
+      overflow-x: auto;
+      padding: 20px 24px;
+    }
+    .cal-week-grid {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(170px, 1fr));
+      gap: 14px;
+      min-width: 1100px;
+    }
+    .cal-day-col {
+      background: rgba(10, 16, 28, 0.6);
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 380px;
+      transition: border-color 0.2s ease;
+    }
+    .cal-day-col.has-classes {
+      border-color: rgba(0, 240, 255, 0.35);
+    }
+    .cal-day-col.today {
+      border-color: var(--holo-cyan);
+      box-shadow: 0 0 16px rgba(0, 240, 255, 0.3);
+    }
+    .cal-day-header {
+      padding: 10px 12px;
+      background: rgba(0, 240, 255, 0.06);
+      border-bottom: 1px solid var(--panel-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .cal-day-name {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: var(--holo-cyan);
+    }
+    .cal-day-date {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--text-dim);
+    }
+    .cal-day-body {
+      padding: 10px;
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .cal-event-card {
+      background: rgba(0, 240, 255, 0.05);
+      border: 1px solid rgba(0, 240, 255, 0.25);
+      border-radius: 6px;
+      padding: 10px 12px;
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+    .cal-event-card:hover {
+      background: rgba(0, 240, 255, 0.12);
+      border-color: var(--holo-cyan);
+      box-shadow: 0 0 14px rgba(0, 240, 255, 0.4);
+      transform: translateY(-2px);
+    }
+    .cal-event-time {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--holo-amber);
+      font-weight: 600;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .cal-event-title {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 0.96rem;
+      font-weight: 700;
+      color: var(--text-main);
+      line-height: 1.25;
+      margin-bottom: 6px;
+    }
+    .cal-event-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+    }
+    .cal-event-room {
+      color: var(--holo-emerald);
+      background: rgba(0, 255, 157, 0.1);
+      padding: 1px 6px;
+      border-radius: 3px;
+      border: 1px solid rgba(0, 255, 157, 0.3);
+    }
+    .cal-day-empty {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      font-family: 'JetBrains Mono', monospace;
+      opacity: 0.45;
+      text-align: center;
+      padding: 20px 8px;
+    }
+    .cal-modal-footer {
+      padding: 12px 24px;
+      background: rgba(0, 240, 255, 0.03);
+      border-top: 1px solid var(--panel-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.76rem;
+    }
+    .cal-footer-stat {
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .stat-bullet {
+      color: var(--holo-emerald);
+      font-size: 0.65rem;
+    }
+    .cal-footer-hint {
+      color: var(--holo-cyan);
+      opacity: 0.8;
+    }
+    .cal-btn-danger {
+      background: rgba(255, 51, 102, 0.12);
+      border: 1px solid var(--holo-crimson);
+      color: var(--holo-crimson);
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 0.82rem;
+      font-weight: 700;
+      padding: 5px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+      letter-spacing: 0.5px;
+    }
+    .cal-btn-danger:hover {
+      background: rgba(255, 51, 102, 0.25);
+      box-shadow: 0 0 14px rgba(255, 51, 102, 0.5);
+    }
+    .cal-pill-del-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      font-size: 0.85rem;
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 3px;
+      margin-left: 4px;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .cal-pill-del-btn:hover {
+      color: var(--holo-crimson);
+      background: rgba(255, 51, 102, 0.2);
+      transform: scale(1.15);
+    }
+    .cal-card-del-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      cursor: pointer;
+      padding: 1px 4px;
+      border-radius: 3px;
+      transition: all 0.2s ease;
+      line-height: 1;
+    }
+    .cal-card-del-btn:hover {
+      color: var(--holo-crimson);
+      border-color: rgba(255, 51, 102, 0.4);
+      background: rgba(255, 51, 102, 0.15);
+    }
+
+    /* Zero-CLS Performance Utilities & Reflow Guards */
+    .tabular-nums {
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum";
+    }
+    .w-14 {
+      width: 3.5rem;
+      min-width: 3.5rem;
+      max-width: 3.5rem;
+    }
+    .text-right {
+      text-align: right;
+    }
+    .inline-block {
+      display: inline-block;
+    }
+    .origin-left {
+      transform-origin: left;
+    }
+    .will-change-transform {
+      will-change: transform;
+    }
+    .h-\[640px\] {
+      height: 640px;
+    }
+    .max-h-\[90vh\] {
+      max-height: 90vh;
+    }
+    .aspect-square {
+      aspect-ratio: 1 / 1;
+    }
+
+    /* Holographic Photo Gallery Modal Viewport (Zero-CLS Component) */
+    .photo-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(3, 7, 14, 0.88);
+      backdrop-filter: blur(14px);
+      z-index: 2450;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      opacity: 0;
+      transition: opacity 0.25s ease;
+    }
+    .photo-modal-backdrop.open {
+      display: flex;
+      opacity: 1;
+    }
+    .photo-modal-dialog {
+      width: 100%;
+      max-width: 1200px;
+      height: 640px;
+      max-height: 90vh;
+      background: rgba(7, 12, 22, 0.95);
+      border: 1px solid var(--holo-cyan);
+      box-shadow: 0 0 50px rgba(0, 240, 255, 0.3), inset 0 0 25px rgba(0, 240, 255, 0.06);
+      border-radius: 10px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      animation: modal-appear 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .photo-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 20px;
+      background: rgba(0, 240, 255, 0.05);
+      border-bottom: 1px solid var(--panel-border);
+      flex: 0 0 auto;
+    }
+    .photo-header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .photo-status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--holo-cyan);
+      box-shadow: 0 0 8px var(--holo-cyan);
+      animation: pulse-staged 2s infinite ease-in-out;
+    }
+    .photo-modal-title {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--holo-cyan);
+      letter-spacing: 2px;
+      text-shadow: var(--glow-cyan);
+    }
+    .photo-modal-subtitle {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      letter-spacing: 1px;
+    }
+    .photo-counter-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      padding: 3px 8px;
+      border-radius: 3px;
+      background: rgba(0, 240, 255, 0.1);
+      border: 1px solid rgba(0, 240, 255, 0.3);
+      color: var(--holo-cyan);
+    }
+    .photo-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .photo-scroll-viewport {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      position: relative;
+      min-height: 0;
+    }
+    .photo-empty-state {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+      color: rgba(0, 240, 255, 0.5);
+    }
+    .photo-empty-state.hidden {
+      display: none;
+    }
+    .photo-empty-title {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.9rem;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .photo-empty-sub {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      max-width: 360px;
+    }
+    .photo-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      gap: 12px;
+    }
+    .photo-tile {
+      position: relative;
+      aspect-ratio: 1 / 1;
+      width: 100%;
+      border-radius: 4px;
+      overflow: hidden;
+      border: 1px solid rgba(0, 240, 255, 0.25);
+      background: rgba(8, 14, 26, 0.8);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      will-change: transform;
+    }
+    .photo-tile:hover {
+      border-color: var(--holo-cyan);
+      box-shadow: 0 0 15px rgba(0, 240, 255, 0.35);
+      transform: translateY(-2px);
+    }
+    .photo-tile img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0;
+      transition: opacity 0.3s ease-out;
+      will-change: opacity;
+      display: block;
+    }
+    .photo-tile img.loaded, .photo-tile img.opacity-100 {
+      opacity: 1;
+    }
+    .photo-tile-badge {
+      position: absolute;
+      bottom: 0;
+      inset-x: 0;
+      background: linear-gradient(to top, rgba(0, 0, 0, 0.85) 0%, rgba(0, 0, 0, 0.4) 70%, transparent 100%);
+      padding: 4px 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      color: var(--holo-cyan);
+      display: flex;
+      justify-content: space-between;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      pointer-events: none;
+    }
+    .photo-tile:hover .photo-tile-badge {
+      opacity: 1;
+    }
+    .photo-modal-footer {
+      padding: 8px 18px;
+      background: rgba(0, 0, 0, 0.4);
+      border-top: 1px solid var(--panel-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      color: rgba(0, 240, 255, 0.7);
+      flex: 0 0 auto;
+    }
+    .photo-footer-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .photo-footer-status {
+      color: rgba(0, 240, 255, 0.9);
+      font-weight: 600;
+    }
+    /* Lightbox Modal */
+    .lightbox-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 2600;
+      background: rgba(0, 0, 0, 0.88);
+      backdrop-filter: blur(12px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .lightbox-modal-backdrop.hidden {
+      display: none;
+    }
+    .lightbox-dialog {
+      background: rgba(8, 14, 26, 0.96);
+      border: 1px solid rgba(0, 240, 255, 0.4);
+      box-shadow: 0 0 40px rgba(0, 240, 255, 0.25);
+      border-radius: 8px;
+      max-width: 760px;
+      width: 100%;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .lightbox-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 16px;
+      background: rgba(0, 240, 255, 0.06);
+      border-bottom: 1px solid var(--panel-border);
+    }
+    .lightbox-title {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.8rem;
+      letter-spacing: 1.5px;
+      color: var(--holo-cyan);
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .lightbox-preview {
+      flex: 1;
+      background: rgba(0, 0, 0, 0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+      overflow: hidden;
+      min-height: 280px;
+    }
+    .lightbox-img {
+      max-width: 100%;
+      max-height: 52vh;
+      object-fit: contain;
+      border-radius: 4px;
+      border: 1px solid rgba(0, 240, 255, 0.2);
+    }
+    .lightbox-details {
+      padding: 14px 16px;
+      border-top: 1px solid var(--panel-border);
+      background: linear-gradient(to top, rgba(0, 240, 255, 0.05), transparent);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .lightbox-meta-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.74rem;
+    }
+    .lightbox-meta-cell {
+      padding: 6px 8px;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      border-radius: 4px;
+    }
+    .meta-label {
+      color: var(--text-dim);
+      font-size: 0.65rem;
+      display: block;
+      margin-bottom: 2px;
+    }
+    .meta-val {
+      color: var(--holo-cyan);
+      display: block;
+    }
+    .lightbox-caption-box {
+      padding: 10px 12px;
+      background: rgba(0, 240, 255, 0.05);
+      border: 1px solid rgba(0, 240, 255, 0.2);
+      border-radius: 4px;
+      font-size: 0.82rem;
+    }
+    .caption-label {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.7rem;
+      color: var(--holo-cyan);
+      display: block;
+      margin-bottom: 4px;
+    }
+    .caption-text {
+      color: var(--text-main);
+      font-style: italic;
+    }
+    .lightbox-actions {
+      display: flex;
+      justify-content: flex-end;
+    }
+  </style>
+<body>
+
+  <!-- DOCKED STARK PILL (UPGRADE 4) -->
+  <div id="starkDockedPill">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <canvas id="dockedMiniCanvas" width="36" height="36" style="border-radius: 50%; display: block;"></canvas>
+      <div style="display: flex; flex-direction: column;">
+        <span id="dockedStatusTitle" style="font-family: 'Orbitron', sans-serif; font-size: 0.72rem; font-weight: 800; color: var(--holo-cyan); letter-spacing: 1.5px;">STANDBY // ONLINE</span>
+        <span id="dockedModelBadge" style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: var(--text-dim);">GEMINI 3.8 FLASH</span>
+      </div>
+    </div>
+
+    <!-- 32-Bar Mini FFT Waveform Canvas -->
+    <div style="display: flex; align-items: center; gap: 8px; flex: 1; max-width: 240px; justify-content: center;">
+      <canvas id="dockedFftCanvas" width="220" height="24" style="display: block;"></canvas>
+    </div>
+
+    <!-- Single-Line Scrolling Mission Ticker -->
+    <div style="flex: 1; min-width: 140px; max-width: 280px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 0.75rem; color: var(--text-main); font-family: 'JetBrains Mono', monospace;" id="dockedTicker">
+      Standing by for your directive, Sir...
+    </div>
+
+    <!-- Quick Action Controls -->
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <button class="pill" id="dockedMuteBtn" onclick="toggleMute()" style="cursor: pointer; padding: 4px 10px; font-size: 0.72rem;">
+        <span class="pill-dot" id="dockedMuteDot"></span>
+        <span id="dockedMuteText">MUTE</span>
+      </button>
+      <button class="pill" onclick="toggleDockedMode()" title="Toggle Full HUD (Ctrl+Shift+J)" style="cursor: pointer; padding: 4px 10px; font-size: 0.72rem; color: var(--holo-cyan);">
+        EXPAND
+      </button>
+    </div>
+  </div>
+
+  <!-- Header -->
+  <header>
+    <div class="brand">
+      <div class="brand-logo"><div class="brand-logo-inner"></div></div>
+      <div class="brand-title">J.A.R.V.I.S. // 4.0</div>
+      <div class="brand-sub">SOVEREIGN COMMAND BRIDGE // STARK INDUSTRIES</div>
+    </div>
+    <div class="header-pills">
+      <div class="pill">
+        <div class="pill-dot" id="socketStatusDot"></div>
+        <span id="socketStatusText">NEURAL LINK ACTIVE</span>
+      </div>
+      <div class="pill">
+        <span>ROUTING:</span>
+        <span style="color: var(--holo-emerald); font-weight: bold;">LOCAL FIRST // CLOUD BY REQUEST</span>
+      </div>
+      <div class="pill" onclick="openPhotoGalleryModal()" style="cursor: pointer; border-color: var(--holo-cyan);" title="Open Archived Visual Intel Matrix">
+        <span style="color: var(--holo-cyan);">🖼️ INTEL MATRIX</span>
+      </div>
+      <div class="pill" onclick="openCalendarModal()" style="cursor: pointer; border-color: var(--holo-cyan);" title="Open Holographic Tactical Calendar">
+        <span style="color: var(--holo-cyan);">📅 CALENDAR</span>
+      </div>
+      <div class="pill" onclick="toggleDrawer()" style="cursor: pointer; border-color: var(--holo-cyan);" title="Toggle Right-Flank Tactical Control Desk [F4 / Click]">
+        <span style="color: var(--holo-cyan);">⚡ CONTROL FLANK</span>
+      </div>
+      <div class="pill">
+        <span id="clockDisplay">00:00:00</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Grid -->
+  <main>
+    <!-- Left: Telemetry Panel -->
+    <section class="hud-card">
+      <div class="card-header">
+        <span>HARDWARE & TELEMETRY</span>
+        <span style="color: var(--text-dim);">[SYS-01]</span>
+      </div>
+      <div class="card-body">
+        <div class="telemetry-section-header">// HARDWARE & THERMALS</div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">HOST OS</span>
+          <span class="telemetry-val" id="osVal">WINDOWS 11 64-BIT</span>
+        </div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">GPU STATUS</span>
+          <div style="display: flex; gap: 6px; align-items: center;">
+            <span class="telemetry-val" id="gpuVal" style="font-size: 0.8rem;">RTX 3050</span>
+            <span class="thermal-badge tabular-nums inline-block" id="gpuTempBadge">--°C</span>
+          </div>
+        </div>
+        <div class="telemetry-row" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+          <div style="display: flex; justify-content: space-between; width: 100%;">
+            <span class="telemetry-label">CPU LOAD</span>
+            <span class="telemetry-val tabular-nums w-14 text-right inline-block" id="cpuVal">-- %</span>
+          </div>
+          <div class="meter-bar-container">
+            <div class="meter-bar origin-left will-change-transform" id="cpuMeter" style="background: linear-gradient(90deg, var(--holo-cyan), var(--holo-amber));"></div>
+          </div>
+        </div>
+        <div class="telemetry-row" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+          <div style="display: flex; justify-content: space-between; width: 100%;">
+            <span class="telemetry-label">SYSTEM RAM</span>
+            <span class="telemetry-val tabular-nums text-right inline-block" id="ramVal">-- GB (-- %)</span>
+          </div>
+          <div class="meter-bar-container">
+            <div class="meter-bar origin-left will-change-transform" id="ramMeter" style="background: linear-gradient(90deg, var(--holo-blue), var(--holo-cyan));"></div>
+          </div>
+        </div>
+        <div class="telemetry-row" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+          <div style="display: flex; justify-content: space-between; width: 100%;">
+            <span class="telemetry-label">SYSTEM BATTERY</span>
+            <span class="telemetry-val tabular-nums w-14 text-right inline-block" id="batteryVal">-- %</span>
+          </div>
+          <div class="meter-bar-container">
+            <div class="meter-bar origin-left will-change-transform" id="batteryMeter"></div>
+          </div>
+        </div>
+
+        <div class="telemetry-section-header">// COGNITIVE ROUTER & LATENCY</div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">ROUTER TIER</span>
+          <span class="telemetry-val" id="modelTierVal" style="color: var(--holo-emerald);">TRI-TIER HYBRID</span>
+        </div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">ACTIVE MODELS</span>
+          <span class="telemetry-val" id="activeModelVal" style="font-size: 0.72rem; line-height: 1.4;">GROQ LPU + OLLAMA + GEMINI</span>
+        </div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">INFERENCE SPEED</span>
+          <span class="thermal-badge" id="latencyBadge" style="border-color: var(--holo-cyan); color: var(--holo-cyan); background: rgba(0, 240, 255, 0.1);">OLLAMA: --ms | GROQ: --ms</span>
+        </div>
+
+        <div class="telemetry-section-header">// AGENT MEMORY & INTAKE</div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">TTS ENGINE</span>
+          <span class="telemetry-val" style="color: var(--holo-emerald);">KOKORO-82M (LOCAL CUDA)</span>
+        </div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">DYNAMIC MEMORY</span>
+          <span class="telemetry-val" id="memoryCountVal">TIER 2 (ACTIVE)</span>
+        </div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">ACTIVE TIMERS</span>
+          <span class="telemetry-val" id="activeTimersVal" style="color: var(--holo-amber);">0 ACTIVE</span>
+        </div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">STAGED INTAKE</span>
+          <span class="telemetry-val" id="telemetryStagedVal" style="color: var(--holo-emerald);">0 PENDING</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Center: Arc Reactor Stage -->
+    <section class="center-stage">
+      <canvas id="reactorCanvas" width="480" height="480"></canvas>
+      <div class="status-hud-box">
+        <div class="status-badge" id="statusBadge">STANDBY // ONLINE</div>
+        <div class="sub-status" id="subStatus">VOICE SENSORS ARMED // HOLD FIN KEY OR SAY "HEY JARVIS"</div>
+        <div id="stagedDocPill" class="staged-doc-pill" style="display:none;" onclick="focusContextInput()" title="Click to provide context for this document">
+          <span>📄</span> <span id="stagedDocText">1 STAGED PDF (Awaiting Briefing)</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right: Mission Dialogue Feed -->
+    <section class="hud-card">
+      <div class="card-header">
+        <span>LIVE MISSION LOG</span>
+        <span style="color: var(--text-dim);" id="msgCount">[00 MSGS]</span>
+      </div>
+      <div class="card-body">
+        <div class="chat-container" id="chatContainer">
+          <div class="chat-bubble chat-jarvis">
+            <div class="bubble-author jarvis">
+              <span>JARVIS</span>
+              <span>BOOT</span>
+            </div>
+            <div class="bubble-text">Jarvis systems operational. All sub-systems online and standing by, Sir.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Bottom: Command Deck -->
+    <footer class="hud-card command-deck">
+      <div class="deck-top-row">
+        <div class="quick-actions">
+          <button class="btn-action" id="btnMute" onclick="toggleMute()">
+            <span id="muteIcon">🎙️</span> <span id="muteText">MUTE VOX</span>
+          </button>
+          <button class="btn-action" onclick="sendQuickCommand('Jarvis, initiate work protocol')">
+            <span>🛡️</span> WORK
+          </button>
+          <button class="btn-action" onclick="sendQuickCommand('Jarvis, give me my daily briefing')">
+            <span>🌅</span> BRIEFING
+          </button>
+          <button class="btn-action" onclick="sendQuickCommand('Jarvis, initiate lockdown protocol')">
+            <span>🔒</span> LOCKDOWN
+          </button>
+          <button class="btn-action" onclick="sendQuickCommand('Jarvis, optimize my PC')">
+            <span>🧹</span> OPTIMIZE
+          </button>
+          <button class="btn-action" onclick="sendQuickCommand('Look at my screen and tell me what you see')">
+            <span>👁️</span> VISION
+          </button>
+          <button class="btn-action" id="btnImportPdf" onclick="triggerPdfImport()" style="border-color: rgba(0, 255, 157, 0.5); color: var(--holo-emerald);" title="Import PDF Document via File Explorer">
+            <span>📄</span> IMPORT PDF
+          </button>
+          <input type="file" id="pdfFileInput" accept=".pdf,application/pdf" style="display:none;" onchange="handlePdfUpload(event)">
+          <button class="btn-action" id="btnGallery" onclick="openPhotoGalleryModal()" style="border-color: rgba(0, 240, 255, 0.5); color: var(--holo-cyan);" title="Open Archived Visual Intel Matrix">
+            <span>🖼️</span> GALLERY
+          </button>
+          <button class="btn-action" id="btnCalendar" onclick="openCalendarModal()" style="border-color: rgba(0, 240, 255, 0.5); color: var(--holo-cyan);" title="Open Holographic Tactical Calendar">
+            <span>📅</span> CALENDAR
+          </button>
+          <button class="btn-action" id="btnDrawer" onclick="toggleDrawer()" style="border-color: rgba(0, 240, 255, 0.7); color: var(--holo-cyan);" title="Toggle Right-Flank Tactical Control Desk">
+            <span>⚡</span> CONTROLS
+          </button>
+        </div>
+        <div class="deck-status-hint">
+          <span style="color: var(--holo-emerald);">●</span> PTT: HOLD FIN / END KEY &middot; OR TRANSMIT VIA COMMAND LINE
+        </div>
+      </div>
+
+      <div class="input-wrapper">
+        <span class="cmd-prefix">JARVIS //</span>
+        <input 
+          type="text" 
+          id="cmdInput" 
+          class="cmd-input" 
+          placeholder="Transmit instruction or voice query to Jarvis..." 
+          autocomplete="off"
+          onkeydown="if(event.key === 'Enter') transmitCommand()"
+        >
+        <button class="btn-transmit" onclick="transmitCommand()">TRANSMIT ↵</button>
+      </div>
+    </footer>
+  </main>
+
+  <!-- Starboard Edge Toggle Pill -->
+  <button class="flank-toggle-edge-btn" id="btnFlankToggleEdge" onclick="toggleDrawer()" title="Toggle Tactical Control Flank [F4 / Click]">
+    <span class="edge-icon">⚡</span>
+    <span class="edge-text">CONTROLS</span>
+  </button>
+
+  <!-- Slide-out Holographic HUD Drawer -->
+  <aside class="hud-drawer" id="hudDrawer">
+    <div class="drawer-header">
+      <span class="drawer-title">// TACTICAL CONTROL FLANK</span>
+      <button class="drawer-close-btn" onclick="toggleDrawer()">✕ CLOSE</button>
+    </div>
+    <div class="drawer-tabs">
+      <button class="drawer-tab active" id="tabControlsBtn" onclick="switchDrawerTab('controls')">CONTROLS</button>
+      <button class="drawer-tab" id="tabIntelligenceBtn" onclick="switchDrawerTab('intelligence')">INTELLIGENCE (<span id="drawerMemoryCount">0</span>)</button>
+      <button class="drawer-tab" id="tabTimersBtn" onclick="switchDrawerTab('timers')">TIMERS (<span id="drawerTimerCount">0</span>)</button>
+      <button class="drawer-tab" id="tabNotesBtn" onclick="switchDrawerTab('notes')">NOTES</button>
+      <button class="drawer-tab" id="tabStagedBtn" onclick="switchDrawerTab('staged')">STAGED (<span id="drawerStagedCount">0</span>)</button>
+      <button class="drawer-tab" id="tabAgendaBtn" onclick="switchDrawerTab('agenda')">AGENDA</button>
+    </div>
+    <div class="drawer-body" id="drawerBody">
+      <div style="color: var(--text-dim); font-size: 0.85rem; text-align: center; margin-top: 20px;">Loading archive data...</div>
+    </div>
+  </aside>
+
+  <!-- Holographic Tactical Calendar Modal -->
+  <div id="calendarModalBackdrop" class="calendar-modal-backdrop" onclick="if(event.target === this) closeCalendarModal()">
+    <div class="calendar-modal-dialog">
+      <!-- Header -->
+      <div class="cal-modal-header">
+        <div class="cal-header-left">
+          <span class="cal-icon">📅</span>
+          <div>
+            <div class="cal-title">// TACTICAL CALENDAR & SCHEDULE MATRIX</div>
+            <div class="cal-subtitle">STARK INDUSTRIES HUD &middot; PERSISTENT ACADEMIC & AGENDA TELEMETRY</div>
+          </div>
+        </div>
+        <div class="cal-header-actions">
+          <button class="cal-btn-outline" onclick="triggerPdfImport()" title="Import new timetable or schedule document">
+            <span>➕</span> IMPORT CALENDAR
+          </button>
+          <button class="cal-btn-outline" onclick="loadCalendarModalData()" title="Reload calendar data from database">
+            <span>🔄</span> REFRESH
+          </button>
+          <button class="cal-close-btn" onclick="closeCalendarModal()">
+            ✕ CLOSE
+          </button>
+        </div>
+      </div>
+
+      <!-- Saved Calendars Shelf -->
+      <div class="cal-shelf-section">
+        <div class="cal-shelf-label">SAVED CALENDARS & TIMETABLE ARCHIVES IN JARVIS (<span id="savedCalCount">0</span>)</div>
+        <div class="cal-pills-container" id="savedCalendarsPills">
+          <!-- Dynamic pills for saved calendar documents -->
+        </div>
+      </div>
+
+      <!-- Active Calendar Info Bar -->
+      <div class="cal-info-bar">
+        <div>
+          <div id="activeCalTitle" class="active-cal-name">⚡ MASTER ACTIVE SCHEDULE (ALL SESSIONS)</div>
+          <div id="activeCalSummary" class="active-cal-desc">Displaying all active academic & calendar events registered in Jarvis SQLite memory.</div>
+        </div>
+        <div id="calActiveActions" style="display:flex; align-items:center; gap:8px;">
+          <button id="btnDeleteCalendar" class="cal-btn-danger" onclick="promptDeleteCurrentCalendar()" title="Delete or clear this calendar">
+            <span>🗑️</span> DELETE CALENDAR
+          </button>
+        </div>
+      </div>
+
+      <!-- Calendar Week Matrix Grid -->
+      <div class="cal-grid-scroll">
+        <div class="cal-week-grid" id="calendarWeekGrid">
+          <!-- 7 Day Columns dynamically rendered -->
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="cal-modal-footer">
+        <div class="cal-footer-stat">
+          <span class="stat-bullet">●</span> REGISTERED SESSIONS: <span id="calTotalEventsCount" style="color:var(--holo-cyan); font-weight:700;">6</span>
+        </div>
+        <div class="cal-footer-stat">
+          <span class="stat-bullet">●</span> CURRENT TIMETABLE: <span style="color:var(--holo-emerald); font-weight:700;">WEEK OF OCT 12 &ndash; 17, 2026</span>
+        </div>
+        <div class="cal-footer-hint">
+          VOICE PROMPT: "Jarvis, what classes do I have today?"
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Holographic Confirmation Modal for Calendar Deletion -->
+  <div id="calConfirmBackdrop" class="calendar-modal-backdrop" style="z-index: 2600;" onclick="if(event.target === this) closeConfirmModal()">
+    <div class="calendar-modal-dialog" style="max-width: 520px; border-color: var(--holo-crimson); box-shadow: 0 0 45px rgba(255, 51, 102, 0.4);">
+      <div class="cal-modal-header" style="background: rgba(255, 51, 102, 0.08); border-bottom-color: rgba(255, 51, 102, 0.3);">
+        <div class="cal-header-left">
+          <span style="font-size: 1.5rem;">⚠️</span>
+          <div>
+            <div class="cal-title" style="color: var(--holo-crimson); text-shadow: 0 0 10px rgba(255, 51, 102, 0.6);">// PURGE CALENDAR ARCHIVE</div>
+            <div class="cal-subtitle">IRREVERSIBLE MEMORY MODIFICATION PROTOCOL</div>
+          </div>
+        </div>
+        <button class="cal-close-btn" onclick="closeConfirmModal()">✕</button>
+      </div>
+      <div style="padding: 20px 24px; font-family: 'Rajdhani', sans-serif; font-size: 1.05rem; color: var(--text-main);">
+        <p id="confirmModalText" style="margin-bottom: 16px;">Are you sure you want to delete this calendar from Jarvis?</p>
+        <label id="confirmClearEventsWrapper" style="display: flex; align-items: center; gap: 8px; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: var(--holo-amber); cursor: pointer; user-select: none;">
+          <input type="checkbox" id="confirmClearEventsCheckbox" checked style="accent-color: var(--holo-crimson); width: 16px; height: 16px;">
+          Also clear timetable events from active schedule
+        </label>
+      </div>
+      <div style="padding: 14px 24px; background: rgba(0, 0, 0, 0.3); border-top: 1px solid rgba(255, 51, 102, 0.2); display: flex; justify-content: flex-end; gap: 10px;">
+        <button class="cal-btn-outline" style="border-color: var(--panel-border); color: var(--text-dim);" onclick="closeConfirmModal()">CANCEL</button>
+        <button id="btnExecuteDelete" class="cal-btn-danger" style="padding: 8px 18px;" onclick="executeDeleteCalendar()">CONFIRM PURGE 🗑️</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Holographic Photo Gallery Modal Viewport (Zero-CLS Component) -->
+  <div id="photoGalleryModalBackdrop" class="photo-modal-backdrop" onclick="if(event.target === this) closePhotoGalleryModal()">
+    <div class="photo-modal-dialog h-[640px] max-h-[90vh]">
+      <!-- Header Deck -->
+      <div class="photo-modal-header">
+        <div class="photo-header-left">
+          <div class="photo-status-dot"></div>
+          <div>
+            <div class="photo-modal-title">// ARCHIVED VISUAL INTEL MATRIX</div>
+            <div class="photo-modal-subtitle">ZERO-VRAM INTEL STREAMING &middot; ETAG 304 CACHED</div>
+          </div>
+          <span id="photoCounterBadge" class="photo-counter-badge">0 ASSETS</span>
+        </div>
+        <div class="photo-header-actions">
+          <button class="cal-btn-outline" onclick="if(photoGallery) photoGallery.refresh()" title="Sync Archives from Database">
+            <span>🔄</span> SYNC
+          </button>
+          <button class="cal-btn-outline" style="border-color: var(--holo-emerald); color: var(--holo-emerald);" onclick="if(photoGallery) photoGallery.pasteClipboard()" title="Capture from Windows Clipboard">
+            <span>📋</span> PASTE CLIPBOARD
+          </button>
+          <button class="cal-close-btn" onclick="closePhotoGalleryModal()">
+            ✕ CLOSE
+          </button>
+        </div>
+      </div>
+
+      <!-- Virtualized Scroll Viewport Container (Clamped Zero-CLS) -->
+      <main id="photoScrollContainer" class="photo-scroll-viewport custom-scrollbar">
+        <!-- Empty State -->
+        <div id="photoEmptyState" class="photo-empty-state hidden">
+          <div style="font-size: 2.5rem; opacity: 0.4; margin-bottom: 8px;">📷</div>
+          <p class="photo-empty-title">VISUAL DATABASE EMPTY</p>
+          <p class="photo-empty-sub">Capture clipboard screenshots with "save clipboard photo" or import visual assets via voice.</p>
+        </div>
+
+        <!-- Dynamic Virtual Grid Matrix -->
+        <div id="photoGrid" class="photo-grid">
+          <!-- Injected dynamically by photoGallery.render() -->
+        </div>
+      </main>
+
+      <!-- Tactical Footer -->
+      <footer class="photo-modal-footer">
+        <div class="photo-footer-left">
+          <span class="stat-bullet" style="color: var(--holo-emerald);">●</span>
+          <span>ETAG CACHE: <strong style="color: var(--holo-cyan);">HTTP 304 ACTIVE</strong></span>
+          <span>&middot;</span>
+          <span>VRAM OVERHEAD: <strong style="color: var(--holo-emerald);">0.0 MB</strong></span>
+        </div>
+        <div id="galleryStatusMsg" class="photo-footer-status">
+          SYSTEM READY
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Lightbox Detail Inspection Modal -->
+  <div id="photoLightboxModal" class="lightbox-modal-backdrop hidden" onclick="if(event.target === this) if(photoGallery) photoGallery.closeLightbox()">
+    <div class="lightbox-dialog">
+      <div class="lightbox-header">
+        <span id="modalPhotoTitle" class="lightbox-title">INTEL INSPECTION</span>
+        <button onclick="if(photoGallery) photoGallery.closeLightbox()" class="cal-close-btn">&times;</button>
+      </div>
+      <div class="lightbox-preview">
+        <img id="modalPhotoImg" src="" alt="Detail Preview" class="lightbox-img">
+      </div>
+      <div class="lightbox-details">
+        <div class="lightbox-meta-grid">
+          <div class="lightbox-meta-cell">
+            <span class="meta-label">RESOLUTION</span>
+            <strong id="modalDim" class="meta-val">-</strong>
+          </div>
+          <div class="lightbox-meta-cell">
+            <span class="meta-label">FILE SIZE</span>
+            <strong id="modalSize" class="meta-val">-</strong>
+          </div>
+          <div class="lightbox-meta-cell">
+            <span class="meta-label">TIMESTAMP</span>
+            <strong id="modalDate" class="meta-val truncate">-</strong>
+          </div>
+          <div class="lightbox-meta-cell">
+            <span class="meta-label">PHOTO ID</span>
+            <strong id="modalId" class="meta-val truncate">-</strong>
+          </div>
+        </div>
+        <div id="modalCaptionBox" class="lightbox-caption-box">
+          <span class="caption-label">SEMANTIC ANALYSIS // GEMINI CLOUD VISION:</span>
+          <p id="modalCaptionText" class="caption-text">No visual description indexed. Click 'ANALYZE WITH VISION' to evaluate.</p>
+        </div>
+        <div class="lightbox-actions">
+          <button id="analyzeVisionBtn" onclick="if(photoGallery) photoGallery.analyzeCurrentPhoto()" class="cal-btn-outline" style="border-color: var(--holo-amber); color: var(--holo-amber);">
+            <span>👁️</span> ANALYZE WITH VISION
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Interactive HUD Script -->
+  <script>
+    // System & Animation State
+    let currentState = "idle";
+    let pulseAngle = 0;
+    let turbineAngle1 = 0;
+    let turbineAngle2 = 0;
+    let turbineAngle3 = 0;
+    let audioReactiveLevel = 0.0;
+    let isMuted = false;
+    let ws = null;
+    let reconnectTimeout = null;
+    let reconnectAttempts = 0;
+    const INITIAL_RECONNECT_DELAY_MS = 1000;
+    const MAX_RECONNECT_DELAY_MS = 16000;
+    const BACKOFF_MULTIPLIER = 1.6;
+
+    // DOM Reference Cache (Zero-Lookup Overhead)
+    const domRefs = {};
+
+    function initDomReferences() {
+      domRefs.clockDisplay = document.getElementById('clockDisplay');
+      domRefs.reactorCanvas = document.getElementById('reactorCanvas');
+      domRefs.socketStatusDot = document.getElementById('socketStatusDot');
+      domRefs.socketStatusText = document.getElementById('socketStatusText');
+      domRefs.statusBadge = document.getElementById('statusBadge');
+      domRefs.subStatus = document.getElementById('subStatus');
+      domRefs.stagedDocPill = document.getElementById('stagedDocPill');
+      domRefs.stagedDocText = document.getElementById('stagedDocText');
+      domRefs.osVal = document.getElementById('osVal');
+      domRefs.gpuVal = document.getElementById('gpuVal');
+      domRefs.gpuTempBadge = document.getElementById('gpuTempBadge');
+      domRefs.cpuVal = document.getElementById('cpuVal');
+      domRefs.cpuMeter = document.getElementById('cpuMeter');
+      domRefs.ramVal = document.getElementById('ramVal');
+      domRefs.ramMeter = document.getElementById('ramMeter');
+      domRefs.batteryVal = document.getElementById('batteryVal');
+      domRefs.batteryMeter = document.getElementById('batteryMeter');
+      domRefs.modelTierVal = document.getElementById('modelTierVal');
+      domRefs.activeModelVal = document.getElementById('activeModelVal');
+      domRefs.latencyBadge = document.getElementById('latencyBadge');
+      domRefs.memoryCountVal = document.getElementById('memoryCountVal');
+      domRefs.activeTimersVal = document.getElementById('activeTimersVal');
+      domRefs.telemetryStagedVal = document.getElementById('telemetryStagedVal');
+      domRefs.chatContainer = document.getElementById('chatContainer');
+      domRefs.msgCount = document.getElementById('msgCount');
+      domRefs.btnMute = document.getElementById('btnMute');
+      domRefs.muteText = document.getElementById('muteText');
+      domRefs.muteIcon = document.getElementById('muteIcon');
+      domRefs.cmdInput = document.getElementById('cmdInput');
+      domRefs.hudDrawer = document.getElementById('hudDrawer');
+      domRefs.drawerBody = document.getElementById('drawerBody');
+      domRefs.drawerTimerCount = document.getElementById('drawerTimerCount');
+      domRefs.drawerStagedCount = document.getElementById('drawerStagedCount');
+      domRefs.tabTimersBtn = document.getElementById('tabTimersBtn');
+      domRefs.tabNotesBtn = document.getElementById('tabNotesBtn');
+      domRefs.tabStagedBtn = document.getElementById('tabStagedBtn');
+      domRefs.tabAgendaBtn = document.getElementById('tabAgendaBtn');
+      domRefs.pdfFileInput = document.getElementById('pdfFileInput');
+      domRefs.calendarModalBackdrop = document.getElementById('calendarModalBackdrop');
+      domRefs.calConfirmBackdrop = document.getElementById('calConfirmBackdrop');
+      // Photo Gallery Viewport & Lightbox References
+      domRefs.photoGalleryModalBackdrop = document.getElementById('photoGalleryModalBackdrop');
+      domRefs.photoScrollContainer = document.getElementById('photoScrollContainer');
+      domRefs.photoGrid = document.getElementById('photoGrid');
+      domRefs.photoCounterBadge = document.getElementById('photoCounterBadge');
+      domRefs.photoEmptyState = document.getElementById('photoEmptyState');
+      domRefs.galleryStatusMsg = document.getElementById('galleryStatusMsg');
+      domRefs.photoLightboxModal = document.getElementById('photoLightboxModal');
+      domRefs.modalPhotoTitle = document.getElementById('modalPhotoTitle');
+      domRefs.modalPhotoImg = document.getElementById('modalPhotoImg');
+      domRefs.modalDim = document.getElementById('modalDim');
+      domRefs.modalSize = document.getElementById('modalSize');
+      domRefs.modalDate = document.getElementById('modalDate');
+      domRefs.modalId = document.getElementById('modalId');
+      domRefs.modalCaptionText = document.getElementById('modalCaptionText');
+      domRefs.analyzeVisionBtn = document.getElementById('analyzeVisionBtn');
+    }
+    initDomReferences();
+
+    // Clock display
+    function updateClock() {
+      const now = new Date();
+      if (domRefs.clockDisplay) {
+        domRefs.clockDisplay.textContent = now.toLocaleTimeString('en-GB');
+      } else {
+        const el = document.getElementById('clockDisplay');
+        if (el) el.textContent = now.toLocaleTimeString('en-GB');
+      }
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // WebGL 2.0 Analytical SDF Mark-85 Arc Reactor Engine (UPGRADE 3)
+    class StarkWebGLReactor {
+      constructor(canvas) {
+        this.canvas = canvas;
+        this.gl = canvas.getContext('webgl2', { alpha: true, antialias: false, depth: false, stencil: false });
+        this.fftBands = new Float32Array(64);
+        this.audioLevel = 0.0;
+        this.currentState = "idle";
+        this.isMuted = false;
+        this.time = 0.0;
+        this.useFallback = !this.gl;
+
+        if (this.gl) {
+          try {
+            this.initGL();
+          } catch (e) {
+            console.warn("WebGL 2.0 init failed, using fallback:", e);
+            this.useFallback = true;
+          }
+        }
+      }
+
+      initGL() {
+        const gl = this.gl;
+        const vsSource = `#version 300 es
+precision highp float;
+out vec2 vUv;
+void main() {
+    vec2 pos = vec2((gl_VertexID == 2) ? 3.0 : -1.0, (gl_VertexID == 1) ? 3.0 : -1.0);
+    vUv = pos * 0.5 + 0.5;
+    gl_Position = vec4(pos, 0.0, 1.0);
+}`;
+
+        const fsSource = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform float uTime;
+uniform float uAudioLevel;
+uniform vec3 uCoreColor;
+uniform vec3 uGlowColor;
+uniform float uFftBands[64];
+
+#define PI 3.14159265359
+
+float sdCircle(vec2 p, float r) { return length(p) - r; }
+float sdRing(vec2 p, float r, float th) { return abs(length(p) - r) - th; }
+
+void main() {
+    vec2 p = (vUv - 0.5) * 2.0;
+    float r = length(p);
+    float theta = atan(p.y, p.x);
+
+    float dynamicMod = 1.0 + (0.04 * sin(uTime * 3.0)) + (uAudioLevel * 0.15);
+    vec2 sp = p / dynamicMod;
+    float sr = r / dynamicMod;
+
+    vec3 col = vec3(0.0);
+    float alpha = 0.0;
+
+    // 1. Central glowing reactor core fill
+    float coreDist = sdCircle(sp, 0.26);
+    if (coreDist < 0.0) {
+        float coreGrad = 1.0 - smoothstep(-0.26, 0.0, coreDist);
+        col += mix(uCoreColor, vec3(1.0), coreGrad * 0.85) * (1.0 + uAudioLevel * 0.5);
+        alpha = max(alpha, 0.85 + 0.15 * coreGrad);
+    }
+
+    // 2. Center Arc Core Dot
+    float dotDist = sdCircle(sp, 0.07);
+    if (dotDist < 0.0) { col = vec3(1.0); alpha = 1.0; }
+    col += uCoreColor * (0.015 / (max(0.001, abs(dotDist)) + 0.03));
+    alpha = max(alpha, clamp(0.02 / (abs(dotDist) + 0.05), 0.0, 1.0));
+
+    // 3. Central Reactor Core Housing Ring
+    float housingRing = sdRing(sp, 0.28, 0.008);
+    float ringGlow = 0.004 / (abs(housingRing) + 0.004);
+    col += uCoreColor * ringGlow;
+    alpha = max(alpha, clamp(ringGlow, 0.0, 1.0));
+
+    // 4. 8 Radial rays
+    float rayRot = theta + uTime * 0.5;
+    if (sr < 0.25 && sr > 0.07 && abs(cos(8.0 * rayRot)) > 0.96) {
+        col += vec3(1.0) * 0.6;
+        alpha = max(alpha, 0.7);
+    }
+
+    // 5. Inner turbine ring (4 counter-rotating arcs)
+    float innerRot = theta - uTime * 1.2;
+    float ring2 = sdRing(sp, 0.44, 0.012);
+    if (cos(4.0 * innerRot) > 0.1) {
+        float arcGlow2 = 0.005 / (abs(ring2) + 0.005);
+        col += uGlowColor * arcGlow2;
+        alpha = max(alpha, clamp(arcGlow2, 0.0, 1.0));
+    }
+
+    // 6. Middle turbine ring (6 segmented arcs)
+    float midRot = theta + uTime * 0.8;
+    float ring1 = sdRing(sp, 0.64, 0.016);
+    if (cos(6.0 * midRot) > -0.2) {
+        float arcGlow1 = 0.008 / (abs(ring1) + 0.006);
+        col += uCoreColor * arcGlow1;
+        alpha = max(alpha, clamp(arcGlow1, 0.0, 1.0));
+    }
+
+    // 7. 64-band polar FFT audio ring
+    float normTheta = (theta + PI) / (2.0 * PI);
+    int bandIdx = int(clamp(floor(normTheta * 64.0), 0.0, 63.0));
+    float bandMag = uFftBands[bandIdx];
+    float notchAngle = fract(normTheta * 64.0);
+    float fftRingR = 0.78;
+    float notchLen = 0.035 + bandMag * 0.12 + (uAudioLevel * 0.04);
+    if (sr >= fftRingR && sr <= (fftRingR + notchLen) && abs(notchAngle - 0.5) < 0.35) {
+        vec3 notchCol = mix(uGlowColor, vec3(1.0), bandMag * 0.7);
+        col += notchCol * (0.8 + bandMag * 0.8);
+        alpha = max(alpha, 0.9);
+    }
+
+    // 8. Outermost ambient ring
+    float outerRing = sdRing(sp, 0.86, 0.004);
+    float outerGlow = 0.002 / (abs(outerRing) + 0.003);
+    col += uCoreColor * (outerGlow * 0.4);
+    alpha = max(alpha, clamp(outerGlow * 0.3, 0.0, 1.0));
+
+    fragColor = vec4(col, clamp(alpha, 0.0, 1.0));
+}`;
+
+        const vs = gl.createShader(gl.VERTEX_SHADER);
+        gl.shaderSource(vs, vsSource);
+        gl.compileShader(vs);
+
+        const fs = gl.createShader(gl.FRAGMENT_SHADER);
+        gl.shaderSource(fs, fsSource);
+        gl.compileShader(fs);
+
+        this.program = gl.createProgram();
+        gl.attachShader(this.program, vs);
+        gl.attachShader(this.program, fs);
+        gl.linkProgram(this.program);
+
+        this.uTimeLoc = gl.getUniformLocation(this.program, "uTime");
+        this.uAudioLevelLoc = gl.getUniformLocation(this.program, "uAudioLevel");
+        this.uCoreColorLoc = gl.getUniformLocation(this.program, "uCoreColor");
+        this.uGlowColorLoc = gl.getUniformLocation(this.program, "uGlowColor");
+        this.uFftBandsLoc = gl.getUniformLocation(this.program, "uFftBands");
+
+        this.vao = gl.createVertexArray();
+      }
+
+      updateDspFrame(bytes) {
+        if (!bytes || bytes.length !== 68 || bytes[0] !== 0x4A) return;
+        const rms = bytes[1];
+        this.audioLevel = rms / 255.0;
+        for (let i = 0; i < 64; i++) {
+          this.fftBands[i] = bytes[4 + i] / 255.0;
+        }
+      }
+
+      updateTelemetry(state, isMuted, audioLevel = null) {
+        this.currentState = state;
+        this.isMuted = isMuted;
+        if (audioLevel !== null) {
+          this.audioLevel = audioLevel;
+        }
+      }
+
+      render(timestamp) {
+        if (this.useFallback) {
+          this.renderFallback();
+          return;
+        }
+        const gl = this.gl;
+        this.time = (timestamp || performance.now()) * 0.001;
+
+        gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+        gl.clearColor(0.0, 0.0, 0.0, 0.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        gl.useProgram(this.program);
+        gl.bindVertexArray(this.vao);
+
+        let coreColor = [0.0, 0.7, 0.85];
+        let glowColor = [0.0, 0.45, 0.65];
+
+        if (this.isMuted) {
+          coreColor = [1.0, 0.2, 0.4];
+          glowColor = [0.8, 0.1, 0.25];
+        } else if (this.currentState === "listening") {
+          coreColor = [0.0, 0.94, 1.0];
+          glowColor = [0.0, 0.6, 0.8];
+        } else if (this.currentState === "thinking") {
+          coreColor = [1.0, 0.67, 0.0];
+          glowColor = [0.8, 0.45, 0.0];
+        } else if (this.currentState === "speaking") {
+          coreColor = [0.0, 0.9, 0.6];
+          glowColor = [0.0, 0.7, 0.45];
+        }
+
+        gl.uniform1f(this.uTimeLoc, this.time);
+        gl.uniform1f(this.uAudioLevelLoc, this.audioLevel);
+        gl.uniform3fv(this.uCoreColorLoc, coreColor);
+        gl.uniform3fv(this.uGlowColorLoc, glowColor);
+        gl.uniform1fv(this.uFftBandsLoc, this.fftBands);
+
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+
+      renderFallback() {
+        const ctx = this.canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        ctx.beginPath();
+        ctx.arc(240, 240, 60, 0, 2 * Math.PI);
+        ctx.fillStyle = this.isMuted ? "#ff3366" : "#00f0ff";
+        ctx.fill();
+      }
+    }
+
+    // Mini Arc Reactor and FFT Waveform Renderers for Docked Stark Pill
+    function renderMiniReactor(ctx, time, state, isMuted) {
+      if (!ctx) return;
+      ctx.clearRect(0, 0, 36, 36);
+      let color = "#00f0ff";
+      if (isMuted) color = "#ff3366";
+      else if (state === "listening") color = "#00f0ff";
+      else if (state === "thinking") color = "#ffaa00";
+      else if (state === "speaking") color = "#00e199";
+
+      ctx.beginPath();
+      ctx.arc(18, 18, 14, 0, 2 * Math.PI);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(18, 18, Math.max(3, 7 + 2 * Math.sin(time * 3)), 0, 2 * Math.PI);
+      ctx.fillStyle = color;
+      ctx.fill();
+    }
+
+    function renderDockedFft(fftBands, audioLevel) {
+      const canvas = document.getElementById('dockedFftCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const bars = 32;
+      const barWidth = 4;
+      const gap = 3;
+      ctx.fillStyle = "rgba(0, 240, 255, 0.85)";
+      for (let i = 0; i < bars; i++) {
+        const mag = (fftBands && fftBands.length >= 64) ? fftBands[i * 2] : ((audioLevel || 0.1) * 0.5);
+        const h = Math.max(2, Math.min(canvas.height, mag * canvas.height));
+        const x = i * (barWidth + gap);
+        const y = canvas.height - h;
+        ctx.fillRect(x, y, barWidth, h);
+      }
+    }
+
+    // Layout Mode & Docked Stark Pill Switcher (UPGRADE 4)
+    function toggleDockedMode() {
+      const isDocked = document.body.classList.toggle('mode-docked');
+      const url = new URL(window.location);
+      if (isDocked) {
+        url.searchParams.set('mode', 'docked');
+      } else {
+        url.searchParams.delete('mode');
+      }
+      window.history.replaceState({}, '', url);
+    }
+
+    // URL parameter parsing for ?mode=docked or ?mode=mini
+    const urlParams = new URLSearchParams(window.location.search);
+    const initialMode = urlParams.get('mode');
+    if (initialMode === 'docked') {
+      document.body.classList.add('mode-docked');
+    } else if (initialMode === 'mini') {
+      document.body.classList.add('mode-mini');
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'J' || e.key === 'j')) {
+        e.preventDefault();
+        toggleDockedMode();
+      }
+    });
+
+    // Initialize WebGL 2.0 Arc Reactor and Animation Loop
+    const canvas = document.getElementById('reactorCanvas');
+    window.reactor = new StarkWebGLReactor(canvas);
+
+    const miniCanvas = document.getElementById('dockedMiniCanvas');
+    const miniCtx = miniCanvas ? miniCanvas.getContext('2d') : null;
+
+    function renderArcReactor(timestamp) {
+      if (window.reactor) {
+        window.reactor.updateTelemetry(currentState, isMuted, audioReactiveLevel);
+        window.reactor.render(timestamp);
+      }
+      if (miniCtx) {
+        renderMiniReactor(miniCtx, (timestamp || performance.now()) * 0.001, currentState, isMuted);
+      }
+      requestAnimationFrame(renderArcReactor);
+    }
+    requestAnimationFrame(renderArcReactor);
+
+    // Resilient WebSocket Client with Binary DSP Tap & Zero-Trust Token Handshake
+    function initWebSocket() {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+      }
+
+      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const tokenQuery = window.__JARVIS_TOKEN__ ? `?token=${encodeURIComponent(window.__JARVIS_TOKEN__)}` : '';
+      const wsUrl = `${proto}//${window.location.host}/ws${tokenQuery}`;
+
+      try {
+        ws = new WebSocket(wsUrl);
+        ws.binaryType = "arraybuffer";
+      } catch (err) {
+        console.warn("[WS] Init failed, scheduling reconnect:", err);
+        scheduleWsReconnect();
+        return;
+      }
+
+      ws.onopen = () => {
+        reconnectAttempts = 0;
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+          reconnectTimeout = null;
+        }
+        if (domRefs.socketStatusDot) {
+          domRefs.socketStatusDot.style.background = "var(--holo-emerald)";
+          domRefs.socketStatusDot.style.boxShadow = "0 0 8px var(--holo-emerald)";
+        }
+        if (domRefs.socketStatusText) {
+          domRefs.socketStatusText.textContent = "NEURAL LINK ACTIVE";
+        }
+      };
+
+      ws.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          const bytes = new Uint8Array(event.data);
+          if (bytes.length === 68 && bytes[0] === 0x4A) {
+            if (window.reactor) {
+              window.reactor.updateDspFrame(bytes);
+              renderDockedFft(window.reactor.fftBands, window.reactor.audioLevel);
+            }
+          }
+          return;
+        }
+        try {
+          const data = JSON.parse(event.data);
+          handleServerMessage(data);
+        } catch (e) {
+          console.error("Malformed WS payload:", e);
+        }
+      };
+
+      ws.onclose = () => {
+        if (domRefs.socketStatusDot) {
+          domRefs.socketStatusDot.style.background = "var(--holo-crimson)";
+          domRefs.socketStatusDot.style.boxShadow = "0 0 8px var(--holo-crimson)";
+        }
+        if (domRefs.socketStatusText) {
+          domRefs.socketStatusText.textContent = "DISCONNECTED // RECONNECTING";
+        }
+        scheduleWsReconnect();
+      };
+
+      ws.onerror = (err) => {
+        console.warn("WebSocket error:", err);
+      };
+    }
+
+    function scheduleWsReconnect() {
+      if (reconnectTimeout) return;
+      const delay = Math.min(
+        MAX_RECONNECT_DELAY_MS,
+        INITIAL_RECONNECT_DELAY_MS * Math.pow(BACKOFF_MULTIPLIER, reconnectAttempts)
+      );
+      reconnectAttempts++;
+      if (domRefs.socketStatusText) {
+        domRefs.socketStatusText.textContent = `LINK DOWN // RETRYING (${Math.round(delay / 1000)}s)`;
+      }
+      reconnectTimeout = setTimeout(() => {
+        reconnectTimeout = null;
+        initWebSocket();
+      }, delay);
+    }
+
+    function handleServerMessage(data) {
+      if (data.type === "state") {
+        updateHUDState(data.state);
+      } else if (data.type === "telemetry" || data.c !== undefined || data.cpu !== undefined) {
+        updateTelemetry(data);
+      } else if (data.type === "chat") {
+        appendChatMessage(data.sender, data.text, data.timestamp);
+      } else if (data.type === "audio_level") {
+        audioReactiveLevel = data.level || 0.0;
+      } else if (data.type === "document_staged") {
+        updateStagedBadge(data.filename);
+        appendChatMessage("jarvis", data.message || `Received '${data.filename}', Sir. Standing by for your briefing.`);
+      } else if (data.type === "screen_snapshot") {
+        appendScreenSnapshotBubble(data.url, data.timestamp);
+      } else if (data.type === "ambient_telemetry") {
+        handleAmbientTelemetry(data.data, data.timestamp);
+      }
+    }
+
+    function updateHUDState(state) {
+      currentState = state;
+      const badge = domRefs.statusBadge || document.getElementById('statusBadge');
+      const sub = domRefs.subStatus || document.getElementById('subStatus');
+      if (!badge || !sub) return;
+
+      if (isMuted) {
+        badge.textContent = "MUTED // SENSORS OFFLINE";
+        badge.style.color = "var(--holo-crimson)";
+        badge.style.borderColor = "var(--holo-crimson)";
+        badge.style.textShadow = "0 0 15px rgba(255, 51, 102, 0.6)";
+        sub.textContent = "MICROPHONE MUTED // CLICK UNMUTE TO RESTORE VOICE";
+        return;
+      }
+
+      if (state === "listening") {
+        badge.textContent = "LISTENING // VOX ACTIVE";
+        badge.style.color = "var(--holo-cyan)";
+        badge.style.borderColor = "var(--holo-cyan)";
+        badge.style.textShadow = "var(--glow-cyan)";
+        sub.textContent = "RECORDING SPEECH // VOICE ACTIVITY DETECTOR ARMED";
+      } else if (state === "thinking") {
+        badge.textContent = "PROCESSING // NEURAL LPU";
+        badge.style.color = "var(--holo-amber)";
+        badge.style.borderColor = "var(--holo-amber)";
+        badge.style.textShadow = "var(--glow-amber)";
+        sub.textContent = "LOCAL REASONING & TOOL ROUTING // NO AUTOMATIC CLOUD FALLBACK";
+      } else if (state === "speaking") {
+        badge.textContent = "SPEAKING // VOCAL HARMONICS";
+        badge.style.color = "var(--holo-emerald)";
+        badge.style.borderColor = "var(--holo-emerald)";
+        badge.style.textShadow = "var(--glow-emerald)";
+        sub.textContent = "SYNTHESIZING & STREAMING VIA KOKORO-82M NEURAL VOICE";
+      } else { // idle
+        badge.textContent = "STANDBY // ONLINE";
+        badge.style.color = "var(--holo-cyan)";
+        badge.style.borderColor = "var(--panel-border)";
+        badge.style.textShadow = "var(--glow-cyan)";
+        sub.textContent = "HOLD FIN KEY OR SAY 'HEY JARVIS' TO ACTIVATE";
+      }
+    }
+
+    // Telemetry Batching via requestAnimationFrame & Zero-CLS GPU Compositor Updates
+    let pendingTelemetry = null;
+    let telemetryRafScheduled = false;
+
+    function updateTelemetry(data) {
+      if (!data) return;
+      if (!pendingTelemetry) {
+        pendingTelemetry = { ...data };
+      } else {
+        Object.assign(pendingTelemetry, data);
+      }
+
+      if (!telemetryRafScheduled) {
+        telemetryRafScheduled = true;
+        requestAnimationFrame(renderTelemetryFrame);
+      }
+    }
+
+    function renderTelemetryFrame() {
+      telemetryRafScheduled = false;
+      if (!pendingTelemetry) return;
+      const data = pendingTelemetry;
+      pendingTelemetry = null;
+
+      // 1. CPU Load (Single-char 'c' with fallback to 'cpu')
+      const cpu = data.c !== undefined ? data.c : data.cpu;
+      if (cpu !== undefined) {
+        if (domRefs.cpuVal) domRefs.cpuVal.textContent = `${cpu}%`;
+        if (domRefs.cpuMeter) {
+          const ratio = Math.min(1, Math.max(0, cpu / 100));
+          domRefs.cpuMeter.style.transform = `scaleX(${ratio})`;
+        }
+      }
+
+      // 2. RAM Load (Single-char 'rp', 'ru', 'rt' with fallbacks to 'ram_pct', 'ram_used_gb', etc.)
+      const ramPct = data.rp !== undefined ? data.rp : data.ram_pct;
+      if (ramPct !== undefined) {
+        let ramText = `${ramPct}%`;
+        if (data.ru !== undefined && data.rt !== undefined) {
+          const usedGb = (data.ru / 1024).toFixed(1);
+          const totalGb = (data.rt / 1024).toFixed(1);
+          ramText = `${usedGb} / ${totalGb} GB (${ramPct}%)`;
+        } else if (data.ram_used_gb !== undefined && data.ram_total_gb !== undefined) {
+          ramText = `${data.ram_used_gb} / ${data.ram_total_gb} GB (${ramPct}%)`;
+        }
+        if (domRefs.ramVal) domRefs.ramVal.textContent = ramText;
+        if (domRefs.ramMeter) {
+          const ratio = Math.min(1, Math.max(0, ramPct / 100));
+          domRefs.ramMeter.style.transform = `scaleX(${ratio})`;
+        }
+      }
+
+      // 3. System Battery
+      if (data.battery !== undefined) {
+        const bText = `${data.battery}% ${data.charging ? '⚡' : ''}`;
+        if (domRefs.batteryVal) domRefs.batteryVal.textContent = bText;
+        if (domRefs.batteryMeter) {
+          const ratio = Math.min(1, Math.max(0, data.battery / 100));
+          domRefs.batteryMeter.style.transform = `scaleX(${ratio})`;
+        }
+      }
+
+      // 4. GPU Thermals & Load (Single-char 'gt', 'gp', 'gl' with fallbacks)
+      const gpuTemp = data.gt !== undefined ? data.gt : data.gpu_temp;
+      if (gpuTemp !== undefined && gpuTemp > 0 && domRefs.gpuTempBadge) {
+        domRefs.gpuTempBadge.textContent = `${gpuTemp}°C`;
+        if (gpuTemp > 80) {
+          domRefs.gpuTempBadge.style.color = 'var(--holo-crimson)';
+          domRefs.gpuTempBadge.style.borderColor = 'var(--holo-crimson)';
+        } else {
+          domRefs.gpuTempBadge.style.color = 'var(--holo-amber)';
+          domRefs.gpuTempBadge.style.borderColor = 'var(--holo-amber)';
+        }
+      }
+
+      const gpuLoad = data.gp !== undefined ? data.gp : (data.gl !== undefined ? data.gl : data.gpu_load);
+      const gpuName = data.gpu || data.gpu_name;
+      if (domRefs.gpuVal) {
+        if (gpuName && gpuLoad !== undefined && gpuLoad > 0) {
+          domRefs.gpuVal.textContent = `${gpuName} (${gpuLoad}%)`;
+        } else if (gpuName) {
+          domRefs.gpuVal.textContent = gpuName;
+        }
+      }
+
+      // 5. Cognitive Model & Tier (Single-char 'md', 'st')
+      const modelVal = data.md !== undefined ? data.md : data.model;
+      if (modelVal && domRefs.activeModelVal) {
+        domRefs.activeModelVal.textContent = modelVal;
+      }
+
+      if (data.tier && domRefs.modelTierVal) {
+        domRefs.modelTierVal.textContent = data.tier.toUpperCase();
+      }
+
+      // 6. State synchronization (Single-char 'st' with fallback to 'state')
+      const stateVal = data.st !== undefined ? data.st : data.state;
+      if (stateVal && stateVal !== currentState) {
+        updateHUDState(stateVal);
+      }
+
+      // 7. Latencies
+      if (data.latencies && domRefs.latencyBadge) {
+        const l = data.latencies;
+        const oMs = l.ollama ? `${Math.round(l.ollama)}ms` : '--';
+        const gMs = l.groq ? `${Math.round(l.groq)}ms` : '--';
+        domRefs.latencyBadge.textContent = `OLLAMA: ${oMs} | GROQ: ${gMs}`;
+      }
+
+      // 8. Memory Label
+      if (data.memory_label && domRefs.memoryCountVal) {
+        domRefs.memoryCountVal.textContent = data.memory_label;
+      }
+
+      // 9. Active Timers
+      if (data.active_timers !== undefined) {
+        if (domRefs.activeTimersVal) domRefs.activeTimersVal.textContent = `${data.active_timers} ACTIVE`;
+        if (domRefs.drawerTimerCount) domRefs.drawerTimerCount.textContent = data.active_timers;
+      }
+
+      // 10. Mute State (Single-char 'm' [0 or 1] with fallback to 'is_muted')
+      const muteVal = data.m !== undefined ? Boolean(data.m === 1 || data.m === true) : data.is_muted;
+      if (muteVal !== undefined && muteVal !== isMuted) {
+        isMuted = muteVal;
+        if (domRefs.btnMute && domRefs.muteText) {
+          if (isMuted) {
+            domRefs.btnMute.classList.add('muted');
+            domRefs.muteText.textContent = "UNMUTE VOX";
+          } else {
+            domRefs.btnMute.classList.remove('muted');
+            domRefs.muteText.textContent = "MUTE VOX";
+          }
+        }
+        updateHUDState(currentState);
+      }
+    }
+
+    // Holographic HUD Drawer Functions
+    let isDrawerOpen = false;
+    let activeDrawerTab = 'controls';
+    let currentMasterVolume = 100;
+    let isPrivacyShieldActive = false;
+
+    function toggleDrawer() {
+      isDrawerOpen = !isDrawerOpen;
+      const drawer = document.getElementById('hudDrawer');
+      if (isDrawerOpen) {
+        drawer.classList.add('open');
+        loadDrawerContent();
+      } else {
+        drawer.classList.remove('open');
+      }
+    }
+
+    function switchDrawerTab(tab) {
+      activeDrawerTab = tab;
+      const controlsBtn = document.getElementById('tabControlsBtn');
+      if (controlsBtn) controlsBtn.classList.toggle('active', tab === 'controls');
+      const intelligenceBtn = document.getElementById('tabIntelligenceBtn');
+      if (intelligenceBtn) intelligenceBtn.classList.toggle('active', tab === 'intelligence');
+      const timersBtn = document.getElementById('tabTimersBtn');
+      if (timersBtn) timersBtn.classList.toggle('active', tab === 'timers');
+      const notesBtn = document.getElementById('tabNotesBtn');
+      if (notesBtn) notesBtn.classList.toggle('active', tab === 'notes');
+      const stagedBtn = document.getElementById('tabStagedBtn');
+      if (stagedBtn) stagedBtn.classList.toggle('active', tab === 'staged');
+      const agendaBtn = document.getElementById('tabAgendaBtn');
+      if (agendaBtn) agendaBtn.classList.toggle('active', tab === 'agenda');
+      loadDrawerContent();
+    }
+
+    function renderControlsTab() {
+      const container = document.getElementById('drawerBody');
+      if (!container) return;
+      const muteStatusText = isMuted ? "UNMUTE VOX" : "MUTE VOX";
+      const muteBtnClass = isMuted ? "flank-btn muted" : "flank-btn";
+
+      container.innerHTML = `
+        <!-- Section 1: Audio & Speech Matrix -->
+        <div class="flank-section-title">
+          <span>// AUDIO & HARMONIC SPEECH</span>
+          <span style="font-size:0.65rem; color:var(--holo-emerald);">ONLINE</span>
+        </div>
+        <div class="flank-slider-row">
+          <div class="flank-slider-header">
+            <span>MASTER HARDWARE VOLUME</span>
+            <span id="flankVolVal" style="color:var(--holo-cyan); font-weight:bold;">${currentMasterVolume}%</span>
+          </div>
+          <input type="range" min="0" max="100" value="${currentMasterVolume}" class="flank-volume-slider" id="flankVolSlider" oninput="handleVolumeSlider(this.value)">
+          <div class="flank-presets">
+            <button class="flank-preset-btn" onclick="setFlankVolume(25)">25%</button>
+            <button class="flank-preset-btn" onclick="setFlankVolume(50)">50%</button>
+            <button class="flank-preset-btn" onclick="setFlankVolume(75)">75%</button>
+            <button class="flank-preset-btn" style="color:var(--holo-cyan); border-color:var(--holo-cyan);" onclick="setFlankVolume(100)">100%</button>
+          </div>
+        </div>
+        <div class="flank-btn-grid" style="margin-top: 4px;">
+          <button class="${muteBtnClass}" id="flankBtnMute" onclick="toggleMute(); setTimeout(renderControlsTab, 200);">
+            <span class="flank-btn-icon" id="flankMuteIcon">${isMuted ? '🔇' : '🎙️'}</span>
+            <span id="flankMuteText">${muteStatusText}</span>
+          </button>
+          <button class="flank-btn" onclick="sendQuickCommand('Jarvis, give me your status debrief');">
+            <span class="flank-btn-icon">⚡</span>
+            <span>VOX DEBRIEF</span>
+          </button>
+        </div>
+
+        <!-- Section 2: Privacy & Security Deck -->
+        <div class="flank-section-title" style="margin-top:12px;">
+          <span>// PRIVACY & SECURITY GATE</span>
+          <span style="font-size:0.65rem; color:var(--holo-amber);">ENFORCED</span>
+        </div>
+        <div class="flank-btn-grid">
+          <button class="flank-btn" onclick="triggerPrivateBrowser();">
+            <span class="flank-btn-icon">🕵️</span>
+            <span>PRIVATE WINDOW</span>
+          </button>
+          <button class="flank-btn" style="border-color: rgba(255, 51, 102, 0.4); color: var(--holo-crimson);" onclick="triggerWorkstationLock();">
+            <span class="flank-btn-icon">🔒</span>
+            <span>LOCK WORKSTATION</span>
+          </button>
+        </div>
+
+        <!-- Section 3: Tactical Workstation Shortcuts -->
+        <div class="flank-section-title" style="margin-top:12px;">
+          <span>// WORKSTATION COCKPIT</span>
+          <span style="font-size:0.65rem; color:var(--holo-cyan);">HOTKEYS</span>
+        </div>
+        <div class="flank-btn-grid">
+          <button class="flank-btn" onclick="triggerFocusIde();">
+            <span class="flank-btn-icon">💻</span>
+            <span>FOCUS VS CODE</span>
+          </button>
+          <button class="flank-btn" onclick="triggerPcOptimize();">
+            <span class="flank-btn-icon">🧹</span>
+            <span>OPTIMIZE MEMORY</span>
+          </button>
+          <button class="flank-btn" onclick="openCalendarModal();">
+            <span class="flank-btn-icon">📅</span>
+            <span>TACTICAL AGENDA</span>
+          </button>
+          <button class="flank-btn" onclick="openPhotoGalleryModal();">
+            <span class="flank-btn-icon">🖼️</span>
+            <span>INTEL MATRIX</span>
+          </button>
+        </div>
+
+        <!-- Section 4: Architecture Calibration -->
+        <div class="drawer-card" style="margin-top: 10px; border-left-color: var(--holo-emerald); font-size: 0.78rem;">
+          <div class="drawer-card-header">
+            <span style="color: var(--holo-emerald); font-weight: 700;">JARVIS 4.0 // ARCHITECTURE</span>
+            <span style="color: var(--holo-cyan);">BUILD 4.0.1</span>
+          </div>
+          <div style="color: var(--text-dim); line-height: 1.4;">
+            • Cognitive Bridge: Gemini 3.8 Flash Hybrid<br>
+            • Acoustic DSP: Kokoro Neural (bm_george)<br>
+            • Automation: Silent CDP Port 9222 + Win32 UIA
+          </div>
+        </div>
+      `;
+    }
+
+    function handleVolumeSlider(val) {
+      currentMasterVolume = parseInt(val, 10);
+      const label = document.getElementById('flankVolVal');
+      if (label) label.textContent = `${currentMasterVolume}%`;
+      setVolume(currentMasterVolume);
+    }
+
+    function setFlankVolume(pct) {
+      currentMasterVolume = pct;
+      const slider = document.getElementById('flankVolSlider');
+      if (slider) slider.value = pct;
+      const label = document.getElementById('flankVolVal');
+      if (label) label.textContent = `${pct}%`;
+      setVolume(pct);
+    }
+
+    function triggerPrivateBrowser() {
+      fetch('/api/action', {
+        method: 'POST',
+        headers: jarvisHeaders(),
+        body: JSON.stringify({ action: 'launch_private_browser' })
+      }).catch(err => console.error(err));
+    }
+
+    function triggerFocusIde() {
+      fetch('/api/action', {
+        method: 'POST',
+        headers: jarvisHeaders(),
+        body: JSON.stringify({ action: 'focus_ide' })
+      }).catch(err => console.error(err));
+    }
+
+    function triggerWorkstationLock() {
+      fetch('/api/action', {
+        method: 'POST',
+        headers: jarvisHeaders(),
+        body: JSON.stringify({ action: 'lock_workstation' })
+      }).catch(err => console.error(err));
+    }
+
+    function triggerPcOptimize() {
+      fetch('/api/action', {
+        method: 'POST',
+        headers: jarvisHeaders(),
+        body: JSON.stringify({ action: 'optimize_pc' })
+      }).catch(err => console.error(err));
+    }
+
+    function briefDocument(filename) {
+      const input = document.getElementById('cmdInput');
+      if (input) {
+        input.value = `Jarvis, that PDF (${filename}) is `;
+        input.focus();
+      }
+      if (isDrawerOpen) toggleDrawer();
+    }
+
+    // ==========================================
+    // TACTICAL INTELLIGENCE & MEMORY INSPECTOR
+    // ==========================================
+    let cachedMemoryData = null;
+    let currentMemoryFilter = 'all';
+    let currentMemorySearch = '';
+    const deletePendingState = {};
+
+    function renderIntelligenceTab() {
+      const container = document.getElementById('drawerBody');
+      if (!container) return;
+
+      container.innerHTML = `
+        <div style="color: var(--text-dim); font-size: 0.85rem; text-align: center; margin-top: 20px;">
+          <span class="pulse-dot inline-block mr-1"></span> Interrogating neural memory matrix...
+        </div>
+      `;
+
+      fetch('/api/memory/nodes')
+        .then(res => {
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status} (${res.statusText || 'Endpoint offline'}). The live daemon requires a quick restart to bind the new routes.`);
+          }
+          return res.json();
+        })
+        .then(data => {
+          cachedMemoryData = data;
+          const countEl = document.getElementById('drawerMemoryCount');
+          if (countEl) countEl.textContent = data.total || 0;
+          renderMemoryMatrixView();
+        })
+        .catch(err => {
+          container.innerHTML = `<div style="color: var(--holo-crimson); font-size: 0.85rem;">Error querying memory nodes: ${err}</div>`;
+        });
+    }
+
+    function switchMemoryFilter(filter) {
+      currentMemoryFilter = filter;
+      renderMemoryMatrixView();
+    }
+
+    function filterMemorySearch(query) {
+      currentMemorySearch = (query || '').toLowerCase().trim();
+      renderMemoryMatrixView();
+    }
+
+    function toggleInscribeForm() {
+      const form = document.getElementById('inscribeForm');
+      const icon = document.getElementById('inscribeToggleIcon');
+      if (!form) return;
+      const isOpen = form.style.display === 'flex';
+      form.style.display = isOpen ? 'none' : 'flex';
+      if (icon) icon.textContent = isOpen ? '▼' : '▲';
+    }
+
+    function submitInscribeMemory() {
+      const type = document.getElementById('inscribeType').value;
+      const cat = document.getElementById('inscribeCategory').value.trim();
+      const key = document.getElementById('inscribeKey').value.trim();
+      const val = document.getElementById('inscribeVal').value.trim();
+
+      if (!key || !val) {
+        alert("Please provide both a key and value, Sir.");
+        return;
+      }
+
+      fetch('/api/memory/update', {
+        method: 'POST',
+        headers: jarvisHeaders(),
+        body: JSON.stringify({
+          type: type,
+          category: cat,
+          key: key,
+          value: val
+        })
+      })
+      .then(res => res.json())
+      .then(data => {
+        renderIntelligenceTab();
+      })
+      .catch(err => {
+        alert("Failed to inscribe memory node: " + err);
+      });
+    }
+
+    function promptDeleteMemoryNode(type, id, btnId) {
+      const btn = document.getElementById(btnId);
+      if (!btn) return;
+
+      if (!deletePendingState[btnId]) {
+        deletePendingState[btnId] = true;
+        btn.textContent = "CONFIRM? ⚠️";
+        btn.style.borderColor = "var(--holo-crimson)";
+        btn.style.backgroundColor = "rgba(255, 51, 102, 0.2)";
+        setTimeout(() => {
+          if (deletePendingState[btnId]) {
+            deletePendingState[btnId] = false;
+            btn.textContent = "PRUNE 🗑️";
+            btn.style.backgroundColor = "transparent";
+            btn.style.borderColor = "var(--panel-border)";
+          }
+        }, 4000);
+        return;
+      }
+
+      deletePendingState[btnId] = false;
+      btn.textContent = "PRUNING...";
+      btn.disabled = true;
+
+      fetch('/api/memory/delete', {
+        method: 'POST',
+        headers: jarvisHeaders(),
+        body: JSON.stringify({ type: type, id: id })
+      })
+      .then(res => res.json())
+      .then(data => {
+        renderIntelligenceTab();
+      })
+      .catch(err => {
+        alert("Failed to prune memory node: " + err);
+        renderIntelligenceTab();
+      });
+    }
+
+    function editMemoryNode(type, id, key, currentValue, category) {
+      const valEl = document.getElementById('val_' + (type === 'preference' ? 'pref_' + key : 'fact_' + id));
+      if (!valEl) return;
+
+      valEl.innerHTML = `
+        <div style="display: flex; flex-direction: column; gap: 6px; margin: 4px 0;">
+          <textarea id="editValInput_${id}" rows="2" style="background: rgba(0, 0, 0, 0.6); border: 1px solid var(--holo-cyan); border-radius: 3px; color: var(--text-main); font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; padding: 6px; width: 100%; resize: vertical;">${escapeHtml(currentValue)}</textarea>
+          <div style="display: flex; gap: 6px; justify-content: flex-end;">
+            <button class="drawer-close-btn" style="color: var(--text-dim); font-size: 0.72rem;" onclick="renderMemoryMatrixView()">CANCEL</button>
+            <button class="drawer-close-btn" style="color: var(--holo-emerald); border-color: rgba(0, 255, 157, 0.4); font-size: 0.72rem; font-weight: 700;" onclick="saveMemoryNodeEdit('${type}', '${id}', '${escapeHtml(key)}', '${escapeHtml(category || '')}')">SAVE 💾</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function saveMemoryNodeEdit(type, id, key, category) {
+      const input = document.getElementById('editValInput_' + id);
+      if (!input) return;
+      const newVal = input.value.trim();
+      if (!newVal) return;
+
+      fetch('/api/memory/update', {
+        method: 'POST',
+        headers: jarvisHeaders(),
+        body: JSON.stringify({
+          type: type,
+          key: key,
+          value: newVal,
+          category: category
+        })
+      })
+      .then(res => res.json())
+      .then(data => {
+        renderIntelligenceTab();
+      })
+      .catch(err => {
+        alert("Failed to update memory node: " + err);
+      });
+    }
+
+    function renderMemoryMatrixView() {
+      const container = document.getElementById('drawerBody');
+      if (!container || !cachedMemoryData) return;
+
+      const counts = cachedMemoryData.counts || { facts: 0, preferences: 0, documents: 0, lessons: 0 };
+      const total = cachedMemoryData.total || 0;
+
+      let facts = cachedMemoryData.facts || [];
+      let prefs = cachedMemoryData.preferences || [];
+      let docs = cachedMemoryData.documents || [];
+      let lessons = cachedMemoryData.lessons || [];
+
+      if (currentMemorySearch) {
+        facts = facts.filter(f => (f.key + " " + f.value + " " + f.category).toLowerCase().includes(currentMemorySearch));
+        prefs = prefs.filter(p => (p.key + " " + p.value).toLowerCase().includes(currentMemorySearch));
+        docs = docs.filter(d => (d.title + " " + d.summary + " " + d.category).toLowerCase().includes(currentMemorySearch));
+        lessons = lessons.filter(l => (l.tool_name + " " + l.trigger_context + " " + l.lesson).toLowerCase().includes(currentMemorySearch));
+      }
+
+      let visibleNodesHtml = "";
+
+      if (currentMemoryFilter === 'all' || currentMemoryFilter === 'preferences') {
+        if (prefs.length) {
+          visibleNodesHtml += `
+            <div class="flank-section-title" style="margin-top: 10px;">
+              <span>// CORE USER DIRECTIVES & PREFERENCES</span>
+              <span style="color: var(--holo-amber);">${prefs.length}</span>
+            </div>
+          `;
+          visibleNodesHtml += prefs.map(p => `
+            <div class="drawer-card" style="border-left-color: var(--holo-amber);" id="memNode_pref_${escapeHtml(p.key)}">
+              <div class="drawer-card-header">
+                <span style="color: var(--holo-amber); font-weight: 700;">★ PREFERENCE</span>
+                <span style="font-size: 0.72rem; color: var(--text-dim);">${escapeHtml(p.updated_at || '')}</span>
+              </div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; color: var(--holo-cyan); margin-bottom: 4px; word-break: break-all;">
+                ${escapeHtml(p.key)}
+              </div>
+              <div id="val_pref_${escapeHtml(p.key)}" style="font-size: 0.85rem; color: var(--text-main); margin-bottom: 8px; line-height: 1.4;">
+                ${escapeHtml(p.value)}
+              </div>
+              <div style="display: flex; gap: 6px; justify-content: flex-end;">
+                <button class="drawer-close-btn" style="color: var(--holo-cyan); font-size: 0.75rem;" onclick="editMemoryNode('preference', '${escapeHtml(p.key)}', '${escapeHtml(p.key)}', '${escapeHtml(p.value.replace(/'/g, "\\'"))}')">EDIT ✏️</button>
+                <button id="delBtn_pref_${escapeHtml(p.key)}" class="drawer-close-btn" style="color: var(--holo-crimson); font-size: 0.75rem;" onclick="promptDeleteMemoryNode('preference', '${escapeHtml(p.key)}', 'delBtn_pref_${escapeHtml(p.key)}')">PRUNE 🗑️</button>
+              </div>
+            </div>
+          `).join('');
+        }
+      }
+
+      if (currentMemoryFilter === 'all' || currentMemoryFilter === 'facts') {
+        if (facts.length) {
+          visibleNodesHtml += `
+            <div class="flank-section-title" style="margin-top: 10px;">
+              <span>// ATOMIC FACTS & KNOWLEDGE GRAPH</span>
+              <span style="color: var(--holo-cyan);">${facts.length}</span>
+            </div>
+          `;
+          visibleNodesHtml += facts.map(f => `
+            <div class="drawer-card" style="border-left-color: var(--holo-cyan);" id="memNode_fact_${f.id}">
+              <div class="drawer-card-header">
+                <span style="color: var(--holo-cyan); font-weight: 600;">• [${escapeHtml(f.category || 'general').toUpperCase()}]</span>
+                <span style="font-size: 0.72rem; color: var(--text-dim);">#${f.id}</span>
+              </div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; color: var(--holo-emerald); margin-bottom: 4px; word-break: break-all;">
+                ${escapeHtml(f.key)}
+              </div>
+              <div id="val_fact_${f.id}" style="font-size: 0.85rem; color: var(--text-main); margin-bottom: 8px; line-height: 1.4;">
+                ${escapeHtml(f.value)}
+              </div>
+              <div style="display: flex; gap: 6px; justify-content: flex-end;">
+                <button class="drawer-close-btn" style="color: var(--holo-cyan); font-size: 0.75rem;" onclick="editMemoryNode('fact', '${f.id}', '${escapeHtml(f.key)}', '${escapeHtml(f.value.replace(/'/g, "\\'"))}', '${escapeHtml(f.category)}')">EDIT ✏️</button>
+                <button id="delBtn_fact_${f.id}" class="drawer-close-btn" style="color: var(--holo-crimson); font-size: 0.75rem;" onclick="promptDeleteMemoryNode('fact', ${f.id}, 'delBtn_fact_${f.id}')">PRUNE 🗑️</button>
+              </div>
+            </div>
+          `).join('');
+        }
+      }
+
+      if (currentMemoryFilter === 'all' || currentMemoryFilter === 'documents') {
+        if (docs.length) {
+          visibleNodesHtml += `
+            <div class="flank-section-title" style="margin-top: 10px;">
+              <span>// ARCHIVED VAULT DOCUMENTS</span>
+              <span style="color: #c084fc;">${docs.length}</span>
+            </div>
+          `;
+          visibleNodesHtml += docs.map(d => `
+            <div class="drawer-card" style="border-left-color: #a855f7;" id="memNode_doc_${d.id}">
+              <div class="drawer-card-header">
+                <span style="color: #c084fc; font-weight: 600;">📄 ${escapeHtml(d.title)}</span>
+                <span style="font-size: 0.72rem; color: var(--text-dim);">#${d.id}</span>
+              </div>
+              <div style="font-size: 0.82rem; color: var(--text-main); margin-bottom: 8px;">
+                ${escapeHtml(d.summary || 'Archived knowledge document.')}
+              </div>
+              <div style="display: flex; justify-content: flex-end;">
+                <button id="delBtn_doc_${d.id}" class="drawer-close-btn" style="color: var(--holo-crimson); font-size: 0.75rem;" onclick="promptDeleteMemoryNode('document', ${d.id}, 'delBtn_doc_${d.id}')">PRUNE 🗑️</button>
+              </div>
+            </div>
+          `).join('');
+        }
+      }
+
+      if (currentMemoryFilter === 'all' || currentMemoryFilter === 'lessons') {
+        if (lessons.length) {
+          visibleNodesHtml += `
+            <div class="flank-section-title" style="margin-top: 10px;">
+              <span>// EPISODIC LESSONS & REFLEXION</span>
+              <span style="color: var(--holo-crimson);">${lessons.length}</span>
+            </div>
+          `;
+          visibleNodesHtml += lessons.map(l => `
+            <div class="drawer-card" style="border-left-color: var(--holo-crimson);" id="memNode_lesson_${l.id}">
+              <div class="drawer-card-header">
+                <span style="color: var(--holo-crimson); font-weight: 600;">⚡ ${escapeHtml(l.tool_name)}</span>
+                <span style="font-size: 0.72rem; color: var(--text-dim);">${l.hit_count} hits</span>
+              </div>
+              <div style="font-size: 0.78rem; color: var(--text-dim); margin-bottom: 4px;">
+                Trigger: ${escapeHtml(l.trigger_context)}
+              </div>
+              <div style="font-size: 0.82rem; color: var(--holo-amber); margin-bottom: 8px;">
+                ${escapeHtml(l.lesson)}
+              </div>
+              <div style="display: flex; justify-content: flex-end;">
+                <button id="delBtn_lesson_${l.id}" class="drawer-close-btn" style="color: var(--holo-crimson); font-size: 0.75rem;" onclick="promptDeleteMemoryNode('lesson', ${l.id}, 'delBtn_lesson_${l.id}')">PRUNE 🗑️</button>
+              </div>
+            </div>
+          `).join('');
+        }
+      }
+
+      if (!visibleNodesHtml) {
+        visibleNodesHtml = `
+          <div style="color: var(--text-dim); text-align: center; margin-top: 30px; font-size: 0.88rem;">
+            🔍 No memory nodes matching query "${escapeHtml(currentMemorySearch)}".
+          </div>
+        `;
+      }
+
+      container.innerHTML = `
+        <!-- Top Toolbar & Search -->
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;">
+          <input type="text" placeholder="Search memory nodes & knowledge graph..."
+                 value="${escapeHtml(currentMemorySearch)}" oninput="filterMemorySearch(this.value)"
+                 style="width: 100%; background: rgba(0, 0, 0, 0.4); border: 1px solid var(--panel-border); border-radius: 4px; padding: 7px 10px; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: var(--holo-cyan); outline: none;">
+
+          <div style="display: flex; gap: 4px; overflow-x: auto; padding-bottom: 2px;">
+            <button class="drawer-tab ${currentMemoryFilter === 'all' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" onclick="switchMemoryFilter('all')">ALL (${total})</button>
+            <button class="drawer-tab ${currentMemoryFilter === 'preferences' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" onclick="switchMemoryFilter('preferences')">PREFS (${counts.preferences})</button>
+            <button class="drawer-tab ${currentMemoryFilter === 'facts' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" onclick="switchMemoryFilter('facts')">FACTS (${counts.facts})</button>
+            <button class="drawer-tab ${currentMemoryFilter === 'documents' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" onclick="switchMemoryFilter('documents')">DOCS (${counts.documents})</button>
+            <button class="drawer-tab ${currentMemoryFilter === 'lessons' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" onclick="switchMemoryFilter('lessons')">LESSONS (${counts.lessons})</button>
+          </div>
+        </div>
+
+        <!-- Inscribe Fact / Preference Accordion -->
+        <div class="drawer-card" style="border-left-color: var(--holo-emerald); background: rgba(0, 255, 157, 0.03); margin-bottom: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleInscribeForm()">
+            <span style="font-family: 'Orbitron', sans-serif; font-size: 0.72rem; color: var(--holo-emerald); font-weight: 700;">+ INSCRIBE NEW MEMORY NODE</span>
+            <span id="inscribeToggleIcon" style="color: var(--holo-emerald); font-size: 0.8rem;">▼</span>
+          </div>
+          <div id="inscribeForm" style="display: none; margin-top: 10px; flex-direction: column; gap: 8px;">
+            <div style="display: flex; gap: 6px;">
+              <select id="inscribeType" style="flex: 1; background: rgba(0, 0, 0, 0.5); border: 1px solid var(--panel-border); border-radius: 3px; color: var(--holo-cyan); font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; padding: 4px 6px;">
+                <option value="fact">Atomic Fact</option>
+                <option value="preference">User Preference</option>
+              </select>
+              <input type="text" id="inscribeCategory" placeholder="Category (e.g. habit)" style="flex: 1; background: rgba(0, 0, 0, 0.5); border: 1px solid var(--panel-border); border-radius: 3px; color: var(--text-main); font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; padding: 4px 6px;">
+            </div>
+            <input type="text" id="inscribeKey" placeholder="Key (e.g. coffee_roast)" style="background: rgba(0, 0, 0, 0.5); border: 1px solid var(--panel-border); border-radius: 3px; color: var(--text-main); font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; padding: 4px 6px;">
+            <textarea id="inscribeVal" placeholder="Value / Assertion" rows="2" style="background: rgba(0, 0, 0, 0.5); border: 1px solid var(--panel-border); border-radius: 3px; color: var(--text-main); font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; padding: 4px 6px; resize: none;"></textarea>
+            <button class="drawer-close-btn" style="color: var(--holo-emerald); border-color: rgba(0, 255, 157, 0.5); padding: 6px 12px; font-weight: 700;" onclick="submitInscribeMemory()">COMMIT TO MEMORY ↵</button>
+          </div>
+        </div>
+
+        <!-- Memory Nodes Matrix -->
+        ${visibleNodesHtml}
+      `;
+    }
+
+    function loadDrawerContent() {
+      const container = document.getElementById('drawerBody');
+      if (activeDrawerTab === 'controls') {
+        renderControlsTab();
+        return;
+      }
+      if (activeDrawerTab === 'intelligence') {
+        renderIntelligenceTab();
+        return;
+      }
+      if (activeDrawerTab === 'timers') {
+        fetch('/api/timers')
+          .then(res => res.json())
+          .then(data => {
+            const timers = data.timers || [];
+            const countEl = document.getElementById('drawerTimerCount');
+            if (countEl) countEl.textContent = timers.length;
+            if (!timers.length) {
+              container.innerHTML = `
+                <div style="color: var(--text-dim); text-align: center; margin-top: 30px; font-size: 0.88rem;">
+                  ⏱️ No active countdown timers.<br>
+                  <span style="font-size: 0.78rem; opacity: 0.7;">Say "Jarvis, set a timer for 10 minutes" to create one.</span>
+                </div>
+              `;
+              return;
+            }
+            container.innerHTML = timers.map(t => `
+              <div class="drawer-card drawer-card-timer">
+                <div class="drawer-card-header">
+                  <span>${escapeHtml(t.label)}</span>
+                  <span style="color: var(--holo-amber);">${t.remaining}s remaining</span>
+                </div>
+                <div style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 6px;">
+                  Original duration: ${t.duration} seconds
+                </div>
+                <button class="drawer-close-btn" style="color: var(--holo-crimson); border-color: rgba(255, 51, 102, 0.4);" onclick="sendQuickCommand('Jarvis, cancel timer ${escapeHtml(t.label)}')">
+                  CANCEL TIMER
+                </button>
+              </div>
+            `).join('');
+          })
+          .catch(err => {
+            container.innerHTML = `<div style="color: var(--holo-crimson); font-size: 0.85rem;">Error loading timers: ${err}</div>`;
+          });
+      } else if (activeDrawerTab === 'notes') {
+        fetch('/api/notes')
+          .then(res => res.json())
+          .then(data => {
+            const notes = data.notes || [];
+            if (!notes.length) {
+              container.innerHTML = `
+                <div style="color: var(--text-dim); text-align: center; margin-top: 30px; font-size: 0.88rem;">
+                  📝 No captured notes in archive.<br>
+                  <span style="font-size: 0.78rem; opacity: 0.7;">Say "Jarvis, take a note that..." to capture thoughts.</span>
+                </div>
+              `;
+              return;
+            }
+            container.innerHTML = notes.map(n => `
+              <div class="drawer-card">
+                <div class="drawer-card-header">
+                  <span style="color: var(--holo-cyan);">${escapeHtml(n.category)}</span>
+                  <span>${escapeHtml(n.timestamp)}</span>
+                </div>
+                <div style="color: var(--text-main); font-size: 0.88rem;">${escapeHtml(n.content)}</div>
+              </div>
+            `).join('');
+          })
+          .catch(err => {
+            container.innerHTML = `<div style="color: var(--holo-crimson); font-size: 0.85rem;">Error loading notes: ${err}</div>`;
+          });
+      } else if (activeDrawerTab === 'staged') {
+        fetch('/api/documents/staged')
+          .then(res => res.json())
+          .then(data => {
+            const docs = data.staged || [];
+            const countEl = document.getElementById('drawerStagedCount');
+            if (countEl) countEl.textContent = docs.length;
+            if (!docs.length) {
+              container.innerHTML = `
+                <div style="color: var(--text-dim); text-align: center; margin-top: 30px; font-size: 0.88rem;">
+                  📄 No documents currently staged awaiting briefing.<br>
+                  <span style="font-size: 0.78rem; opacity: 0.7;">Click [IMPORT PDF] in the command deck to stage documents.</span>
+                </div>
+              `;
+              return;
+            }
+            container.innerHTML = docs.map(doc => `
+              <div class="drawer-card">
+                <div class="drawer-card-header">
+                  <span style="color: var(--holo-emerald); font-weight: 600;">📄 ${escapeHtml(doc.filename)}</span>
+                  <span style="color: var(--holo-amber); font-size: 0.8rem;">${(doc.file_size ? (doc.file_size / 1024).toFixed(1) + ' KB' : 'PDF')}</span>
+                </div>
+                <div style="font-size: 0.78rem; color: var(--text-dim); margin-bottom: 8px;">
+                  Status: PENDING BRIEFING &middot; ID #${doc.id}
+                </div>
+                <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); width: 100%;" onclick="briefDocument('${escapeHtml(doc.filename)}')">
+                  BRIEF JARVIS ↵
+                </button>
+              </div>
+            `).join('');
+          })
+          .catch(err => {
+            container.innerHTML = `<div style="color: var(--holo-crimson); font-size: 0.85rem;">Error loading staged documents: ${err}</div>`;
+          });
+      } else if (activeDrawerTab === 'agenda') {
+        fetch('/api/calendar')
+          .then(res => res.json())
+          .then(data => {
+            const events = data.events || [];
+            if (!events.length) {
+              container.innerHTML = `
+                <div style="color: var(--text-dim); text-align: center; margin-top: 30px; font-size: 0.88rem;">
+                  <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); width: 100%; margin-bottom: 12px; padding: 8px;" onclick="openCalendarModal()">
+                    📅 OPEN FULL HOLOGRAPHIC MATRIX ⤢
+                  </button>
+                  <div style="color: var(--text-dim); text-align: center; margin-top: 20px; font-size: 0.88rem;">
+                    📅 No upcoming calendar events scheduled.<br>
+                    <span style="font-size: 0.78rem; opacity: 0.7;">Say "Jarvis, schedule meeting with Stark tomorrow at 10am" to add one.</span>
+                  </div>
+                `;
+                return;
+              }
+              const headerBtn = `
+                <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); width: 100%; margin-bottom: 12px; padding: 8px;" onclick="openCalendarModal()">
+                  📅 OPEN FULL HOLOGRAPHIC MATRIX ⤢
+                </button>
+              `;
+              container.innerHTML = headerBtn + events.map(ev => `
+                <div class="drawer-card">
+                  <div class="drawer-card-header">
+                    <span style="color: var(--holo-amber); font-weight: 600;">📅 ${escapeHtml(ev.title)}</span>
+                    <span style="color: var(--text-dim); font-size: 0.78rem;">#${ev.id}</span>
+                  </div>
+                  <div style="font-size: 0.82rem; color: var(--text-main); margin-bottom: 4px;">
+                    ⏰ ${escapeHtml(ev.start_time)}${ev.end_time ? ' &ndash; ' + escapeHtml(ev.end_time) : ''}
+                  </div>
+                  ${ev.location ? `<div style="font-size: 0.78rem; color: var(--holo-cyan); margin-bottom: 8px;">📍 ${escapeHtml(ev.location)}</div>` : ''}
+                  <button class="drawer-close-btn" style="color: var(--holo-crimson); border-color: rgba(255, 51, 102, 0.4);" onclick="sendQuickCommand('Jarvis, cancel calendar event ${escapeHtml(ev.title)}')">
+                    CANCEL EVENT
+                  </button>
+                </div>
+              `).join('');
+            })
+            .catch(err => {
+              container.innerHTML = `<div style="color: var(--holo-crimson); font-size: 0.85rem;">Error loading calendar: ${err}</div>`;
+            });
+        }
+      }
+
+    // Holographic Photo Gallery Virtualized Controller (Zero-CLS & Zero-VRAM)
+    const ERROR_FALLBACK_SVG = "data:image/svg+xml;utf8," + encodeURIComponent(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 100 100" fill="none">` +
+      `<rect width="100" height="100" fill="#0f1420"/>` +
+      `<path d="M50 30v25M50 68h.01" stroke="#ff3366" stroke-width="5" stroke-linecap="round"/>` +
+      `<circle cx="50" cy="50" r="42" stroke="#ff3366" stroke-width="2" stroke-dasharray="4 4"/>` +
+      `<text x="50" y="86" fill="#ff3366" font-size="8" font-family="monospace" text-anchor="middle">PAYLOAD ERROR</text>` +
+      `</svg>`
+    );
+
+    class HolographicPhotoGallery {
+      constructor() {
+        this.photos = [];
+        this.currentPhoto = null;
+        this.observer = null;
+        this.initObserver();
+      }
+
+      initObserver() {
+        // 10% rootMargin as required by Council invariants
+        const options = {
+          root: domRefs.photoScrollContainer || document.getElementById('photoScrollContainer'),
+          rootMargin: "10%",
+          threshold: 0.01
+        };
+
+        this.observer = new IntersectionObserver((entries, observer) => {
+          entries.forEach(entry => {
+            if (entry.isIntersecting) {
+              const img = entry.target;
+              const targetSrc = img.dataset.src;
+              if (targetSrc) {
+                img.src = targetSrc;
+                img.removeAttribute("data-src");
+              }
+              observer.unobserve(img);
+            }
+          });
+        }, options);
+      }
+
+      async loadGallery() {
+        this.setStatus("FETCHING INTEL ARCHIVES...");
+        try {
+          const resp = await fetch("/api/photos");
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const data = await resp.json();
+          this.photos = data.photos || [];
+          if (domRefs.photoCounterBadge) {
+            domRefs.photoCounterBadge.textContent = `${this.photos.length} ASSETS`;
+          }
+          this.render();
+          this.setStatus(`SYNC COMPLETE (${this.photos.length} INDEXED)`);
+        } catch (err) {
+          console.error("[PhotoGallery] Failed to fetch archives:", err);
+          this.setStatus("DATABASE SYNC ERROR");
+        }
+      }
+
+      render() {
+        const grid = domRefs.photoGrid || document.getElementById('photoGrid');
+        if (!grid) return;
+        grid.innerHTML = "";
+
+        const emptyState = domRefs.photoEmptyState || document.getElementById('photoEmptyState');
+        if (this.photos.length === 0) {
+          if (emptyState) emptyState.classList.remove("hidden");
+          return;
+        }
+        if (emptyState) emptyState.classList.add("hidden");
+
+        const fragment = document.createDocumentFragment();
+
+        this.photos.forEach(photo => {
+          const tile = document.createElement("div");
+          tile.className = "photo-tile aspect-square";
+          tile.onclick = () => this.openLightbox(photo);
+
+          const img = document.createElement("img");
+          img.alt = photo.caption || photo.file_name || "Archived photo";
+          img.dataset.src = `/api/photos/${photo.photo_id}`;
+          img.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3C/svg%3E";
+
+          img.onload = () => {
+            img.classList.add("loaded");
+          };
+
+          img.onerror = () => {
+            img.src = ERROR_FALLBACK_SVG;
+            img.classList.add("loaded");
+            tile.style.borderColor = "rgba(255, 51, 102, 0.4)";
+          };
+
+          tile.appendChild(img);
+
+          const badge = document.createElement("div");
+          badge.className = "photo-tile-badge";
+          const dim = photo.dimensions || "IMG";
+          const sizeK = Math.round((photo.file_size || 0) / 1024);
+          badge.innerHTML = `<span>${escapeHtml(dim)}</span><span>${sizeK}K</span>`;
+          tile.appendChild(badge);
+
+          fragment.appendChild(tile);
+
+          if (this.observer) {
+            this.observer.observe(img);
+          }
+        });
+
+        grid.appendChild(fragment);
+      }
+
+      openLightbox(photo) {
+        this.currentPhoto = photo;
+        if (domRefs.modalPhotoTitle) domRefs.modalPhotoTitle.textContent = `INTEL // ${photo.file_name || photo.photo_id}`;
+        if (domRefs.modalDim) domRefs.modalDim.textContent = photo.dimensions || "Unknown";
+        if (domRefs.modalSize) domRefs.modalSize.textContent = `${Math.round((photo.file_size || 0) / 1024)} KB`;
+        if (domRefs.modalDate) domRefs.modalDate.textContent = photo.created_at || "Recent";
+        if (domRefs.modalId) domRefs.modalId.textContent = photo.photo_id;
+
+        if (domRefs.modalCaptionText) {
+          domRefs.modalCaptionText.textContent = photo.caption || "No visual description indexed. Click 'ANALYZE WITH VISION' to evaluate.";
+        }
+
+        if (domRefs.modalPhotoImg) {
+          domRefs.modalPhotoImg.src = `/api/photos/${photo.photo_id}`;
+          domRefs.modalPhotoImg.onerror = () => {
+            domRefs.modalPhotoImg.src = ERROR_FALLBACK_SVG;
+          };
+        }
+
+        if (domRefs.photoLightboxModal) {
+          domRefs.photoLightboxModal.classList.remove("hidden");
+        }
+      }
+
+      closeLightbox() {
+        if (domRefs.photoLightboxModal) domRefs.photoLightboxModal.classList.add("hidden");
+        if (domRefs.modalPhotoImg) domRefs.modalPhotoImg.src = "";
+        this.currentPhoto = null;
+      }
+
+      async analyzeCurrentPhoto() {
+        if (!this.currentPhoto) return;
+        const btn = domRefs.analyzeVisionBtn;
+        const captionText = domRefs.modalCaptionText;
+
+        if (btn) {
+          btn.disabled = true;
+          btn.style.opacity = "0.5";
+        }
+        if (captionText) captionText.textContent = "Streaming visual tokens to Gemini Cloud Vision...";
+
+        try {
+          const resp = await fetch("/api/command", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ command: `describe photo ${this.currentPhoto.photo_id}` })
+          });
+          const data = await resp.json();
+          if (captionText) captionText.textContent = `Analysis request dispatched (${data.status || 'queued'}). Listening for voice debrief...`;
+        } catch (e) {
+          if (captionText) captionText.textContent = `Vision analysis request failed: ${e.message}`;
+        } finally {
+          if (btn) {
+            btn.disabled = false;
+            btn.style.opacity = "1";
+          }
+        }
+      }
+
+      async pasteClipboard() {
+        this.setStatus("EXTRACTING CLIPBOARD STREAM...");
+        try {
+          const resp = await fetch("/api/command", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ command: "save clipboard photo" })
+          });
+          this.setStatus("CLIPBOARD COMMAND SENT");
+          setTimeout(() => this.loadGallery(), 1000);
+        } catch (e) {
+          this.setStatus("CLIPBOARD FAILED");
+        }
+      }
+
+      refresh() {
+        this.loadGallery();
+      }
+
+      setStatus(msg) {
+        if (domRefs.galleryStatusMsg) domRefs.galleryStatusMsg.textContent = msg;
+      }
+    }
+
+    let photoGallery = null;
+
+    function openPhotoGalleryModal() {
+      const backdrop = domRefs.photoGalleryModalBackdrop || document.getElementById('photoGalleryModalBackdrop');
+      if (backdrop) {
+        backdrop.classList.add('open');
+        if (!photoGallery) {
+          photoGallery = new HolographicPhotoGallery();
+        }
+        photoGallery.loadGallery();
+      }
+    }
+
+    function closePhotoGalleryModal() {
+      const backdrop = domRefs.photoGalleryModalBackdrop || document.getElementById('photoGalleryModalBackdrop');
+      if (backdrop) {
+        backdrop.classList.remove('open');
+      }
+    }
+
+    // Holographic Tactical Calendar Modal Controller
+    let currentCalendarFilter = null;
+    let cachedCalendarData = null;
+
+    function openCalendarModal() {
+      const backdrop = document.getElementById('calendarModalBackdrop');
+      if (backdrop) {
+        backdrop.classList.add('open');
+        loadCalendarModalData();
+      }
+    }
+
+    function closeCalendarModal() {
+      const backdrop = document.getElementById('calendarModalBackdrop');
+      if (backdrop) {
+        backdrop.classList.remove('open');
+      }
+    }
+
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        closeCalendarModal();
+        if (typeof closeConfirmModal === 'function') closeConfirmModal();
+        closePhotoGalleryModal();
+        if (photoGallery) photoGallery.closeLightbox();
+        if (isDrawerOpen) toggleDrawer();
+      } else if (e.key === 'F4') {
+        e.preventDefault();
+        toggleDrawer();
+      }
+    });
+
+    function selectSavedCalendar(docId) {
+      currentCalendarFilter = docId;
+      renderCalendarModalView();
+    }
+
+    function loadCalendarModalData() {
+      fetch('/api/calendar')
+        .then(res => res.json())
+        .then(data => {
+          cachedCalendarData = data;
+          renderCalendarModalView();
+        })
+        .catch(err => {
+          console.error("Error loading calendar data:", err);
+          const grid = document.getElementById('calendarWeekGrid');
+          if (grid) grid.innerHTML = `<div style="color:var(--holo-crimson); padding:20px;">Error loading tactical calendar: ${escapeHtml(err.message || err)}</div>`;
+        });
+    }
+
+    function renderCalendarModalView() {
+      if (!cachedCalendarData) return;
+
+      const events = cachedCalendarData.events || [];
+      const savedCals = cachedCalendarData.saved_calendars || [];
+      const grouped = cachedCalendarData.grouped || {};
+
+      // 1. Update count badges
+      const countEl = document.getElementById('savedCalCount');
+      if (countEl) countEl.textContent = savedCals.length;
+      const totalEventsEl = document.getElementById('calTotalEventsCount');
+      if (totalEventsEl) totalEventsEl.textContent = events.length;
+
+      // 2. Render Saved Calendars Pills
+      const pillsContainer = document.getElementById('savedCalendarsPills');
+      if (pillsContainer) {
+        let pillsHtml = `
+          <div class="cal-pill ${currentCalendarFilter === null ? 'active' : ''}" onclick="selectSavedCalendar(null)">
+            <span>⚡</span>
+            <span>MASTER ACTIVE SCHEDULE</span>
+            <span class="cal-pill-tag">${events.length} SESSIONS</span>
+          </div>
+        `;
+        savedCals.forEach(doc => {
+          const isActive = currentCalendarFilter === doc.id;
+          const catTag = (doc.category || 'SCHEDULE').toUpperCase();
+          pillsHtml += `
+            <div class="cal-pill ${isActive ? 'active' : ''}" onclick="selectSavedCalendar(${doc.id})" title="${escapeHtml(doc.summary || doc.title)}">
+              <span>📄</span>
+              <span>${escapeHtml(doc.title)}</span>
+              <span class="cal-pill-tag">${catTag}</span>
+              <button class="cal-pill-del-btn" onclick="event.stopPropagation(); promptDeleteCalendar(${doc.id}, '${escapeJs(doc.title)}')" title="Delete this calendar from Jarvis">
+                🗑️
+              </button>
+            </div>
+          `;
+        });
+        pillsContainer.innerHTML = pillsHtml;
+      }
+
+      // 3. Update Active Info Bar
+      const titleEl = document.getElementById('activeCalTitle');
+      const descEl = document.getElementById('activeCalSummary');
+      const delBtn = document.getElementById('btnDeleteCalendar');
+      if (currentCalendarFilter === null) {
+        if (titleEl) titleEl.textContent = '⚡ MASTER ACTIVE SCHEDULE (ALL SESSIONS)';
+        if (descEl) descEl.textContent = 'Displaying all active academic & calendar events registered in Jarvis SQLite memory.';
+        if (delBtn) {
+          delBtn.innerHTML = '<span>🧹</span> CLEAR SCHEDULE';
+          delBtn.title = 'Purge all active sessions from calendar';
+        }
+      } else {
+        const found = savedCals.find(d => d.id === currentCalendarFilter);
+        if (found) {
+          if (titleEl) titleEl.textContent = `📄 ${found.title.toUpperCase()}`;
+          if (descEl) descEl.textContent = found.summary || 'Archived timetable document in database.';
+          if (delBtn) {
+            delBtn.innerHTML = '<span>🗑️</span> DELETE CALENDAR';
+            delBtn.title = `Delete '${found.title}' from Jarvis`;
+          }
+        }
+      }
+
+      // 4. Render 7-Day Week Matrix Grid
+      // Days of the week: Monday through Sunday
+      // Dates: Oct 12 - 18, 2026
+      const daysDef = [
+        { name: "MONDAY", date: "2026-10-12", displayDate: "Oct 12" },
+        { name: "TUESDAY", date: "2026-10-13", displayDate: "Oct 13" },
+        { name: "WEDNESDAY", date: "2026-10-14", displayDate: "Oct 14" },
+        { name: "THURSDAY", date: "2026-10-15", displayDate: "Oct 15" },
+        { name: "FRIDAY", date: "2026-10-16", displayDate: "Oct 16" },
+        { name: "SATURDAY", date: "2026-10-17", displayDate: "Oct 17" },
+        { name: "SUNDAY", date: "2026-10-18", displayDate: "Oct 18" },
+      ];
+
+      const weekGrid = document.getElementById('calendarWeekGrid');
+      if (weekGrid) {
+        weekGrid.innerHTML = daysDef.map(day => {
+          const dayEvents = grouped[day.date] || [];
+          const hasClasses = dayEvents.length > 0;
+
+          let cardsHtml = '';
+          if (hasClasses) {
+            cardsHtml = dayEvents.map(ev => {
+              const startPart = ev.start_time.replace(day.date, '').trim();
+              const endPart = (ev.end_time || '').replace(day.date, '').trim();
+              const timeDisplay = endPart ? `${startPart} &ndash; ${endPart}` : startPart;
+              return `
+                <div class="cal-event-card" onclick="sendQuickCommand('Jarvis, tell me about ${escapeHtml(ev.title)} on ${day.name}')" title="Click to ask Jarvis about this session">
+                  <div class="cal-event-time">
+                    <span>⏰</span> <span>${timeDisplay}</span>
+                  </div>
+                  <div class="cal-event-title">${escapeHtml(ev.title)}</div>
+                  <div class="cal-event-meta">
+                    ${ev.location ? `<span class="cal-event-room">📍 ${escapeHtml(ev.location)}</span>` : '<span></span>'}
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span style="color:var(--text-dim); font-size:0.7rem;">#${ev.id}</span>
+                      <button class="cal-card-del-btn" onclick="event.stopPropagation(); deleteCalendarEvent(${ev.id}, '${escapeJs(ev.title)}')" title="Delete session #${ev.id}">✕</button>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('');
+          } else {
+            cardsHtml = `
+              <div class="cal-day-empty">
+                <span style="font-size:1.1rem; margin-bottom:4px; opacity:0.6;">✧</span>
+                <span style="font-weight:600; color:var(--holo-cyan); opacity:0.8;">STATUS: CLEAR</span>
+                <span style="font-size:0.7rem;">No classes scheduled</span>
+              </div>
+            `;
+          }
+
+          return `
+            <div class="cal-day-col ${hasClasses ? 'has-classes' : ''}">
+              <div class="cal-day-header">
+                <span class="cal-day-name">${day.name}</span>
+                <span class="cal-day-date">${day.displayDate}</span>
+              </div>
+              <div class="cal-day-body">
+                ${cardsHtml}
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    // Calendar Deletion Controller
+    let pendingDeleteCalendarId = null;
+    let pendingDeleteCalendarTitle = "";
+
+    function escapeJs(str) {
+      if (!str) return '';
+      return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    }
+
+    function promptDeleteCalendar(docId, title) {
+      pendingDeleteCalendarId = docId;
+      pendingDeleteCalendarTitle = title || `Calendar #${docId}`;
+      const backdrop = document.getElementById('calConfirmBackdrop');
+      const textEl = document.getElementById('confirmModalText');
+      const wrapper = document.getElementById('confirmClearEventsWrapper');
+      if (textEl) {
+        textEl.innerHTML = `Are you sure you want to permanently delete calendar "<strong>${escapeHtml(pendingDeleteCalendarTitle)}</strong>" from Jarvis?`;
+      }
+      if (wrapper) wrapper.style.display = 'flex';
+      if (backdrop) backdrop.classList.add('open');
+    }
+
+    function promptDeleteCurrentCalendar() {
+      if (currentCalendarFilter === null) {
+        promptClearAllEvents();
+      } else if (cachedCalendarData && cachedCalendarData.saved_calendars) {
+        const found = cachedCalendarData.saved_calendars.find(d => d.id === currentCalendarFilter);
+        if (found) {
+          promptDeleteCalendar(found.id, found.title);
+        }
+      }
+    }
+
+    function promptClearAllEvents() {
+      pendingDeleteCalendarId = 'ALL';
+      pendingDeleteCalendarTitle = 'ALL ACTIVE SCHEDULE SESSIONS';
+      const backdrop = document.getElementById('calConfirmBackdrop');
+      const textEl = document.getElementById('confirmModalText');
+      const wrapper = document.getElementById('confirmClearEventsWrapper');
+      if (textEl) {
+        textEl.innerHTML = `Are you sure you want to purge <strong>ALL active schedule events</strong> from Jarvis memory?`;
+      }
+      if (wrapper) wrapper.style.display = 'none';
+      if (backdrop) backdrop.classList.add('open');
+    }
+
+    function closeConfirmModal() {
+      const backdrop = document.getElementById('calConfirmBackdrop');
+      if (backdrop) backdrop.classList.remove('open');
+      pendingDeleteCalendarId = null;
+      pendingDeleteCalendarTitle = "";
+    }
+
+    function executeDeleteCalendar() {
+      const btn = document.getElementById('btnExecuteDelete');
+      if (btn) btn.disabled = true;
+
+      if (pendingDeleteCalendarId === 'ALL') {
+        fetch('/api/calendar/clear', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        })
+          .then(res => res.json())
+          .then(data => {
+            closeConfirmModal();
+            loadCalendarModalData();
+            if (activeDrawerTab === 'agenda') loadDrawerContent();
+          })
+          .catch(err => {
+            console.error("Error clearing calendar events:", err);
+            closeConfirmModal();
+          })
+          .finally(() => {
+            if (btn) btn.disabled = false;
+          });
+      } else if (pendingDeleteCalendarId) {
+        const clearCheckbox = document.getElementById('confirmClearEventsCheckbox');
+        const clearEvents = clearCheckbox ? clearCheckbox.checked : false;
+
+        fetch('/api/calendar/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ doc_id: pendingDeleteCalendarId, clear_events: clearEvents })
+        })
+          .then(res => res.json())
+          .then(data => {
+            closeConfirmModal();
+            currentCalendarFilter = null;
+            loadCalendarModalData();
+            if (activeDrawerTab === 'agenda') loadDrawerContent();
+          })
+          .catch(err => {
+            console.error("Error deleting calendar document:", err);
+            closeConfirmModal();
+          })
+          .finally(() => {
+            if (btn) btn.disabled = false;
+          });
+      }
+    }
+
+    function deleteCalendarEvent(eventId, title) {
+      fetch('/api/calendar/event/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_id: eventId })
+      })
+        .then(res => res.json())
+        .then(data => {
+          loadCalendarModalData();
+          if (activeDrawerTab === 'agenda') loadDrawerContent();
+        })
+        .catch(err => {
+          console.error("Error deleting event:", err);
+        });
+    }
+
+    let messageCount = 1;
+    let lastMsgKey = "";
+    let lastMsgTime = 0;
+
+    function appendChatMessage(sender, text, timeStr) {
+      if (!text || !text.trim()) return;
+
+      // Deduplicate identical message from same sender within 2.0 seconds
+      const cleanText = text.trim();
+      const key = `${sender.toLowerCase()}:${cleanText}`;
+      const nowMs = Date.now();
+      if (key === lastMsgKey && (nowMs - lastMsgTime) < 2000) {
+        return;
+      }
+      lastMsgKey = key;
+      lastMsgTime = nowMs;
+
+      // Update Docked Stark Pill Ticker securely (UPGRADE 4)
+      const ticker = document.getElementById('dockedTicker');
+      if (ticker) {
+        ticker.textContent = cleanText;
+      }
+
+      const container = document.getElementById('chatContainer');
+      const bubble = document.createElement('div');
+      bubble.className = `chat-bubble chat-${sender.toLowerCase()}`;
+
+      const now = timeStr || new Date().toLocaleTimeString('en-GB');
+      const authorClass = sender.toLowerCase() === 'user' ? 'user' : 'jarvis';
+      const authorName = sender.toLowerCase() === 'user' ? 'SIR' : 'JARVIS';
+
+      // Strict DOM Node Construction (Zero DOM XSS Vulnerability)
+      const authorDiv = document.createElement('div');
+      authorDiv.className = `bubble-author ${authorClass}`;
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = authorName;
+      const timeSpan = document.createElement('span');
+      timeSpan.textContent = now;
+      authorDiv.appendChild(nameSpan);
+      authorDiv.appendChild(timeSpan);
+
+      const textDiv = document.createElement('div');
+      textDiv.className = 'bubble-text';
+      textDiv.textContent = cleanText;
+
+      bubble.appendChild(authorDiv);
+      bubble.appendChild(textDiv);
+
+      container.appendChild(bubble);
+      container.scrollTop = container.scrollHeight;
+
+      messageCount++;
+      const msgCountEl = document.getElementById('msgCount');
+      if (msgCountEl) msgCountEl.textContent = `[${String(messageCount).padStart(2, '0')} MSGS]`;
+    }
+
+    function appendScreenSnapshotBubble(url, timestamp) {
+      const container = document.getElementById('chatContainer');
+      if (!container) return;
+      const bubble = document.createElement('div');
+      bubble.className = 'chat-bubble chat-jarvis';
+      const now = timestamp || new Date().toLocaleTimeString('en-GB');
+
+      bubble.innerHTML = `
+        <div class="bubble-author jarvis">
+          <span>JARVIS // VISUAL CORTEX</span>
+          <span>${now}</span>
+        </div>
+        <div class="bubble-text" style="padding-top: 6px;">
+          <div style="font-size: 0.72rem; color: var(--holo-cyan); letter-spacing: 0.05em; margin-bottom: 6px; font-weight: 600;">
+            WORKSTATION SCREEN SNAPSHOT CAPTURED
+          </div>
+          <div style="position: relative; border: 1px solid rgba(0, 240, 255, 0.4); border-radius: 6px; overflow: hidden; max-width: 420px; box-shadow: 0 0 15px rgba(0, 240, 255, 0.2); cursor: pointer;" onclick="window.open('${url}', '_blank')">
+            <img src="${url}" alt="Workstation Screen Snapshot" style="width: 100%; height: auto; display: block;" loading="lazy">
+            <div style="position: absolute; bottom: 0; left: 0; right: 0; background: rgba(7, 11, 18, 0.85); padding: 4px 8px; font-size: 0.68rem; color: var(--text-dim); display: flex; justify-content: space-between; border-top: 1px solid rgba(0, 240, 255, 0.2);">
+              <span>CLICK TO EXPAND IN FULL RESOLUTION</span>
+              <span style="color: var(--holo-emerald);">AUDITED</span>
+            </div>
+          </div>
+        </div>
+      `;
+
+      container.appendChild(bubble);
+      container.scrollTop = container.scrollHeight;
+      messageCount++;
+      const counter = document.getElementById('msgCount');
+      if (counter) counter.textContent = `[${String(messageCount).padStart(2, '0')} MSGS]`;
+    }
+
+    function handleAmbientTelemetry(data, timestamp) {
+      if (!data) return;
+      const now = timestamp || new Date().toLocaleTimeString('en-GB');
+      if (data.event === "task_completed") {
+        const container = document.getElementById('chatContainer');
+        if (!container) return;
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble chat-jarvis';
+        const isSuccess = data.status === "completed";
+        const statusColor = isSuccess ? "var(--holo-emerald)" : "var(--holo-crimson)";
+        const badgeText = isSuccess ? "COMPLETED" : `FAILED (Exit: ${data.exit_code})`;
+
+        bubble.innerHTML = `
+          <div class="bubble-author jarvis">
+            <span>BACKGROUND TASK // ${escapeHtml(data.name || data.task_id)}</span>
+            <span>${now}</span>
+          </div>
+          <div class="bubble-text">
+            <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 6px;">
+              <span style="border: 1px solid ${statusColor}; color: ${statusColor}; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: bold; letter-spacing: 0.05em;">${badgeText}</span>
+              <span style="font-size: 0.75rem; color: var(--text-dim);">Duration: ${data.duration_s}s</span>
+            </div>
+            ${data.summary ? `<pre style="background: rgba(0,0,0,0.4); border-left: 2px solid ${statusColor}; padding: 6px 8px; font-size: 0.72rem; color: #a0aec0; border-radius: 2px; overflow-x: auto; max-height: 120px; font-family: 'JetBrains Mono', monospace;">${escapeHtml(data.summary)}</pre>` : ''}
+          </div>
+        `;
+        container.appendChild(bubble);
+        container.scrollTop = container.scrollHeight;
+        messageCount++;
+        const counter = document.getElementById('msgCount');
+        if (counter) counter.textContent = `[${String(messageCount).padStart(2, '0')} MSGS]`;
+      } else if (data.event === "calendar_countdown") {
+        updateCalendarCountdownPill(data);
+      } else if (data.event === "ergonomic_break") {
+        showErgonomicPill(data);
+      } else if (data.event === "cognitive_state_update") {
+        updateCognitiveStateBadge(data);
+      } else if (data.event === "proactive_habit_prediction") {
+        updateHabitPredictionPill(data);
+      } else if (data.event === "memory_consolidated") {
+        updateMemoryConsolidatedPill(data);
+      }
+    }
+
+    function updateMemoryConsolidatedPill(data) {
+      const sub = document.getElementById('subStatus');
+      if (sub && data.traits_extracted) {
+        const orig = sub.textContent;
+        sub.textContent = `[MEMORY SYNTHESIS: +${data.traits_extracted} TRAITS]`;
+        sub.style.color = 'var(--holo-gold)';
+        setTimeout(() => {
+          sub.textContent = orig;
+          sub.style.color = '';
+        }, 8000);
+      }
+    }
+
+    function updateHabitPredictionPill(data) {
+      let pill = document.getElementById('habitPredictionPill');
+      if (!pill) {
+        const sub = document.getElementById('subStatus');
+        if (sub && sub.parentNode) {
+          pill = document.createElement('div');
+          pill.id = 'habitPredictionPill';
+          pill.className = 'staged-doc-pill';
+          pill.style.marginTop = '4px';
+          pill.style.fontSize = '0.72rem';
+          pill.style.borderColor = 'var(--holo-cyan)';
+          pill.style.color = 'var(--holo-cyan)';
+          sub.parentNode.insertBefore(pill, sub.nextSibling);
+        }
+      }
+      if (pill && data.target_action) {
+        const pct = Math.round((data.probability || 0) * 100);
+        pill.style.display = 'inline-flex';
+        pill.innerHTML = `<span>⚡</span> <span>[PREDICT: ${escapeHtml(data.target_action)} // ${pct}%]</span>`;
+      }
+    }
+
+
+    function updateCognitiveStateBadge(data) {
+      let badge = document.getElementById('cognitiveStateBadge');
+      if (!badge) {
+        const sub = document.getElementById('subStatus');
+        if (sub && sub.parentNode) {
+          badge = document.createElement('div');
+          badge.id = 'cognitiveStateBadge';
+          badge.className = 'staged-doc-pill';
+          badge.style.marginTop = '4px';
+          badge.style.fontSize = '0.72rem';
+          sub.parentNode.insertBefore(badge, sub.nextSibling);
+        }
+      }
+      if (badge && data.state) {
+        let color = "var(--holo-cyan)";
+        if (data.state === "DEEP_FLOW") color = "var(--holo-cyan)";
+        else if (data.state === "ACTIVE_DEBUGGING") color = "var(--holo-amber)";
+        else if (data.state === "FATIGUED_DRIFT") color = "var(--holo-crimson)";
+        else if (data.state === "EXPLORATORY_RESEARCH") color = "var(--holo-emerald)";
+
+        badge.style.display = 'inline-flex';
+        badge.style.borderColor = color;
+        badge.style.color = color;
+        badge.innerHTML = `<span>🧠</span> <span>[TWIN: ${escapeHtml(data.state)} // ${data.kpm} KPM]</span>`;
+      }
+    }
+
+
+    function updateCalendarCountdownPill(data) {
+      let pill = document.getElementById('calendarCountdownPill');
+      if (!pill) {
+        const sub = document.getElementById('subStatus');
+        if (sub && sub.parentNode) {
+          pill = document.createElement('div');
+          pill.id = 'calendarCountdownPill';
+          pill.className = 'staged-doc-pill';
+          pill.style.borderColor = 'var(--holo-amber)';
+          pill.style.color = 'var(--holo-amber)';
+          pill.style.marginTop = '6px';
+          sub.parentNode.insertBefore(pill, sub.nextSibling);
+        }
+      }
+      if (pill) {
+        pill.style.display = 'inline-flex';
+        pill.innerHTML = `<span>📅</span> <span>UPCOMING: ${escapeHtml(data.title)} in ${data.minutes_remaining}m</span>`;
+      }
+    }
+
+    function showErgonomicPill(data) {
+      let pill = document.getElementById('ergonomicPill');
+      if (!pill) {
+        const sub = document.getElementById('subStatus');
+        if (sub && sub.parentNode) {
+          pill = document.createElement('div');
+          pill.id = 'ergonomicPill';
+          pill.className = 'staged-doc-pill';
+          pill.style.borderColor = 'var(--holo-emerald)';
+          pill.style.color = 'var(--holo-emerald)';
+          pill.style.marginTop = '6px';
+          sub.parentNode.insertBefore(pill, sub.nextSibling);
+        }
+      }
+      if (pill) {
+        pill.style.display = 'inline-flex';
+        pill.innerHTML = `<span>☕</span> <span>ERGONOMIC NOTICE: ${data.continuous_active_minutes}m active work. Take a brief stretch.</span>`;
+        setTimeout(() => { if (pill) pill.style.display = 'none'; }, 20000);
+      }
+    }
+
+    function escapeHtml(string) {
+      return String(string)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function jarvisHeaders(extra = {}) {
+      const headers = { 'Content-Type': 'application/json', ...extra };
+      if (window.__JARVIS_TOKEN__) {
+        headers['X-Jarvis-Token'] = window.__JARVIS_TOKEN__;
+      }
+      return headers;
+    }
+
+    function transmitCommand() {
+      const input = document.getElementById('cmdInput');
+      const query = input.value.trim();
+      if (!query) return;
+
+      input.value = '';
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'command', text: query }));
+      } else {
+        // Fallback to REST endpoint with zero-trust token
+        fetch('/api/command', {
+          method: 'POST',
+          headers: jarvisHeaders(),
+          body: JSON.stringify({ command: query })
+        })
+        .then(res => res.json())
+        .catch(err => console.error("REST transmit error:", err));
+      }
+    }
+
+    function sendQuickCommand(cmd) {
+      document.getElementById('cmdInput').value = cmd;
+      transmitCommand();
+    }
+
+    function setVolume(pct) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'action', action: 'set_volume', percent: pct }));
+      } else {
+        fetch('/api/action', {
+          method: 'POST',
+          headers: jarvisHeaders(),
+          body: JSON.stringify({ action: 'set_volume', percent: pct })
+        });
+      }
+    }
+
+    function toggleMute() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'action', action: 'toggle_mute' }));
+      } else {
+        fetch('/api/mute', {
+          method: 'POST',
+          headers: jarvisHeaders()
+        });
+      }
+    }
+
+    // PDF Document Import & Context Staging
+    function triggerPdfImport() {
+      const input = document.getElementById('pdfFileInput');
+      if (input) {
+        input.value = '';
+        input.click();
+      }
+    }
+
+    async function handlePdfUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      appendChatMessage('system', `Importing '${file.name}' via file explorer...`);
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await fetch('/api/documents/upload', {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+        if (res.ok) {
+          appendChatMessage('jarvis', `Document '${file.name}' staged successfully, Sir. Standing by for your context and instructions.`);
+          updateStagedBadge(file.name);
+        } else {
+          appendChatMessage('system', `Failed to stage document: ${data.error || 'Unknown error'}`);
+        }
+      } catch (err) {
+        appendChatMessage('system', `Network error uploading document: ${err.message}`);
+      }
+    }
+
+    function updateStagedBadge(filename) {
+      const pill = document.getElementById('stagedDocPill');
+      const text = document.getElementById('stagedDocText');
+      if (pill && text) {
+        if (filename) {
+          text.textContent = `STAGED: ${filename} (Awaiting Briefing)`;
+          pill.style.display = 'inline-flex';
+        } else {
+          pill.style.display = 'none';
+        }
+      }
+    }
+
+    function focusContextInput() {
+      const cmd = document.getElementById('cmdInput');
+      if (cmd) {
+        cmd.value = "Jarvis, that PDF is ";
+        cmd.focus();
+      }
+    }
+
+    function checkStagedDocuments() {
+      fetch('/api/documents/staged')
+        .then(res => res.json())
+        .then(data => {
+          const docs = data.staged || [];
+          const drawerCount = document.getElementById('drawerStagedCount');
+          if (drawerCount) drawerCount.textContent = docs.length;
+
+          const telemStaged = document.getElementById('telemetryStagedVal');
+          if (telemStaged) {
+            telemStaged.textContent = docs.length > 0 ? `${docs.length} PENDING` : '0 PENDING';
+            telemStaged.style.color = docs.length > 0 ? 'var(--holo-amber)' : 'var(--holo-emerald)';
+          }
+
+          if (docs.length > 0) {
+            updateStagedBadge(docs[0].filename);
+          } else {
+            updateStagedBadge(null);
+          }
+        })
+        .catch(() => {});
+    }
+
+    // Auto-fetch initial telemetry
+    function fetchInitialTelemetry() {
+      fetch('/api/status')
+        .then(res => res.json())
+        .then(data => updateTelemetry(data))
+        .catch(err => console.log("Initial telemetry poll:", err));
+    }
+
+    window.addEventListener('load', () => {
+      initDomReferences();
+      initWebSocket();
+      fetchInitialTelemetry();
+      checkStagedDocuments();
+
+      // Fallback polling loop if WebSocket connection is lost or offline
+      setInterval(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          fetchInitialTelemetry();
+        }
+      }, 3000);
+
+      // Periodic check for staged documents
+      setInterval(() => {
+        checkStagedDocuments();
+      }, 5000);
+
+      // Auto-refresh countdown timers when drawer is open
+      setInterval(() => {
+        if (isDrawerOpen && activeDrawerTab === 'timers') {
+          loadDrawerContent();
+        }
+      }, 1500);
+    });
+  </script>
+</body>
+</html>

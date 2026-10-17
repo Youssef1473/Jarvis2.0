@@ -1,0 +1,561 @@
+"""Native Model Context Protocol (MCP) Client and Job-Sandboxed Subprocess Governor for Jarvis 2.0.
+
+Provides stateless HTTP transport (MCP-Protocol-Version: 2026-07-28) and
+E-Core Job-Sandboxed stdio transport with asynchronous stderr draining and taint tracking.
+"""
+import collections
+import json
+import logging
+import os
+import queue
+import subprocess
+import threading
+import time
+import urllib.request
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from jarvis.core.security_boundaries import TurnTaintTracker, validate_egress_url, SecurityBoundaryViolation
+from jarvis.skills.base import SkillRegistry
+
+logger = logging.getLogger("Jarvis.Core.MCP")
+
+MCP_PROTOCOL_VERSION = "2026-07-28"
+DEFAULT_TIMEOUT_SEC = 5.0
+DEFAULT_TOOL_CACHE_TTL_SEC = 60.0
+STDIO_MEMORY_LIMIT_MB = 512
+STDIO_AFFINITY_MASK = 0xFF00
+
+
+def _setup_win32_job_object(proc_handle: int, max_memory_mb: int = STDIO_MEMORY_LIMIT_MB) -> Optional[int]:
+    """Configures a 64-bit Windows Job Object to constrain stdio MCP servers to E-Cores and 512MB RAM."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        JobObjectExtendedLimitInformation = 9
+        JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
+        JOB_OBJECT_LIMIT_AFFINITY = 0x00000010
+        JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
+        JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION = 0x00000400
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+
+        kernel32.GetProcessAffinityMask.restype = wintypes.BOOL
+        kernel32.GetProcessAffinityMask.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.POINTER(ctypes.c_size_t),
+        ]
+
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetCurrentProcess.argtypes = []
+
+        h_job = kernel32.CreateJobObjectW(None, None)
+        if not h_job:
+            logger.warning("Failed to create Win32 Job Object for MCP server (error %s)", ctypes.get_last_error())
+            return None
+
+        ext_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        limit_flags = (
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            | JOB_OBJECT_LIMIT_JOB_MEMORY
+            | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+            | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION
+        )
+
+        proc_mask = ctypes.c_size_t(0)
+        sys_mask = ctypes.c_size_t(0)
+        if kernel32.GetProcessAffinityMask(kernel32.GetCurrentProcess(), ctypes.byref(proc_mask), ctypes.byref(sys_mask)):
+            available = sys_mask.value
+            targeted = STDIO_AFFINITY_MASK & available
+            safe_affinity = targeted if targeted > 0 else proc_mask.value
+            if safe_affinity:
+                limit_flags |= JOB_OBJECT_LIMIT_AFFINITY
+                ext_info.BasicLimitInformation.Affinity = safe_affinity
+
+        ext_info.BasicLimitInformation.LimitFlags = limit_flags
+        ext_info.BasicLimitInformation.ActiveProcessLimit = 8
+        ext_info.JobMemoryLimit = max_memory_mb * 1024 * 1024
+
+        set_ok = kernel32.SetInformationJobObject(
+            h_job,
+            JobObjectExtendedLimitInformation,
+            ctypes.byref(ext_info),
+            ctypes.sizeof(ext_info),
+        )
+        if not set_ok:
+            logger.warning("Failed to configure Job Object limits (error %s)", ctypes.get_last_error())
+
+        assign_ok = kernel32.AssignProcessToJobObject(h_job, int(proc_handle))
+        if not assign_ok:
+            logger.warning("Failed to assign MCP process to Job Object (error %s)", ctypes.get_last_error())
+
+        return int(h_job)
+    except Exception as e:
+        logger.debug("Win32 Job Object setup bypassed: %s", e)
+        return None
+
+
+def _close_win32_job_object(h_job: Optional[int]) -> None:
+    """Closes and terminates a Win32 Job Object handle."""
+    if not h_job:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        kernel32.TerminateJobObject(wintypes.HANDLE(h_job), 1)
+        kernel32.CloseHandle(wintypes.HANDLE(h_job))
+    except Exception as e:
+        logger.debug("Error closing Job Object handle: %s", e)
+
+
+class MCPClientSession:
+    """Represents a connection session to an external Model Context Protocol server."""
+
+    def __init__(
+        self,
+        name: str,
+        transport: str = "http",
+        endpoint_url: Optional[str] = None,
+        command: Optional[List[str]] = None,
+        args: Optional[List[str]] = None,
+        env: Optional[Dict[str, str]] = None,
+        cwd: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+        tool_cache_ttl_sec: float = DEFAULT_TOOL_CACHE_TTL_SEC,
+    ):
+        self.name = name
+        self.transport = transport.lower()
+        self.endpoint_url = endpoint_url
+        self.command = command or []
+        self.args = args or []
+        self.env = env
+        self.cwd = cwd
+        self.headers = headers or {}
+        self.tool_cache_ttl_sec = tool_cache_ttl_sec
+
+        self._request_id: int = 0
+        self._lock = threading.Lock()
+        self._tool_cache: Optional[List[Dict[str, Any]]] = None
+        self._cache_timestamp: float = 0.0
+        self._is_closed: bool = False
+
+        # Stdio specific state
+        self._proc: Optional[subprocess.Popen] = None
+        self._job_handle: Optional[int] = None
+        self._stderr_buffer: collections.deque = collections.deque(maxlen=200)
+        self._stdout_queue: queue.Queue = queue.Queue()
+        self._stderr_thread: Optional[threading.Thread] = None
+        self._stdout_thread: Optional[threading.Thread] = None
+
+    def _next_id(self) -> int:
+        with self._lock:
+            self._request_id += 1
+            return self._request_id
+
+    def initialize(self, timeout: float = DEFAULT_TIMEOUT_SEC) -> Dict[str, Any]:
+        """Performs protocol handshake with MCP server."""
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "jarvis-mcp-client", "version": "2.0"},
+            },
+        }
+        res = self._send_request(payload, timeout=timeout)
+        logger.info("Initialized MCP session '%s' (transport: %s)", self.name, self.transport)
+        return res
+
+    def list_tools(self, force_refresh: bool = False, timeout: float = DEFAULT_TIMEOUT_SEC) -> List[Dict[str, Any]]:
+        """Queries exposed tools from the server, respecting ttl caching."""
+        now = time.time()
+        if (
+            not force_refresh
+            and self._tool_cache is not None
+            and (now - self._cache_timestamp < self.tool_cache_ttl_sec)
+        ):
+            return list(self._tool_cache)
+
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": "tools/list",
+            "params": {},
+        }
+        resp = self._send_request(payload, timeout=timeout)
+        tools = resp.get("result", {}).get("tools", [])
+        if not isinstance(tools, list):
+            tools = []
+
+        with self._lock:
+            self._tool_cache = tools
+            self._cache_timestamp = now
+
+        logger.info("Discovered %d MCP tools for session '%s'", len(tools), self.name)
+        return list(tools)
+
+    def call_tool(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None, timeout: float = 15.0) -> Any:
+        """Executes a tool on the external MCP server via JSON-RPC 2.0."""
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments or {},
+            },
+        }
+        resp = self._send_request(payload, timeout=timeout)
+        if "error" in resp:
+            err = resp["error"]
+            raise RuntimeError(f"MCP server '{self.name}' returned error on tool '{tool_name}': {err}")
+
+        result = resp.get("result", {})
+        return result
+
+    def _send_request(self, payload: Dict[str, Any], timeout: float = DEFAULT_TIMEOUT_SEC) -> Dict[str, Any]:
+        """Dispatches JSON-RPC request over active transport."""
+        if self._is_closed:
+            raise RuntimeError(f"MCPClientSession '{self.name}' is already closed.")
+
+        if self.transport == "http":
+            return self._send_http_request(payload, timeout=timeout)
+        elif self.transport == "stdio":
+            return self._send_stdio_request(payload, timeout=timeout)
+        else:
+            raise ValueError(f"Unsupported MCP transport: '{self.transport}'")
+
+    def _send_http_request(self, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+        """Stateless HTTP POST transport conforming to 2026-07-28 specification."""
+        if not self.endpoint_url:
+            raise ValueError(f"HTTP transport requires endpoint_url for session '{self.name}'.")
+
+        # Validate URL via SSRF boundary, allowing user-configured local MCP endpoints
+        clean_url = validate_egress_url(self.endpoint_url, allow_local_mcp=True)
+
+        req_headers = {
+            "Content-Type": "application/json",
+            "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+            "User-Agent": "Jarvis-MCP-Client/2.0",
+        }
+        req_headers.update(self.headers)
+
+        body_bytes = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(clean_url, data=body_bytes, headers=req_headers, method="POST")
+
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                resp_bytes = resp.read()
+                return json.loads(resp_bytes.decode("utf-8"))
+        except Exception as err:
+            logger.error("HTTP request error to MCP server '%s': %s", self.name, err)
+            raise RuntimeError(f"MCP HTTP request to '{self.name}' failed: {err}") from err
+
+    def _ensure_stdio_process(self) -> None:
+        """Launches stdio subprocess pinned to E-Cores within a Windows Job Object."""
+        with self._lock:
+            if self._proc is not None and self._proc.poll() is None:
+                return
+
+            cmd_list = [self.command] if isinstance(self.command, str) else list(self.command)
+            cmd_list.extend(self.args)
+
+            if not cmd_list:
+                raise ValueError(f"Stdio transport requires command list for session '{self.name}'.")
+
+            cwd_path = os.path.abspath(self.cwd) if self.cwd else os.getcwd()
+
+            proc = subprocess.Popen(
+                cmd_list,
+                cwd=cwd_path,
+                env=self.env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                close_fds=True,
+            )
+            self._proc = proc
+
+            # Assign to Win32 Job Object (E-Cores, 512MB RAM cap)
+            self._job_handle = _setup_win32_job_object(int(proc._handle), max_memory_mb=STDIO_MEMORY_LIMIT_MB)
+
+            # Start asynchronous daemon stderr drain thread
+            def _drain_stderr():
+                while proc.poll() is None:
+                    try:
+                        line = proc.stderr.readline()
+                        if not line:
+                            break
+                        self._stderr_buffer.append(line.rstrip())
+                    except Exception:
+                        break
+
+            self._stderr_thread = threading.Thread(target=_drain_stderr, daemon=True, name=f"mcp-stderr-{self.name}")
+            self._stderr_thread.start()
+
+            # Start asynchronous daemon stdout reader thread
+            def _drain_stdout():
+                while proc.poll() is None:
+                    try:
+                        line = proc.stdout.readline()
+                        if not line:
+                            break
+                        self._stdout_queue.put(line.rstrip())
+                    except Exception:
+                        break
+
+            self._stdout_thread = threading.Thread(target=_drain_stdout, daemon=True, name=f"mcp-stdout-{self.name}")
+            self._stdout_thread.start()
+
+    def _send_stdio_request(self, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+        """Transmits JSON-RPC payload over stdio framing and waits for response line."""
+        self._ensure_stdio_process()
+
+        with self._lock:
+            if not self._proc or self._proc.poll() is not None:
+                raise RuntimeError(f"MCP stdio subprocess for '{self.name}' is not running.")
+
+            raw_req = json.dumps(payload) + "\n"
+            try:
+                self._proc.stdin.write(raw_req)
+                self._proc.stdin.flush()
+            except Exception as e:
+                raise RuntimeError(f"Failed to write request to MCP stdin: {e}") from e
+
+        # Wait for JSON-RPC response from stdout queue
+        try:
+            line = self._stdout_queue.get(timeout=timeout)
+            return json.loads(line)
+        except queue.Empty:
+            recent_err = " | ".join(list(self._stderr_buffer)[-3:]) if self._stderr_buffer else "No stderr available."
+            raise TimeoutError(
+                f"MCP stdio server '{self.name}' timed out after {timeout}s waiting for response. "
+                f"Stderr tail: {recent_err}"
+            )
+
+    def close(self) -> None:
+        """Closes session, terminates stdio process and cleans up Job Object."""
+        with self._lock:
+            if self._is_closed:
+                return
+            self._is_closed = True
+            self._tool_cache = None
+
+            if self._proc:
+                try:
+                    if self._proc.stdin and not self._proc.stdin.closed:
+                        self._proc.stdin.close()
+                except Exception:
+                    pass
+
+                # Terminate Job Object to kill process tree cleanly
+                if self._job_handle:
+                    _close_win32_job_object(self._job_handle)
+                    self._job_handle = None
+
+                try:
+                    if self._proc.poll() is None:
+                        self._proc.kill()
+                        self._proc.wait(timeout=1.0)
+                except Exception:
+                    pass
+
+                try:
+                    if self._proc.stdout and not self._proc.stdout.closed:
+                        self._proc.stdout.close()
+                    if self._proc.stderr and not self._proc.stderr.closed:
+                        self._proc.stderr.close()
+                except Exception:
+                    pass
+
+                self._proc = None
+
+        logger.info("Closed MCP session '%s'", self.name)
+
+
+def register_discovered_mcp_tools(session: MCPClientSession) -> List[str]:
+    """Discovers tools from an MCPClientSession and registers them in SkillRegistry with taint tracking."""
+    tools = session.list_tools()
+    registered_names: List[str] = []
+
+    for tool_spec in tools:
+        raw_name = tool_spec.get("name", "")
+        if not raw_name:
+            continue
+
+        clean_tool_name = raw_name.replace("-", "_").lower()
+        registered_name = f"mcp_{session.name}_{clean_tool_name}"
+        desc = tool_spec.get("description", f"External MCP tool '{raw_name}' from server '{session.name}'.")
+
+        # Closure generator binding session and tool name
+        def _build_handler(sess: MCPClientSession, t_name: str, reg_name: str):
+            def _handler(**kwargs):
+                # Mark current turn tainted upon invoking external MCP tool
+                TurnTaintTracker.get_instance().mark_tainted(reg_name)
+                return sess.call_tool(t_name, kwargs)
+
+            _handler.__name__ = reg_name
+            _handler.__doc__ = desc
+            return _handler
+
+        handler_fn = _build_handler(session, raw_name, registered_name)
+        # Register with risk_level=1 (tainting & gated)
+        SkillRegistry.register(name=registered_name, description=desc, risk_level=1)(handler_fn)
+        registered_names.append(registered_name)
+        logger.info("Registered dynamic MCP skill: %s (risk_level=1)", registered_name)
+
+    return registered_names
+
+
+class MCPManager:
+    """Manages active MCP client sessions and their exposed tool integrations."""
+
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.config = config or {}
+        base_dir = Path(self.config.get("_base_dir", "."))
+        cfg_rel_path = self.config.get("mcp", {}).get("config_path", "config/mcp_servers.json")
+        self.config_path = base_dir / cfg_rel_path
+        self.active_sessions: Dict[str, MCPClientSession] = {}
+        self._lock = threading.Lock()
+
+    def connect_http(
+        self,
+        name: str,
+        endpoint_url: str,
+        headers: Optional[Dict[str, str]] = None,
+        tool_cache_ttl_sec: float = DEFAULT_TOOL_CACHE_TTL_SEC,
+    ) -> MCPClientSession:
+        """Establishes a stateless HTTP MCP session and auto-registers tools."""
+        with self._lock:
+            if name in self.active_sessions:
+                self.active_sessions[name].close()
+
+            session = MCPClientSession(
+                name=name,
+                transport="http",
+                endpoint_url=endpoint_url,
+                headers=headers,
+                tool_cache_ttl_sec=tool_cache_ttl_sec,
+            )
+            self.active_sessions[name] = session
+            return session
+
+    def connect_stdio(
+        self,
+        name: str,
+        command: List[str],
+        args: Optional[List[str]] = None,
+        env: Optional[Dict[str, str]] = None,
+        cwd: Optional[str] = None,
+    ) -> MCPClientSession:
+        """Establishes an E-core sandboxed stdio MCP session and auto-registers tools."""
+        with self._lock:
+            if name in self.active_sessions:
+                self.active_sessions[name].close()
+
+            session = MCPClientSession(
+                name=name,
+                transport="stdio",
+                command=command,
+                args=args,
+                env=env,
+                cwd=cwd,
+            )
+            self.active_sessions[name] = session
+            return session
+
+    def get_session(self, name: str) -> Optional[MCPClientSession]:
+        with self._lock:
+            return self.active_sessions.get(name)
+
+    def list_available_mcp_tools(self) -> List[Dict[str, Any]]:
+        """Aggregates all exposed tools across all enabled/connected sessions."""
+        all_tools = []
+        with self._lock:
+            sessions = list(self.active_sessions.values())
+
+        for sess in sessions:
+            try:
+                tools = sess.list_tools()
+                for t in tools:
+                    t_copy = dict(t)
+                    t_copy["server"] = sess.name
+                    all_tools.append(t_copy)
+            except Exception as e:
+                logger.warning("Could not list tools from MCP session '%s': %s", sess.name, e)
+
+        return all_tools
+
+    def shutdown_all(self) -> None:
+        """Deterministically shuts down all active MCP client sessions."""
+        with self._lock:
+            sessions = list(self.active_sessions.values())
+            self.active_sessions.clear()
+
+        for sess in sessions:
+            try:
+                sess.close()
+            except Exception as err:
+                logger.debug("Error closing MCP session '%s': %s", sess.name, err)
+        logger.info("All active MCP sessions have been terminated.")

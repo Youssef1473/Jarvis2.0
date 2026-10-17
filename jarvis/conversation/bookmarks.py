@@ -1,0 +1,230 @@
+"""Conversational Resumption Bookmarks & Interruption Stack for Jarvis 2.0.
+
+Maintains a bounded LIFO ReasoningBookmarkStack (capacity 8) capturing
+interrupted cognitive frames across sub-1us Win32 atomic barge-ins.
+(Dimension 6.1: Smart Resumption).
+"""
+from __future__ import annotations
+
+from collections import deque
+import dataclasses
+from dataclasses import dataclass, field
+import logging
+import re
+import threading
+import time
+from typing import Any, Deque, Dict, List, Optional, Tuple
+
+from jarvis.context.flow_state_mirror import FlowStateSnapshot
+
+logger = logging.getLogger("Jarvis.Conversation.Bookmarks")
+
+MAX_BOOKMARK_CAPACITY = 8
+
+
+@dataclass(frozen=True)
+class ReasoningBookmark:
+    """Immutable snapshot of an interrupted reasoning and speech synthesis frame."""
+    turn_id: str
+    original_query: str = ""
+    topic_label: str = "the architecture"
+    spoken_clauses_completed: Tuple[str, ...] = ()
+    unspoken_clauses_remaining: Tuple[str, ...] = ()
+    resolved_tool_outputs: Dict[str, Any] = field(default_factory=dict)
+    flow_state_xml: str = ""
+    created_monotonic_ns: int = field(default_factory=time.perf_counter_ns)
+    ttl_ns: int = 300_000_000_000  # 5 minutes validity
+    # Backwards compatibility fields:
+    user_query: str = ""
+    partial_llm_plan: str = ""
+    flow_state_snapshot: Optional[FlowStateSnapshot] = None
+    timestamp: float = field(default_factory=time.time)
+
+    def __post_init__(self):
+        if not self.original_query and self.user_query:
+            object.__setattr__(self, "original_query", self.user_query)
+        elif not self.user_query and self.original_query:
+            object.__setattr__(self, "user_query", self.original_query)
+
+    def is_expired(self, now_ns: Optional[int] = None) -> bool:
+        current = now_ns if now_ns is not None else time.perf_counter_ns()
+        return (current - self.created_monotonic_ns) > self.ttl_ns
+
+    @property
+    def remaining_speech_text(self) -> str:
+        return " ".join(self.unspoken_clauses_remaining).strip()
+
+
+class ReasoningBookmarkStack:
+    """
+    Thread-safe bounded LIFO stack preserving interrupted cognitive frames across
+    sub-1us Win32 atomic barge-in events (Dimension 6.1: Smart Resumption).
+    """
+    _INTERJECTION_PATTERNS = re.compile(
+        r"^(wait|hold on|quick question|which|what was|who|where|when|how many|was that|did you say)\b",
+        re.IGNORECASE,
+    )
+    _CANCEL_PATTERNS = re.compile(
+        r"^(stop|cancel|never mind|forget it|drop that|abort|scratch that)\b",
+        re.IGNORECASE,
+    )
+
+    _instance: Optional[ReasoningBookmarkStack] = None
+    _singleton_lock = threading.Lock()
+
+    def __init__(self, max_depth: int = MAX_BOOKMARK_CAPACITY, capacity: Optional[int] = None) -> None:
+        eff_capacity = capacity if capacity is not None else max_depth
+        self.capacity = eff_capacity
+        self._stack: Deque[ReasoningBookmark] = deque(maxlen=eff_capacity)
+        self._lock = threading.RLock()
+
+    @classmethod
+    def get_instance(cls) -> ReasoningBookmarkStack:
+        with cls._singleton_lock:
+            if cls._instance is None:
+                cls._instance = cls()
+            return cls._instance
+
+    def push_interrupted_turn(
+        self,
+        turn_id: str,
+        original_query: str = "",
+        topic_label: str = "the architecture",
+        spoken_clauses: Optional[List[str]] = None,
+        unspoken_clauses: Optional[List[str]] = None,
+        resolved_tool_outputs: Optional[Dict[str, Any]] = None,
+        flow_state_xml: str = "",
+        user_query: Optional[str] = None,
+        partial_llm_plan: str = "",
+        flow_state_snapshot: Optional[FlowStateSnapshot] = None,
+    ) -> Optional[ReasoningBookmark]:
+        """Pushes an interrupted turn onto the LIFO stack if unspoken clauses remain."""
+        eff_query = original_query or user_query or ""
+        raw_remaining = unspoken_clauses if unspoken_clauses is not None else ([partial_llm_plan] if partial_llm_plan else ["resumed turn"])
+        cleaned_remaining = [c.strip() for c in raw_remaining if c and c.strip()]
+        if not cleaned_remaining:
+            return None
+
+        eff_spoken = spoken_clauses or []
+        eff_resolved = dict(resolved_tool_outputs or {})
+
+        bookmark = ReasoningBookmark(
+            turn_id=turn_id,
+            original_query=eff_query,
+            topic_label=topic_label,
+            spoken_clauses_completed=tuple(eff_spoken),
+            unspoken_clauses_remaining=tuple(cleaned_remaining),
+            resolved_tool_outputs=eff_resolved,
+            flow_state_xml=flow_state_xml,
+            created_monotonic_ns=time.perf_counter_ns(),
+            user_query=eff_query,
+            partial_llm_plan=partial_llm_plan,
+            flow_state_snapshot=flow_state_snapshot,
+            timestamp=time.time(),
+        )
+        with self._lock:
+            self._stack.append(bookmark)
+            logger.info("Reasoning bookmark pushed: turn %s (depth=%d)", turn_id, len(self._stack))
+        return bookmark
+
+    def peek_valid(self) -> Optional[ReasoningBookmark]:
+        with self._lock:
+            while self._stack:
+                top = self._stack[-1]
+                if top.is_expired():
+                    self._stack.pop()
+                else:
+                    return top
+            return None
+
+    def pop_valid(self) -> Optional[ReasoningBookmark]:
+        with self._lock:
+            while self._stack:
+                top = self._stack.pop()
+                if not top.is_expired():
+                    logger.info("Restored reasoning bookmark: turn %s (remaining=%d)", top.turn_id, len(self._stack))
+                    return top
+            return None
+
+    def pop_latest_bookmark(self) -> Optional[ReasoningBookmark]:
+        return self.pop_valid()
+
+    def peek_latest_bookmark(self) -> Optional[ReasoningBookmark]:
+        return self.peek_valid()
+
+    def inject_resumed_context(self, pivot_prompt: str) -> Tuple[str, Dict[str, Any]]:
+        """Restores latest bookmark outputs and formats them into the pivot prompt context."""
+        bookmark = self.pop_valid()
+        if not bookmark:
+            return pivot_prompt, {}
+
+        injected_outputs = bookmark.resolved_tool_outputs
+        context_block = (
+            f"[SYSTEM NOTE: User interrupted prior turn '{bookmark.turn_id}' ('{bookmark.original_query}'). "
+            f"Prior resolved tool outputs are preserved: {list(injected_outputs.keys())}. "
+            f"Pivot to user's updated directive immediately without re-executing resolved tools.]\n"
+        )
+        enriched_prompt = f"{context_block}\n{pivot_prompt}"
+        return enriched_prompt, injected_outputs
+
+    def clear(self) -> None:
+        with self._lock:
+            self._stack.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._stack)
+
+    @classmethod
+    def classify_barge_in_intent(cls, utterance: str) -> str:
+        """
+        Classifies whether a barge-in utterance is:
+        - 'ABORT': Sir wants to stop the explanation completely.
+        - 'CLARIFY_AND_RESUME': Brief clarifying tangent that should auto-resume.
+        - 'PIVOT': A brand-new directive that supersedes the prior topic.
+        """
+        text = (utterance or "").strip()
+        if cls._CANCEL_PATTERNS.search(text):
+            return "ABORT"
+        word_count = len(text.split())
+        if word_count <= 12 and (text.endswith("?") or cls._INTERJECTION_PATTERNS.search(text)):
+            return "CLARIFY_AND_RESUME"
+        return "PIVOT"
+
+    def format_prompt_injection(self, utterance: str) -> str:
+        """
+        Generates the XML context block injected into JarvisBrain when a valid bookmark exists.
+        """
+        intent = self.classify_barge_in_intent(utterance)
+        if intent == "ABORT":
+            self.clear()
+            return ""
+
+        top = self.peek_valid()
+        if top is None:
+            return ""
+
+        if intent == "CLARIFY_AND_RESUME":
+            # Pop so we consume the bookmark on this resumption turn
+            self.pop_valid()
+            return (
+                '<active_resumption_bookmark mode="CLARIFY_AND_RESUME">\n'
+                f"  <suspended_topic>{top.topic_label}</suspended_topic>\n"
+                f"  <already_spoken>{' '.join(top.spoken_clauses_completed)}</already_spoken>\n"
+                f"  <remaining_to_speak>{top.remaining_speech_text}</remaining_to_speak>\n"
+                f"  <cached_tool_results>{top.resolved_tool_outputs}</cached_tool_results>\n"
+                "  <directive>Answer Sir's clarifying question in 1 crisp sentence, then immediately "
+                f"bridge with: 'Continuing with {top.topic_label}...' and deliver the remaining explanation.</directive>\n"
+                "</active_resumption_bookmark>"
+            )
+
+        # For a pivot ("No, use Option B"), keep resolved tool outputs hot without repeating speech
+        self.pop_valid()
+        return (
+            '<active_resumption_bookmark mode="PIVOT_WITH_CACHED_TOOLS">\n'
+            f"  <prior_query>{top.original_query}</prior_query>\n"
+            f"  <cached_tool_results>{top.resolved_tool_outputs}</cached_tool_results>\n"
+            "  <directive>Sir pivoted direction. Reuse the cached tool results above without "
+            "re-executing read-only tools.</directive>\n"
+            "</active_resumption_bookmark>"
+        )

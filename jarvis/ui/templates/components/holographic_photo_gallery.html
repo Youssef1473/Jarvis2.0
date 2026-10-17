@@ -1,0 +1,380 @@
+<!-- ==============================================================================
+     JARVIS 3.0 // HOLOGRAPHIC PHOTO GALLERY & INTEL MATRIX
+     Virtualized Lazy-Loading Matrix with Zero-Client Memory Overhead & Native ETag Cache
+     ============================================================================== -->
+<div id="photoGalleryContainer" class="photo-gallery-root w-full h-full flex flex-col bg-[#050811]/90 backdrop-blur-md border border-cyan-500/30 rounded-lg overflow-hidden shadow-[0_0_25px_rgba(0,240,255,0.15)] font-['Rajdhani',sans-serif] text-[#e2f1f8]">
+
+  <!-- Tactical Header & Controls Deck -->
+  <header class="flex items-center justify-between px-5 py-3 border-b border-cyan-500/20 bg-gradient-to-r from-cyan-950/40 via-transparent to-cyan-950/20">
+    <div class="flex items-center space-x-3">
+      <div class="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse shadow-[0_0_8px_#00f0ff]"></div>
+      <h2 class="font-['Orbitron',sans-serif] text-sm tracking-[0.2em] text-cyan-300 uppercase font-semibold">
+        Archived Visual Intel // Matrix
+      </h2>
+      <span id="photoCounterBadge" class="text-xs px-2 py-0.5 rounded bg-cyan-950/60 text-cyan-400 border border-cyan-500/30 font-mono">
+        0 ASSETS
+      </span>
+    </div>
+
+    <!-- Action Bar -->
+    <div class="flex items-center space-x-2">
+      <button onclick="photoGallery.refresh()" title="Sync Archives" class="px-3 py-1 text-xs font-['Orbitron',sans-serif] tracking-wider text-cyan-300 border border-cyan-500/40 rounded bg-cyan-950/30 hover:bg-cyan-500/20 hover:border-cyan-400 transition-all duration-200 active:scale-95 flex items-center gap-1.5 cursor-pointer">
+        <svg class="w-3.5 h-3.5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+        <span>SYNC</span>
+      </button>
+
+      <button onclick="photoGallery.pasteClipboard()" title="Capture from Windows Clipboard" class="px-3 py-1 text-xs font-['Orbitron',sans-serif] tracking-wider text-emerald-300 border border-emerald-500/40 rounded bg-emerald-950/30 hover:bg-emerald-500/20 hover:border-emerald-400 transition-all duration-200 active:scale-95 flex items-center gap-1.5 cursor-pointer">
+        <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+        <span>PASTE CLIPBOARD</span>
+      </button>
+
+      <button onclick="photoGallery.close()" title="Dismiss Gallery" class="text-cyan-400/60 hover:text-cyan-300 p-1 rounded hover:bg-cyan-950/40 transition-colors cursor-pointer">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Virtualized Scroll Viewport Container -->
+  <main id="photoScrollContainer" class="flex-1 overflow-y-auto p-4 custom-scrollbar relative">
+    
+    <!-- Empty State -->
+    <div id="photoEmptyState" class="hidden absolute inset-0 flex flex-col items-center justify-center p-6 text-center text-cyan-400/50">
+      <svg class="w-16 h-16 mb-3 opacity-40 animate-pulse text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+      </svg>
+      <p class="font-['Orbitron',sans-serif] text-sm tracking-wider uppercase">Visual Database Empty</p>
+      <p class="text-xs text-cyan-500/70 mt-1 max-w-sm">Capture clipboard screenshots with <span class="text-cyan-300 font-mono">'save clipboard photo'</span> or import assets via vocal command.</p>
+    </div>
+
+    <!-- Dynamic Virtual Grid Matrix -->
+    <div id="photoGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3.5">
+      <!-- Image tiles injected dynamically by photoGallery.render() -->
+    </div>
+
+  </main>
+
+  <!-- Tactical Telemetry Status Footer -->
+  <footer class="px-5 py-2 border-t border-cyan-500/20 bg-black/40 flex items-center justify-between text-[11px] font-mono text-cyan-400/70">
+    <div class="flex items-center space-x-3">
+      <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+      <span>ETAG CACHE: <strong class="text-cyan-300">HTTP 304 ACTIVE</strong></span>
+      <span>|</span>
+      <span>VRAM OVERHEAD: <strong class="text-emerald-300">0.0 MB</strong></span>
+    </div>
+    <div id="galleryStatusMsg" class="truncate max-w-xs text-right text-cyan-300/80">
+      SYSTEM READY
+    </div>
+  </footer>
+
+  <!-- Lightbox Detail Inspection Modal -->
+  <div id="photoLightboxModal" class="hidden fixed inset-0 z-50 bg-black/85 backdrop-blur-lg flex items-center justify-center p-4" onclick="if(event.target === this) photoGallery.closeLightbox()">
+    <div class="bg-[#080e1a] border border-cyan-400/40 rounded-lg max-w-3xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-[0_0_35px_rgba(0,240,255,0.25)] relative">
+      
+      <!-- Modal Header -->
+      <div class="flex items-center justify-between px-4 py-2.5 border-b border-cyan-500/20 bg-cyan-950/40">
+        <span id="modalPhotoTitle" class="font-['Orbitron',sans-serif] text-xs tracking-wider text-cyan-300 truncate">INTEL INSPECTION</span>
+        <button onclick="photoGallery.closeLightbox()" class="text-cyan-400 hover:text-white text-lg leading-none cursor-pointer">&times;</button>
+      </div>
+
+      <!-- Preview Stage -->
+      <div class="flex-1 bg-black/60 flex items-center justify-center p-2 overflow-hidden min-h-[300px] relative">
+        <img id="modalPhotoImg" src="" alt="Detail Preview" class="max-w-full max-h-[60vh] object-contain rounded border border-cyan-500/20 transition-opacity duration-300">
+      </div>
+
+      <!-- Metadata & Semantic Controls -->
+      <div class="p-4 border-t border-cyan-500/20 bg-gradient-to-t from-cyan-950/30 to-transparent space-y-3">
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
+          <div class="p-2 bg-black/40 rounded border border-cyan-500/10">
+            <span class="text-cyan-500/70 block">RESOLUTION</span>
+            <strong id="modalDim" class="text-cyan-300">-</strong>
+          </div>
+          <div class="p-2 bg-black/40 rounded border border-cyan-500/10">
+            <span class="text-cyan-500/70 block">FILE SIZE</span>
+            <strong id="modalSize" class="text-cyan-300">-</strong>
+          </div>
+          <div class="p-2 bg-black/40 rounded border border-cyan-500/10">
+            <span class="text-cyan-500/70 block">TIMESTAMP</span>
+            <strong id="modalDate" class="text-cyan-300 truncate">-</strong>
+          </div>
+          <div class="p-2 bg-black/40 rounded border border-cyan-500/10">
+            <span class="text-cyan-500/70 block">PHOTO ID</span>
+            <strong id="modalId" class="text-cyan-300 truncate">-</strong>
+          </div>
+        </div>
+
+        <!-- Vision Semantic Analysis Output -->
+        <div id="modalCaptionBox" class="p-3 bg-cyan-950/20 rounded border border-cyan-500/20 text-xs">
+          <span class="text-cyan-400 font-semibold block mb-1">SEMANTIC ANALYSIS // GEMINI CLOUD VISION:</span>
+          <p id="modalCaptionText" class="text-cyan-200/90 italic">No semantic description recorded yet.</p>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-1">
+          <button id="analyzeVisionBtn" onclick="photoGallery.analyzeCurrentPhoto()" class="px-4 py-1.5 text-xs font-['Orbitron',sans-serif] tracking-wider text-amber-300 border border-amber-500/40 rounded bg-amber-950/30 hover:bg-amber-500/20 hover:border-amber-400 transition-all cursor-pointer flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+            <span>ANALYZE WITH VISION</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<!-- Component Styles -->
+<style>
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: rgba(5, 8, 17, 0.6);
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(0, 240, 255, 0.25);
+    border-radius: 3px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 240, 255, 0.45);
+  }
+
+  /* Low-res inline placeholder SVG */
+  .img-placeholder {
+    background-color: rgba(8, 14, 26, 0.8);
+    background-image: radial-gradient(rgba(0, 240, 255, 0.08) 1px, transparent 1px);
+    background-size: 8px 8px;
+  }
+</style>
+
+<!-- Component JavaScript Controller -->
+<script>
+/**
+ * Holographic Photo Gallery Virtualized Controller
+ * Strictly adheres to 0 client memory overhead and native browser HTTP 304 ETag caching.
+ */
+class HolographicPhotoGallery {
+  constructor() {
+    this.grid = document.getElementById("photoGrid");
+    this.scrollContainer = document.getElementById("photoScrollContainer");
+    this.counterBadge = document.getElementById("photoCounterBadge");
+    this.emptyState = document.getElementById("photoEmptyState");
+    this.statusMsg = document.getElementById("galleryStatusMsg");
+    this.lightbox = document.getElementById("photoLightboxModal");
+    
+    this.photos = [];
+    this.currentPhoto = null;
+    this.observer = null;
+
+    // Minimalist SVG error fallback data URI to replace broken or blocked images
+    this.errorFallbackSvg = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 100 100" fill="none"><rect width="100" height="100" fill="%230f1420"/><path d="M50 30v25M50 68h.01" stroke="%23ff3366" stroke-width="5" stroke-linecap="round"/><circle cx="50" cy="50" r="42" stroke="%23ff3366" stroke-width="2" stroke-dasharray="4 4"/><text x="50" y="86" fill="%23ff3366" font-size="8" font-family="monospace" text-anchor="middle">PAYLOAD ERROR</text></svg>`;
+
+    this.initObserver();
+    this.loadGallery();
+  }
+
+  /**
+   * Initializes the virtualized viewport IntersectionObserver.
+   * Defers binary downloads until tiles enter 100px proximity to prevent thread-pool exhaustion.
+   */
+  initObserver() {
+    const options = {
+      root: this.scrollContainer,
+      rootMargin: "100px 0px", // Pre-fetch 100px ahead of viewport scroll
+      threshold: 0.01
+    };
+
+    this.observer = new IntersectionObserver((entries, observer) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const img = entry.target;
+          const targetSrc = img.dataset.src;
+
+          if (targetSrc) {
+            // Initiate standard browser GET with native If-None-Match ETag check
+            img.src = targetSrc;
+            img.removeAttribute("data-src");
+          }
+
+          // Unobserve immediately once triggered to release observer resources
+          observer.unobserve(img);
+        }
+      });
+    }, options);
+  }
+
+  /**
+   * Fetches metadata array from /api/photos and constructs virtualized grid matrix.
+   */
+  async loadGallery() {
+    this.setStatus("FETCHING INTEL ARCHIVES...");
+    try {
+      const resp = await fetch("/api/photos");
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      this.photos = data.photos || [];
+
+      this.counterBadge.textContent = `${this.photos.length} ASSETS`;
+      this.render();
+      this.setStatus(`SYNC COMPLETE (${this.photos.length} INDEXED)`);
+    } catch (err) {
+      console.error("[PhotoGallery] Failed to fetch archives:", err);
+      this.setStatus("DATABASE SYNC ERROR");
+    }
+  }
+
+  /**
+   * Constructs DOM tiles with fixed aspect ratio to eliminate Cumulative Layout Shift (CLS).
+   */
+  render() {
+    this.grid.innerHTML = "";
+
+    if (this.photos.length === 0) {
+      this.emptyState.classList.remove("hidden");
+      return;
+    }
+    this.emptyState.classList.add("hidden");
+
+    const fragment = document.createDocumentFragment();
+
+    this.photos.forEach((photo) => {
+      const tile = document.createElement("div");
+      tile.className = "group relative aspect-square rounded overflow-hidden border border-cyan-500/25 bg-[#080e1a]/80 hover:border-cyan-400 hover:shadow-[0_0_15px_rgba(0,240,255,0.35)] transition-all duration-200 cursor-pointer img-placeholder will-change-transform";
+      tile.onclick = () => this.openLightbox(photo);
+
+      // Scanning line hover indicator
+      const scanline = document.createElement("div");
+      scanline.className = "absolute inset-0 bg-gradient-to-b from-transparent via-cyan-400/10 to-transparent -translate-y-full group-hover:translate-y-full transition-transform duration-700 pointer-events-none z-10";
+      tile.appendChild(scanline);
+
+      // Image element with hardware-accelerated opacity transition
+      const img = document.createElement("img");
+      img.className = "w-full h-full object-cover opacity-0 transition-opacity duration-300 ease-out will-change-transform";
+      img.alt = photo.caption || photo.file_name;
+      img.dataset.src = `/api/photos/${photo.photo_id}`;
+
+      // Blank inline 1x1 data URI to prevent broken image icon before loading
+      img.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3C/svg%3E";
+
+      // Onload: smooth fade-in
+      img.onload = () => {
+        img.classList.remove("opacity-0");
+        img.classList.add("opacity-100");
+      };
+
+      // Onerror: replace malformed/blocked payload with fallback SVG
+      img.onerror = () => {
+        img.src = this.errorFallbackSvg;
+        img.classList.remove("opacity-0");
+        img.classList.add("opacity-100");
+        tile.classList.add("border-rose-500/40");
+      };
+
+      tile.appendChild(img);
+
+      // Bottom Overlay Badge
+      const badge = document.createElement("div");
+      badge.className = "absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-mono text-cyan-300 truncate z-20 flex justify-between items-center";
+      badge.innerHTML = `<span>${photo.dimensions || 'IMG'}</span><span>${Math.round((photo.file_size || 0)/1024)}K</span>`;
+      tile.appendChild(badge);
+
+      fragment.appendChild(tile);
+
+      // Enqueue to IntersectionObserver for on-demand streaming
+      this.observer.observe(img);
+    });
+
+    this.grid.appendChild(fragment);
+  }
+
+  /**
+   * Opens the Lightbox inspection view for a given photo record.
+   */
+  openLightbox(photo) {
+    this.currentPhoto = photo;
+    document.getElementById("modalPhotoTitle").textContent = `INTEL // ${photo.file_name || photo.photo_id}`;
+    document.getElementById("modalDim").textContent = photo.dimensions || "Unknown";
+    document.getElementById("modalSize").textContent = `${Math.round((photo.file_size || 0) / 1024)} KB`;
+    document.getElementById("modalDate").textContent = photo.created_at || "Recent";
+    document.getElementById("modalId").textContent = photo.photo_id;
+
+    const captionBox = document.getElementById("modalCaptionText");
+    captionBox.textContent = photo.caption || "No visual description indexed. Click 'ANALYZE WITH VISION' to evaluate.";
+
+    const img = document.getElementById("modalPhotoImg");
+    img.src = `/api/photos/${photo.photo_id}`;
+    img.onerror = () => { img.src = this.errorFallbackSvg; };
+
+    this.lightbox.classList.remove("hidden");
+  }
+
+  closeLightbox() {
+    this.lightbox.classList.add("hidden");
+    document.getElementById("modalPhotoImg").src = "";
+    this.currentPhoto = null;
+  }
+
+  /**
+   * Invokes the describe_photo skill for zero-local-VRAM cloud vision analysis.
+   */
+  async analyzeCurrentPhoto() {
+    if (!this.currentPhoto) return;
+    const btn = document.getElementById("analyzeVisionBtn");
+    const captionText = document.getElementById("modalCaptionText");
+
+    btn.disabled = true;
+    btn.classList.add("opacity-50", "animate-pulse");
+    captionText.textContent = "Streaming visual tokens to Gemini Cloud Vision...";
+
+    try {
+      const resp = await fetch("/api/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command: `describe photo ${this.currentPhoto.photo_id}` })
+      });
+      const data = await resp.json();
+      captionText.textContent = `Analysis request dispatched (${data.status || 'queued'}). Listening for voice debrief...`;
+    } catch (e) {
+      captionText.textContent = `Vision analysis request failed: ${e.message}`;
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove("opacity-50", "animate-pulse");
+    }
+  }
+
+  /**
+   * Triggers native clipboard extraction on Windows/WSL host.
+   */
+  async pasteClipboard() {
+    this.setStatus("EXTRACTING CLIPBOARD STREAM...");
+    try {
+      const resp = await fetch("/api/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command: "save clipboard photo" })
+      });
+      this.setStatus("CLIPBOARD COMMAND SENT");
+      setTimeout(() => this.loadGallery(), 1000);
+    } catch (e) {
+      this.setStatus("CLIPBOARD FAILED");
+    }
+  }
+
+  refresh() {
+    this.loadGallery();
+  }
+
+  close() {
+    const root = document.getElementById("photoGalleryContainer");
+    if (root) root.style.display = "none";
+  }
+
+  setStatus(msg) {
+    if (this.statusMsg) this.statusMsg.textContent = msg;
+  }
+}
+
+// Global initialization
+let photoGallery;
+document.addEventListener("DOMContentLoaded", () => {
+  photoGallery = new HolographicPhotoGallery();
+});
+</script>
