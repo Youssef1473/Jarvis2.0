@@ -11,8 +11,13 @@ These rules are loaded automatically on every interaction turn. All operations w
 * **Reuse Local Infrastructure First:** Never invent new classes, helpers, or external libraries if a native subsystem exists in the repository:
   * For tool creation and registration: Always use `@SkillRegistry.register` in `jarvis.skills.base`.
   * For local <15ms reflexes: Always use `DynamicReflexEngine` in `jarvis.core.reflex_engine`.
+  * For fast regex reflexes, habit execution & tool narration: Always use `ReflexDispatcher` in `jarvis.core.reflex_dispatcher`.
+  * For cognitive tier classification, thinking budgets & quota failover: Always use `CognitiveRouter` in `jarvis.core.cognition`.
+  * For context gathering, working memory bounding & dynamic prompt assembly: Always use `ContextOrchestrator` in `jarvis.context`.
+  * For tool lifecycle telemetry & interim speech queuing: Always route through `ToolOrchestrator` and `InterimSpeechBridge` in `jarvis.core.pipeline`.
   * For persistent storage & hybrid search: Always use `MemoryManager` with SQLite WAL + `sqlite-vec` KNN (`facts_vec`, `documents_vec`, `lessons_vec`) + FTS5 BM25 + Hybrid RRF in `jarvis.core.memory`.
   * For episodic reflection & mistake avoidance: Always use `MemoryManager.record_episodic_lesson` and `JarvisBrain._synthesize_error_lesson`.
+  * For Antigravity named pipe streaming: Always use non-blocking `PeekNamedPipe` polling with monotonic cancellation token checks.
   * For proactive desktop presence & idle tracking: Always use `JarvisHeartbeat` and `orchestrator.broadcast_ambient_telemetry`.
   * For risk gating & command sandboxing: Always route through `SafetyGate` in `jarvis.core.safety`.
   * For LLM inference & streaming: Always route through `AntigravityBridge` or `JarvisBrain` in `jarvis.core.brain`.
@@ -37,10 +42,13 @@ These rules are loaded automatically on every interaction turn. All operations w
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                          JarvisBrain                                   │
-│  - Fast Reflex Engine (<15ms Local Regex / Habit Routing)              │
+│  - CognitiveRouter (Cognitive Tier Classification & Quota Failover)    │
+│  - ContextOrchestrator (Dynamic Prompt Assembly & Token Bounding)      │
+│  - ReflexDispatcher (<15ms Fast Regexes, Habit Dispatch & Narration)   │
 │  - AntigravityBridge (Local CLI / Sidecar Clause Streaming)            │
 │  - Gemini Specialist Consultation (Cloud Fallback)                     │
 │  - Deterministic Subprocess Lifecycle Management (shutdown / __del__)  │
+│  * Lazy self-healing accessors for mock resilience in test suites       │
 └───────────────────┬────────────────────────────────┬───────────────────┘
                     │                                │
                     ▼                                ▼
@@ -136,7 +144,7 @@ These rules are loaded automatically on every interaction turn. All operations w
 2. **PROHIBITED:** Hardcoded blind sleeps (`time.sleep(1.0)` or higher) in production paths. Use condition variables, event loops, or non-blocking socket probes with tight timeouts.
 3. **PROHIBITED:** `subprocess.run(shell=True)` or raw string formatting in shell commands. Use argument lists with `close_fds=True` and pass through `SafetyGate`.
 4. **PROHIBITED:** Storing secrets, API keys, or raw user tokens in plaintext logs or database records.
-5. **PROHIBITED:** Breaking test compatibility. All 502 existing unit tests in `tests/` must remain green on every single commit.
+5. **PROHIBITED:** Breaking test compatibility. All 552 existing unit tests in `tests/` must remain green on every single commit.
 
 ---
 
@@ -154,5 +162,5 @@ These rules are loaded automatically on every interaction turn. All operations w
   * Cloud Vision Response: `< 12s` (typical 3.8s on `gemini-3-flash-preview`)
   * Browser Tab Switching / Closing: `< 25ms` (CDP) / `< 100ms` (Win32)
   * Working Memory Prompt Overhead: `< 1.5KB`
-  * Full Test Suite Baseline: **234 unit tests** (all 100% green).
+  * Full Test Suite Baseline: **552 unit tests** (all 100% green).
 * **Host & Shell Awareness:** This workspace runs on **Windows (PowerShell)** with a local virtual environment at `.venv`. All scripts, paths, and commands must use Windows-appropriate syntax and backslashes or forward slashes handled via `pathlib.Path`.
