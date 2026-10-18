@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
@@ -300,6 +301,16 @@ class JarvisBrain:
         self.cognitive_router = CognitiveRouter(default_model=self.antigravity_model)
         self.context_orchestrator = ContextOrchestrator(config=self.config)
         self.reflex_dispatcher = ReflexDispatcher(reflex_engine=self.reflex_engine)
+
+        from jarvis.core.mcp_manager import MCPManager
+        self.mcp_manager = MCPManager(config=self.config)
+        if self.config.get("mcp", {}).get("auto_start", False):
+            threading.Thread(
+                target=self.mcp_manager.start_configured_servers,
+                kwargs={"auto_register_skills": True},
+                daemon=True,
+                name="mcp-startup-worker",
+            ).start()
 
     def set_tts_instance(self, tts: Any):
         """Sets the TextToSpeech instance for acoustic interim feedback."""

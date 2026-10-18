@@ -93,6 +93,7 @@ performance:
 
 mcp:
   config_path: "config/mcp_servers.json"
+  auto_start: true
 
 heartbeat:
   enabled: true
