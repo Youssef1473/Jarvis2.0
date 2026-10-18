@@ -23,15 +23,7 @@ class MCPManager(CoreMCPManager):
         self.servers_config = self._load_servers_config()
 
     def _load_servers_config(self) -> Dict[str, Any]:
-        if not self.config_path.exists():
-            return {}
-        try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("mcpServers", {})
-        except Exception as e:
-            logger.error(f"Failed to parse MCP config: {e}")
-            return {}
+        return self.load_servers_config()
 
     async def list_available_mcp_tools_async(self) -> List[Dict[str, Any]]:
         """Queries enabled MCP servers asynchronously for exposed tools."""

@@ -195,6 +195,69 @@ class TestMCPManager(unittest.TestCase):
         self.assertEqual(mgr.active_sessions, {})
         self.assertTrue(s1._is_closed)
 
+    def test_load_servers_config(self):
+        mgr = MCPManager()
+        servers = mgr.load_servers_config()
+        self.assertIsInstance(servers, dict)
+        self.assertIn("everything", servers)
+        self.assertIn("github", servers)
+        self.assertTrue(servers["everything"]["enabled"])
+        self.assertTrue(servers["github"]["enabled"])
+
+    @patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_mocktoken123"}, clear=False)
+    @patch("jarvis.core.mcp_manager.register_discovered_mcp_tools")
+    def test_start_configured_servers_mocked(self, mock_reg):
+        mock_reg.return_value = ["mcp_everything_search", "mcp_github_issues"]
+
+        mgr = MCPManager()
+        with patch.object(mgr, "connect_stdio") as mock_connect:
+            mock_session = MagicMock()
+            mock_connect.return_value = mock_session
+
+            res = mgr.start_configured_servers(auto_register_skills=True)
+
+            self.assertIn("everything", res)
+            self.assertIn("github", res)
+            self.assertEqual(mock_connect.call_count, 2)
+
+            # Check that GITHUB_TOKEN environment variable was expanded
+            calls = mock_connect.call_args_list
+            github_call = [c for c in calls if c[0][0] == "github"][0]
+            passed_env = github_call[1].get("env", {})
+            self.assertEqual(passed_env.get("GITHUB_PERSONAL_ACCESS_TOKEN"), "ghp_mocktoken123")
+
+    @patch("subprocess.Popen")
+    @patch("jarvis.core.mcp_manager._setup_win32_job_object")
+    def test_stdio_executable_resolution_and_env_merging(self, mock_job, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
+        mock_job.return_value = 9999
+
+        session = MCPClientSession(
+            name="test_cmd",
+            transport="stdio",
+            command="python",
+            args=["-m", "mock_module"],
+            env={"CUSTOM_KEY": "custom_val_${TEST_MCP_VAR}"},
+        )
+
+        with patch.dict("os.environ", {"TEST_MCP_VAR": "resolved_val"}, clear=False):
+            session._ensure_stdio_process()
+
+        self.assertTrue(mock_popen.called)
+        called_args = mock_popen.call_args[0][0]
+        called_env = mock_popen.call_args[1].get("env", {})
+
+        # Ensure executable was resolved or present
+        self.assertTrue(len(called_args) >= 3)
+        # Ensure custom key was expanded
+        self.assertEqual(called_env.get("CUSTOM_KEY"), "custom_val_resolved_val")
+        # Ensure system env (e.g. PATH) was preserved
+        self.assertIn("PATH", called_env)
+
+        session.close()
+
 
 if __name__ == "__main__":
     unittest.main()

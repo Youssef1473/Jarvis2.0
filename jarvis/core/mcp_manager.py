@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -321,12 +322,26 @@ class MCPClientSession:
             if not cmd_list:
                 raise ValueError(f"Stdio transport requires command list for session '{self.name}'.")
 
+            # On Windows, resolve .cmd / .bat executables (e.g. npx -> npx.CMD)
+            executable = shutil.which(cmd_list[0])
+            if executable:
+                cmd_list[0] = executable
+
             cwd_path = os.path.abspath(self.cwd) if self.cwd else os.getcwd()
+
+            # Merge with system environment so PATH, SystemRoot, TEMP are preserved
+            proc_env = os.environ.copy()
+            if self.env:
+                for k, v in self.env.items():
+                    if isinstance(v, str):
+                        proc_env[k] = os.path.expandvars(v)
+                    else:
+                        proc_env[k] = str(v)
 
             proc = subprocess.Popen(
                 cmd_list,
                 cwd=cwd_path,
-                env=self.env,
+                env=proc_env,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -545,7 +560,71 @@ class MCPManager:
             except Exception as e:
                 logger.warning("Could not list tools from MCP session '%s': %s", sess.name, e)
 
-        return all_tools
+    def load_servers_config(self) -> Dict[str, Any]:
+        """Loads mcpServers definitions from config_path."""
+        if not self.config_path.exists():
+            logger.debug("MCP config file '%s' does not exist.", self.config_path)
+            return {}
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("mcpServers", {})
+        except Exception as e:
+            logger.error("Failed to parse MCP config '%s': %s", self.config_path, e)
+            return {}
+
+    def start_configured_servers(self, auto_register_skills: bool = True) -> Dict[str, List[str]]:
+        """Spawns enabled MCP servers from configuration and optionally registers tools."""
+        servers = self.load_servers_config()
+        registered_by_server: Dict[str, List[str]] = {}
+
+        for server_name, server_def in servers.items():
+            if not isinstance(server_def, dict) or not server_def.get("enabled", True):
+                logger.debug("Skipping disabled MCP server: %s", server_name)
+                continue
+
+            try:
+                transport = server_def.get("transport")
+                if not transport:
+                    transport = "http" if "endpoint_url" in server_def else "stdio"
+
+                session: Optional[MCPClientSession] = None
+                if transport == "http":
+                    url = server_def.get("endpoint_url", "")
+                    headers = server_def.get("headers")
+                    session = self.connect_http(server_name, url, headers=headers)
+                elif transport == "stdio":
+                    cmd = server_def.get("command")
+                    args = server_def.get("args", [])
+                    raw_env = server_def.get("env")
+                    cwd = server_def.get("cwd")
+
+                    resolved_env = {}
+                    if raw_env and isinstance(raw_env, dict):
+                        for k, v in raw_env.items():
+                            if isinstance(v, str):
+                                resolved_env[k] = os.path.expandvars(v)
+                            else:
+                                resolved_env[k] = str(v)
+
+                    session = self.connect_stdio(
+                        server_name,
+                        command=[cmd] if isinstance(cmd, str) else cmd,
+                        args=args,
+                        env=resolved_env or None,
+                        cwd=cwd,
+                    )
+
+                if session and auto_register_skills:
+                    registered_tools = register_discovered_mcp_tools(session)
+                    registered_by_server[server_name] = registered_tools
+                    logger.info("MCP server '%s' started with %d tools registered.", server_name, len(registered_tools))
+                elif session:
+                    registered_by_server[server_name] = []
+            except Exception as e:
+                logger.warning("Failed to start MCP server '%s': %s", server_name, e)
+
+        return registered_by_server
 
     def shutdown_all(self) -> None:
         """Deterministically shuts down all active MCP client sessions."""
