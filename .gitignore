@@ -76,3 +76,6 @@ Thumbs.db
 *~
 .idea/
 *.log
+
+# Arena tournament runtime workspace
+.arena/

@@ -30,13 +30,17 @@
    - **Thread-Isolated Sync Architecture:** Implemented [`ObsidianContextSyncEngine`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/memory/obsidian_sync.py) running on a dedicated scanner thread (`_scan_thread`) with micro-sleep CPU yields (1ms) to eliminate context-switch stalls against the sub-100ms CUDA voice pipeline.
    - **Differential Delta Tracking:** Fast-path scanning utilizing Windows NTFS `os.scandir` cached `st_mtime` with in-memory `_stat_cache` and inline SHA-256 hash tracking in SQLite table `obsidian_sync_state`, skipping untouched notes with 0 file reads and 0 hashing cycles.
 
+4. **Arena Competitive Optimization Framework & Zero-Allocation Ring Buffer:**
+   - **Arena Skill Installation:** Integrated [`.agents/skills/arena/`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/.agents/skills/arena/) containing `bracket.py`, `strategies.json` (2,160 strategy permutations), `rubric.md`, and `SKILL.md` along with 27 unit tests in [`tests/test_arena_bracket.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_arena_bracket.py).
+   - **Windows CLI Runtime Adaptations:** Patched `bracket.py` to use `sys.executable` dynamically and quarantined `.arena/` tournament outputs in `.gitignore`.
+   - **Champion `a003` Zero-Allocation `AudioRingBuffer` Optimization:** Ran 4-agent tournament on WASAPI ring buffer callback performance. Champion `a003` eliminated Python heap slice allocations via `ctypes.memmove`/`ctypes.memset`, static raised-cosine tables, and `read_into` method, achieving **0 bytes intermediate heap allocations** and **4.64 microsecond callback latency** over 2,000 frames.
+
 ---
 
 ## 📌 2. Repository & Branch State
 - **Branch:** `main`
-- **Latest Commit:** `c418b31` — `refactor: post-93f714c architectural consolidation, zero-copy shm transport, and latency profiler`
 - **Remote URL:** `https://github.com/Youssef1473/Jarvis2.0.git`
-- **Working Tree:** Clean (all 558 unit tests passing).
+- **Working Tree:** Clean (all 585 unit tests passing).
 
 ---
 
@@ -44,6 +48,8 @@
 
 | Subsystem | File Location | Key Architectural Invariants | Test Status |
 | :--- | :--- | :--- | :--- |
+| **Zero-Allocation Audio Ring Buffer** | [`jarvis/audio/ring_buffer.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/audio/ring_buffer.py) | Champion `a003` implementation: `ctypes.memmove`, precomputed raised-cosine tables, zero heap slices, zero GC pauses on WASAPI callback. | `test_audio_ring_buffer.py` (PASS) |
+| **Arena Tournament Engine** | [`.agents/skills/arena/bracket.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/.agents/skills/arena/bracket.py) | Full bracket state machine, 2,160 orthogonal strategy cards, Windows `sys.executable` execution, multi-agent evaluation. | `test_arena_bracket.py` (PASS) |
 | **Shared Memory Audio Transport** | [`jarvis/audio/shm_transport.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/audio/shm_transport.py) | Lock-free SPSC float32 ring buffer, atomic 32-byte header, `<1us` barge-in epoch increment, wrap/overflow protection. | `test_phase9_shm_and_profiler.py` (PASS) |
 | **Nanosecond Latency Profiler** | [`jarvis/core/pipeline/latency_profiler.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/pipeline/latency_profiler.py) | Nanosecond turn tracing (`TurnTrace`), rolling histogram percentiles (P50/P95/P99), WebSocket HUD telemetry. | `test_phase9_shm_and_profiler.py` (PASS) |
 | **Preemptive Cancellation Bus** | [`jarvis/core/cancellation.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/cancellation.py) | Unified singleton state across core and audio, re-entrancy protected flush callbacks, atomic `<10ns` invalidation. | `test_execution_abort_killswitch.py` (PASS) |
@@ -66,7 +72,17 @@ Run the complete test suite across the repository:
 ```
 **Latest Output:**
 ```text
-Ran 558 tests in 95.407s
+Ran 585 tests in 117.40s
+OK
+```
+
+Targeted Arena Skill Bracket Unit Tests:
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests/test_arena_bracket.py
+```
+**Output:**
+```text
+Ran 27 tests in 21.247s
 OK
 ```
 

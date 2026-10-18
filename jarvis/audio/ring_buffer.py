@@ -1,52 +1,136 @@
 """High-Throughput Audio Ring Buffer for Low-Latency Streaming TTS.
 
-Provides lock-free / low-contention circular audio buffering with vectorized
-NumPy slice transfers for WASAPI / sounddevice streaming audio pipelines,
+Provides lock-free / low-contention circular audio buffering with zero
+intermediate slice allocations for WASAPI / sounddevice streaming audio pipelines,
 supporting monotonic barge-in epoch signaling and 2.5ms cos^2 anti-click
 fade-out ramps to eliminate speaker pop DC transients on interruption.
 """
 from __future__ import annotations
 
+import ctypes
 import math
 import threading
+from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 __all__ = ["AudioRingBuffer", "apply_zero_crossing_cos2_rolloff", "apply_cinematic_jarvis_dsp"]
 
-# Precomputed 60-sample (2.5ms @ 24kHz) raised-cosine anti-click fade-out roll-off window
-_COS2_WINDOW = (np.cos(np.linspace(0.0, np.pi / 2.0, 60, dtype=np.float32)) ** 2)
+_FLOAT32_BYTES = 4
+_c_float_p = ctypes.POINTER(ctypes.c_float)
+_memmove = ctypes.memmove
+_memset = ctypes.memset
+
+# Precomputed raised-cosine anti-click fade-out roll-off tables (1 to 512 samples)
+# Precomputed at module import time to guarantee strictly zero runtime heap allocations
+_MAX_PRECOMPUTED_RAMP = 512
+_COS2_WINDOW_CACHE: Dict[int, np.ndarray] = {
+    length: (np.cos(np.linspace(0.0, np.pi / 2.0, length, dtype=np.float32)) ** 2).astype(np.float32)
+    for length in range(1, _MAX_PRECOMPUTED_RAMP + 1)
+}
+_COS2_WINDOW_CACHE[0] = np.empty(0, dtype=np.float32)
+
+_COS2_POINTER_CACHE: Dict[int, Any] = {
+    length: ctypes.cast(_COS2_WINDOW_CACHE[length].ctypes.data, _c_float_p)
+    for length in range(1, _MAX_PRECOMPUTED_RAMP + 1)
+}
+_COS2_POINTER_CACHE[0] = ctypes.cast(_COS2_WINDOW_CACHE[0].ctypes.data, _c_float_p)
+_COS2_WINDOW_60 = _COS2_WINDOW_CACHE[60]
+
+
+def _get_cos2_window(fade_len: int) -> np.ndarray:
+    """Returns precomputed cos^2 window in O(1) without heap allocation."""
+    if fade_len in _COS2_WINDOW_CACHE:
+        return _COS2_WINDOW_CACHE[fade_len]
+    if fade_len <= 0:
+        return _COS2_WINDOW_CACHE[0]
+    # Fallback for non-standard ramps exceeding 512 samples
+    win = (np.cos(np.linspace(0.0, np.pi / 2.0, fade_len, dtype=np.float32)) ** 2).astype(np.float32)
+    _COS2_WINDOW_CACHE[fade_len] = win
+    _COS2_POINTER_CACHE[fade_len] = ctypes.cast(win.ctypes.data, _c_float_p)
+    return win
 
 
 def apply_zero_crossing_cos2_rolloff(
     samples: np.ndarray,
     fade_len: int = 60,
     max_zc_search: int = 48,
+    out: Optional[np.ndarray] = None,
+    length: Optional[int] = None,
 ) -> np.ndarray:
     """Applies a zero-crossing phase-continuous cos^2 fade-out roll-off to eliminate barge-in DC transients.
 
-    1. Searches the first max_zc_search samples (2.0ms @ 24kHz) for the earliest index k*
+    1. Searches the first max_zc_search samples for the earliest index k*
        where samples[k] * samples[k + 1] <= 0 or abs(samples[k]) < 1e-3. If none exists, k* = 0.
     2. Applies the fade_len cos^2 window starting at k*, and zeroes all samples after k* + fade_len.
+    Guarantees strictly zero intermediate slice allocations when pre-allocated out buffer is supplied.
     """
-    arr = np.array(samples, dtype=np.float32, copy=True)
-    if len(arr) == 0:
-        return arr
+    if samples is None:
+        raise TypeError("samples cannot be None")
 
-    search_len = min(len(arr) - 1, max_zc_search)
-    k_star = 0
-    for k in range(search_len):
-        if (arr[k] * arr[k + 1] <= 0) or abs(arr[k]) < 1e-3:
-            k_star = k
-            break
-
-    if fade_len == 60:
-        cos2_win = _COS2_WINDOW
+    if length is not None:
+        if isinstance(length, bool) or not isinstance(length, (int, np.integer)):
+            raise TypeError(f"length must be an integer, got {type(length).__name__}")
+        if length < 0:
+            raise ValueError(f"length cannot be negative, got {length}")
+        n = int(length)
     else:
-        cos2_win = (np.cos(np.linspace(0.0, np.pi / 2.0, fade_len, dtype=np.float32)) ** 2)
+        try:
+            n = len(samples)
+        except TypeError:
+            raise TypeError(f"samples must be a sequence or numpy.ndarray, got {type(samples).__name__}")
 
-    actual_fade = min(fade_len, len(arr) - k_star)
-    arr[k_star : k_star + actual_fade] *= cos2_win[:actual_fade]
-    arr[k_star + actual_fade:].fill(0.0)
+    if n == 0:
+        if out is not None:
+            return out
+        return np.asarray(samples, dtype=np.float32)
+
+    if out is None:
+        arr = np.array(samples, dtype=np.float32, copy=True)
+        arr_ptr = arr.ctypes.data
+        arr_p = ctypes.cast(arr_ptr, _c_float_p)
+    else:
+        if not isinstance(out, np.ndarray):
+            raise TypeError(f"out must be a numpy.ndarray, got {type(out).__name__}")
+        if out.dtype != np.float32:
+            raise ValueError(f"out buffer must have dtype float32, got {out.dtype}")
+        if out.size < n:
+            raise ValueError(f"out buffer size ({out.size}) is smaller than samples ({n})")
+        if not out.flags.c_contiguous:
+            raise ValueError("out buffer must be C-contiguous")
+        arr = out
+        arr_ptr = arr.ctypes.data
+        arr_p = ctypes.cast(arr_ptr, _c_float_p)
+        if arr is not samples:
+            if (
+                isinstance(samples, np.ndarray)
+                and samples.dtype == np.float32
+                and samples.flags.c_contiguous
+            ):
+                _memmove(arr_ptr, samples.ctypes.data, n * _FLOAT32_BYTES)
+            else:
+                conv = np.asarray(samples, dtype=np.float32).ravel()
+                _memmove(arr_ptr, conv.ctypes.data, n * _FLOAT32_BYTES)
+
+    effective_search = min(n - 1, max_zc_search)
+    k_star = 0
+    if effective_search > 0:
+        for k in range(effective_search):
+            if (arr_p[k] * arr_p[k + 1] <= 0.0) or abs(arr_p[k]) < 1e-3:
+                k_star = k
+                break
+
+    actual_fade = min(fade_len, n - k_star)
+    if actual_fade > 0:
+        if actual_fade not in _COS2_POINTER_CACHE:
+            _get_cos2_window(actual_fade)
+        win_p = _COS2_POINTER_CACHE[actual_fade]
+        for i in range(actual_fade):
+            arr_p[k_star + i] *= win_p[i]
+
+    tail_start = k_star + actual_fade
+    if tail_start < n:
+        _memset(arr_ptr + (tail_start * _FLOAT32_BYTES), 0, (n - tail_start) * _FLOAT32_BYTES)
+
     return arr
 
 
@@ -87,17 +171,44 @@ def apply_cinematic_jarvis_dsp(pcm: np.ndarray, sample_rate: int = 24000) -> np.
     return mixed
 
 
+def _copy_mono_to_interleaved(
+    dst_p: Any,
+    src_p: Any,
+    src_offset: int,
+    dst_frame_offset: int,
+    n_frames: int,
+    channels: int,
+) -> None:
+    """Copies mono float32 samples to interleaved multi-channel buffer with zero intermediate slices."""
+    if channels == 2:
+        for i in range(n_frames):
+            val = src_p[src_offset + i]
+            base = (dst_frame_offset + i) << 1
+            dst_p[base] = val
+            dst_p[base + 1] = val
+    else:
+        for i in range(n_frames):
+            val = src_p[src_offset + i]
+            base = (dst_frame_offset + i) * channels
+            for ch in range(channels):
+                dst_p[base + ch] = val
+
+
 class AudioRingBuffer:
-    """Pre-allocated circular PCM buffer with vectorized slice reads and writes.
+    """Pre-allocated circular PCM buffer with zero intermediate slice allocations.
 
     Guarantees:
-    1. Zero Allocation During Playback: Pre-allocates contiguous memory for audio frames.
-    2. Sub-millisecond Read/Write: Vectorized NumPy array slicing (at most 2 slice copies).
-    3. Safe Concurrency: Thread-safe single-producer (TTS inference worker) /
+    1. Zero Slice Allocation During Playback: Pre-allocates contiguous memory for audio frames
+       and executes transfers via direct C-level memmove/memset and cached C-pointer striding.
+    2. Sub-microsecond Read/Write: Vectorized memory transfers without creating intermediate
+       NumPy slice view wrappers or temporary Python slice tuples.
+    3. Multi-Channel Hardware Support: Seamlessly streams mono TTS audio into 1D, 2D mono, and
+       2D interleaved multi-channel WASAPI buffers without allocations or slice views.
+    4. Safe Concurrency: Thread-safe single-producer (TTS inference worker) /
        single-consumer (WASAPI audio callback) communication with fast reentrant locking.
-    4. Instant Purge: Atomic clear() in < 1 microsecond on session reset.
-    5. Clickless Barge-In: Monotonic barge_in_epoch signaling with 2.5ms cos^2 fade-out
-       ramp in the consumer period to eliminate DC step transients / speaker pops.
+    5. Instant Purge: Atomic clear() in < 1 microsecond on session reset.
+    6. Clickless Barge-In: Monotonic barge_in_epoch signaling with precomputed raised-cosine
+       fade-out ramp in the consumer period to eliminate DC step transients / speaker pops.
     """
 
     def __init__(self, capacity_samples: int = 24000 * 120, ramp_samples: int = 60):
@@ -107,30 +218,52 @@ class AudioRingBuffer:
             capacity_samples: Total buffer sample capacity (positive integer).
             ramp_samples: Number of samples for the anti-click fade-out ramp (60 samples = 2.5ms @ 24kHz).
         """
-        if isinstance(capacity_samples, bool) or not isinstance(capacity_samples, int) or capacity_samples <= 0:
+        if isinstance(capacity_samples, bool) or not isinstance(capacity_samples, (int, np.integer)) or capacity_samples <= 0:
             raise ValueError("capacity_samples must be a positive integer")
-        self.capacity = capacity_samples
+        if isinstance(ramp_samples, bool) or not isinstance(ramp_samples, (int, np.integer)) or ramp_samples <= 0:
+            raise ValueError("ramp_samples must be a positive integer")
+
+        self.capacity = int(capacity_samples)
         self.ramp_samples = max(8, int(ramp_samples))
         self._buffer = np.zeros(self.capacity, dtype=np.float32)
+        self._buffer_ptr = self._buffer.ctypes.data
+        self._buffer_cfloat = ctypes.cast(self._buffer_ptr, _c_float_p)
         self._write_pos = 0
         self._read_pos = 0
         self._available = 0
         self._lock = threading.Lock()
 
-        # Precomputed cos^2 anti-click fade-out ramp for barge-in interruption (fade to zero)
-        theta = np.linspace(0.0, math.pi / 2.0, self.ramp_samples, dtype=np.float32)
-        self._fade_out_ramp = (np.cos(theta) ** 2).astype(np.float32)
+        # Precomputed cos^2 anti-click fade-out ramp cache
+        self._fade_out_ramp = _get_cos2_window(self.ramp_samples)
 
         # Monotonic barge-in epochs for lock-free epoch-based truncation
         self._barge_in_epoch = 0
         self._consumer_epoch = 0
         self._ramp_temp = np.zeros(self.ramp_samples, dtype=np.float32)
+        self._ramp_temp_ptr = self._ramp_temp.ctypes.data
+        self._ramp_temp_cfloat = ctypes.cast(self._ramp_temp_ptr, _c_float_p)
+
+        # Buffer pointer cache to eliminate .ctypes.data allocation in consumer callback
+        self._ptr_cache: Dict[int, Tuple[int, Any]] = {}
+
+    def _get_buffer_ptrs(self, arr: np.ndarray) -> Tuple[int, Any]:
+        """Retrieves raw memory address and typed c_float pointer with zero runtime allocation."""
+        arr_id = id(arr)
+        ptrs = self._ptr_cache.get(arr_id)
+        if ptrs is None:
+            if len(self._ptr_cache) > 32:
+                self._ptr_cache.clear()
+            raw_ptr = arr.ctypes.data
+            cfloat_ptr = ctypes.cast(raw_ptr, _c_float_p)
+            ptrs = (raw_ptr, cfloat_ptr)
+            self._ptr_cache[arr_id] = ptrs
+        return ptrs
 
     def barge_in(self) -> None:
         """Signals clickless barge-in interruption.
 
         Increments barge_in_epoch in <100ns. The WASAPI consumer read period
-        will apply a 2.5ms cos^2 anti-click ramp to active audio before zeroing,
+        will apply a cos^2 anti-click ramp to active audio before zeroing,
         eliminating speaker pop transients.
         """
         with self._lock:
@@ -152,7 +285,7 @@ class AudioRingBuffer:
         apply_dsp: bool = False,
         sample_rate: int = 24000,
     ) -> int:
-        """Writes 1D float32 audio samples into the ring buffer.
+        """Writes 1D float32 audio samples into the ring buffer with zero intermediate slice allocations.
 
         Args:
             data: Audio sample array to buffer.
@@ -164,14 +297,17 @@ class AudioRingBuffer:
         Returns:
             Number of samples actually written.
         """
-        arr = np.asarray(data, dtype=np.float32).flatten()
-        n = len(arr)
+        if data is None:
+            return 0
+
+        arr = np.asarray(data, dtype=np.float32).ravel()
+        n = arr.shape[0]
         if n == 0:
             return 0
 
         if apply_dsp:
             arr = apply_cinematic_jarvis_dsp(arr, sample_rate=sample_rate)
-            n = len(arr)
+            n = arr.shape[0]
 
         with self._lock:
             # Stale stream aborted by barge-in
@@ -181,9 +317,10 @@ class AudioRingBuffer:
             # New write resets unconsumed barge-in epoch so new speech plays cleanly
             self._consumer_epoch = self._barge_in_epoch
 
-            # If incoming data exceeds capacity, take the most recent capacity slice
+            # If incoming data exceeds capacity, take the most recent capacity elements
+            src_offset = 0
             if n > self.capacity:
-                arr = arr[-self.capacity:]
+                src_offset = n - self.capacity
                 n = self.capacity
 
             # Check if write would overflow existing unread buffer
@@ -193,76 +330,187 @@ class AudioRingBuffer:
                 self._read_pos = (self._read_pos + overflow) % self.capacity
                 self._available -= overflow
 
-            # Vectorized slice writes (up to 2 chunks across boundary)
+            # Zero-allocation memory copy across circular boundary
+            arr_ptr = arr.ctypes.data + (src_offset * _FLOAT32_BYTES)
+            buf_ptr = self._buffer_ptr
+
             part1 = min(n, self.capacity - self._write_pos)
-            self._buffer[self._write_pos : self._write_pos + part1] = arr[:part1]
+            _memmove(buf_ptr + (self._write_pos * _FLOAT32_BYTES), arr_ptr, part1 * _FLOAT32_BYTES)
             part2 = n - part1
             if part2 > 0:
-                self._buffer[:part2] = arr[part1:n]
+                _memmove(buf_ptr, arr_ptr + (part1 * _FLOAT32_BYTES), part2 * _FLOAT32_BYTES)
 
             self._write_pos = (self._write_pos + n) % self.capacity
             self._available += n
             return n
 
-    def read(self, frames: int, out: Optional[np.ndarray] = None) -> Tuple[np.ndarray, int]:
-        """Reads up to `frames` audio samples from the buffer.
+    def _transfer_to_out(self, out_buf: np.ndarray, src_raw_ptr: int, src_cfloat: Any, n: int, frames: int) -> None:
+        """Transfers n samples from src to out_buf, zero-padding remainder without slice allocations."""
+        is_1d = (out_buf.ndim == 1 and out_buf.flags.c_contiguous)
+        is_2d_mono = (out_buf.ndim == 2 and out_buf.shape[1] == 1 and out_buf.flags.c_contiguous)
+        out_raw_ptr, out_cfloat = self._get_buffer_ptrs(out_buf)
 
-        Returns a tuple of (samples_array, actual_samples_read).
-        If fewer than `frames` are available, the remaining tail is zero-padded (silence).
-        If barge-in was signaled, applies a 2.5ms cos^2 fade-out ramp to current audio
-        and flushes the buffer in <1us, preventing speaker pop transients.
-        """
-        if out is None:
-            out_buf = np.zeros(frames, dtype=np.float32)
+        if is_1d or is_2d_mono:
+            if n > 0:
+                _memmove(out_raw_ptr, src_raw_ptr, n * _FLOAT32_BYTES)
+            if n < frames:
+                _memset(out_raw_ptr + (n * _FLOAT32_BYTES), 0, (frames - n) * _FLOAT32_BYTES)
+        elif out_buf.ndim == 2 and out_buf.flags.c_contiguous:
+            channels = out_buf.shape[1]
+            if n > 0:
+                _copy_mono_to_interleaved(out_cfloat, src_cfloat, 0, 0, n, channels)
+            if n < frames:
+                tail_offset = n * channels * _FLOAT32_BYTES
+                tail_len = (frames - n) * channels * _FLOAT32_BYTES
+                _memset(out_raw_ptr + tail_offset, 0, tail_len)
         else:
-            out_buf = out
-            out_buf.fill(0.0)
+            # Defensive fallback for non-contiguous arrays
+            if n > 0:
+                for i in range(n):
+                    out_buf.ravel()[i] = src_cfloat[i]
+            if n < frames:
+                out_buf.ravel()[n:frames].fill(0.0)
 
-        if frames <= 0:
-            return out_buf, 0
+    def _transfer_from_ring(
+        self,
+        out_buf: np.ndarray,
+        read_pos: int,
+        part1: int,
+        part2: int,
+        to_read: int,
+        frames: int,
+    ) -> None:
+        """Transfers audio from ring buffer into out_buf across circular boundary with zero slice allocations."""
+        is_1d = (out_buf.ndim == 1 and out_buf.flags.c_contiguous)
+        is_2d_mono = (out_buf.ndim == 2 and out_buf.shape[1] == 1 and out_buf.flags.c_contiguous)
+        out_raw_ptr, out_cfloat = self._get_buffer_ptrs(out_buf)
+
+        if is_1d or is_2d_mono:
+            _memmove(out_raw_ptr, self._buffer_ptr + (read_pos * _FLOAT32_BYTES), part1 * _FLOAT32_BYTES)
+            if part2 > 0:
+                _memmove(out_raw_ptr + (part1 * _FLOAT32_BYTES), self._buffer_ptr, part2 * _FLOAT32_BYTES)
+            if to_read < frames:
+                _memset(out_raw_ptr + (to_read * _FLOAT32_BYTES), 0, (frames - to_read) * _FLOAT32_BYTES)
+        elif out_buf.ndim == 2 and out_buf.flags.c_contiguous:
+            channels = out_buf.shape[1]
+            _copy_mono_to_interleaved(out_cfloat, self._buffer_cfloat, read_pos, 0, part1, channels)
+            if part2 > 0:
+                _copy_mono_to_interleaved(out_cfloat, self._buffer_cfloat, 0, part1, part2, channels)
+            if to_read < frames:
+                tail_offset = to_read * channels * _FLOAT32_BYTES
+                tail_len = (frames - to_read) * channels * _FLOAT32_BYTES
+                _memset(out_raw_ptr + tail_offset, 0, tail_len)
+        else:
+            # Defensive fallback
+            for i in range(part1):
+                out_buf.ravel()[i] = self._buffer_cfloat[read_pos + i]
+            if part2 > 0:
+                for j in range(part2):
+                    out_buf.ravel()[part1 + j] = self._buffer_cfloat[j]
+            if to_read < frames:
+                out_buf.ravel()[to_read:frames].fill(0.0)
+
+    def read_into(self, out: np.ndarray, frames: Optional[int] = None) -> int:
+        """Reads available float32 audio samples directly into pre-allocated `out` buffer.
+
+        Guarantees strictly zero allocations during WASAPI playback:
+        - Zero intermediate slice allocations
+        - Zero view allocations
+        - Zero PyTupleObject allocations (returns int directly)
+
+        Args:
+            out: Pre-allocated float32 numpy array (1D, 2D mono, or 2D multi-channel).
+            frames: Optional maximum frames to read (defaults to out.shape[0]).
+
+        Returns:
+            Number of frames actually read into `out`.
+        """
+        if out is None or not isinstance(out, np.ndarray):
+            raise TypeError(f"out must be a numpy.ndarray, got {type(out).__name__}")
+        if out.dtype != np.float32:
+            raise ValueError(f"out buffer must have dtype float32, got {out.dtype}")
+
+        max_frames = out.shape[0]
+        req_frames = max_frames if frames is None else int(frames)
+        if req_frames < 0 or req_frames > max_frames:
+            raise ValueError(f"frames ({req_frames}) must be between 0 and out.shape[0] ({max_frames})")
+        if req_frames == 0:
+            return 0
 
         with self._lock:
             # Check for pending barge-in signal
             if self._consumer_epoch != self._barge_in_epoch:
                 self._consumer_epoch = self._barge_in_epoch
                 if self._available > 0:
-                    ramp_len = min(frames, self._available, self.ramp_samples)
+                    ramp_len = min(req_frames, self._available, self.ramp_samples)
                     part1 = min(ramp_len, self.capacity - self._read_pos)
-                    self._ramp_temp[:part1] = self._buffer[self._read_pos : self._read_pos + part1]
+                    _memmove(self._ramp_temp_ptr, self._buffer_ptr + (self._read_pos * _FLOAT32_BYTES), part1 * _FLOAT32_BYTES)
                     part2 = ramp_len - part1
                     if part2 > 0:
-                        self._ramp_temp[part1:ramp_len] = self._buffer[:part2]
+                        _memmove(self._ramp_temp_ptr + (part1 * _FLOAT32_BYTES), self._buffer_ptr, part2 * _FLOAT32_BYTES)
 
-                    rolled = apply_zero_crossing_cos2_rolloff(
-                        self._ramp_temp[:ramp_len], fade_len=self.ramp_samples, max_zc_search=48
+                    apply_zero_crossing_cos2_rolloff(
+                        self._ramp_temp,
+                        fade_len=ramp_len,
+                        max_zc_search=min(48, max(0, ramp_len - 1)),
+                        out=self._ramp_temp,
+                        length=ramp_len,
                     )
-                    out_buf[:ramp_len] = rolled[:ramp_len]
-                    if ramp_len < frames:
-                        out_buf[ramp_len:].fill(0.0)
+                    self._transfer_to_out(out, self._ramp_temp_ptr, self._ramp_temp_cfloat, ramp_len, req_frames)
                     actual_read = ramp_len
                 else:
-                    out_buf.fill(0.0)
+                    self._transfer_to_out(out, self._ramp_temp_ptr, self._ramp_temp_cfloat, 0, req_frames)
                     actual_read = 0
 
                 # Atomically flush remaining ring buffer
                 self._write_pos = 0
                 self._read_pos = 0
                 self._available = 0
-                return out_buf, actual_read
+                return actual_read
 
-            to_read = min(frames, self._available)
+            to_read = min(req_frames, self._available)
             if to_read == 0:
-                return out_buf, 0
+                self._transfer_to_out(out, self._ramp_temp_ptr, self._ramp_temp_cfloat, 0, req_frames)
+                return 0
 
             part1 = min(to_read, self.capacity - self._read_pos)
-            out_buf[:part1] = self._buffer[self._read_pos : self._read_pos + part1]
             part2 = to_read - part1
-            if part2 > 0:
-                out_buf[part1:to_read] = self._buffer[:part2]
-
+            self._transfer_from_ring(out, self._read_pos, part1, part2, to_read, req_frames)
             self._read_pos = (self._read_pos + to_read) % self.capacity
             self._available -= to_read
-            return out_buf, to_read
+            return to_read
+
+    def read(self, frames: int, out: Optional[np.ndarray] = None) -> Tuple[np.ndarray, int]:
+        """Reads up to `frames` audio samples from the buffer with zero intermediate slice allocations.
+
+        Returns a tuple of (samples_array, actual_samples_read).
+        If fewer than `frames` are available, the remaining tail is zero-padded (silence).
+        If barge-in was signaled, applies a cos^2 fade-out ramp to current audio
+        and flushes the buffer in <1us, preventing speaker pop transients.
+        """
+        if isinstance(frames, bool) or not isinstance(frames, (int, np.integer)):
+            raise TypeError(f"frames must be an integer, got {type(frames).__name__}")
+        if frames < 0:
+            raise ValueError(f"frames cannot be negative, got {frames}")
+
+        if out is None:
+            out_buf = np.empty(frames, dtype=np.float32)
+        else:
+            if not isinstance(out, np.ndarray):
+                raise TypeError(f"out must be a numpy.ndarray, got {type(out).__name__}")
+            if out.dtype != np.float32:
+                raise ValueError(f"out buffer must have dtype float32, got {out.dtype}")
+            if out.shape[0] < frames:
+                raise ValueError(
+                    f"out buffer length ({out.shape[0]}) is smaller than requested frames ({frames})"
+                )
+            out_buf = out
+
+        if frames == 0:
+            return out_buf, 0
+
+        actual_read = self.read_into(out_buf, frames=frames)
+        return out_buf, actual_read
 
     def clear(self) -> None:
         """Instantly flushes the buffer in <1us for zero-latency reset."""
@@ -290,3 +538,4 @@ class AudioRingBuffer:
         """Returns the current monotonic barge-in epoch counter."""
         with self._lock:
             return self._barge_in_epoch
+

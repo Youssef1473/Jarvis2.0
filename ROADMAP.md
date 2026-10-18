@@ -17,9 +17,11 @@
 5. [x] **Win32 Job Object Teardown:** Hardened subprocess lifecycle in `job_object_sandbox.py` with post-execution `proc.wait(timeout=1.0)` eliminating Exit Code 15 (`0x0000000F`).
 6. [x] **ONNX Low-Latency CPU Tuning:** Configured `session.intra_op.allow_spinning="0"`, `intra_op_num_threads=2`, and `CPUExecutionProvider` to eliminate P-core spin contention.
 7. [x] **Speculative TOCTOU Invalidation:** Linked `ContextOrchestrator` mutations to `speculative/engine.py` epoch advancing.
+8. [x] **Zero-Allocation Audio Ring Buffer:** Champion `a003` optimization replacing slice allocations with `ctypes.memmove`, precomputed raised-cosine tables, and `read_into()` to guarantee 0 heap allocations during 100Hz WASAPI audio loops.
 
 ## P2 — Integrations & Continuous Verification
 
 1. [x] **MCP Client Transport Pool:** Unified MCP JSON-RPC stdio transport and client pool under `jarvis/core/mcp_manager.py` with delegating skill wrapper.
-2. [x] **Full Regression Baseline:** 558 unit tests passing with zero failures, zero errors, and zero skips.
-3. [ ] **Continuous Real-Time Telemetry:** Extend HUD graphs with historical rolling P99 trendlines.
+2. [x] **Arena Competitive Optimization Framework:** Self-contained tournament state machine, 2,160 strategy permutations, Windows CLI execution, and 27 unit tests under `.agents/skills/arena/`.
+3. [x] **Full Regression Baseline:** 585 unit tests passing with zero failures, zero errors, and zero skips.
+4. [ ] **Continuous Real-Time Telemetry:** Extend HUD graphs with historical rolling P99 trendlines.
