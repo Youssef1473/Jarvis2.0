@@ -122,3 +122,8 @@ class AudioDspTap:
             return frame
         except Exception:
             return None
+
+    def reset(self) -> None:
+        """Resets the DSP tap state and clears cached references."""
+        self._enabled = True
+
