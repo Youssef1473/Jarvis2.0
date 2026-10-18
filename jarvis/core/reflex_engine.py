@@ -58,19 +58,8 @@ def normalize_trigger_phrase(text: str) -> str:
     """Normalizes conversational text into a canonical lookup key."""
     if not text:
         return ""
-    lower = text.lower().strip()
-    # Strip common leading conversational preambles iteratively
-    prev = None
-    while prev != lower:
-        prev = lower
-        lower = re.sub(
-            r"^(?:no[,.]?|hey jarvis[,.]?|jarvis[,.]?|okay jarvis[,.]?|ok jarvis[,.]?|please|i want you to|could you(?: please)?|can you(?: please)?|would you(?: please)?)\s+",
-            "",
-            lower,
-        ).strip()
-    # Strip terminal punctuation
-    clean = re.sub(r"[.!?,]+$", "", lower).strip()
-    # Collapse multiple whitespaces
+    from jarvis.core.reflex_dispatcher import ReflexDispatcher
+    clean = ReflexDispatcher.normalize_conversational_text(text)
     return " ".join(clean.split())
 
 

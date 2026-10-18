@@ -179,6 +179,10 @@ def run_job_sandboxed_process(
         timed_out = False
         try:
             stdout, stderr = proc.communicate(timeout=timeout_sec)
+            try:
+                proc.wait(timeout=1.0)
+            except Exception:
+                pass
         except subprocess.TimeoutExpired:
             kernel32.TerminateJobObject(h_job, 1)
             # Mandatory pipe closure and process cleanup to prevent ResourceWarning

@@ -131,3 +131,39 @@ def audit_memory_heap(top_n: int = 5) -> str:
         lines.append(f"{index}. {stat.size / 1024:.1f} KB - {frame.strip()}")
 
     return "\n".join(lines)
+
+
+_GLOBAL_LATENCY_PROFILER = None
+
+
+def set_global_latency_profiler(profiler: Any) -> None:
+    """Sets the global pipeline latency profiler instance."""
+    global _GLOBAL_LATENCY_PROFILER
+    _GLOBAL_LATENCY_PROFILER = profiler
+
+
+def get_global_latency_profiler():
+    """Retrieves or lazily initializes the singleton pipeline latency profiler."""
+    global _GLOBAL_LATENCY_PROFILER
+    if _GLOBAL_LATENCY_PROFILER is None:
+        from jarvis.core.pipeline.latency_profiler import PipelineLatencyProfiler
+        _GLOBAL_LATENCY_PROFILER = PipelineLatencyProfiler()
+    return _GLOBAL_LATENCY_PROFILER
+
+
+@SkillRegistry.register(
+    name="get_pipeline_latency_stats",
+    description="Retrieves P50, P95, and P99 stage-by-stage turn latencies (STT, routing, TTFT, TTS synthesis, DSP IPC, TTFA) from the PipelineLatencyProfiler."
+)
+def get_pipeline_latency_stats() -> str:
+    """Returns formatted P50/P95/P99 latency metrics across pipeline stages."""
+    profiler = get_global_latency_profiler()
+    percentiles = profiler.get_percentiles()
+    if not percentiles:
+        return "No pipeline turns recorded yet, Sir. Telemetry histogram is currently empty."
+
+    lines = ["Stage-by-Stage Latency Telemetry (P50 / P95 / P99), Sir:"]
+    for stage, metrics in percentiles.items():
+        lines.append(f"• {stage}: {metrics['p50']}ms (P50) | {metrics['p95']}ms (P95) | {metrics['p99']}ms (P99)")
+    return "\n".join(lines)
+

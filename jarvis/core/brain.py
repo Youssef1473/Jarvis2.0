@@ -60,6 +60,7 @@ from jarvis.core.reflex_engine import DynamicReflexEngine
 from jarvis.core.cognition import CognitiveRouter
 from jarvis.context.context_orchestrator import ContextOrchestrator, BASE_SYSTEM_PROMPT as CONTEXT_BASE_SYSTEM_PROMPT
 from jarvis.core.reflex_dispatcher import ReflexDispatcher
+from jarvis.core.pipeline.latency_profiler import PipelineLatencyProfiler, TurnTrace
 
 logger = logging.getLogger("Jarvis.Brain")
 
@@ -252,6 +253,10 @@ class JarvisBrain:
 
         # Monotonic cancellation token for preempting in-flight tool actuation on speech barge-in
         self._active_cancel_token: Optional[Any] = None
+
+        # Real-time nanosecond stage-by-stage latency profiler
+        self.latency_profiler: PipelineLatencyProfiler = jarvis.skills.diagnostics.get_global_latency_profiler()
+        self._current_turn_id: str = ""
 
         # Initialize requested provider
         if self.provider in ("hybrid", "auto"):
@@ -920,6 +925,10 @@ class JarvisBrain:
     ) -> str:
         """Routes normal conversation to the configured primary model; consultations are explicit."""
         turn_start_time = time.perf_counter()
+        self._current_turn_id = f"turn_{int(time.time() * 1000)}"
+        if hasattr(self, "latency_profiler") and self.latency_profiler:
+            self.latency_profiler.begin_turn(self._current_turn_id)
+            self.latency_profiler.mark(self._current_turn_id, "stt_final_ns")
         self._current_turn_executed_tools = []
         self._current_turn_resolved_tool_outputs = {}
         self._current_turn_flow_xml = flow_state_xml
@@ -983,6 +992,10 @@ class JarvisBrain:
         # Fast Deterministic Reflex Dispatcher (<10ms execution, 0 tokens)
         reflex_reply = self._try_fast_reflex(norm_text)
         if reflex_reply:
+            if hasattr(self, "latency_profiler") and self.latency_profiler:
+                self.latency_profiler.mark(self._current_turn_id, "route_complete_ns")
+                self.latency_profiler.mark(self._current_turn_id, "llm_first_token_ns")
+                self.latency_profiler.complete_turn(self._current_turn_id)
             if sentence_callback:
                 sentence_callback(reflex_reply)
             self.memory.log_interaction(user_text, reflex_reply, None)
@@ -997,6 +1010,10 @@ class JarvisBrain:
         if consultation:
             provider, prompt = consultation.group(1).lower(), consultation.group(2).strip()
             result = self._consult_specialist(provider, prompt)
+            if hasattr(self, "latency_profiler") and self.latency_profiler:
+                self.latency_profiler.mark(self._current_turn_id, "route_complete_ns")
+                self.latency_profiler.mark(self._current_turn_id, "llm_first_token_ns")
+                self.latency_profiler.complete_turn(self._current_turn_id)
             if sentence_callback:
                 speech_buffer = result
                 while speech_buffer:
@@ -1017,6 +1034,9 @@ class JarvisBrain:
 
         # Smart Tri-Tier Hybrid Dispatch & Model Execution
         reply = self._dispatch_llm_query(user_text, sentence_callback)
+        if hasattr(self, "latency_profiler") and self.latency_profiler:
+            self.latency_profiler.mark(self._current_turn_id, "llm_first_token_ns")
+            self.latency_profiler.complete_turn(self._current_turn_id)
         self._finalize_turn_habit(norm_text, turn_start_time)
         return reply
 
@@ -1116,6 +1136,8 @@ class JarvisBrain:
                 has_gemini=has_gemini,
                 has_copilot=has_copilot,
             )
+            if hasattr(self, "latency_profiler") and self.latency_profiler:
+                self.latency_profiler.mark(getattr(self, "_current_turn_id", ""), "route_complete_ns")
 
             if route == "gemini_vision":
                 logger.info("Hybrid Routing: Screen vision requested -> GEMINI MULTIMODAL")
@@ -1212,6 +1234,10 @@ class JarvisBrain:
     def get_latencies(self) -> Dict[str, float]:
         """Returns the most recent measured round-trip inference latencies in milliseconds."""
         return dict(self.last_latencies)
+
+    def get_latency_profiler(self) -> PipelineLatencyProfiler:
+        """Returns the nanosecond stage-by-stage PipelineLatencyProfiler instance."""
+        return self.latency_profiler
 
     def _consult_specialist(self, provider: str, prompt: str) -> str:
         """Run only a user-requested secondary consultation; never changes the primary model."""

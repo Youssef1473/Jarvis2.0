@@ -57,6 +57,53 @@ class BargeInCancellationToken:
             )
 
 
+CancellationToken = BargeInCancellationToken
+
+_FLUSH_CALLBACKS: list[Callable[[], None]] = []
+_BARGE_IN_ACTIVE: bool = False
+
+
+def is_barge_in_active() -> bool:
+    """Returns True if a barge-in event is currently active."""
+    return _BARGE_IN_ACTIVE
+
+
+def reset_global_barge_in() -> None:
+    """Resets the barge-in active flag."""
+    global _BARGE_IN_ACTIVE
+    _BARGE_IN_ACTIVE = False
+
+
+def register_audio_flush_callback(cb: Callable[[], None]) -> None:
+    """Registers a callback (e.g. KokoroSynthWorker.stop, RingBuffer.stop) to run on barge-in."""
+    if cb not in _FLUSH_CALLBACKS:
+        _FLUSH_CALLBACKS.append(cb)
+
+
+def unregister_audio_flush_callback(cb: Callable[[], None]) -> None:
+    """Unregisters an audio flush callback."""
+    if cb in _FLUSH_CALLBACKS:
+        _FLUSH_CALLBACKS.remove(cb)
+
+
+_IS_RUNNING_FLUSH: bool = False
+
+
+def _run_flush_callbacks() -> None:
+    global _IS_RUNNING_FLUSH
+    if _IS_RUNNING_FLUSH:
+        return
+    _IS_RUNNING_FLUSH = True
+    try:
+        for cb in list(_FLUSH_CALLBACKS):
+            try:
+                cb()
+            except Exception as e:
+                logger.debug("Error in flush callback: %s", e)
+    finally:
+        _IS_RUNNING_FLUSH = False
+
+
 def get_global_cancellation_token() -> BargeInCancellationToken:
     """Mints a new BargeInCancellationToken capturing the current global barge-in epoch."""
     return BargeInCancellationToken(GLOBAL_EPOCH_STATE)
@@ -64,8 +111,11 @@ def get_global_cancellation_token() -> BargeInCancellationToken:
 
 def signal_global_barge_in() -> int:
     """Atomically advances the global barge-in epoch, invalidating all outstanding tokens in <10ns."""
+    global _BARGE_IN_ACTIVE
+    _BARGE_IN_ACTIVE = True
     GLOBAL_EPOCH_STATE.barge_in_epoch += 1
     logger.debug("Signaled global barge-in: epoch -> %d", GLOBAL_EPOCH_STATE.barge_in_epoch)
+    _run_flush_callbacks()
     return int(GLOBAL_EPOCH_STATE.barge_in_epoch)
 
 
@@ -74,8 +124,29 @@ def signal_execution_abort() -> int:
     return signal_global_barge_in()
 
 
+def trigger_speech_barge_in() -> int:
+    """Invoked when user speech or wake word is detected while audio is active.
+    Advances the monotonic barge-in epoch and immediately triggers all audio flush callbacks.
+    """
+    return signal_global_barge_in()
+
+
 def advance_active_tool_epoch() -> int:
     """Advances the active tool epoch counter."""
     GLOBAL_EPOCH_STATE.active_tool_epoch += 1
     return int(GLOBAL_EPOCH_STATE.active_tool_epoch)
+
+
+__all__ = [
+    "SharedEpochState",
+    "GLOBAL_EPOCH_STATE",
+    "BargeInCancellationToken",
+    "get_global_cancellation_token",
+    "signal_global_barge_in",
+    "signal_execution_abort",
+    "trigger_speech_barge_in",
+    "register_audio_flush_callback",
+    "unregister_audio_flush_callback",
+    "advance_active_tool_epoch",
+]
 

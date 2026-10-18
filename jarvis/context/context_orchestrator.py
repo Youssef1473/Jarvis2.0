@@ -219,6 +219,27 @@ class ContextOrchestrator:
         self.config = config or {}
 
     @staticmethod
+    def notify_environment_mutation(mutation_type: str, detail: Any = None) -> None:
+        """Notifies the speculative engine of environment mutations to invalidate stale TOCTOU epochs."""
+        try:
+            from jarvis.speculative.engine import EnvironmentEpochTracker
+            tracker = EnvironmentEpochTracker.get_instance()
+            if mutation_type in ("fs", "usn", "file"):
+                tracker.bump_fs_epoch(detail if isinstance(detail, int) else None)
+            elif mutation_type in ("git", "head"):
+                tracker.update_git_head(str(detail) if detail else "HEAD")
+            elif mutation_type in ("terminal", "pipe", "pty"):
+                tracker.bump_terminal_seq()
+            elif mutation_type in ("hwnd", "window"):
+                if isinstance(detail, int):
+                    tracker.set_active_hwnd(detail)
+                else:
+                    import time
+                    tracker.set_active_hwnd(int(time.time() * 1000) & 0xFFFFFFFF)
+        except Exception as e:
+            logger.debug("Failed to notify speculative engine of mutation: %s", e)
+
+    @staticmethod
     def load_curated_prompt(name: str) -> str:
         """Loads a curated engineering prompt from data/prompts/ with local file lookup."""
         candidate_paths = [

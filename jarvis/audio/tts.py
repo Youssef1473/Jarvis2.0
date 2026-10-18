@@ -134,6 +134,20 @@ class TextToSpeech:
         except Exception:
             pass
 
+        # Zero-copy shared memory transport (enabled via config or runtime fallback)
+        self._shm_transport: Optional[Any] = None
+        if tts_cfg.get("use_shm_transport", False):
+            try:
+                from jarvis.audio.shm_transport import ShmAudioRingTransport
+                self._shm_transport = ShmAudioRingTransport(
+                    name=tts_cfg.get("shm_name", "JarvisAudioShmRing"),
+                    capacity_samples=24000 * 10,
+                    sample_rate=24000,
+                    create=True,
+                )
+            except Exception as e:
+                logger.debug("ShmAudioRingTransport initialization deferred: %s", e)
+
     def _init_kokoro(self):
         """Initializes Kokoro neural engine with constrained CPU threading to prevent CPU spikes."""
         try:
@@ -363,9 +377,16 @@ class TextToSpeech:
         if hasattr(self, "_ring_buffer"):
             self._ring_buffer.barge_in()
 
+        if hasattr(self, "_shm_transport") and self._shm_transport:
+            try:
+                self._shm_transport.trigger_barge_in_clear()
+            except Exception:
+                pass
+
         try:
-            from jarvis.core.cancellation import signal_global_barge_in
-            signal_global_barge_in()
+            from jarvis.core.cancellation import is_barge_in_active, signal_global_barge_in
+            if not is_barge_in_active():
+                signal_global_barge_in()
         except Exception:
             pass
 
@@ -609,6 +630,11 @@ class TextToSpeech:
                             if not self._stop_event.is_set():
                                 # Write directly to the audio ring buffer for gapless WASAPI playback
                                 self._ring_buffer.write(padded_samples)
+                                if getattr(self, "_shm_transport", None):
+                                    try:
+                                        self._shm_transport.write_pcm(padded_samples)
+                                    except Exception:
+                                        pass
                                 # Keep legacy audio queue populated for backwards compatibility
                                 self._audio_queue.put((padded_samples, sr))
                                 try:

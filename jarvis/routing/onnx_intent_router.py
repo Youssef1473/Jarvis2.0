@@ -76,6 +76,7 @@ class ONNXIntentRouter:
                 opts.intra_op_num_threads = 2
                 opts.inter_op_num_threads = 1
                 opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
                 providers = ["CPUExecutionProvider"]
                 self.session = ort.InferenceSession(str(self.model_path), sess_options=opts, providers=providers)
                 logger.info("Loaded ONNX Intent Router model from %s", self.model_path)

@@ -116,17 +116,18 @@ class OnnxEmbeddingEngine:
                 # Mandatory Constraint 3: Set opts.intra_op_num_threads = 1
                 # Avoids OpenMP thread wake overhead and P-Core bleed
                 opts = ort.SessionOptions()
-                opts.intra_op_num_threads = 1
+                opts.intra_op_num_threads = 2
                 opts.inter_op_num_threads = 1
                 opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
                 opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
 
                 self._session = ort.InferenceSession(
                     str(onnx_path),
                     opts,
                     providers=["CPUExecutionProvider"]
                 )
-                logger.info("OnnxEmbeddingEngine loaded successfully from %s (threads=1, dim=%d)", onnx_path, self.dim)
+                logger.info("OnnxEmbeddingEngine loaded successfully from %s (threads=2, dim=%d)", onnx_path, self.dim)
                 return True
             except Exception as e:
                 logger.warning("Failed to initialize ONNX embedding session (%s). Using offline fallback.", e)

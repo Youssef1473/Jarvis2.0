@@ -17,6 +17,8 @@ import sys
 import time
 from typing import Optional
 
+from jarvis.audio.shm_transport import ShmAudioRingTransport
+
 logger = logging.getLogger("Jarvis.Audio.DSPProcess")
 
 DEFAULT_SHM_NAME = "JarvisAudioShmRing"
@@ -98,8 +100,19 @@ def dsp_companion_main(shm_name: str, event_name: str, shutdown_event: mp.Event)
     _elevate_companion_process(pcore_mask=0x0F)
     barge_in_h = _create_or_open_event(event_name)
 
+    transport = None
+    shm = None
     try:
-        shm = shared_memory.SharedMemory(name=shm_name, create=False)
+        try:
+            transport = ShmAudioRingTransport(
+                name=shm_name,
+                capacity_samples=RING_CAPACITY_SAMPLES,
+                sample_rate=SAMPLE_RATE,
+                create=False,
+            )
+            shm = transport._shm
+        except Exception:
+            shm = shared_memory.SharedMemory(name=shm_name, create=False)
     except Exception as e:
         logger.error("DSP companion failed attaching to shared memory: %s", e)
         return
@@ -119,14 +132,20 @@ def dsp_companion_main(shm_name: str, event_name: str, shutdown_event: mp.Event)
                     # 0ms check
                     if k32.WaitForSingleObject(barge_in_h, 0) == 0:
                         # Barge-in signaled: flush ring buffer immediately
-                        struct.pack_into("<QQ", buf, 0, 0, 0)
+                        if transport:
+                            transport.trigger_barge_in_clear()
+                        else:
+                            struct.pack_into("<QQ", buf, 0, 0, 0)
                         _reset_named_event(barge_in_h)
                 except Exception:
                     pass
 
             time.sleep(0.005)
     finally:
-        shm.close()
+        if transport:
+            transport.close()
+        elif shm:
+            shm.close()
         _close_event_handle(barge_in_h)
         logger.info("DSP Companion Process shutdown complete.")
 
@@ -137,6 +156,7 @@ class AudioDSPProcessClient:
     def __init__(self, shm_name: str = DEFAULT_SHM_NAME, event_name: str = DEFAULT_BARGE_IN_EVENT):
         self.shm_name = shm_name
         self.event_name = event_name
+        self.transport: Optional[ShmAudioRingTransport] = None
         self.shm: Optional[shared_memory.SharedMemory] = None
         self.barge_in_h = None
         self.process: Optional[mp.Process] = None
@@ -153,9 +173,18 @@ class AudioDSPProcessClient:
             except Exception:
                 pass
 
-            self.shm = shared_memory.SharedMemory(name=self.shm_name, create=True, size=BUFFER_BYTE_SIZE)
-            # Initialize header: write_idx=0, read_idx=0, sample_rate=24000, active=1
-            struct.pack_into("<QQII", self.shm.buf, 0, 0, 0, SAMPLE_RATE, 1)
+            try:
+                self.transport = ShmAudioRingTransport(
+                    name=self.shm_name,
+                    capacity_samples=RING_CAPACITY_SAMPLES,
+                    sample_rate=SAMPLE_RATE,
+                    create=True,
+                )
+                self.shm = self.transport._shm
+            except Exception as e:
+                logger.warning("ShmAudioRingTransport creation fallback: %s", e)
+                self.shm = shared_memory.SharedMemory(name=self.shm_name, create=True, size=BUFFER_BYTE_SIZE)
+                struct.pack_into("<QQII", self.shm.buf, 0, 0, 0, SAMPLE_RATE, 1)
 
             self.barge_in_h = _create_or_open_event(self.event_name)
 
@@ -174,13 +203,18 @@ class AudioDSPProcessClient:
 
     def trigger_barge_in(self) -> bool:
         """Atomically signals speech interruption in <1us."""
-        if self.shm and self.shm.buf:
+        if self.transport:
+            self.transport.trigger_barge_in_clear()
+        elif self.shm and self.shm.buf:
             # Immediate local memory reset
             struct.pack_into("<QQ", self.shm.buf, 0, 0, 0)
         return _set_named_event(self.barge_in_h)
 
     def write_pcm(self, pcm_data: np.ndarray) -> int:
         """Writes float32 audio samples into the shared ring buffer."""
+        if self.transport:
+            return self.transport.write_pcm(pcm_data)
+
         if not self.shm or not self.shm.buf or pcm_data.size == 0:
             return 0
 
@@ -214,7 +248,14 @@ class AudioDSPProcessClient:
         _close_event_handle(self.barge_in_h)
         self.barge_in_h = None
 
-        if self.shm:
+        if self.transport:
+            try:
+                self.transport.close()
+            except Exception:
+                pass
+            self.transport = None
+            self.shm = None
+        elif self.shm:
             try:
                 self.shm.close()
                 self.shm.unlink()

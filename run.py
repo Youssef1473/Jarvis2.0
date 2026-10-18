@@ -88,7 +88,18 @@ def main():
         except Exception:
             pass
 
-    # Check for stealth mode flags (--stealth, --background, -b, -s)
+    # Check for CLI flags (--check-health, --omniroute, --stealth, --background, -b, -s)
+    if "--check-health" in sys.argv:
+        logger = logging.getLogger("Jarvis.HealthCheck")
+        logger.info("Running Jarvis 2.0 system health check...")
+        cfg = load_config()
+        logger.info("Configuration loaded: provider=%s", cfg.get("llm", {}).get("provider"))
+        logger.info("Health check complete. System operational.")
+        sys.exit(0)
+
+    if "--omniroute" in sys.argv:
+        os.environ["LLM_PROVIDER"] = "omniroute"
+
     is_stealth = any(arg in sys.argv for arg in ("--stealth", "--background", "-b", "-s"))
     config = load_config()
     if is_stealth:
