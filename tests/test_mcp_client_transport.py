@@ -201,8 +201,12 @@ class TestMCPManager(unittest.TestCase):
         self.assertIsInstance(servers, dict)
         self.assertIn("everything", servers)
         self.assertIn("github", servers)
+        self.assertIn("context7", servers)
+        self.assertIn("sequential_thinking", servers)
         self.assertTrue(servers["everything"]["enabled"])
         self.assertTrue(servers["github"]["enabled"])
+        self.assertTrue(servers["context7"]["enabled"])
+        self.assertTrue(servers["sequential_thinking"]["enabled"])
 
     @patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_mocktoken123"}, clear=False)
     @patch("jarvis.core.mcp_manager.register_discovered_mcp_tools")
@@ -218,7 +222,9 @@ class TestMCPManager(unittest.TestCase):
 
             self.assertIn("everything", res)
             self.assertIn("github", res)
-            self.assertEqual(mock_connect.call_count, 2)
+            self.assertIn("context7", res)
+            self.assertIn("sequential_thinking", res)
+            self.assertEqual(mock_connect.call_count, 4)
 
             # Check that GITHUB_TOKEN environment variable was expanded
             calls = mock_connect.call_args_list

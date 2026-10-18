@@ -21,7 +21,7 @@
 
 ## P2 — Integrations & Continuous Verification
 
-1. [x] **MCP Client Transport Pool & Auto-Configuration:** Unified MCP JSON-RPC stdio transport and client pool under `jarvis/core/mcp_manager.py` with E-core Job Object sandboxing (`0xFF00`), Windows `shutil.which` resolution, env expansion (`${VAR}`), and Voidtools Everything + GitHub configuration.
+1. [x] **MCP Client Transport Pool & Auto-Configuration:** Unified MCP JSON-RPC stdio transport and client pool under `jarvis/core/mcp_manager.py` with E-core Job Object sandboxing (`0xFF00`), Windows `shutil.which` resolution, env expansion (`${VAR}`), and 4-tier MCP suite (Everything, GitHub, Context7, Sequential Thinking).
 2. [x] **Arena Competitive Optimization Framework:** Self-contained tournament state machine, 2,160 strategy permutations, Windows CLI execution, and 27 unit tests under `.agents/skills/arena/`.
 3. [x] **Full Regression Baseline:** 588 unit tests passing with zero failures, zero errors, and zero skips.
 4. [ ] **Continuous Real-Time Telemetry:** Extend HUD graphs with historical rolling P99 trendlines.
