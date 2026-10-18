@@ -94,6 +94,11 @@ class JarvisOrchestrator:
         else:
             self.ui_service = None
 
+        if hasattr(self.brain, "set_tts_instance"):
+            self.brain.set_tts_instance(self.tts)
+        if getattr(self, "ui_service", None) and hasattr(self.brain, "set_tool_status_callback"):
+            self.brain.set_tool_status_callback(self._on_tool_status_event)
+
         # Mute state
         self._is_muted = False
 
@@ -150,6 +155,12 @@ class JarvisOrchestrator:
         if self.tts.is_speaking:
             self.tts.stop()
             was_busy = True
+
+        if hasattr(self, "brain") and hasattr(self.brain, "cancel_active_turn"):
+            try:
+                self.brain.cancel_active_turn()
+            except Exception:
+                pass
 
         # Sync resolved tool outputs from brain if available
         active_tools = dict(getattr(self, "_active_tool_outputs", {}) or {})
@@ -214,6 +225,18 @@ class JarvisOrchestrator:
                 self.ui_service.broadcast({
                     "type": "ambient_telemetry",
                     "data": data,
+                    "timestamp": time.strftime("%H:%M:%S"),
+                })
+            except Exception:
+                pass
+
+    def _on_tool_status_event(self, event: Dict[str, Any]):
+        """Dispatches live tool execution status events to the Holographic HUD."""
+        if getattr(self, "ui_service", None):
+            try:
+                self.ui_service.broadcast({
+                    "type": "tool_execution",
+                    "data": event,
                     "timestamp": time.strftime("%H:%M:%S"),
                 })
             except Exception:
@@ -607,7 +630,6 @@ class JarvisOrchestrator:
             self.sfx.play_think()
 
             # Start streaming pipelined speech session
-            self.set_state("speaking")
             self.tts.start_streaming_session()
 
             # Check if this query is an instant deterministic reflex (<10ms) or model switch
@@ -638,6 +660,8 @@ class JarvisOrchestrator:
                         queued_ack = "Analyzing that now, Sir. Here is my assessment."
 
                 if queued_ack:
+                    if self.get_state() != "speaking":
+                        self.set_state("speaking")
                     self.tts.queue_sentence(queued_ack)
 
             def queue_speech(sentence: str):
@@ -654,6 +678,8 @@ class JarvisOrchestrator:
                         flags=re.I
                     ).strip()
                 if s_clean:
+                    if self.get_state() != "speaking":
+                        self.set_state("speaking")
                     self.tts.queue_sentence(s_clean)
 
             reply = self.brain.process_query(query, sentence_callback=queue_speech)

@@ -1625,6 +1625,7 @@
       justify-content: flex-end;
     }
   </style>
+</head>
 <body>
 
   <!-- DOCKED STARK PILL (UPGRADE 4) -->
@@ -1878,7 +1879,7 @@
       <button class="drawer-tab" id="tabTimersBtn" onclick="switchDrawerTab('timers')">TIMERS (<span id="drawerTimerCount">0</span>)</button>
       <button class="drawer-tab" id="tabNotesBtn" onclick="switchDrawerTab('notes')">NOTES</button>
       <button class="drawer-tab" id="tabStagedBtn" onclick="switchDrawerTab('staged')">STAGED (<span id="drawerStagedCount">0</span>)</button>
-      <button class="drawer-tab" id="tabAgendaBtn" onclick="switchDrawerTab('agenda')">AGENDA</button>
+      <button class="drawer-tab" id="tabAgendaBtn" onclick="switchDrawerTab('agenda')">AGENDA (<span id="drawerAgendaCount">0</span>)</button>
     </div>
     <div class="drawer-body" id="drawerBody">
       <div style="color: var(--text-dim); font-size: 0.85rem; text-align: center; margin-top: 20px;">Loading archive data...</div>
@@ -1925,6 +1926,13 @@
           <div id="activeCalSummary" class="active-cal-desc">Displaying all active academic & calendar events registered in Jarvis SQLite memory.</div>
         </div>
         <div id="calActiveActions" style="display:flex; align-items:center; gap:8px;">
+          <!-- Holographic Week Navigator -->
+          <div style="display:flex; align-items:center; gap:4px; background:rgba(0,0,0,0.4); border:1px solid var(--panel-border); border-radius:4px; padding:3px 6px;">
+            <button class="cal-btn-outline" style="padding:4px 8px; font-size:0.75rem;" onclick="calendarNavigateWeek(-1)" title="Previous Week">◀ PREV</button>
+            <span id="calCurrentWeekRangeLabel" style="font-family:'JetBrains Mono',monospace; font-size:0.78rem; color:var(--holo-cyan); font-weight:600; padding:0 8px; min-width:140px; text-align:center;">WEEK OF OCT 19</span>
+            <button class="cal-btn-outline" style="padding:4px 8px; font-size:0.75rem;" onclick="calendarNavigateWeek(1)" title="Next Week">NEXT ▶</button>
+            <button class="cal-btn-outline" style="padding:4px 6px; font-size:0.7rem; color:var(--holo-emerald); border-color:rgba(0,255,157,0.4);" onclick="calendarResetToActiveWeek()" title="Reset to active schedule week">ACTIVE</button>
+          </div>
           <button id="btnDeleteCalendar" class="cal-btn-danger" onclick="promptDeleteCurrentCalendar()" title="Delete or clear this calendar">
             <span>🗑️</span> DELETE CALENDAR
           </button>
@@ -1941,10 +1949,10 @@
       <!-- Footer -->
       <div class="cal-modal-footer">
         <div class="cal-footer-stat">
-          <span class="stat-bullet">●</span> REGISTERED SESSIONS: <span id="calTotalEventsCount" style="color:var(--holo-cyan); font-weight:700;">6</span>
+          <span class="stat-bullet">●</span> REGISTERED SESSIONS: <span id="calTotalEventsCount" style="color:var(--holo-cyan); font-weight:700;">0</span>
         </div>
         <div class="cal-footer-stat">
-          <span class="stat-bullet">●</span> CURRENT TIMETABLE: <span style="color:var(--holo-emerald); font-weight:700;">WEEK OF OCT 12 &ndash; 17, 2026</span>
+          <span class="stat-bullet">●</span> CURRENT TIMETABLE: <span id="calFooterTimetableRange" style="color:var(--holo-emerald); font-weight:700;">WEEK OF OCT 19 &ndash; 25, 2026</span>
         </div>
         <div class="cal-footer-hint">
           VOICE PROMPT: "Jarvis, what classes do I have today?"
@@ -2582,6 +2590,26 @@ void main() {
         appendScreenSnapshotBubble(data.url, data.timestamp);
       } else if (data.type === "ambient_telemetry") {
         handleAmbientTelemetry(data.data, data.timestamp);
+      } else if (data.type === "tool_execution") {
+        handleToolExecution(data.data, data.timestamp);
+      }
+    }
+
+    function handleToolExecution(event, timestamp) {
+      if (!event || !event.tool) return;
+      const badge = domRefs.statusBadge || document.getElementById('statusBadge');
+      const sub = domRefs.subStatus || document.getElementById('subStatus');
+      if (!badge || !sub) return;
+
+      if (event.status === "running") {
+        badge.textContent = `EXECUTING // ${event.tool.toUpperCase()}`;
+        badge.style.color = "var(--holo-amber)";
+        badge.style.borderColor = "var(--holo-amber)";
+        badge.style.textShadow = "var(--glow-amber)";
+        sub.textContent = `SYSTEM DIRECTIVE STEP ${event.step || 1} // ${event.tool}`;
+      } else if (event.status === "completed") {
+        badge.textContent = `PROCESSING // SYNTHESIS`;
+        sub.textContent = `STEP ${event.step || 1} COMPLETED // SYNTHESIZING RESPONSE`;
       }
     }
 
@@ -3242,6 +3270,18 @@ void main() {
         }
       }
 
+      if (currentMemoryFilter === 'lessons' && !lessons.length) {
+        visibleNodesHtml += `
+          <div style="color: var(--text-dim); text-align: center; margin-top: 24px; padding: 16px; font-size: 0.82rem; border: 1px dashed rgba(0, 240, 255, 0.25); border-radius: 6px; background: rgba(0,0,0,0.3);">
+            <div style="color: var(--holo-amber); font-weight: 700; margin-bottom: 6px; font-family: 'Orbitron', sans-serif;">⚡ 0 EPISODIC REFLEXION LESSONS INDEXED</div>
+            <div style="line-height: 1.4; color: var(--text-dim); margin-bottom: 8px;">Episodic lessons are autonomous self-correction post-mortems synthesized after runtime tool errors.</div>
+            <div style="color: var(--holo-cyan); cursor: pointer; text-decoration: underline; font-weight: 600;" onclick="switchDrawerTab('agenda')">
+              Looking for university timetable courses & subjects? ➔ Open AGENDA tab
+            </div>
+          </div>
+        `;
+      }
+
       if (!visibleNodesHtml) {
         visibleNodesHtml = `
           <div style="color: var(--text-dim); text-align: center; margin-top: 30px; font-size: 0.88rem;">
@@ -3401,43 +3441,66 @@ void main() {
           .then(res => res.json())
           .then(data => {
             const events = data.events || [];
+            const countEl = document.getElementById('drawerAgendaCount');
+            if (countEl) countEl.textContent = events.length;
+
             if (!events.length) {
               container.innerHTML = `
-                <div style="color: var(--text-dim); text-align: center; margin-top: 30px; font-size: 0.88rem;">
-                  <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); width: 100%; margin-bottom: 12px; padding: 8px;" onclick="openCalendarModal()">
-                    📅 OPEN FULL HOLOGRAPHIC MATRIX ⤢
-                  </button>
-                  <div style="color: var(--text-dim); text-align: center; margin-top: 20px; font-size: 0.88rem;">
-                    📅 No upcoming calendar events scheduled.<br>
-                    <span style="font-size: 0.78rem; opacity: 0.7;">Say "Jarvis, schedule meeting with Stark tomorrow at 10am" to add one.</span>
-                  </div>
-                `;
-                return;
-              }
-              const headerBtn = `
                 <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); width: 100%; margin-bottom: 12px; padding: 8px;" onclick="openCalendarModal()">
                   📅 OPEN FULL HOLOGRAPHIC MATRIX ⤢
                 </button>
+                <div style="color: var(--text-dim); text-align: center; margin-top: 20px; font-size: 0.88rem;">
+                  📅 No upcoming calendar events scheduled.<br>
+                  <span style="font-size: 0.78rem; opacity: 0.7;">Say "Jarvis, schedule meeting with Stark tomorrow at 10am" to add one, or import a university timetable PDF.</span>
+                </div>
               `;
-              container.innerHTML = headerBtn + events.map(ev => `
-                <div class="drawer-card">
+              return;
+            }
+            const headerBtn = `
+              <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); width: 100%; margin-bottom: 12px; padding: 8px; font-weight:700;" onclick="openCalendarModal()">
+                📅 OPEN FULL HOLOGRAPHIC MATRIX (${events.length} SESSIONS) ⤢
+              </button>
+            `;
+            container.innerHTML = headerBtn + events.map(ev => {
+              const startPart = ev.start_time || '';
+              const dateMatch = startPart.match(/^(\d{4}-\d{2}-\d{2})/);
+              let dayBadge = '';
+              if (dateMatch) {
+                try {
+                  const parts = dateMatch[1].split('-');
+                  const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+                  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                  dayBadge = `<span style="background:rgba(0,240,255,0.1); border:1px solid rgba(0,240,255,0.3); color:var(--holo-cyan); font-size:0.7rem; padding:1px 6px; border-radius:3px; margin-right:6px; font-weight:600;">${dayNames[d.getDay()]} ${parts[1]}/${parts[2]}</span>`;
+                } catch(e) {}
+              }
+              const startDisplay = ev.start_time ? (ev.start_time.length > 11 ? ev.start_time.substring(11) : ev.start_time) : '';
+              const endDisplay = ev.end_time ? (ev.end_time.length > 11 ? ev.end_time.substring(11) : ev.end_time) : '';
+              const timeDisplay = endDisplay ? `${startDisplay} &ndash; ${endDisplay}` : startDisplay;
+              return `
+                <div class="drawer-card" style="border-left-color: var(--holo-amber);">
                   <div class="drawer-card-header">
                     <span style="color: var(--holo-amber); font-weight: 600;">📅 ${escapeHtml(ev.title)}</span>
                     <span style="color: var(--text-dim); font-size: 0.78rem;">#${ev.id}</span>
                   </div>
                   <div style="font-size: 0.82rem; color: var(--text-main); margin-bottom: 4px;">
-                    ⏰ ${escapeHtml(ev.start_time)}${ev.end_time ? ' &ndash; ' + escapeHtml(ev.end_time) : ''}
+                    ${dayBadge}⏰ ${timeDisplay || escapeHtml(ev.start_time)}
                   </div>
-                  ${ev.location ? `<div style="font-size: 0.78rem; color: var(--holo-cyan); margin-bottom: 8px;">📍 ${escapeHtml(ev.location)}</div>` : ''}
-                  <button class="drawer-close-btn" style="color: var(--holo-crimson); border-color: rgba(255, 51, 102, 0.4);" onclick="sendQuickCommand('Jarvis, cancel calendar event ${escapeHtml(ev.title)}')">
-                    CANCEL EVENT
-                  </button>
+                  ${ev.location ? `<div style="font-size: 0.78rem; color: var(--holo-emerald); margin-bottom: 8px;">📍 ${escapeHtml(ev.location)}</div>` : ''}
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                    <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); font-size:0.75rem; flex:1;" onclick="sendQuickCommand('Jarvis, tell me about ${escapeHtml(ev.title)}')">
+                      ASK JARVIS ↵
+                    </button>
+                    <button class="drawer-close-btn" style="color: var(--holo-crimson); border-color: rgba(255, 51, 102, 0.4); font-size:0.75rem;" onclick="deleteCalendarEvent(${ev.id}, '${escapeJs(ev.title)}')">
+                      DELETE ✕
+                    </button>
+                  </div>
                 </div>
-              `).join('');
-            })
-            .catch(err => {
-              container.innerHTML = `<div style="color: var(--holo-crimson); font-size: 0.85rem;">Error loading calendar: ${err}</div>`;
-            });
+              `;
+            }).join('');
+          })
+          .catch(err => {
+            container.innerHTML = `<div style="color: var(--holo-crimson); font-size: 0.85rem;">Error loading calendar: ${err}</div>`;
+          });
         }
       }
 
@@ -3597,7 +3660,7 @@ void main() {
         try {
           const resp = await fetch("/api/command", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: jarvisHeaders(),
             body: JSON.stringify({ command: `describe photo ${this.currentPhoto.photo_id}` })
           });
           const data = await resp.json();
@@ -3617,7 +3680,7 @@ void main() {
         try {
           const resp = await fetch("/api/command", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: jarvisHeaders(),
             body: JSON.stringify({ command: "save clipboard photo" })
           });
           this.setStatus("CLIPBOARD COMMAND SENT");
@@ -3659,6 +3722,40 @@ void main() {
     // Holographic Tactical Calendar Modal Controller
     let currentCalendarFilter = null;
     let cachedCalendarData = null;
+    let currentCalendarWeekOffset = 0;
+    let calendarBaseMonday = null;
+
+    function getMondayOfWeek(d) {
+      const date = new Date(d);
+      const day = date.getDay();
+      const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+      const monday = new Date(date.setDate(diff));
+      monday.setHours(0, 0, 0, 0);
+      return monday;
+    }
+
+    function formatDateYMD(d) {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+
+    function formatDateDisplay(d) {
+      const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      return `${monthNames[d.getMonth()]} ${d.getDate()}`;
+    }
+
+    function calendarNavigateWeek(direction) {
+      currentCalendarWeekOffset += direction;
+      renderCalendarModalView();
+    }
+
+    function calendarResetToActiveWeek() {
+      currentCalendarWeekOffset = 0;
+      calendarBaseMonday = null;
+      renderCalendarModalView();
+    }
 
     function openCalendarModal() {
       const backdrop = document.getElementById('calendarModalBackdrop');
@@ -3690,6 +3787,8 @@ void main() {
 
     function selectSavedCalendar(docId) {
       currentCalendarFilter = docId;
+      currentCalendarWeekOffset = 0;
+      calendarBaseMonday = null;
       renderCalendarModalView();
     }
 
@@ -3770,24 +3869,79 @@ void main() {
         }
       }
 
-      // 4. Render 7-Day Week Matrix Grid
-      // Days of the week: Monday through Sunday
-      // Dates: Oct 12 - 18, 2026
-      const daysDef = [
-        { name: "MONDAY", date: "2026-10-12", displayDate: "Oct 12" },
-        { name: "TUESDAY", date: "2026-10-13", displayDate: "Oct 13" },
-        { name: "WEDNESDAY", date: "2026-10-14", displayDate: "Oct 14" },
-        { name: "THURSDAY", date: "2026-10-15", displayDate: "Oct 15" },
-        { name: "FRIDAY", date: "2026-10-16", displayDate: "Oct 16" },
-        { name: "SATURDAY", date: "2026-10-17", displayDate: "Oct 17" },
-        { name: "SUNDAY", date: "2026-10-18", displayDate: "Oct 18" },
-      ];
+      // 4. Compute Dynamic Base Monday
+      if (!calendarBaseMonday) {
+        if (currentCalendarFilter !== null) {
+          const found = savedCals.find(d => d.id === currentCalendarFilter);
+          if (found) {
+            const textToSearch = (found.summary || '') + ' ' + (found.title || '');
+            const m = textToSearch.match(/(\d{4})-(\d{2})-(\d{2})/) ||
+                      textToSearch.match(/(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})/);
+            if (m) {
+              if (m[3] && m[3].length === 4) {
+                const day = parseInt(m[1], 10);
+                const month = parseInt(m[2], 10) - 1;
+                const year = parseInt(m[3], 10);
+                calendarBaseMonday = getMondayOfWeek(new Date(year, month, day));
+              } else {
+                const parts = m[0].split(/[-.\/]/).map(x => parseInt(x, 10));
+                calendarBaseMonday = getMondayOfWeek(new Date(parts[0], parts[1] - 1, parts[2]));
+              }
+            }
+          }
+        }
+
+        if (!calendarBaseMonday && events.length > 0) {
+          const todayStr = formatDateYMD(new Date());
+          const eventDates = events
+            .map(e => (e.start_time || '').substring(0, 10))
+            .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d))
+            .sort();
+
+          if (eventDates.length > 0) {
+            const upcoming = eventDates.find(d => d >= todayStr);
+            const anchorDateStr = upcoming || eventDates[0];
+            const parts = anchorDateStr.split('-');
+            calendarBaseMonday = getMondayOfWeek(new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)));
+          }
+        }
+
+        if (!calendarBaseMonday) {
+          calendarBaseMonday = getMondayOfWeek(new Date());
+        }
+      }
+
+      // 5. Render 7-Day Week Matrix Grid
+      const currentMonday = new Date(calendarBaseMonday.getTime() + currentCalendarWeekOffset * 7 * 86400000);
+      const dayNames = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"];
+      const daysDef = [];
+      const todayStr = formatDateYMD(new Date());
+
+      for (let i = 0; i < 7; i++) {
+        const dayDate = new Date(currentMonday.getTime() + i * 86400000);
+        const ymd = formatDateYMD(dayDate);
+        daysDef.push({
+          name: dayNames[i],
+          date: ymd,
+          displayDate: formatDateDisplay(dayDate),
+          isToday: (ymd === todayStr)
+        });
+      }
+
+      // Update week labels
+      const startDisplay = `${daysDef[0].displayDate}, ${currentMonday.getFullYear()}`;
+      const endDisplay = `${daysDef[6].displayDate}, ${daysDef[6].date.substring(0, 4)}`;
+      const weekLabelEl = document.getElementById('calCurrentWeekRangeLabel');
+      if (weekLabelEl) weekLabelEl.textContent = `${daysDef[0].displayDate} – ${daysDef[6].displayDate}`;
+      const footerRangeEl = document.getElementById('calFooterTimetableRange');
+      if (footerRangeEl) footerRangeEl.innerHTML = `WEEK OF ${escapeHtml(startDisplay.toUpperCase())} &ndash; ${escapeHtml(endDisplay.toUpperCase())}`;
 
       const weekGrid = document.getElementById('calendarWeekGrid');
       if (weekGrid) {
         weekGrid.innerHTML = daysDef.map(day => {
           const dayEvents = grouped[day.date] || [];
           const hasClasses = dayEvents.length > 0;
+          const isToday = day.isToday;
 
           let cardsHtml = '';
           if (hasClasses) {
@@ -3822,10 +3976,10 @@ void main() {
           }
 
           return `
-            <div class="cal-day-col ${hasClasses ? 'has-classes' : ''}">
+            <div class="cal-day-col ${hasClasses ? 'has-classes' : ''} ${isToday ? 'today' : ''}">
               <div class="cal-day-header">
                 <span class="cal-day-name">${day.name}</span>
-                <span class="cal-day-date">${day.displayDate}</span>
+                <span class="cal-day-date">${day.displayDate}${isToday ? ' (TODAY)' : ''}</span>
               </div>
               <div class="cal-day-body">
                 ${cardsHtml}
@@ -3896,7 +4050,7 @@ void main() {
       if (pendingDeleteCalendarId === 'ALL') {
         fetch('/api/calendar/clear', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: jarvisHeaders(),
           body: JSON.stringify({})
         })
           .then(res => res.json())
@@ -3918,7 +4072,7 @@ void main() {
 
         fetch('/api/calendar/delete', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: jarvisHeaders(),
           body: JSON.stringify({ doc_id: pendingDeleteCalendarId, clear_events: clearEvents })
         })
           .then(res => res.json())
@@ -3941,7 +4095,7 @@ void main() {
     function deleteCalendarEvent(eventId, title) {
       fetch('/api/calendar/event/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jarvisHeaders(),
         body: JSON.stringify({ event_id: eventId })
       })
         .then(res => res.json())
@@ -4200,10 +4354,24 @@ void main() {
         .replace(/'/g, '&#39;');
     }
 
+    function getJarvisToken() {
+      if (window.__JARVIS_TOKEN__) {
+        try { localStorage.setItem('jarvis_session_token', window.__JARVIS_TOKEN__); } catch (e) {}
+        return window.__JARVIS_TOKEN__;
+      }
+      try {
+        const stored = localStorage.getItem('jarvis_session_token');
+        if (stored) return stored;
+      } catch (e) {}
+      const match = document.cookie.match(/(?:^|;\s*)jarvis_session=([^;]+)/);
+      return match ? decodeURIComponent(match[1]) : '';
+    }
+
     function jarvisHeaders(extra = {}) {
       const headers = { 'Content-Type': 'application/json', ...extra };
-      if (window.__JARVIS_TOKEN__) {
-        headers['X-Jarvis-Token'] = window.__JARVIS_TOKEN__;
+      const token = getJarvisToken();
+      if (token) {
+        headers['X-Jarvis-Token'] = token;
       }
       return headers;
     }
@@ -4275,9 +4443,20 @@ void main() {
       const formData = new FormData();
       formData.append('file', file);
 
+      const token = getJarvisToken();
+      const uploadHeaders = {};
+      if (token) {
+        uploadHeaders['X-Jarvis-Token'] = token;
+      }
+
       try {
-        const res = await fetch('/api/documents/upload', {
+        const uploadUrl = token
+          ? `/api/documents/upload?token=${encodeURIComponent(token)}`
+          : '/api/documents/upload';
+        const res = await fetch(uploadUrl, {
           method: 'POST',
+          headers: uploadHeaders,
+          credentials: 'same-origin',
           body: formData
         });
         const data = await res.json();
@@ -4344,11 +4523,23 @@ void main() {
         .catch(err => console.log("Initial telemetry poll:", err));
     }
 
+    function updateAgendaCountBadge() {
+      fetch('/api/calendar')
+        .then(res => res.json())
+        .then(data => {
+          const events = data.events || [];
+          const countEl = document.getElementById('drawerAgendaCount');
+          if (countEl) countEl.textContent = events.length;
+        })
+        .catch(() => {});
+    }
+
     window.addEventListener('load', () => {
       initDomReferences();
       initWebSocket();
       fetchInitialTelemetry();
       checkStagedDocuments();
+      updateAgendaCountBadge();
 
       // Fallback polling loop if WebSocket connection is lost or offline
       setInterval(() => {
@@ -4357,9 +4548,10 @@ void main() {
         }
       }, 3000);
 
-      // Periodic check for staged documents
+      // Periodic check for staged documents & calendar badge
       setInterval(() => {
         checkStagedDocuments();
+        updateAgendaCountBadge();
       }, 5000);
 
       // Auto-refresh countdown timers when drawer is open

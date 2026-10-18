@@ -59,11 +59,12 @@ class TestHudSecurityAndDsp(unittest.TestCase):
         self.assertIn(res_auth_query.status_code, (200, 503))
 
         # 5. Valid token in jarvis_session cookie -> authorized
+        client.cookies.set("jarvis_session", valid_token)
         res_auth_cookie = client.post(
             "/api/command",
-            cookies={"jarvis_session": valid_token},
             json={"command": "status"},
         )
+        client.cookies.delete("jarvis_session")
         self.assertIn(res_auth_cookie.status_code, (200, 503))
 
         # 6. Malicious external Origin header -> rejected with 403 Forbidden

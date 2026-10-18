@@ -21,10 +21,12 @@ class ToolOrchestrator:
         interim_bridge: Optional[InterimSpeechBridge] = None,
         taint_tracker: Optional[TurnTaintTracker] = None,
         max_identical_cycles: int = 2,
+        on_status_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
         self.interim_bridge = interim_bridge or InterimSpeechBridge()
         self.taint_tracker = taint_tracker or TurnTaintTracker.get_instance()
         self.max_identical_cycles = max_identical_cycles
+        self.on_status_callback = on_status_callback
         self._history: List[Tuple[str, str]] = []
 
     def reset(self) -> None:
@@ -71,6 +73,18 @@ class ToolOrchestrator:
             logger.warning("Tool execution '%s' aborted by cancellation token.", tool_name)
             return "Action cancelled: Operation was aborted by user interrupt."
 
+        # Broadcast tool start event
+        if getattr(self, "on_status_callback", None):
+            try:
+                self.on_status_callback({
+                    "type": "tool_status",
+                    "tool": tool_name,
+                    "status": "running",
+                    "step": step_index,
+                })
+            except Exception as e:
+                logger.debug("Tool status callback notice (start): %s", e)
+
         try:
             # 4. Physical Execution via SkillRegistry
             result = SkillRegistry.execute(tool_name, **arguments)
@@ -82,3 +96,13 @@ class ToolOrchestrator:
             # 5. Disarm Interim Bridge on completion
             if self.interim_bridge:
                 self.interim_bridge.on_tool_end()
+            if getattr(self, "on_status_callback", None):
+                try:
+                    self.on_status_callback({
+                        "type": "tool_status",
+                        "tool": tool_name,
+                        "status": "completed",
+                        "step": step_index,
+                    })
+                except Exception as e:
+                    logger.debug("Tool status callback notice (end): %s", e)

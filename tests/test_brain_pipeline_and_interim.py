@@ -141,6 +141,24 @@ class TestToolOrchestrator(unittest.TestCase):
         res_confirmed = orchestrator.execute_step("_test_high_risk_tool", {}, step_index=4, dual_key_confirmed=True)
         self.assertEqual(res_confirmed, "Danger executed")
 
+    def test_tool_status_callback_events(self):
+        events = []
+        def _callback(evt):
+            events.append(evt)
+
+        orchestrator = ToolOrchestrator(
+            taint_tracker=self.tracker,
+            on_status_callback=_callback,
+        )
+        res = orchestrator.execute_step("_test_echo_tool", {"text": "telemetry"}, step_index=1)
+        self.assertEqual(res, "Echo: telemetry")
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["status"], "running")
+        self.assertEqual(events[0]["tool"], "_test_echo_tool")
+        self.assertEqual(events[1]["status"], "completed")
+        self.assertEqual(events[1]["tool"], "_test_echo_tool")
+
 
 if __name__ == "__main__":
     unittest.main()
+

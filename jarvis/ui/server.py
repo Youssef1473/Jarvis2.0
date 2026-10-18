@@ -1294,7 +1294,23 @@ class JarvisUIService:
             )
             self._server = uvicorn.Server(config)
             logger.info(f"Starting Jarvis HUD Web Server at http://{self.host}:{self.port}...")
-            self._loop.run_until_complete(_serve_all())
+            try:
+                self._loop.run_until_complete(_serve_all())
+            finally:
+                try:
+                    pending = asyncio.all_tasks(self._loop)
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                except Exception:
+                    pass
+                try:
+                    self._loop.run_until_complete(self._loop.shutdown_asyncgens())
+                except Exception:
+                    pass
+                if not self._loop.is_closed():
+                    self._loop.close()
 
         self._thread = threading.Thread(target=_run_server, daemon=True, name="Jarvis-HUD-Server")
         self._thread.start()
@@ -1305,7 +1321,7 @@ class JarvisUIService:
         if self._server:
             self._server.should_exit = True
         if self._thread:
-            self._thread.join(timeout=1.0)
+            self._thread.join(timeout=2.0)
             self._thread = None
         self._server = None
         WorkstationMetricsCollector.shutdown_nvml()

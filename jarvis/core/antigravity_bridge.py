@@ -10,9 +10,10 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 from jarvis.audio.prosodic_chunker import TwoGearProsodicChunker
 from jarvis.core.stream_tool_parser import NonceGuardedStreamParser, ParsedToolCall
@@ -135,19 +136,76 @@ class AntigravityDaemon:
         except Exception as e:
             logger.debug("Workspace hygiene purge notice: %s", e)
 
-    @staticmethod
-    def _iter_unbuffered_lines(proc: subprocess.Popen):
+    @classmethod
+    def _iter_unbuffered_lines(
+        cls,
+        proc: subprocess.Popen,
+        timeout: Optional[float] = None,
+        initial_epoch: Optional[int] = None,
+    ) -> Generator[str, None, None]:
         """Yields lines from proc.stdout with unbuffered OS reads if available, or readline fallback."""
+        is_windows = sys.platform == "win32"
+        pipe_handle = None
         raw_fd = None
         if proc and proc.stdout and hasattr(proc.stdout, "fileno"):
             try:
-                fd = proc.stdout.fileno()
-                if isinstance(fd, int) and fd >= 0:
-                    raw_fd = fd
+                fd_cand = proc.stdout.fileno()
+                if isinstance(fd_cand, int) and fd_cand >= 0:
+                    raw_fd = fd_cand
+                    if is_windows:
+                        import msvcrt
+                        pipe_handle = msvcrt.get_osfhandle(raw_fd)
             except Exception:
+                pipe_handle = None
                 raw_fd = None
 
-        if raw_fd is not None:
+        if is_windows and pipe_handle is not None:
+            import ctypes
+            from ctypes import wintypes
+            from jarvis.core.cancellation import GLOBAL_EPOCH_STATE
+            kernel32 = ctypes.windll.kernel32
+            avail_bytes = wintypes.DWORD()
+            deadline = (time.perf_counter() + timeout) if timeout and timeout > 0 else None
+            buf = ""
+
+            while True:
+                if initial_epoch is not None and int(GLOBAL_EPOCH_STATE.barge_in_epoch) != initial_epoch:
+                    logger.info("Antigravity unbuffered pipe read aborted by barge-in epoch increment.")
+                    break
+                if deadline is not None and time.perf_counter() > deadline:
+                    logger.warning("Antigravity unbuffered pipe read timed out after %.1fs", timeout)
+                    break
+
+                res = kernel32.PeekNamedPipe(pipe_handle, None, 0, None, ctypes.byref(avail_bytes), None)
+                if not res:
+                    if buf:
+                        yield buf
+                    break
+
+                n_avail = avail_bytes.value
+                if n_avail > 0:
+                    try:
+                        chunk = os.read(raw_fd, min(4096, n_avail))
+                        if not chunk:
+                            if buf:
+                                yield buf
+                            break
+                        buf += chunk.decode("utf-8", errors="replace")
+                        while "\n" in buf:
+                            line, buf = buf.split("\n", 1)
+                            yield line + "\n"
+                    except (OSError, ValueError):
+                        if buf:
+                            yield buf
+                        break
+                else:
+                    if proc.poll() is not None:
+                        if buf:
+                            yield buf
+                        break
+                    time.sleep(0.01)
+
+        elif raw_fd is not None:
             buf = ""
             while True:
                 try:
@@ -285,6 +343,10 @@ class AntigravityDaemon:
     def __del__(self):
         self.stop()
 
+    def abort_active_turn(self) -> None:
+        """Interrupts in-flight turn execution immediately and safely terminates child process."""
+        self.stop()
+
     def execute_turn(
         self,
         prompt: str,
@@ -338,11 +400,12 @@ class AntigravityDaemon:
             initial_epoch = int(GLOBAL_EPOCH_STATE.barge_in_epoch)
 
             try:
-                for line in self._iter_unbuffered_lines(self.proc):
+                for line in self._iter_unbuffered_lines(self.proc, timeout=timeout, initial_epoch=initial_epoch):
                     if timed_out:
                         break
                     if int(GLOBAL_EPOCH_STATE.barge_in_epoch) != initial_epoch:
                         logger.info("Antigravity turn stream aborted mid-turn by global cancel signal.")
+                        self.stop()
                         break
                     last_activity_time = time.perf_counter()
                     line_str = line.strip()
@@ -732,6 +795,20 @@ class AntigravityBridge:
                 except Exception:
                     pass
                 self._active_daemon = None
+
+    def abort_active_turn(self) -> None:
+        """Interrupts any in-flight persistent daemon turn across all daemons in the pool."""
+        with self._pool_lock:
+            if self._active_daemon:
+                try:
+                    self._active_daemon.abort_active_turn()
+                except Exception:
+                    pass
+            for d in list(self._daemon_pool.values()):
+                try:
+                    d.abort_active_turn()
+                except Exception:
+                    pass
 
     def __del__(self):
         self.stop()
