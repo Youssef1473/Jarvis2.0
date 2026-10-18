@@ -12,7 +12,9 @@ from jarvis.core.cognition.proactive_evi import (
     DeliveryModality,
     TelemetrySlice,
     CognitiveTwinEngine,
+    PrewarmedContextEntry,
 )
+from jarvis.speculative.engine import EpochVector
 
 
 class TestProactiveEVISuite(unittest.TestCase):
@@ -106,6 +108,53 @@ class TestProactiveEVISuite(unittest.TestCase):
 
         self.assertIn('<live_telemetry_envelope state="DEEP_FLOW"', envelope)
         self.assertIn("Directive: Sir is in deep engineering flow.", envelope)
+
+    def test_speculative_prewarm_option_a_gating(self):
+        """Verifies evaluate_speculative_prewarm approves silent pre-warming when utility exceeds threshold."""
+        # Standard routine state
+        self.engine.state = CognitiveState.ROUTINE_ADMIN
+        v = EpochVector(fs_usn_epoch=1, git_head_crc=100, terminal_seq=2, active_hwnd=300)
+
+        # High utility & relevance -> approved for silent pre-warming
+        approved, score = self.engine.evaluate_speculative_prewarm(
+            utility=0.8,
+            relevance=0.8,
+            epoch_vector=v,
+            current_vector=v,
+        )
+        self.assertTrue(approved)
+        self.assertGreaterEqual(score, 0.25)
+        self.assertTrue(self.engine.should_prewarm_context(utility=0.8, relevance=0.8, epoch_vector=v, current_vector=v))
+
+    def test_speculative_prewarm_invalidation_on_epoch_mismatch(self):
+        """Verifies evaluate_speculative_prewarm disapproves when EpochVector is stale/incompatible."""
+        v_cached = EpochVector(fs_usn_epoch=1, git_head_crc=100, terminal_seq=2, active_hwnd=300)
+        v_current = EpochVector(fs_usn_epoch=2, git_head_crc=100, terminal_seq=2, active_hwnd=300)  # FS modified!
+
+        approved, score = self.engine.evaluate_speculative_prewarm(
+            utility=0.9,
+            relevance=0.9,
+            epoch_vector=v_cached,
+            current_vector=v_current,
+        )
+        self.assertFalse(approved)
+        self.assertEqual(score, 0.0)
+        self.assertFalse(self.engine.should_prewarm_context(epoch_vector=v_cached, current_vector=v_current))
+
+    def test_prewarmed_context_entry_validation(self):
+        """Verifies PrewarmedContextEntry.is_valid detects TOCTOU epoch drift."""
+        v1 = EpochVector(fs_usn_epoch=5, git_head_crc=99, terminal_seq=1, active_hwnd=500)
+        entry = PrewarmedContextEntry(
+            context_id="ast_summary:main.py",
+            data={"symbols": ["run", "shutdown"]},
+            epoch_vector=v1,
+        )
+
+        v_same = EpochVector(fs_usn_epoch=5, git_head_crc=99, terminal_seq=1, active_hwnd=500)
+        v_changed = EpochVector(fs_usn_epoch=5, git_head_crc=99, terminal_seq=2, active_hwnd=500)
+
+        self.assertTrue(entry.is_valid(v_same))
+        self.assertFalse(entry.is_valid(v_changed))
 
 
 if __name__ == "__main__":

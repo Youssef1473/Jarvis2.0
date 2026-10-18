@@ -124,6 +124,7 @@ class AudioRingBuffer:
         # Monotonic barge-in epochs for lock-free epoch-based truncation
         self._barge_in_epoch = 0
         self._consumer_epoch = 0
+        self._ramp_temp = np.zeros(self.ramp_samples, dtype=np.float32)
 
     def barge_in(self) -> None:
         """Signals clickless barge-in interruption.
@@ -134,6 +135,15 @@ class AudioRingBuffer:
         """
         with self._lock:
             self._barge_in_epoch += 1
+
+    def stop(self) -> None:
+        """Instantly terminates playback, advances barge-in epoch, and zeroes indices in <1us."""
+        with self._lock:
+            self._barge_in_epoch += 1
+            self._write_pos = 0
+            self._read_pos = 0
+            self._available = 0
+            self._consumer_epoch = self._barge_in_epoch
 
     def write(
         self,
@@ -194,7 +204,7 @@ class AudioRingBuffer:
             self._available += n
             return n
 
-    def read(self, frames: int) -> Tuple[np.ndarray, int]:
+    def read(self, frames: int, out: Optional[np.ndarray] = None) -> Tuple[np.ndarray, int]:
         """Reads up to `frames` audio samples from the buffer.
 
         Returns a tuple of (samples_array, actual_samples_read).
@@ -202,9 +212,14 @@ class AudioRingBuffer:
         If barge-in was signaled, applies a 2.5ms cos^2 fade-out ramp to current audio
         and flushes the buffer in <1us, preventing speaker pop transients.
         """
-        out = np.zeros(frames, dtype=np.float32)
+        if out is None:
+            out_buf = np.zeros(frames, dtype=np.float32)
+        else:
+            out_buf = out
+            out_buf.fill(0.0)
+
         if frames <= 0:
-            return out, 0
+            return out_buf, 0
 
         with self._lock:
             # Check for pending barge-in signal
@@ -213,42 +228,41 @@ class AudioRingBuffer:
                 if self._available > 0:
                     ramp_len = min(frames, self._available, self.ramp_samples)
                     part1 = min(ramp_len, self.capacity - self._read_pos)
-                    temp_buf = np.zeros(ramp_len, dtype=np.float32)
-                    temp_buf[:part1] = self._buffer[self._read_pos : self._read_pos + part1]
+                    self._ramp_temp[:part1] = self._buffer[self._read_pos : self._read_pos + part1]
                     part2 = ramp_len - part1
                     if part2 > 0:
-                        temp_buf[part1:ramp_len] = self._buffer[:part2]
+                        self._ramp_temp[part1:ramp_len] = self._buffer[:part2]
 
                     rolled = apply_zero_crossing_cos2_rolloff(
-                        temp_buf, fade_len=self.ramp_samples, max_zc_search=48
+                        self._ramp_temp[:ramp_len], fade_len=self.ramp_samples, max_zc_search=48
                     )
-                    out[:ramp_len] = rolled[:ramp_len]
+                    out_buf[:ramp_len] = rolled[:ramp_len]
                     if ramp_len < frames:
-                        out[ramp_len:].fill(0.0)
+                        out_buf[ramp_len:].fill(0.0)
                     actual_read = ramp_len
                 else:
-                    out.fill(0.0)
+                    out_buf.fill(0.0)
                     actual_read = 0
 
                 # Atomically flush remaining ring buffer
                 self._write_pos = 0
                 self._read_pos = 0
                 self._available = 0
-                return out, actual_read
+                return out_buf, actual_read
 
             to_read = min(frames, self._available)
             if to_read == 0:
-                return out, 0
+                return out_buf, 0
 
             part1 = min(to_read, self.capacity - self._read_pos)
-            out[:part1] = self._buffer[self._read_pos : self._read_pos + part1]
+            out_buf[:part1] = self._buffer[self._read_pos : self._read_pos + part1]
             part2 = to_read - part1
             if part2 > 0:
-                out[part1:to_read] = self._buffer[:part2]
+                out_buf[part1:to_read] = self._buffer[:part2]
 
             self._read_pos = (self._read_pos + to_read) % self.capacity
             self._available -= to_read
-            return out, to_read
+            return out_buf, to_read
 
     def clear(self) -> None:
         """Instantly flushes the buffer in <1us for zero-latency reset."""

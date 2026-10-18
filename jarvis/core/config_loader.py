@@ -30,6 +30,14 @@ def load_config(config_path: Path | None = None) -> Dict[str, Any]:
     return config
 
 
+def get_database_path(config: Dict[str, Any] | None = None) -> Path:
+    """Retrieves the unified canonical database path (data/jarvis_memory.db)."""
+    cfg = config if config is not None else load_config()
+    base_dir = Path(cfg.get("_base_dir", BASE_DIR))
+    db_rel = cfg.get("memory", {}).get("db_path", "data/jarvis_memory.db")
+    return (base_dir / db_rel).resolve()
+
+
 def get_gemini_api_key() -> str:
     """Retrieves Google Gemini API key from environment."""
     key = os.getenv("GEMINI_API_KEY", "").strip()

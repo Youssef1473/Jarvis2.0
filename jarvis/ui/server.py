@@ -65,7 +65,7 @@ def resolve_safe_photo_path(photo_id: str, photos_dir: Optional[Path] = None) ->
 
     if photos_dir is None:
         try:
-            from jarvis.core.skills.photo_manager import PHOTOS_DIR
+            from jarvis.skills.photo_manager import PHOTOS_DIR
             base_photos_dir = Path(PHOTOS_DIR).resolve()
         except Exception:
             base_photos_dir = Path("data/photos").resolve()
@@ -377,7 +377,7 @@ class TelemetryConnectionManager:
         return set(self._clients.keys())
 
     async def connect(self, websocket: WebSocket) -> bool:
-        """Enforces 8-subscriber connection ceiling and binds an isolated Queue(maxsize=1)."""
+        """Enforces 8-subscriber connection ceiling and binds an isolated Queue(maxsize=2)."""
         async with self._lock:
             if len(self._clients) >= self.max_clients:
                 logger.warning("HUD WebSocket connection rejected: max client ceiling (%d) reached.", self.max_clients)
@@ -385,7 +385,7 @@ class TelemetryConnectionManager:
                 return False
 
             await websocket.accept()
-            queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+            queue: asyncio.Queue = asyncio.Queue(maxsize=2)
             self._clients[websocket] = queue
             task = asyncio.create_task(self._client_sender_worker(websocket, queue))
             self._sender_tasks[websocket] = task
@@ -402,11 +402,14 @@ class TelemetryConnectionManager:
             logger.info("HUD WebSocket client disconnected (Total: %d)", len(self._clients))
 
     async def _client_sender_worker(self, websocket: WebSocket, queue: asyncio.Queue):
-        """Dedicated coroutine per client: drains Queue(maxsize=1) and writes to socket."""
+        """Dedicated coroutine per client: drains Queue(maxsize=2) and writes to socket."""
         try:
             while True:
-                payload_str = await queue.get()
-                await websocket.send_text(payload_str)
+                payload = await queue.get()
+                if isinstance(payload, bytes):
+                    await websocket.send_bytes(payload)
+                else:
+                    await websocket.send_text(payload)
                 queue.task_done()
         except (WebSocketDisconnect, asyncio.CancelledError):
             pass
@@ -469,15 +472,17 @@ class TelemetryConnectionManager:
             await self.disconnect(ws)
 
     async def broadcast_binary(self, data: bytes):
-        """Broadcasts binary DSP frames directly to connected WebSocket subscribers."""
-        dead = []
-        for ws in list(self._clients.keys()):
+        """Broadcasts binary DSP frames to connected WebSocket subscribers via bounded queue."""
+        for queue in list(self._clients.values()):
+            if queue.full():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
             try:
-                await ws.send_bytes(data)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            await self.disconnect(ws)
+                queue.put_nowait(data)
+            except asyncio.QueueFull:
+                pass
 
 
 
@@ -547,7 +552,7 @@ class JarvisUIService:
     async def _handle_photos_list(self, request):
         """Lists archived photos from SQLite memory for HUD photo matrix."""
         import sqlite3
-        from jarvis.core.skills.photo_manager import DB_PATH
+        from jarvis.skills.photo_manager import DB_PATH
         try:
             def _query_photos():
                 conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
@@ -655,18 +660,39 @@ class JarvisUIService:
             category = request.query_params.get("category") or None
             limit = int(request.query_params.get("limit") or 150)
 
+            default_nodes = {
+                "total": 0,
+                "counts": {"facts": 0, "preferences": 0, "documents": 0, "lessons": 0},
+                "facts": [],
+                "preferences": [],
+                "documents": [],
+                "lessons": [],
+            }
             if hasattr(mem, "get_all_memory_nodes"):
-                nodes = mem.get_all_memory_nodes(category=category, search=search, limit=limit)
+                try:
+                    res = mem.get_all_memory_nodes(category=category, search=search, limit=limit)
+                    if isinstance(res, dict):
+                        for k in default_nodes:
+                            if k not in res:
+                                res[k] = default_nodes[k]
+                        nodes = res
+                    else:
+                        nodes = default_nodes
+                except Exception:
+                    nodes = default_nodes
             else:
-                nodes = {
-                    "total": 0,
-                    "counts": {"facts": 0, "preferences": 0, "documents": 0, "lessons": 0},
-                    "facts": [],
-                    "preferences": [],
-                    "documents": [],
-                    "lessons": [],
-                }
-            return JSONResponse(nodes)
+                nodes = default_nodes
+
+            def _json_safe(obj):
+                if isinstance(obj, dict):
+                    return {str(k): _json_safe(v) for k, v in obj.items()}
+                elif isinstance(obj, (list, tuple)):
+                    return [_json_safe(x) for x in obj]
+                elif isinstance(obj, (int, float, str, bool)) or obj is None:
+                    return obj
+                return str(obj)
+
+            return JSONResponse(_json_safe(nodes))
         except Exception as e:
             logger.error("Error retrieving memory nodes: %s", e)
             return JSONResponse({"error": str(e)}, status_code=500)
@@ -722,7 +748,7 @@ class JarvisUIService:
                 cat = category or "general"
                 msg = mem.remember_fact(key, value, category=cat)
 
-            return JSONResponse({"status": "success", "message": msg, "key": key, "value": value})
+            return JSONResponse({"status": "success", "message": str(msg), "key": str(key), "value": str(value)})
         except Exception as e:
             logger.error("Error updating memory node: %s", e)
             return JSONResponse({"error": str(e)}, status_code=500)

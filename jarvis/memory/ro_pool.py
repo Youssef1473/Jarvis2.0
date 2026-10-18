@@ -52,6 +52,14 @@ class ReadOnlyConnectionPool:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only = ON;")
         conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA mmap_size = 268435456;")
+        conn.execute("PRAGMA busy_timeout = 5000;")
+        try:
+            import sqlite_vec
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+        except Exception:
+            pass
         return conn
 
     @contextlib.contextmanager
@@ -63,6 +71,18 @@ class ReadOnlyConnectionPool:
             self._local.connections = connections
 
         key = str(target.resolve())
+        is_temp = "tmp" in key.lower() or "temp" in key.lower() or target.name.startswith("test_")
+        if is_temp:
+            conn = self._create_connection(target)
+            try:
+                yield conn
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            return
+
         conn = connections.get(key)
         if conn is None:
             conn = self._create_connection(target)
@@ -83,6 +103,27 @@ class ReadOnlyConnectionPool:
                 except Exception:
                     pass
             connections.clear()
+
+    def close_db(self, db_path: Optional[Path | str] = None) -> None:
+        """Closes cached connection for a specific database path on calling thread."""
+        connections: dict[str, sqlite3.Connection] = getattr(self._local, "connections", None)
+        if connections:
+            target = Path(db_path or self.default_db_path)
+            key = str(target.resolve())
+            conn = connections.pop(key, None)
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    @classmethod
+    def reset_pool(cls) -> None:
+        """Resets singleton instance."""
+        with cls._lock:
+            if cls._instance is not None:
+                cls._instance.close_current_thread()
+                cls._instance = None
 
 
 def get_ro_connection(db_path: Optional[Path | str] = None):

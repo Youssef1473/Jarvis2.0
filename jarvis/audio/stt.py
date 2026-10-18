@@ -126,6 +126,29 @@ class SpeechToText:
         device = self.preferred_device
         compute_type = self.compute_type
 
+        # Dynamic VRAM arbiter check for GPU allocation and compute type adaptation
+        if device == "cuda":
+            try:
+                from jarvis.skills.nvml_dxgi_vram_arbiter import audit_vram_and_thermal_budget
+                vram_info = audit_vram_and_thermal_budget(reclaim_if_pressured=True)
+                if vram_info.get("status") == "ok":
+                    free_mb = vram_info.get("vram_free_mb", 4000.0)
+                    if free_mb < 350.0:
+                        logger.warning(
+                            "VRAM critically low (%.1f MB free < 350MB). Falling back Whisper STT to CPU (int8).",
+                            free_mb
+                        )
+                        device = "cpu"
+                        compute_type = "int8"
+                    elif free_mb < 700.0:
+                        logger.info(
+                            "VRAM constrained (%.1f MB free). Adapting Whisper compute_type to int8_float16.",
+                            free_mb
+                        )
+                        compute_type = "int8_float16"
+            except Exception as arb_err:
+                logger.debug("VRAM arbiter check note in STT init: %s", arb_err)
+
         # Try CUDA first if requested
         if device == "cuda":
             try:
@@ -135,6 +158,8 @@ class SpeechToText:
                 dummy_audio = np.zeros(800, dtype=np.float32)
                 _ = list(candidate_model.transcribe(dummy_audio, language="en", vad_filter=False)[0])
                 self.model = candidate_model
+                self.device = "cuda"
+                self.compute_type = compute_type
                 logger.info("Successfully validated faster-whisper on CUDA GPU.")
                 return
             except Exception as e:
@@ -144,6 +169,8 @@ class SpeechToText:
         try:
             logger.info(f"Loading faster-whisper '{self.model_size}' on CPU (int8, {self.cpu_threads} threads)...")
             self.model = WhisperModel(self.model_size, device="cpu", compute_type="int8", cpu_threads=self.cpu_threads)
+            self.device = "cpu"
+            self.compute_type = "int8"
             logger.info("Successfully loaded faster-whisper on CPU.")
         except Exception as e:
             logger.error(f"Failed to load faster-whisper on CPU: {e}")
@@ -235,6 +262,8 @@ class SpeechToText:
             try:
                 from faster_whisper import WhisperModel
                 self.model = WhisperModel(self.model_size, device="cpu", compute_type="int8", cpu_threads=self.cpu_threads)
+                self.device = "cpu"
+                self.compute_type = "int8"
                 segments, info = self.model.transcribe(
                     audio_to_transcribe,
                     beam_size=self.beam_size,

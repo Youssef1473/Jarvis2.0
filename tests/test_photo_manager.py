@@ -7,7 +7,7 @@ import time
 import unittest
 from PIL import Image
 
-from jarvis.core.skills.photo_manager import (
+from jarvis.skills.photo_manager import (
     save_photo,
     save_clipboard_photo,
     list_photos,

@@ -15,6 +15,7 @@ import time
 from typing import Optional
 
 from jarvis.context.flow_state_mirror import EnvironmentEpochTracker, ResourceScope
+from jarvis.speculative.engine import EnvironmentEpochTracker as SpeculativeEpochTracker
 
 logger = logging.getLogger("Jarvis.Context.FSWatcher")
 
@@ -105,6 +106,10 @@ class WorkspaceFilesystemWatcher:
                 )
                 if success and bytes_returned.value > 0:
                     EnvironmentEpochTracker.bump(ResourceScope.FILESYSTEM)
+                    try:
+                        SpeculativeEpochTracker.get_instance().bump_fs_epoch()
+                    except Exception:
+                        pass
                     logger.debug("Filesystem change detected in workspace. Epoch bumped.")
                 time.sleep(0.05)
 
@@ -122,6 +127,10 @@ class WorkspaceFilesystemWatcher:
                     current_mtime = os.stat(self.workspace_root).st_mtime
                     if last_mtime != 0.0 and current_mtime != last_mtime:
                         EnvironmentEpochTracker.bump(ResourceScope.FILESYSTEM)
+                        try:
+                            SpeculativeEpochTracker.get_instance().bump_fs_epoch()
+                        except Exception:
+                            pass
                     last_mtime = current_mtime
             except Exception:
                 pass

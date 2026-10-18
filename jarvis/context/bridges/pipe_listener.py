@@ -13,6 +13,7 @@ import time
 from typing import Optional
 
 from jarvis.context.flow_state_mirror import FlowStateMirror
+from jarvis.speculative.engine import EnvironmentEpochTracker as SpeculativeEpochTracker
 
 logger = logging.getLogger("Jarvis.Context.PipeListener")
 
@@ -68,6 +69,10 @@ class FlowStateBridgeListener:
                         selection_range=tuple(payload["selection"]) if "selection" in payload else None,
                     )
                 elif msg_type == "terminal_state":
+                    try:
+                        SpeculativeEpochTracker.get_instance().bump_terminal_seq()
+                    except Exception:
+                        pass
                     mirror.update_snapshot(
                         last_terminal_cmd=payload.get("cmd"),
                         last_exit_code=payload.get("exit_code"),

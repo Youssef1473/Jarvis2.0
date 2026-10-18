@@ -10,7 +10,7 @@ from enum import Enum
 import logging
 import math
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("Jarvis.Cognition.EVI")
 
@@ -181,4 +181,65 @@ class CognitiveTwinEngine:
             f"  Directive: {directive}\n"
             f"</live_telemetry_envelope>"
         )
+
+    def evaluate_speculative_prewarm(
+        self,
+        utility: float = 0.5,
+        relevance: float = 0.6,
+        epoch_vector: Optional[Any] = None,
+        current_vector: Optional[Any] = None,
+    ) -> Tuple[bool, float]:
+        """Evaluates whether to speculatively pre-warm read-only context under Option A.
+        Returns (is_approved, score). Disapproves if epochs are incompatible or benefit too low.
+        """
+        if epoch_vector is not None and current_vector is not None:
+            if hasattr(epoch_vector, "is_compatible_with"):
+                if not epoch_vector.is_compatible_with(current_vector):
+                    return False, 0.0
+        benefit = utility * relevance
+        costs = self.INTERRUPTION_COST.get(self.state, self.INTERRUPTION_COST[CognitiveState.ROUTINE_ADMIN])
+        silent_cost = costs.get(DeliveryModality.SILENT_ACT, 0.01)
+        net_score = benefit - silent_cost
+        is_approved = benefit >= 0.25
+        return is_approved, net_score
+
+    def should_prewarm_context(
+        self,
+        utility: float = 0.5,
+        relevance: float = 0.6,
+        epoch_vector: Optional[Any] = None,
+        current_vector: Optional[Any] = None,
+    ) -> bool:
+        """Convenience predicate for TOCTOU-guarded read-only context pre-warming."""
+        approved, _ = self.evaluate_speculative_prewarm(
+            utility=utility,
+            relevance=relevance,
+            epoch_vector=epoch_vector,
+            current_vector=current_vector,
+        )
+        return approved
+
+
+@dataclass
+class PrewarmedContextEntry:
+    """Represents a speculatively pre-warmed context object with TOCTOU epoch vector validation."""
+    context_id: str
+    data: Any
+    epoch_vector: Any
+    created_at: float = field(default_factory=time.time)
+
+    def is_valid(self, current_vector: Any) -> bool:
+        if hasattr(self.epoch_vector, "is_compatible_with"):
+            return self.epoch_vector.is_compatible_with(current_vector)
+        return True
+
+
+__all__ = [
+    "CognitiveState",
+    "DeliveryModality",
+    "TelemetrySlice",
+    "CognitiveTwinEngine",
+    "PrewarmedContextEntry",
+]
+
 

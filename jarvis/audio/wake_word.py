@@ -115,6 +115,11 @@ class WakeWordDetector:
                     for model_name, score in prediction.items():
                         if score >= self.threshold:
                             logger.info(f"Wake word detected! Score: {score:.3f}")
+                            try:
+                                from jarvis.audio.cancellation import trigger_speech_barge_in
+                                trigger_speech_barge_in()
+                            except Exception:
+                                pass
                             self.model.reset()
                             self._preroll_buffer.clear()
                             self._active_chunks_remaining = 0

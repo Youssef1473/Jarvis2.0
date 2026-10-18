@@ -127,6 +127,13 @@ class TextToSpeech:
         self._sapi = None
         self._init_sapi()
 
+        # Register audio flush callback for immediate barge-in interruption
+        try:
+            from jarvis.audio.cancellation import register_audio_flush_callback
+            register_audio_flush_callback(self.stop)
+        except Exception:
+            pass
+
     def _init_kokoro(self):
         """Initializes Kokoro neural engine with constrained CPU threading to prevent CPU spikes."""
         try:
@@ -165,7 +172,25 @@ class TextToSpeech:
 
                 available = rt.get_available_providers()
                 providers = []
-                if "CUDAExecutionProvider" in available:
+                use_cuda = "CUDAExecutionProvider" in available
+
+                # Dynamic VRAM arbiter check for RTX 3050 4GB ceiling
+                if use_cuda:
+                    try:
+                        from jarvis.skills.nvml_dxgi_vram_arbiter import audit_vram_and_thermal_budget
+                        vram_info = audit_vram_and_thermal_budget(reclaim_if_pressured=True)
+                        if vram_info.get("status") == "ok":
+                            free_mb = vram_info.get("vram_free_mb", 4000.0)
+                            if free_mb < 600.0:
+                                logger.warning(
+                                    "RTX 3050 VRAM heavily pressured (%.1f MB free < 600MB). Falling back Kokoro TTS to CPUExecutionProvider.",
+                                    free_mb
+                                )
+                                use_cuda = False
+                    except Exception as arb_err:
+                        logger.debug("VRAM arbiter check note in Kokoro init: %s", arb_err)
+
+                if use_cuda:
                     cuda_opts = {
                         "device_id": 0,
                         "arena_extend_strategy": "kNextPowerOfTwo",
@@ -593,6 +618,8 @@ class TextToSpeech:
                                     pass
                         except Exception as e:
                             logger.error(f"Kokoro synth error on '{chunk}': {e}")
+                    if not self._stop_event.is_set() and self._stream_active:
+                        self._spoken_clauses.append(sentence)
 
             # Stage 2: Hardware WASAPI / sounddevice Output Stream
             use_stream_callback = True

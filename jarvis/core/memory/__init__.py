@@ -1,10 +1,12 @@
 """Long-term persistent memory management and adaptive self-learning for Jarvis 2.0."""
+import asyncio
 import contextlib
 import datetime
 import json
 import logging
 import math
 import os
+import queue
 from collections import Counter
 from pathlib import Path
 import re
@@ -226,6 +228,109 @@ class VectorMemoryEngine:
         return OnnxEmbeddingEngine.get_instance().get_backend_name()
 
 
+class SingleWriterActor:
+    """Serializes all write operations (INSERT, UPDATE, DELETE) through an asynchronous queue worker.
+    Guarantees zero SQLITE_BUSY write lock contention and atomic transaction sequencing.
+    """
+
+    def __init__(self, db_path: Path):
+        self.db_path = Path(db_path)
+        self._queue: queue.Queue[Optional[Tuple[Callable[[sqlite3.Connection], Any], threading.Event, list, list]]] = queue.Queue()
+        self._running = True
+        self._thread = threading.Thread(target=self._worker_loop, daemon=True, name="JarvisSingleWriter")
+        self._thread.start()
+
+    def _create_conn(self) -> sqlite3.Connection:
+        c = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        c.execute("PRAGMA journal_mode=WAL;")
+        c.execute("PRAGMA synchronous=NORMAL;")
+        c.execute("PRAGMA busy_timeout=5000;")
+        c.execute("PRAGMA mmap_size=268435456;")
+        c.execute("PRAGMA cache_size=-64000;")
+        c.execute("PRAGMA temp_store=MEMORY;")
+        c.row_factory = sqlite3.Row
+        try:
+            import sqlite_vec
+            c.enable_load_extension(True)
+            sqlite_vec.load(c)
+        except Exception:
+            pass
+        return c
+
+    def _worker_loop(self) -> None:
+        key = str(self.db_path.resolve())
+        is_temp = "tmp" in key.lower() or "temp" in key.lower() or self.db_path.name.startswith("test_")
+
+        conn: Optional[sqlite3.Connection] = None
+        if not is_temp:
+            try:
+                conn = self._create_conn()
+            except Exception as e:
+                logger.debug("SingleWriterActor persistent conn init note: %s", e)
+
+        while self._running:
+            try:
+                item = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if item is None:
+                break
+
+            func, done_evt, res_box, err_box = item
+            local_conn = conn
+            opened_temp = False
+            if local_conn is None:
+                try:
+                    local_conn = self._create_conn()
+                    opened_temp = True
+                except Exception as ce:
+                    err_box.append(ce)
+                    done_evt.set()
+                    self._queue.task_done()
+                    continue
+
+            try:
+                with local_conn:
+                    result = func(local_conn)
+                res_box.append(result)
+            except Exception as e:
+                err_box.append(e)
+            finally:
+                if opened_temp and local_conn is not None:
+                    try:
+                        local_conn.close()
+                    except Exception:
+                        pass
+                done_evt.set()
+                self._queue.task_done()
+
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def execute_write(self, func: Callable[[sqlite3.Connection], Any], timeout: float = 30.0) -> Any:
+        done_evt = threading.Event()
+        res_box: list = []
+        err_box: list = []
+        self._queue.put((func, done_evt, res_box, err_box))
+        if not done_evt.wait(timeout=timeout):
+            raise TimeoutError("Single-writer queue timeout exceeded")
+        if err_box:
+            raise err_box[0]
+        return res_box[0] if res_box else None
+
+    async def execute_write_async(self, func: Callable[[sqlite3.Connection], Any]) -> Any:
+        return await asyncio.to_thread(self.execute_write, func)
+
+    def stop(self) -> None:
+        self._running = False
+        self._queue.put(None)
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+
 class MemoryManager:
     """Stores user preferences, facts, tasks, and conversation history in SQLite with adaptive learning."""
 
@@ -237,34 +342,66 @@ class MemoryManager:
         self._learning_in_flight = False
         self._context_summary_lock = threading.Lock()
         self._context_summary_cache: Optional[str] = None
+        self._write_lock = threading.RLock()
         base_dir = Path(config.get("_base_dir", "."))
         db_rel_path = memory_config.get("db_path", "data/jarvis_memory.db")
         self.db_path = base_dir / db_rel_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.vector_engine = VectorMemoryEngine()
+        self._writer_actor = SingleWriterActor(self.db_path)
         self._init_db()
 
     @contextlib.contextmanager
     def _get_connection(self):
-        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=5000;")
-        conn.execute("PRAGMA mmap_size=268435456;")
-        conn.execute("PRAGMA cache_size=-64000;")
-        conn.execute("PRAGMA temp_store=MEMORY;")
-        conn.row_factory = sqlite3.Row
+        with self._write_lock:
+            conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("PRAGMA busy_timeout=5000;")
+            conn.execute("PRAGMA mmap_size=268435456;")
+            conn.execute("PRAGMA cache_size=-64000;")
+            conn.execute("PRAGMA temp_store=MEMORY;")
+            conn.row_factory = sqlite3.Row
+            try:
+                import sqlite_vec
+                conn.enable_load_extension(True)
+                sqlite_vec.load(conn)
+            except Exception:
+                pass
+            try:
+                with conn:
+                    yield conn
+            finally:
+                conn.close()
+
+    @contextlib.contextmanager
+    def _get_ro_connection(self):
+        """Thread-local read-only SQLite connection from ReadOnlyConnectionPool."""
+        from jarvis.memory.ro_pool import get_ro_connection
+        with get_ro_connection(self.db_path) as conn:
+            yield conn
+
+    def execute_write(self, func: Callable[[sqlite3.Connection], Any], timeout: float = 30.0) -> Any:
+        """Executes a write operation serialized through the Single-Writer Actor queue."""
+        return self._writer_actor.execute_write(func, timeout=timeout)
+
+    async def execute_write_async(self, func: Callable[[sqlite3.Connection], Any]) -> Any:
+        """Asynchronously dispatches a write operation through the Single-Writer Actor queue."""
+        return await self._writer_actor.execute_write_async(func)
+
+    def close(self) -> None:
+        """Cleans up writer actor and read-only pool connections."""
+        if hasattr(self, "_writer_actor") and self._writer_actor:
+            self._writer_actor.stop()
         try:
-            import sqlite_vec
-            conn.enable_load_extension(True)
-            sqlite_vec.load(conn)
+            from jarvis.memory.ro_pool import ReadOnlyConnectionPool
+            ReadOnlyConnectionPool.get_instance().close_db(self.db_path)
         except Exception:
             pass
-        try:
-            with conn:
-                yield conn
-        finally:
-            conn.close()
+
+    def __del__(self) -> None:
+        self.close()
+
 
     def _init_db(self):
         """Initializes database schema."""
@@ -775,7 +912,7 @@ class MemoryManager:
         """Queries currently active knowledge edges (valid_until IS NULL) with ACT-R temporal activation."""
         import time
         now = time.time()
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             query = "SELECT * FROM knowledge_edges WHERE valid_until IS NULL"
             params: List[Any] = []
@@ -797,16 +934,22 @@ class MemoryManager:
                 decay_rate = float(r.get("decay_lambda", 0.01))
                 r["temporal_score"] = round(float(r.get("confidence", 1.0)) * math.exp(-decay_rate * delta_days), 4)
 
-            # Update access tracking
-            if rows:
-                ids = [r["edge_id"] for r in rows]
-                placeholders = ",".join("?" * len(ids))
-                cursor.execute(
-                    f"UPDATE knowledge_edges SET last_accessed = ?, access_count = access_count + 1 WHERE edge_id IN ({placeholders})",
-                    [now] + ids
-                )
+        # Update access tracking via writer connection
+        if rows:
+            try:
+                with self._get_connection() as wconn:
+                    wcursor = wconn.cursor()
+                    ids = [r["edge_id"] for r in rows]
+                    placeholders = ",".join("?" * len(ids))
+                    wcursor.execute(
+                        f"UPDATE knowledge_edges SET last_accessed = ?, access_count = access_count + 1 WHERE edge_id IN ({placeholders})",
+                        [now] + ids
+                    )
+                    wconn.commit()
+            except Exception as e:
+                logger.debug("knowledge_edges access tracking update notice: %s", e)
 
-            return sorted(rows, key=lambda x: x.get("temporal_score", 0.0), reverse=True)
+        return sorted(rows, key=lambda x: x.get("temporal_score", 0.0), reverse=True)
 
     def record_habit_transition(
         self,
@@ -845,7 +988,7 @@ class MemoryManager:
         h = hour_bucket if hour_bucket is not None else now_dt.hour
         w = is_weekend if is_weekend is not None else (1 if now_dt.weekday() >= 5 else 0)
 
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT dst_event, decayed_weight, sample_count
@@ -948,7 +1091,7 @@ class MemoryManager:
 
     def get_fact(self, key: str) -> Optional[str]:
         """Retrieves a specific stored fact."""
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT value FROM facts WHERE key = ?", (key.lower().strip(),))
             row = cursor.fetchone()
@@ -982,7 +1125,7 @@ class MemoryManager:
     def get_user_preferences(self) -> Dict[str, str]:
         """Retrieves all core user preferences as a key-value dictionary."""
         result: Dict[str, str] = {}
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             try:
                 cursor.execute("SELECT pref_key, pref_value FROM user_preferences ORDER BY pref_key")
@@ -1027,7 +1170,7 @@ class MemoryManager:
         sanitized = sanitize_fts5_query(query)
         if sanitized:
             try:
-                with self._get_connection() as conn:
+                with self._get_ro_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
                         SELECT f.category, f.key, f.value
@@ -1044,7 +1187,7 @@ class MemoryManager:
 
         # Fallback to standard LIKE matching
         q = f"%{query.lower().strip()}%"
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT category, key, value FROM facts
@@ -1055,7 +1198,7 @@ class MemoryManager:
 
     def get_all_facts(self) -> List[Dict[str, str]]:
         """Retrieves all stored facts."""
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT category, key, value FROM facts ORDER BY category, key")
             return [dict(row) for row in cursor.fetchall()]
@@ -1067,7 +1210,7 @@ class MemoryManager:
             import sqlite_vec
             q_vec = self.vector_engine.embed_query(query)
             q_blob = sqlite_vec.serialize_float32(q_vec)
-            with self._get_connection() as conn:
+            with self._get_ro_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT f.category, f.key, f.value, v.distance
@@ -1133,7 +1276,7 @@ class MemoryManager:
         limit: int = 150,
     ) -> Dict[str, Any]:
         """Retrieves structured memory nodes across facts, preferences, documents, and episodic lessons."""
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
 
             facts_list = []
@@ -1287,7 +1430,7 @@ class MemoryManager:
 
     def get_pending_tasks(self) -> List[Dict[str, Any]]:
         """Retrieves all incomplete tasks."""
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id, description, due_date, created_at FROM tasks WHERE is_completed = 0")
             return [dict(row) for row in cursor.fetchall()]
@@ -1335,7 +1478,7 @@ class MemoryManager:
 
     def get_calendar_events(self, include_cancelled: bool = False) -> List[Dict[str, Any]]:
         """Retrieves active calendar events."""
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             query = "SELECT id, title, start_time, end_time, location, created_at FROM calendar_events WHERE is_cancelled = 0 ORDER BY start_time"
             if include_cancelled:
@@ -1412,7 +1555,7 @@ class MemoryManager:
 
     def get_staged_documents(self, status: str = "PENDING_CONTEXT") -> List[Dict[str, Any]]:
         """Retrieves documents waiting in the staged queue."""
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             if status == "ALL":
                 cursor.execute("SELECT * FROM staged_documents ORDER BY id DESC")
@@ -1422,7 +1565,7 @@ class MemoryManager:
 
     def get_staged_document(self, doc_id: Optional[int] = None, filename: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Finds a specific staged document or the most recent pending one."""
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             if doc_id:
                 cursor.execute("SELECT * FROM staged_documents WHERE id = ?", (doc_id,))
@@ -1483,7 +1626,7 @@ class MemoryManager:
         sanitized = sanitize_fts5_query(query)
         if sanitized:
             try:
-                with self._get_connection() as conn:
+                with self._get_ro_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
                         SELECT d.id, d.title, d.category, d.summary, d.file_path, d.created_at
@@ -1501,7 +1644,7 @@ class MemoryManager:
 
         # Fallback to standard LIKE matching
         q = f"%{query.lower().strip()}%"
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id, title, category, summary, file_path, created_at
@@ -1517,7 +1660,7 @@ class MemoryManager:
             import sqlite_vec
             q_vec = self.vector_engine.embed_query(query)
             q_blob = sqlite_vec.serialize_float32(q_vec)
-            with self._get_connection() as conn:
+            with self._get_ro_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT d.id, d.title, d.category, d.summary, d.file_path, d.created_at, dv.distance
@@ -1550,7 +1693,7 @@ class MemoryManager:
             logger.debug("sqlite-vec documents KNN search fallback: %s", e)
 
         # In-Memory TF-IDF Fallback
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id, title, category, summary, file_path, created_at, raw_content FROM documents ORDER BY id DESC LIMIT 100")
             docs = [dict(r) for r in cursor.fetchall()]
@@ -1595,7 +1738,7 @@ class MemoryManager:
 
     def get_document_by_id(self, doc_id: int) -> Optional[Dict[str, Any]]:
         """Retrieves a single archived document by its primary key ID."""
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id, title, category, summary, raw_content, file_path, created_at
@@ -1606,7 +1749,7 @@ class MemoryManager:
 
     def get_recent_documents(self, limit: int = 5) -> List[Dict[str, Any]]:
         """Retrieves recently archived documents."""
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id, title, category, summary, raw_content, file_path, created_at
@@ -1643,7 +1786,7 @@ class MemoryManager:
 
     def get_saved_calendars(self) -> List[Dict[str, Any]]:
         """Retrieves all calendar and schedule documents archived in memory."""
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id, title, category, summary, file_path, created_at
@@ -1694,7 +1837,7 @@ class MemoryManager:
 
     def get_recent_interactions(self, limit: int = 8) -> List[Dict[str, Any]]:
         """Retrieves the most recent N interaction turns in chronological order."""
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT user_input, jarvis_reply, tool_calls, created_at
@@ -1710,7 +1853,7 @@ class MemoryManager:
         sanitized = sanitize_fts5_query(query)
         if sanitized:
             try:
-                with self._get_connection() as conn:
+                with self._get_ro_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
                         SELECT i.id, i.user_input, i.jarvis_reply, i.tool_calls, i.created_at
@@ -1747,14 +1890,14 @@ class MemoryManager:
         """
         params.append(limit)
 
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(sql, tuple(params))
             return [dict(r) for r in cursor.fetchall()]
 
     def semantic_search_interactions(self, query: str, top_k: int = 5, min_score: float = 0.10) -> List[Dict[str, Any]]:
         """Searches past conversation history using semantic vector similarity."""
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id, user_input, jarvis_reply, tool_calls, created_at
@@ -2012,7 +2155,7 @@ class MemoryManager:
         sanitized = sanitize_fts5_query(query)
         if sanitized:
             try:
-                with self._get_connection() as conn:
+                with self._get_ro_connection() as conn:
                     cursor = conn.cursor()
                     sql = """
                         SELECT l.id, l.tool_name, l.trigger_context, l.failure_signature, l.lesson, l.hit_count
@@ -2037,7 +2180,7 @@ class MemoryManager:
             import sqlite_vec
             q_vec = self.vector_engine.embed_query(query)
             q_blob = sqlite_vec.serialize_float32(q_vec)
-            with self._get_connection() as conn:
+            with self._get_ro_connection() as conn:
                 cursor = conn.cursor()
                 sql = """
                     SELECT l.id, l.tool_name, l.trigger_context, l.failure_signature, l.lesson, l.hit_count, lv.distance

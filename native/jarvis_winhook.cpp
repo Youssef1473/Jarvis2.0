@@ -76,6 +76,11 @@ static void PushEventFrame(HWINEVENTHOOK hHook, DWORD event, HWND hwnd, LONG idO
     }
 
     uint64_t w_idx = g_pHeader->write_idx.load(std::memory_order_relaxed);
+    uint64_t r_idx = g_pHeader->read_idx.load(std::memory_order_acquire);
+    if (w_idx - r_idx >= RING_CAPACITY) {
+        // Drop frames safely if queue exceeds 1,024 events without allocating memory on callback thread
+        return;
+    }
     uint32_t slot = static_cast<uint32_t>(w_idx % RING_CAPACITY);
 
     WinEventFrame& frame = g_pFrames[slot];

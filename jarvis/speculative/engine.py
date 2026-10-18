@@ -18,11 +18,104 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from jarvis.context.flow_state_mirror import EnvironmentEpochTracker, ResourceScope
+from jarvis.context.flow_state_mirror import ResourceScope
 from jarvis.core.thread_affinity import init_speculative_worker_thread
 from jarvis.skills.base import SkillMetadata, SkillRegistry, SpeculationForbiddenError
 
 logger = logging.getLogger("Jarvis.Speculative.Engine")
+
+
+@dataclass(slots=True, frozen=True)
+class EpochVector:
+    fs_usn_epoch: int = 0
+    git_head_crc: int = 0
+    terminal_seq: int = 0
+    active_hwnd: int = 0
+
+    def is_compatible_with(self, current: "EpochVector") -> bool:
+        return (
+            self.fs_usn_epoch == current.fs_usn_epoch
+            and self.git_head_crc == current.git_head_crc
+            and self.terminal_seq == current.terminal_seq
+            and self.active_hwnd == current.active_hwnd
+        )
+
+
+class EnvironmentEpochTracker:
+    __slots__ = ("_fs_usn_epoch", "_git_head_crc", "_terminal_seq", "_active_hwnd")
+
+    _instance: Optional["EnvironmentEpochTracker"] = None
+    _lock = threading.Lock()
+
+    def __init__(self) -> None:
+        self._fs_usn_epoch: int = 0
+        self._git_head_crc: int = 0
+        self._terminal_seq: int = 0
+        self._active_hwnd: int = 0
+
+    @classmethod
+    def get_instance(cls) -> "EnvironmentEpochTracker":
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls()
+            return cls._instance
+
+    def bump_fs_epoch(self, usn: int | None = None) -> None:
+        self._fs_usn_epoch = int(usn) if usn is not None else (self._fs_usn_epoch + 1)
+
+    def update_git_head(self, head_ref: str) -> None:
+        digest = hashlib.blake2b(head_ref.encode("utf-8"), digest_size=4).digest()
+        self._git_head_crc = int.from_bytes(digest, "little")
+
+    def bump_terminal_seq(self) -> None:
+        self._terminal_seq += 1
+
+    def set_active_hwnd(self, hwnd: int) -> None:
+        self._active_hwnd = int(hwnd)
+
+    def snapshot(self) -> EpochVector:
+        return EpochVector(
+            fs_usn_epoch=self._fs_usn_epoch,
+            git_head_crc=self._git_head_crc,
+            terminal_seq=self._terminal_seq,
+            active_hwnd=self._active_hwnd,
+        )
+
+    def reset_instance(self) -> None:
+        self._fs_usn_epoch = 0
+        self._git_head_crc = 0
+        self._terminal_seq = 0
+        self._active_hwnd = 0
+
+    @classmethod
+    def bump(cls, scope: Any) -> int:
+        from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker
+        res = FlowEpochTracker.bump(scope)
+        inst = cls.get_instance()
+        scope_name = getattr(scope, "name", str(scope))
+        if "FILESYSTEM" in scope_name:
+            inst.bump_fs_epoch()
+        if "TERMINAL" in scope_name:
+            inst.bump_terminal_seq()
+        if "GIT" in scope_name:
+            inst.update_git_head(str(time.time_ns()))
+        return res
+
+    @classmethod
+    def get_epoch(cls, scope: Any) -> int:
+        from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker
+        return FlowEpochTracker.get_epoch(scope)
+
+    @classmethod
+    def get_snapshot(cls) -> Dict[Any, int]:
+        from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker
+        return FlowEpochTracker.get_snapshot()
+
+    @classmethod
+    def reset(cls) -> None:
+        from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker
+        FlowEpochTracker.reset()
+        cls.get_instance().reset_instance()
 
 
 @dataclass(frozen=True)
@@ -38,6 +131,7 @@ class ValidationSnapshot:
     """Dual-stamp snapshot of environment epochs and tracked file stats."""
     scope_epochs: Dict[ResourceScope, int]
     file_stamps: Tuple[FileStatStamp, ...]
+    epoch_vector: Optional[EpochVector] = None
 
 
 @dataclass
@@ -87,8 +181,9 @@ class SpeculativeExecutionEngine:
     _instance: Optional[SpeculativeExecutionEngine] = None
     _lock = threading.Lock()
 
-    def __init__(self, max_workers: int = 4):
+    def __init__(self, max_workers: int = 4, epoch_tracker: Optional[EnvironmentEpochTracker] = None):
         self.max_workers = max_workers
+        self._epoch_tracker = epoch_tracker or EnvironmentEpochTracker.get_instance()
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="SpeculativeWorker",
@@ -97,6 +192,10 @@ class SpeculativeExecutionEngine:
         self._active_entries: Dict[str, SpeculativeEntry] = {}
         self._entries_lock = threading.Lock()
         self.metrics = ExecutionMetrics()
+
+    @property
+    def epoch_tracker(self) -> EnvironmentEpochTracker:
+        return self._epoch_tracker
 
     @classmethod
     def get_instance(cls) -> SpeculativeExecutionEngine:
@@ -107,6 +206,7 @@ class SpeculativeExecutionEngine:
 
     def _capture_validation_snapshot(self, meta: SkillMetadata, bound_args: Dict[str, Any]) -> ValidationSnapshot:
         scope_epochs = EnvironmentEpochTracker.get_snapshot()
+        epoch_vector = self._epoch_tracker.snapshot()
         file_stamps: List[FileStatStamp] = []
 
         for arg_name in meta.path_arg_names:
@@ -126,6 +226,7 @@ class SpeculativeExecutionEngine:
         return ValidationSnapshot(
             scope_epochs=scope_epochs,
             file_stamps=tuple(file_stamps),
+            epoch_vector=epoch_vector,
         )
 
     def _is_snapshot_valid(self, entry: SpeculativeEntry) -> bool:
@@ -141,7 +242,18 @@ class SpeculativeExecutionEngine:
                                  scope_flag, snap.scope_epochs.get(scope_flag, 0), current_epochs.get(scope_flag, 0))
                     return False
 
-        # 2. Verify file stat stamps
+        # 2. Verify 4-dimensional EpochVector TOCTOU compatibility
+        if snap.epoch_vector is not None:
+            current_vector = self._epoch_tracker.snapshot()
+            if not snap.epoch_vector.is_compatible_with(current_vector):
+                logger.debug(
+                    "Speculative cache invalidated: EpochVector mismatch (%s -> %s)",
+                    snap.epoch_vector,
+                    current_vector,
+                )
+                return False
+
+        # 3. Verify file stat stamps
         for stamp in snap.file_stamps:
             try:
                 p = Path(stamp.path)
@@ -269,3 +381,15 @@ class SpeculativeExecutionEngine:
     def shutdown(self, wait: bool = False):
         self.discard_unclaimed()
         self._executor.shutdown(wait=wait)
+
+
+__all__ = [
+    "EpochVector",
+    "EnvironmentEpochTracker",
+    "FileStatStamp",
+    "ValidationSnapshot",
+    "SpeculativeEntry",
+    "ExecutionMetrics",
+    "compute_deterministic_cache_key",
+    "SpeculativeExecutionEngine",
+]

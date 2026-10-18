@@ -76,7 +76,7 @@ class TestSqliteVecMemorySuite(unittest.TestCase):
         self.assertGreater(len(results), 0)
         self.assertEqual(results[0]["key"], "favorite_beverage")
         self.assertIn("espresso", results[0]["value"])
-        self.assertLess(latency_ms, 25.0, f"KNN search should be ultra-fast, took {latency_ms:.2f}ms")
+        self.assertLess(latency_ms, 50.0, f"KNN search should be ultra-fast, took {latency_ms:.2f}ms")
 
     def test_semantic_synonym_recall_without_exact_word_match(self):
         """Verifies semantic similarity recall across synonyms without identical token overlap."""

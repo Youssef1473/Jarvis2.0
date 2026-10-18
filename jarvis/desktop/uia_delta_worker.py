@@ -99,6 +99,10 @@ class UIADeltaWorker:
         if read_idx >= write_idx:
             return 0
 
+        # Safely drop frames if queue backlog exceeds 1,024 events without allocating memory
+        if write_idx - read_idx > RING_CAPACITY:
+            read_idx = write_idx - RING_CAPACITY
+
         count = 0
         while read_idx < write_idx:
             slot = read_idx % RING_CAPACITY

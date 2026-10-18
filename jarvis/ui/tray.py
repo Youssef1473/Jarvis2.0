@@ -282,10 +282,13 @@ class SystemTrayApp:
 
     def run(self):
         """Runs the tray icon loop."""
-        image = create_tray_icon_image("online")
-        menu = self._build_menu()
-        self.icon = pystray.Icon("Jarvis3.0", image, "JARVIS 3.0 Assistant", menu)
-        self.icon.run()
+        try:
+            image = create_tray_icon_image("online")
+            menu = self._build_menu()
+            self.icon = pystray.Icon("Jarvis3.0", image, "JARVIS 3.0 Assistant", menu)
+            self.icon.run()
+        except Exception as e:
+            logger.warning(f"System tray icon initialization skipped: {e}")
 
     def run_in_background(self):
         """Starts the tray icon in a dedicated daemon thread."""

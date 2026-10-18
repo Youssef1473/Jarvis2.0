@@ -84,6 +84,24 @@ class TestOnnxEmbeddingEngine(unittest.TestCase):
         norm = np.linalg.norm(vec)
         self.assertAlmostEqual(float(norm), 1.0, places=4)
 
+    def test_async_embedding_event_loop(self):
+        """Verifies embed_async and embed_batch_async run via asyncio.to_thread without blocking event loop."""
+        import asyncio
+        engine = OnnxEmbeddingEngine.get_instance()
+
+        async def _run_async_test():
+            v = await engine.embed_async("Testing async embedding in event loop", is_query=False)
+            self.assertEqual(len(v), 384)
+            norm = np.linalg.norm(v)
+            self.assertAlmostEqual(float(norm), 1.0, places=4)
+
+            batch = await engine.embed_batch_async(["Task alpha", "Task beta"], batch_size=2)
+            self.assertEqual(len(batch), 2)
+            for item in batch:
+                self.assertEqual(len(item), 384)
+
+        asyncio.run(_run_async_test())
+
 
 if __name__ == "__main__":
     unittest.main()

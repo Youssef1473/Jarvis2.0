@@ -35,18 +35,25 @@ htmlcov/
 data/models/
 *.onnx
 
-# Browser debug runtime profiles & cache (99MB+ runtime user data)
+# Browser debug runtime profiles & cache
 data/browser_debug_profile/
 
-# Runtime SQLite WAL & Shared Memory locks
+# Runtime SQLite databases, WAL & Shared Memory locks
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.db-journal
 *.db-wal
 *.db-shm
 *.db-journal
 data/test_memory.db
 
-# Runtime screenshots & temporary workspaces
+# Runtime screenshots, photos, intake documents & temporary workspaces
 data/screenshots/
-data/agy_runtime_workspace/
+data/photos/*.jpg
+data/intake/*.pdf
+data/agy_runtime_workspace/*
+!data/agy_runtime_workspace/.gitkeep
 .agy_lock
 
 # Repository dumps & Repomix outputs
@@ -57,6 +64,9 @@ jarvis_core_src.txt
 
 # Release archives
 release/*.zip
+
+# Environment & credentials
+.env
 
 # OS / Editor clutter
 .DS_Store

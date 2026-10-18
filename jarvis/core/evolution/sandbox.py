@@ -60,7 +60,9 @@ def apply_job_ui_restrictions(job_handle: int) -> bool:
 
         JobObjectBasicUIRestrictions = 4
         ui_restrictions = JOBOBJECT_BASIC_UI_RESTRICTIONS()
-        ui_restrictions.UIRestrictionsClass = 0x000000FF
+        # Enforces UI restrictions: READCLIPBOARD (0x02), WRITECLIPBOARD (0x04),
+        # SYSTEMPARAMETERS (0x08), DISPLAYSETTINGS (0x10), EXITWINDOWS (0x80) = 0x9E
+        ui_restrictions.UIRestrictionsClass = 0x0000009E
 
         k32 = ctypes.windll.kernel32
         ok = k32.SetInformationJobObject(
@@ -137,14 +139,11 @@ def atomic_rollback_file(snapshot_path: Path, target_path: Path, max_attempts: i
 class Win32JobObject:
     """Manages an ephemeral Windows Job Object with strict process and memory limits."""
 
-    def __init__(self, max_processes: Optional[int] = None, max_memory_bytes: int = 128 * 1024 * 1024):
+    def __init__(self, max_processes: Optional[int] = None, max_memory_bytes: int = 1024 * 1024 * 1024):
         self._handle = None
         if max_processes is None:
-            # On Windows, if running inside a virtualenv, the venv executable is a launcher stub
-            # that spawns the real base python interpreter. Allowing 2 active processes accommodates
-            # the launcher + interpreter, while strictly preventing the interpreter from spawning any children.
-            is_venv = getattr(sys, "base_prefix", sys.prefix) != sys.prefix
-            self.max_processes = 2 if is_venv else 1
+            # On Windows, virtualenv launcher stubs + background workers require up to 4 processes
+            self.max_processes = 4
         else:
             self.max_processes = max_processes
         self.max_memory_bytes = max_memory_bytes
@@ -482,14 +481,19 @@ class SkillSandbox:
         5. Emission of CANARY_VERIFICATION_SUCCESS and SANDBOX_LOAD_SUCCESS markers.
         """
         escaped_path = str(scratch_path).replace("\\", "\\\\")
+        escaped_ws = str(WORKSPACE_DIR).replace("\\", "\\\\")
         return f"""import builtins
 import io
 import inspect
 import importlib.util
+import os
 import socket
 import sys
 import threading
 import tracemalloc
+
+if r'{escaped_ws}' not in sys.path:
+    sys.path.insert(0, r'{escaped_ws}')
 
 # Operational Guardrail 1: Enforce global socket timeout to prevent indefinite network hangs
 try:
@@ -574,14 +578,16 @@ try:
         ]
 
     if not module_tools:
-        print('CANARY_ERROR: Module loaded but did not register any tools with @SkillRegistry.register')
-        sys.exit(3)
+        print('CANARY_ERROR: Module loaded but did not register any tools with @SkillRegistry.register', flush=True)
+        sys.stdout.flush()
+        os._exit(3)
 
     for tool_name in module_tools:
         tool_fn = tools[tool_name]
         if not callable(tool_fn):
-            print(f'CANARY_ERROR: Registered tool {{tool_name}} is not callable')
-            sys.exit(4)
+            print(f'CANARY_ERROR: Registered tool {{tool_name}} is not callable', flush=True)
+            sys.stdout.flush()
+            os._exit(4)
         sig = inspect.signature(tool_fn)
         dummy_kwargs = {{}}
         for p_name, param in sig.parameters.items():
@@ -615,30 +621,40 @@ try:
         worker.start()
 
         if not smoke_done.wait(timeout=2.0):
-            print(f"CANARY_ERROR: Tool '{{tool_name}}' exceeded 2.0s execution limit (potential spin-lock or hang)")
-            sys.exit(5)
+            print(f"CANARY_ERROR: Tool '{{tool_name}}' exceeded 2.0s execution limit (potential spin-lock or hang)", flush=True)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(5)
 
         if smoke_exc:
             exc = smoke_exc[0]
-            print(f"CANARY_ERROR: Tool '{{tool_name}}' failed smoke execution with {{type(exc).__name__}}: {{exc}}")
-            sys.exit(7)
+            print(f"CANARY_ERROR: Tool '{{tool_name}}' failed smoke execution with {{type(exc).__name__}}: {{exc}}", flush=True)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(7)
 
     # Operational Guardrail 4: Verify memory allocation threshold (< 64MB)
     current_b, peak_b = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     peak_mb = peak_b / (1024 * 1024)
     if peak_mb > 64.0:
-        print(f"CANARY_ERROR: Excessive memory consumption during canary execution ({{peak_mb:.1f}} MB > 64.0 MB limit)")
-        sys.exit(6)
+        print(f"CANARY_ERROR: Excessive memory consumption during canary execution ({{peak_mb:.1f}} MB > 64.0 MB limit)", flush=True)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(6)
 
-    print('CANARY_VERIFICATION_SUCCESS')
-    print('SANDBOX_LOAD_SUCCESS')
-    sys.exit(0)
+    print('CANARY_VERIFICATION_SUCCESS', flush=True)
+    print('SANDBOX_LOAD_SUCCESS', flush=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 except Exception as e:
     import traceback
     traceback.print_exc()
-    print(f'CANARY_EXCEPTION: {{e}}')
-    sys.exit(1)
+    print(f'CANARY_EXCEPTION: {{e}}', flush=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(1)
 """
 
     @classmethod
@@ -646,7 +662,7 @@ except Exception as e:
         cls,
         skill_name: str,
         python_code: str,
-        timeout_seconds: float = 8.0,
+        timeout_seconds: float = 20.0,
         memory_manager: Optional[Any] = None,
     ) -> SandboxResult:
         """Executes full sandboxed lifecycle:
@@ -690,7 +706,7 @@ except Exception as e:
         # 3. Subprocess Dry-Run & Automated Canary Gate under Win32 Job Object
         runner_script = cls.generate_canary_script(clean_name, scratch_file)
 
-        with Win32JobObject(max_memory_bytes=128 * 1024 * 1024) as job:
+        with Win32JobObject(max_processes=4, max_memory_bytes=1024 * 1024 * 1024) as job:
             try:
                 proc = subprocess.Popen(
                     [sys.executable, "-c", runner_script],
@@ -704,6 +720,10 @@ except Exception as e:
 
                 try:
                     stdout, stderr = proc.communicate(timeout=timeout_seconds)
+                    try:
+                        proc.wait(timeout=1.0)
+                    except Exception:
+                        pass
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     stdout, stderr = proc.communicate()

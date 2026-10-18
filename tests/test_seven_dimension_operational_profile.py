@@ -18,6 +18,7 @@ from jarvis.context.flow_state_mirror import FlowStateSnapshot
 from jarvis.conversation.bookmarks import ReasoningBookmark, ReasoningBookmarkStack
 from jarvis.core.heartbeat import JarvisHeartbeat
 from jarvis.core.memory import MemoryManager
+from jarvis.core.orchestrator import JarvisOrchestrator
 
 
 class TestSevenDimensionOperationalProfile(unittest.TestCase):
@@ -189,6 +190,106 @@ class TestSevenDimensionOperationalProfile(unittest.TestCase):
             mock_tts.queue_sentence.assert_called_once()
             quip = mock_tts.queue_sentence.call_args[0][0]
             self.assertIn("Operating well past optimal circadian parameters, Sir.", quip)
+
+    def test_format_prompt_injection_pivot_with_cached_tools(self):
+        """Verifies prompt injection XML generation for pivot directives preserving tool cache."""
+        stack = ReasoningBookmarkStack()
+        stack.clear()
+        stack.push_interrupted_turn(
+            turn_id="turn_pivot_42",
+            original_query="Explain Option A implementation details",
+            topic_label="Option A details",
+            spoken_clauses=["Here are the details for Option A."],
+            unspoken_clauses=["First we allocate the memory buffer."],
+            resolved_tool_outputs={"profile_memory": "4GB available"},
+        )
+        self.assertEqual(len(stack), 1)
+
+        prompt_xml = stack.format_prompt_injection("No, proceed with Option B instead")
+        self.assertIn('<active_resumption_bookmark mode="PIVOT_WITH_CACHED_TOOLS">', prompt_xml)
+        self.assertIn("<prior_query>Explain Option A implementation details</prior_query>", prompt_xml)
+        self.assertIn("4GB available", prompt_xml)
+        self.assertIn("Sir pivoted direction. Reuse the cached tool results", prompt_xml)
+        self.assertEqual(len(stack), 0)
+
+    def test_orchestrator_abort_pushes_bookmark_with_brain_tools(self):
+        """Verifies abort_active_command snapshots spoken/unspoken clauses and pulls brain tool outputs."""
+        with patch.object(JarvisOrchestrator, "__init__", lambda self, cfg: None):
+            orch = JarvisOrchestrator({})
+            orch.tts = MagicMock()
+            orch.tts.is_speaking = True
+            orch.tts.abort_and_partition_clauses.return_value = (
+                ["First step completed."],
+                ["Second step remaining.", "Third step remaining."],
+            )
+            orch.brain = MagicMock()
+            orch.brain.get_current_turn_tool_outputs.return_value = {
+                "read_file": {"status": "ok", "content": "class Foo: pass"}
+            }
+            orch.bookmarks = ReasoningBookmarkStack()
+            orch.bookmarks.clear()
+            orch._active_turn_id = "turn_test_101"
+            orch._active_query = "Inspect the architecture of Foo"
+            orch._active_topic_label = "class Foo architecture"
+            orch._active_tool_outputs = {}
+            orch._is_processing_command = True
+            orch._current_state = "speaking"
+            orch.set_state = MagicMock()
+            orch.ui_service = None
+
+            was_busy = orch.abort_active_command()
+            self.assertTrue(was_busy)
+            self.assertEqual(len(orch.bookmarks), 1)
+
+            top = orch.bookmarks.peek_valid()
+            self.assertIsNotNone(top)
+            self.assertEqual(top.turn_id, "turn_test_101")
+            self.assertEqual(top.topic_label, "class Foo architecture")
+            self.assertEqual(list(top.spoken_clauses_completed), ["First step completed."])
+            self.assertEqual(list(top.unspoken_clauses_remaining), ["Second step remaining.", "Third step remaining."])
+            self.assertEqual(top.resolved_tool_outputs["read_file"]["status"], "ok")
+
+    def test_on_atomic_barge_in_invokes_abort(self):
+        """Verifies sub-1us barge-in callback triggers abort_active_command immediately."""
+        with patch.object(JarvisOrchestrator, "__init__", lambda self, cfg: None):
+            orch = JarvisOrchestrator({})
+            orch.abort_active_command = MagicMock(return_value=True)
+            orch.on_atomic_barge_in()
+            orch.abort_active_command.assert_called_once()
+
+    def test_dynamic_topic_label_extraction(self):
+        """Verifies dynamic extraction of concise topic labels from user queries for resumption."""
+        self.assertEqual(
+            JarvisOrchestrator._extract_topic_label("Explain how Kokoro audio synthesis works"),
+            "how kokoro audio synthesis",
+        )
+        self.assertEqual(
+            JarvisOrchestrator._extract_topic_label("Can you tell me about the SQLite WAL memory pool?"),
+            "the sqlite wal memory",
+        )
+        self.assertEqual(
+            JarvisOrchestrator._extract_topic_label(""),
+            "the prior topic",
+        )
+
+    def test_brain_generate_turn_async_contract(self):
+        """Verifies JarvisBrain.generate_turn contract returns (reply, topic, tool_outputs)."""
+        from jarvis.core.brain import JarvisBrain
+        mock_mem = MagicMock()
+        mock_mem.format_core_preferences_xml.return_value = "<prefs />"
+        mock_mem.get_recent_interactions.return_value = []
+        mock_mem.get_context_summary.return_value = ""
+        mock_mem.recall_episodic_lessons.return_value = []
+        mock_safety = MagicMock()
+
+        brain = JarvisBrain({"_base_dir": self.temp_dir, "llm": {"provider": "ollama"}}, mock_mem, mock_safety)
+        with patch.object(brain, "process_query", return_value="System operational."):
+            res = asyncio.run(brain.generate_turn("Explain the Kokoro audio synthesis"))
+            self.assertEqual(len(res), 3)
+            reply, topic, tool_outputs = res
+            self.assertEqual(reply, "System operational.")
+            self.assertIn("kokoro", topic)
+            self.assertIsInstance(tool_outputs, dict)
 
 
 if __name__ == "__main__":

@@ -38,12 +38,89 @@ class AntigravityDaemon:
         self.runtime_workspace = Path("data/agy_runtime_workspace").resolve()
         self.runtime_workspace.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _is_pid_alive(pid: int) -> bool:
+        """Determines if a process ID is actively running on Windows / OS."""
+        if pid <= 0:
+            return False
+        try:
+            import psutil
+            return psutil.pid_exists(pid)
+        except Exception:
+            pass
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import wintypes
+                kernel32 = ctypes.windll.kernel32
+                SYNCHRONIZE = 0x00100000
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                h_proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, wintypes.DWORD(pid))
+                if h_proc:
+                    exit_code = wintypes.DWORD()
+                    STILL_ACTIVE = 259
+                    if kernel32.GetExitCodeProcess(h_proc, ctypes.byref(exit_code)):
+                        is_active = (exit_code.value == STILL_ACTIVE)
+                        kernel32.CloseHandle(h_proc)
+                        return is_active
+                    kernel32.CloseHandle(h_proc)
+                    return True
+                return False
+            except Exception:
+                return False
+        else:
+            try:
+                os.kill(pid, 0)
+                return True
+            except (OSError, ProcessLookupError):
+                return False
+
+    def _recover_stale_lock(self) -> None:
+        """Audits data/agy_runtime_workspace/.agy_lock for stale process leases (>300s or dead PID)."""
+        lock_file = self.runtime_workspace / ".agy_lock"
+        if not lock_file.exists():
+            return
+        is_stale = False
+        try:
+            mtime = lock_file.stat().st_mtime
+            if time.time() - mtime > 300.0:
+                is_stale = True
+            else:
+                raw_text = lock_file.read_text(encoding="utf-8").strip()
+                if raw_text:
+                    try:
+                        data = json.loads(raw_text)
+                        pid = data.get("pid")
+                        ts = float(data.get("timestamp", mtime))
+                        if time.time() - ts > 300.0:
+                            is_stale = True
+                        elif pid is not None and not self._is_pid_alive(int(pid)):
+                            is_stale = True
+                    except Exception:
+                        if raw_text.isdigit():
+                            if not self._is_pid_alive(int(raw_text)):
+                                is_stale = True
+                        # If arbitrary non-empty text and <300s old, treat as fresh lease
+                else:
+                    is_stale = True
+        except Exception as e:
+            logger.debug("Error inspecting .agy_lock: %s", e)
+            is_stale = False
+
+        if is_stale:
+            try:
+                lock_file.unlink(missing_ok=True)
+                logger.info("Purged stale .agy_lock from agy_runtime_workspace.")
+            except Exception as e:
+                logger.debug("Failed to delete stale .agy_lock: %s", e)
+
     def _clean_workspace(self) -> None:
         """Workspace hygiene guard: purges stray files to avoid CLI startup indexing latency."""
         try:
             if not self.runtime_workspace.exists():
                 self.runtime_workspace.mkdir(parents=True, exist_ok=True)
                 return
+            self._recover_stale_lock()
             allowed = {".gitkeep", ".agy_lock"}
             for item in self.runtime_workspace.iterdir():
                 if item.name in allowed:
@@ -147,6 +224,18 @@ class AntigravityDaemon:
                     data = json.loads(line_str)
                     if data.get("event") == "init":
                         self.conversation_id = data.get("conversation_id")
+                        try:
+                            lock_file = self.runtime_workspace / ".agy_lock"
+                            lock_file.write_text(
+                                json.dumps({
+                                    "pid": self.proc.pid,
+                                    "timestamp": time.time(),
+                                    "model": model,
+                                }),
+                                encoding="utf-8"
+                            )
+                        except Exception:
+                            pass
                         logger.info(
                             "Antigravity persistent warm daemon online (model: %s, cid: %s)",
                             model, self.conversation_id
@@ -186,6 +275,12 @@ class AntigravityDaemon:
                 self.proc = None
                 self.current_model = None
                 self.current_effort = None
+                try:
+                    lock_file = self.runtime_workspace / ".agy_lock"
+                    if lock_file.exists():
+                        lock_file.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     def __del__(self):
         self.stop()

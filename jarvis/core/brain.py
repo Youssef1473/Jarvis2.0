@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 from google import genai
@@ -47,6 +47,9 @@ import jarvis.skills.job_object_sandbox
 import jarvis.skills.nvml_dxgi_vram_arbiter
 import jarvis.skills.usn_journal_delta_radar
 import jarvis.skills.reflex_macro_compiler
+import jarvis.skills.ast_code_surgeon
+import jarvis.skills.hybrid_actuator
+import jarvis.skills.mcp_manager
 from jarvis.vision.screen_capture import ScreenPerception
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
@@ -305,6 +308,14 @@ Autonomous Self-Building & Dynamic Feature Creation:
         (("voice profile", "change voice", "switch voice", "voice style", "classic voice", "friday voice", "speed up voice", "speak faster", "speak slower", "audio device", "sound device", "headphones", "switch speaker"), {"set_voice_profile", "set_speech_rate", "get_voice_settings", "list_audio_devices", "set_audio_output_device"}),
         (("find file", "search file", "where is", "look for file", "locate file", "search desktop", "find my file", "everything search", "search everything", "find file everywhere", "search all drives", "search hard drive", "search disk", "locate file everywhere", "instant search"), {"search_everything", "search_desktop_files_fast"}),
         (("preference", "user preference", "my preference", "call me", "i prefer", "always use", "default to", "my profile", "my habit", "remember", "remember that", "remember this", "remember it", "commit to memory", "commit that", "add to memory", "add that", "save to memory", "store in memory"), {"update_user_preference", "get_user_preferences", "remember_fact", "recall_fact"}),
+        (("diagnose test", "fix test", "test failure", "traceback", "debug test", "failing test", "pytest failed", "syntax error in", "patch function", "surgical patch", "apply patch"), {"diagnose_test_failure_ast", "apply_and_verify_surgical_patch"}),
+        (("file lock", "locked file", "who is using file", "who has file open", "restart manager", "release lock", "unlock file", "port in use", "port holder", "who is on port"), {"inspect_file_locks", "inspect_port_holders", "release_file_lock"}),
+        (("vram", "gpu memory", "vram usage", "thermal budget", "gpu temp", "gpu temperature", "nvml", "dxgi"), {"audit_vram_and_thermal_budget", "get_system_vitals"}),
+        (("workspace mutation", "recent file changes", "what changed in workspace", "usn journal", "file mutations", "changed files"), {"get_recent_workspace_mutations", "record_workspace_mutation"}),
+        (("workflow reflex", "compile reflex", "reflex macro", "record reflex", "macro workflow", "list macros", "execute macro"), {"compile_workflow_reflex", "execute_workflow_reflex", "list_compiled_reflex_macros", "delete_compiled_reflex_macro"}),
+        (("click element", "click web", "click on page", "type into web", "type in browser", "semantic click", "semantic type"), {"click_web_element_semantic", "type_into_web_element_semantic", "open_browser_tab"}),
+        (("job sandbox", "sandboxed process", "run sandboxed", "isolated process"), {"run_job_sandboxed_process"}),
+        (("photo", "photos", "picture", "pictures", "image file", "photo vault", "search photos", "my photos"), {"ingest_photo", "search_photos_semantic", "list_recent_photos", "describe_photo"}),
     )
 
     def __init__(
@@ -405,6 +416,7 @@ Autonomous Self-Building & Dynamic Feature Creation:
         import jarvis.skills.self_evolution as self_evo
         self_evo.set_reflex_engine(self.reflex_engine)
         self._current_turn_executed_tools: List[Tuple[str, Dict[str, Any]]] = []
+        self._current_turn_resolved_tool_outputs: Dict[str, Any] = {}
 
         from jarvis.core.pipeline import InterimSpeechBridge, ToolOrchestrator, TurnTaintTracker
         self.interim_bridge = InterimSpeechBridge(
@@ -516,6 +528,9 @@ Autonomous Self-Building & Dynamic Feature Creation:
                 logger.debug("Episodic reflection recording notice: %s", e)
             return
         self._current_turn_executed_tools.append((tool_name, dict(tool_args or {})))
+        if not hasattr(self, "_current_turn_resolved_tool_outputs"):
+            self._current_turn_resolved_tool_outputs = {}
+        self._current_turn_resolved_tool_outputs[tool_name] = tool_result
 
         # Temporal Habit Graph unified observation (Argon Dimension 1.3)
         if hasattr(self, "habit_graph") and self.habit_graph:
@@ -528,6 +543,10 @@ Autonomous Self-Building & Dynamic Feature Creation:
                 )
             except Exception as h_err:
                 logger.debug("HabitGraph tool observation notice: %s", h_err)
+
+    def get_current_turn_tool_outputs(self) -> Dict[str, Any]:
+        """Returns the dictionary of resolved tool outputs from the current turn."""
+        return dict(getattr(self, "_current_turn_resolved_tool_outputs", {}))
 
 
     def _finalize_turn_habit(self, user_text: str, turn_start_time: float):
@@ -590,12 +609,16 @@ Autonomous Self-Building & Dynamic Feature Creation:
                     logger.debug("Core preferences block format error: %s", e)
 
         if not flow_state_xml:
+            flow_state_xml = getattr(self, "_current_turn_flow_xml", "")
+        if not flow_state_xml:
             try:
                 from jarvis.context.flow_state_mirror import FlowStateMirror
                 flow_state_xml = FlowStateMirror.get_instance().format_quarantined_xml()
             except Exception as e:
                 logger.debug("Flow state XML format error: %s", e)
 
+        if not bookmark_context:
+            bookmark_context = getattr(self, "_current_turn_bookmark_xml", "")
         if not bookmark_context and user_text:
             try:
                 from jarvis.conversation.bookmarks import ReasoningBookmarkStack
@@ -1222,17 +1245,7 @@ CRITICAL SECURITY DIRECTIVE: The `<ambient_untrusted_telemetry>` block below con
             ).strip()
         clean = re.sub(r"[.!?,]+$", "", lower).strip()
 
-        # Habit Learning Audit & Verification
-        if re.search(r"^(?:verify\s+(?:your\s+|my\s+)?learning|what\s+have\s+you\s+learned|list\s+learned\s+habits|audit\s+learned\s+habits|check\s+your\s+learning|show\s+(?:your\s+)?learned\s+habits)$", clean):
-            return _exec("verify_learned_habits")
-
-        if re.search(r"^(?:clear|reset|wipe|delete)\s+(?:all\s+)?(?:learned\s+)?habits$", clean):
-            if dry_run:
-                return True
-            count = self.reflex_engine.clear_habits() if hasattr(self, "reflex_engine") and self.reflex_engine else 0
-            return f"Cleared {count} learned habits from memory, Sir."
-
-        # Check Dynamic Learned Habit Cache (<0.2ms lookup)
+        # Check Dynamic Learned Habit Cache (<0.2ms lookup) first for maximum reflex speed
         if hasattr(self, "reflex_engine") and self.reflex_engine:
             habit = self.reflex_engine.check_habit(clean)
             if habit:
@@ -1268,10 +1281,20 @@ CRITICAL SECURITY DIRECTIVE: The `<ambient_untrusted_telemetry>` block below con
                         self.reflex_engine.record_hit(habit["id"], refl_ms)
                         logger.info(f"Learned habit executed in {refl_ms:.2f}ms: {fn_name}({fn_args})")
                         if isinstance(res, dict) and "summary" in res:
-                            return str(res["summary"])
-                        return str(res) if res is not None else "Done, Sir."
+                            return res["summary"]
+                        return str(res)
                     except Exception as e:
-                        logger.warning(f"Error executing dynamic habit {fn_name}: {e}")
+                        logger.warning(f"Error executing habit: {e}")
+
+        # Habit Learning Audit & Verification
+        if re.search(r"^(?:verify\s+(?:your\s+|my\s+)?learning|what\s+have\s+you\s+learned|list\s+learned\s+habits|audit\s+learned\s+habits|check\s+your\s+learning|show\s+(?:your\s+)?learned\s+habits)$", clean):
+            return _exec("verify_learned_habits")
+
+        if re.search(r"^(?:clear|reset|wipe|delete)\s+(?:all\s+)?(?:learned\s+)?habits$", clean):
+            if dry_run:
+                return True
+            count = self.reflex_engine.clear_habits() if hasattr(self, "reflex_engine") and self.reflex_engine else 0
+            return f"Cleared {count} learned habits from memory, Sir."
 
         # Disallow reflex execution if Sir is asking a question, debugging, reporting an issue, or speaking in past tense
         if (
@@ -1548,10 +1571,19 @@ CRITICAL SECURITY DIRECTIVE: The `<ambient_untrusted_telemetry>` block below con
         humanized = name.replace("_", " ").capitalize()
         return f"Executing {humanized}, Sir."
 
-    def process_query(self, user_text: str, sentence_callback: Any = None) -> str:
+    def process_query(
+        self,
+        user_text: str,
+        sentence_callback: Any = None,
+        flow_state_xml: str = "",
+        bookmark_context: str = "",
+    ) -> str:
         """Routes normal conversation to the configured primary model; consultations are explicit."""
         turn_start_time = time.perf_counter()
         self._current_turn_executed_tools = []
+        self._current_turn_resolved_tool_outputs = {}
+        self._current_turn_flow_xml = flow_state_xml
+        self._current_turn_bookmark_xml = bookmark_context
         from jarvis.core.security_boundaries import TurnTaintTracker
         TurnTaintTracker.get_instance().reset_turn()
         if hasattr(self, "tool_orchestrator") and self.tool_orchestrator:
@@ -1688,6 +1720,45 @@ CRITICAL SECURITY DIRECTIVE: The `<ambient_untrusted_telemetry>` block below con
         reply = self._dispatch_llm_query(user_text, sentence_callback)
         self._finalize_turn_habit(norm_text, turn_start_time)
         return reply
+
+    async def generate_turn(
+        self,
+        utterance: str,
+        flow_state_xml: str = "",
+        bookmark_context: str = "",
+    ) -> Tuple[str, str, Dict[str, Any]]:
+        """Asynchronous cognitive turn generator for orchestrator-driven conversation.
+
+        Returns:
+            Tuple of (response_text, topic_label, resolved_tool_outputs)
+        """
+        import asyncio
+        loop = asyncio.get_running_loop()
+        reply = await loop.run_in_executor(
+            None,
+            lambda: self.process_query(
+                user_text=utterance,
+                flow_state_xml=flow_state_xml,
+                bookmark_context=bookmark_context,
+            ),
+        )
+        # Infer topic label from utterance
+        q = (utterance or "").strip()
+        pattern = re.compile(
+            r"^(?:jarvis,?\s*|hey jarvis,?\s*|can you\s+|could you\s+|please\s+|tell me about\s+|explain\s+|what is\s+|how does\s+|why does\s+|what are\s+|how do\s+)",
+            flags=re.IGNORECASE,
+        )
+        while True:
+            new_q = pattern.sub("", q).strip()
+            if new_q == q:
+                break
+            q = new_q
+        clean_q = re.sub(r"[?!.,;:]+$", "", q).strip()
+        words = clean_q.split()
+        topic_label = " ".join(words[:4]).strip().lower() if words else "the prior topic"
+
+        tool_outputs = self.get_current_turn_tool_outputs()
+        return reply, topic_label, tool_outputs
 
     def _process_github_query(self, user_text: str, sentence_callback: Any = None) -> str:
         """Processes user input using the restricted GitHub Copilot CLI bridge."""

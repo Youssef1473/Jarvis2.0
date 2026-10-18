@@ -6,6 +6,7 @@ with asymmetric query prefixing, dynamic batching, and resilient offline fallbac
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import math
@@ -275,3 +276,25 @@ class OnnxEmbeddingEngine:
                 results.extend([self.fallback_dense_vectorize(t, dim=target_dim) for t in chunk])
 
         return results
+
+    async def embed_async(self, text: str, is_query: bool = False, dim: Optional[int] = None) -> List[float]:
+        """Runs embedding inference inside asyncio.to_thread so main event loop is never blocked."""
+        return await asyncio.to_thread(self.embed, text, is_query, dim)
+
+    async def embed_batch_async(
+        self,
+        texts: List[str],
+        batch_size: int = 64,
+        is_query: bool = False,
+        dim: Optional[int] = None,
+    ) -> List[List[float]]:
+        """Runs batch embedding inference inside asyncio.to_thread so main event loop is never blocked."""
+        return await asyncio.to_thread(self.embed_batch, texts, batch_size, is_query, dim)
+
+    async def embed_query_async(self, query: str, dim: Optional[int] = None) -> List[float]:
+        """Runs query embedding inference asynchronously."""
+        return await self.embed_async(query, is_query=True, dim=dim)
+
+    async def embed_document_async(self, doc_text: str, dim: Optional[int] = None) -> List[float]:
+        """Runs document embedding inference asynchronously."""
+        return await self.embed_async(doc_text, is_query=False, dim=dim)

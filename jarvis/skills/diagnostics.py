@@ -17,9 +17,18 @@ logger = logging.getLogger("Jarvis.Diagnostics")
 
 def _find_pyspy() -> Optional[str]:
     """Locates py-spy binary in .venv or system PATH."""
+    # Check parent workspace .venv
     venv_pyspy = Path(__file__).resolve().parent.parent.parent / ".venv" / "Scripts" / "py-spy.exe"
     if venv_pyspy.exists():
         return str(venv_pyspy)
+    # Check active Python interpreter environment / virtualenv prefix
+    sys_pyspy = Path(sys.prefix) / "Scripts" / "py-spy.exe"
+    if sys_pyspy.exists():
+        return str(sys_pyspy)
+    # Check executable sibling directory
+    exe_pyspy = Path(sys.executable).parent / "py-spy.exe"
+    if exe_pyspy.exists():
+        return str(exe_pyspy)
     return shutil.which("py-spy")
 
 

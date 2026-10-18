@@ -127,7 +127,7 @@ class JarvisHeartbeat:
         self._last_alerted_cmd_ts: int = 0
         self._consecutive_fail_count: int = 0
         self._continuous_flow_start_mono: float = time.monotonic()
-        self._last_circadian_quip_mono: float = 0.0
+        self._last_circadian_quip_mono: float = float("-inf")
         self._idle_reset_threshold_sec: float = 300.0  # 5 min break resets 2-hr continuous timer
         self._circadian_cooldown_sec: float = 10800.0  # Max once every 3 hours
 

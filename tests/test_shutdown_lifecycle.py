@@ -15,7 +15,7 @@ from jarvis.audio.stt import SpeechToText
 from jarvis.audio.tts import TextToSpeech
 from jarvis.skills.system_watchdog import start_hardware_watchdog, stop_hardware_watchdog, _watchdog_active
 from jarvis.skills.timers import start_timer, cancel_timer, _active_timers
-from jarvis.core.skills.photo_manager import shutdown_photo_manager
+from jarvis.skills.photo_manager import shutdown_photo_manager
 
 
 class TestShutdownLifecycle(unittest.TestCase):

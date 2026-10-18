@@ -201,7 +201,7 @@ def set_memory_manager(mgr: Any) -> None:
 def _get_memory():
     global _memory_instance
     if _memory_instance is None:
-        from jarvis.core.config import load_config
+        from jarvis.core.config_loader import load_config
         from jarvis.core.memory import MemoryManager
         cfg = load_config()
         _memory_instance = MemoryManager(cfg)

@@ -151,7 +151,26 @@ class JarvisOrchestrator:
             self.tts.stop()
             was_busy = True
 
-        if getattr(self, "_active_turn_id", None) and unspoken_clauses and hasattr(self, "bookmarks"):
+        # Sync resolved tool outputs from brain if available
+        active_tools = dict(getattr(self, "_active_tool_outputs", {}) or {})
+        if hasattr(self, "brain") and hasattr(self.brain, "get_current_turn_tool_outputs"):
+            try:
+                brain_tools = self.brain.get_current_turn_tool_outputs()
+                if brain_tools:
+                    active_tools.update(brain_tools)
+                    self._active_tool_outputs.update(brain_tools)
+            except Exception:
+                pass
+
+        remaining_clauses = list(unspoken_clauses or [])
+        if not remaining_clauses:
+            partial_text = getattr(self, "_active_partial_text", None)
+            if partial_text:
+                remaining_clauses = [partial_text]
+            elif spoken_clauses:
+                remaining_clauses = ["remaining explanation"]
+
+        if getattr(self, "_active_turn_id", None) and hasattr(self, "bookmarks"):
             flow_xml = ""
             try:
                 from jarvis.context.flow_state_mirror import FlowStateMirror
@@ -159,15 +178,16 @@ class JarvisOrchestrator:
             except Exception:
                 pass
 
-            self.bookmarks.push_interrupted_turn(
-                turn_id=self._active_turn_id,
-                original_query=getattr(self, "_active_query", ""),
-                topic_label=getattr(self, "_active_topic_label", "the architecture"),
-                spoken_clauses=spoken_clauses,
-                unspoken_clauses=unspoken_clauses,
-                resolved_tool_outputs=getattr(self, "_active_tool_outputs", {}),
-                flow_state_xml=flow_xml,
-            )
+            if remaining_clauses:
+                self.bookmarks.push_interrupted_turn(
+                    turn_id=self._active_turn_id,
+                    original_query=getattr(self, "_active_query", ""),
+                    topic_label=getattr(self, "_active_topic_label", "the architecture"),
+                    spoken_clauses=spoken_clauses,
+                    unspoken_clauses=remaining_clauses,
+                    resolved_tool_outputs=active_tools,
+                    flow_state_xml=flow_xml,
+                )
 
         if getattr(self, "_is_processing_command", False) or getattr(self, "_current_state", "idle") in ("thinking", "speaking"):
             was_busy = True
@@ -503,6 +523,54 @@ class JarvisOrchestrator:
         ]
         return any(re.search(t, normalized) for t in triggers)
 
+    async def handle_user_utterance(self, turn_id: str, utterance: str) -> str:
+        """Main cognitive execution entrypoint with automatic bookmark resumption."""
+        self._active_turn_id = turn_id
+        self._active_query = utterance
+        self._active_tool_outputs.clear()
+
+        bookmark_xml = self.bookmarks.format_prompt_injection(utterance) if hasattr(self, "bookmarks") else ""
+        flow_xml = ""
+        try:
+            from jarvis.context.flow_state_mirror import FlowStateMirror
+            flow_xml = FlowStateMirror.get_instance().format_quarantined_xml()
+        except Exception:
+            pass
+
+        if hasattr(self.brain, "generate_turn"):
+            response_text, topic_label, tool_outputs = await self.brain.generate_turn(
+                utterance=utterance,
+                flow_state_xml=flow_xml,
+                bookmark_context=bookmark_xml,
+            )
+            self._active_topic_label = topic_label
+            self._active_tool_outputs.update(tool_outputs)
+            if hasattr(self.tts, "queue_response_clauses"):
+                self.tts.queue_response_clauses(turn_id=turn_id, text=response_text)
+            return response_text
+        else:
+            return self.handle_command(utterance)
+
+    @staticmethod
+    def _extract_topic_label(query: str) -> str:
+        """Derives a concise 2-4 word topic phrase from the query for bookmark bridging."""
+        q = (query or "").strip()
+        pattern = re.compile(
+            r"^(?:jarvis,?\s*|hey jarvis,?\s*|can you\s+|could you\s+|please\s+|tell me about\s+|explain\s+|what is\s+|how does\s+|why does\s+|what are\s+|how do\s+)",
+            flags=re.IGNORECASE,
+        )
+        while True:
+            new_q = pattern.sub("", q).strip()
+            if new_q == q:
+                break
+            q = new_q
+        q_clean = re.sub(r"[?!.,;:]+$", "", q).strip()
+        words = q_clean.split()
+        if not words:
+            return "the prior topic"
+        topic = " ".join(words[:4]).strip().lower()
+        return topic or "the prior topic"
+
     def handle_command(self, query: str):
         """Processes a text query, executes tools, and speaks the reply."""
         # Broadcast prompt to Holographic HUD
@@ -531,36 +599,8 @@ class JarvisOrchestrator:
         self._is_processing_command = True
         self._active_turn_id = f"turn_{int(time.time() * 1000)}"
         self._active_query = query
-        self._active_topic_label = "the architecture"
+        self._active_topic_label = self._extract_topic_label(query)
         self._active_tool_outputs = {}
-
-    async def handle_user_utterance(self, turn_id: str, utterance: str) -> str:
-        """Main cognitive execution entrypoint with automatic bookmark resumption."""
-        self._active_turn_id = turn_id
-        self._active_query = utterance
-        self._active_tool_outputs.clear()
-
-        bookmark_xml = self.bookmarks.format_prompt_injection(utterance) if hasattr(self, "bookmarks") else ""
-        flow_xml = ""
-        try:
-            from jarvis.context.flow_state_mirror import FlowStateMirror
-            flow_xml = FlowStateMirror.get_instance().format_quarantined_xml()
-        except Exception:
-            pass
-
-        if hasattr(self.brain, "generate_turn"):
-            response_text, topic_label, tool_outputs = await self.brain.generate_turn(
-                utterance=utterance,
-                flow_state_xml=flow_xml,
-                bookmark_context=bookmark_xml,
-            )
-            self._active_topic_label = topic_label
-            self._active_tool_outputs.update(tool_outputs)
-            if hasattr(self.tts, "queue_response_clauses"):
-                self.tts.queue_response_clauses(turn_id=turn_id, text=response_text)
-            return response_text
-        else:
-            return self.handle_command(utterance)
 
         try:
             self.set_state("thinking")
@@ -759,7 +799,7 @@ class JarvisOrchestrator:
             pass
 
         try:
-            from jarvis.core.skills.photo_manager import shutdown_photo_manager
+            from jarvis.skills.photo_manager import shutdown_photo_manager
             shutdown_photo_manager()
         except Exception:
             pass

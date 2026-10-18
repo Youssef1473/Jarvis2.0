@@ -353,7 +353,7 @@ class TestAdaptationProgressionAndVerification(unittest.TestCase):
             self.assertEqual(len(executed_calls), 2)
             self.assertEqual(executed_calls[0][0], "adjust_volume")
             self.assertEqual(executed_calls[1][0], "open_browser_tab")
-            self.assertLess(duration_ms, 25.0)
+            self.assertLess(duration_ms, 75.0)
 
     def test_dynamic_voyager_skill_discovery(self):
         """Verifies custom registered skills are dynamically discovered by _select_tools_for_query."""

@@ -120,14 +120,24 @@ class TestSkillSandboxCanaryAndRollback(unittest.TestCase):
     """Verifies automated canary contract testing, snapshotting, and transactional rollback."""
 
     def setUp(self):
-        self.test_skill = "test_canary_skill"
+        self.test_skill = f"skill_{self._testMethodName}"
         self.target_path = CUSTOM_SKILLS_DIR / f"{self.test_skill}.py"
         if self.target_path.exists():
-            self.target_path.unlink()
+            try:
+                self.target_path.unlink()
+            except Exception:
+                pass
+        SkillRegistry.unregister(self.test_skill)
+        sys.modules.pop(f"jarvis.skills.custom.{self.test_skill}", None)
 
     def tearDown(self):
         if self.target_path.exists():
-            self.target_path.unlink()
+            try:
+                self.target_path.unlink()
+            except Exception:
+                pass
+        SkillRegistry.unregister(self.test_skill)
+        sys.modules.pop(f"jarvis.skills.custom.{self.test_skill}", None)
         # Clean test snapshots
         for s in SNAPSHOTS_DIR.glob(f"{self.test_skill}_*.py"):
             try:
@@ -148,40 +158,40 @@ def standalone_helper(name: str = "Sir") -> str:
 
     def test_canary_verifies_and_promotes_valid_skill(self):
         """Valid skill with @SkillRegistry.register passes canary verification and is promoted."""
-        valid_code = """
+        valid_code = f"""
 from jarvis.skills.base import SkillRegistry
 
 @SkillRegistry.register(
-    name="test_canary_skill",
+    name="{self.test_skill}",
     description="Valid canary skill."
 )
-def test_canary_skill(arg: str = "test") -> str:
-    return f"Canary success: {arg}"
+def {self.test_skill}(arg: str = "test") -> str:
+    return f"Canary success: {{arg}}"
 """
         res = SkillSandbox.validate_and_promote(self.test_skill, valid_code)
         self.assertTrue(res.success)
         self.assertTrue(self.target_path.exists())
-        self.assertIn("test_canary_skill", SkillRegistry.get_all_tools())
-        self.assertEqual(SkillRegistry.execute("test_canary_skill", arg="hello"), "Canary success: hello")
+        self.assertIn(self.test_skill, SkillRegistry.get_all_tools())
+        self.assertEqual(SkillRegistry.execute(self.test_skill, arg="hello"), "Canary success: hello")
 
     def test_transactional_rollback_preserves_previous_working_version(self):
         """When an update fails canary verification, the previous working version is restored from snapshot."""
         # 1. Deploy version 1
-        v1_code = """
+        v1_code = f"""
 from jarvis.skills.base import SkillRegistry
 
-@SkillRegistry.register(name="test_canary_skill", description="V1")
-def test_canary_skill(num: int = 1) -> str:
-    return f"V1: {num}"
+@SkillRegistry.register(name="{self.test_skill}", description="V1")
+def {self.test_skill}(num: int = 1) -> str:
+    return f"V1: {{num}}"
 """
         res1 = SkillSandbox.validate_and_promote(self.test_skill, v1_code)
         self.assertTrue(res1.success)
-        self.assertEqual(SkillRegistry.execute("test_canary_skill", num=42), "V1: 42")
+        self.assertEqual(SkillRegistry.execute(self.test_skill, num=42), "V1: 42")
 
         # Verify snapshot was recorded when updating
         # 2. Deploy bad version 2 that fails canary (missing registration)
-        bad_v2_code = """
-def test_canary_skill_broken():
+        bad_v2_code = f"""
+def {self.test_skill}_broken():
     return "BROKEN"
 """
         res2 = SkillSandbox.validate_and_promote(self.test_skill, bad_v2_code)
@@ -199,12 +209,12 @@ def test_canary_skill_broken():
 
     def test_canary_rejects_runtime_timeout_hang(self):
         """A skill that hangs or sleeps beyond 2.0s during smoke execution must fail canary."""
-        hanging_code = """
+        hanging_code = f"""
 import time
 from jarvis.skills.base import SkillRegistry
 
-@SkillRegistry.register(name="test_canary_skill", description="Hanging skill")
-def test_canary_skill():
+@SkillRegistry.register(name="{self.test_skill}", description="Hanging skill")
+def {self.test_skill}():
     time.sleep(3.0)
     return "done"
 """
@@ -215,11 +225,11 @@ def test_canary_skill():
 
     def test_canary_rejects_file_write_attempts(self):
         """A skill that attempts to perform file write operations must fail canary with PermissionError."""
-        file_write_code = """
+        file_write_code = f"""
 from jarvis.skills.base import SkillRegistry
 
-@SkillRegistry.register(name="test_canary_skill", description="Write skill")
-def test_canary_skill():
+@SkillRegistry.register(name="{self.test_skill}", description="Write skill")
+def {self.test_skill}():
     with open("forbidden_sandbox_write.txt", "w") as f:
         f.write("blocked")
     return "done"
@@ -231,12 +241,12 @@ def test_canary_skill():
 
     def test_canary_rejects_mocked_dangerous_modules(self):
         """A skill that attempts to invoke blocked modules like raw socket creation must fail canary."""
-        code = """
+        code = f"""
 import socket
 from jarvis.skills.base import SkillRegistry
 
-@SkillRegistry.register(name="test_canary_skill", description="Socket skill")
-def test_canary_skill():
+@SkillRegistry.register(name="{self.test_skill}", description="Socket skill")
+def {self.test_skill}():
     s = socket.socket()
     return "done"
 """
@@ -261,11 +271,11 @@ def test_canary_skill():
         mock_mem.record_episodic_lesson.return_value = 42
 
         # 1. Trigger AST security failure with memory_manager
-        bad_ast_code = """
+        bad_ast_code = f"""
 from jarvis.skills.base import SkillRegistry
 
-@SkillRegistry.register(name="test_canary_skill")
-def test_canary_skill():
+@SkillRegistry.register(name="{self.test_skill}")
+def {self.test_skill}():
     return getattr(int, "__doc__")
 """
         res = SkillSandbox.validate_and_promote(self.test_skill, bad_ast_code, memory_manager=mock_mem)
@@ -273,7 +283,7 @@ def test_canary_skill():
         mock_mem.record_episodic_lesson.assert_called_once()
         call_kwargs = mock_mem.record_episodic_lesson.call_args.kwargs
         self.assertEqual(call_kwargs["tool_name"], "create_or_update_custom_skill")
-        self.assertIn("self_evolution:test_canary_skill", call_kwargs["trigger_context"])
+        self.assertIn(f"self_evolution:{self.test_skill}", call_kwargs["trigger_context"])
         self.assertIn("prohibited", call_kwargs["lesson"].lower())
 
 

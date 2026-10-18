@@ -1,6 +1,7 @@
 """Verification test suite for Jarvis UI Enhancements and Holographic HUD."""
 import sys
 from pathlib import Path
+import unittest
 from starlette.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -23,113 +24,94 @@ class DummyOrchestrator:
         pass
 
 
-def test_ui_telemetry_gathering():
-    print("\n--- 1. Testing UI Telemetry Gathering ---")
-    service = JarvisUIService(orchestrator=DummyOrchestrator())
-    telemetry = service._gather_telemetry()
-    print("Telemetry gathered keys:", list(telemetry.keys()))
+class TestUIEnhancements(unittest.TestCase):
+    def test_ui_telemetry_gathering(self):
+        service = JarvisUIService(orchestrator=DummyOrchestrator())
+        telemetry = service._gather_telemetry()
 
-    assert "cpu" in telemetry
-    assert "ram_pct" in telemetry
-    assert "ram_used_gb" in telemetry
-    assert "ram_total_gb" in telemetry
-    assert "gpu" in telemetry
-    assert "gpu_temp" in telemetry
-    assert "battery" in telemetry
-    assert "active_timers" in telemetry
-    assert "tier" in telemetry
+        self.assertIn("cpu", telemetry)
+        self.assertIn("ram_pct", telemetry)
+        self.assertIn("ram_used_gb", telemetry)
+        self.assertIn("ram_total_gb", telemetry)
+        self.assertIn("gpu", telemetry)
+        self.assertIn("gpu_temp", telemetry)
+        self.assertIn("battery", telemetry)
+        self.assertIn("active_timers", telemetry)
+        self.assertIn("tier", telemetry)
 
-    print(f"CPU: {telemetry['cpu']}%, RAM: {telemetry['ram_used_gb']}/{telemetry['ram_total_gb']} GB ({telemetry['ram_pct']}%)")
-    print(f"GPU: {telemetry['gpu']} at {telemetry['gpu_temp']}°C, Battery: {telemetry['battery']}%")
-    print(f"Tier: {telemetry['tier']}, Active Timers: {telemetry['active_timers']}")
+    def test_ui_endpoints(self):
+        service = JarvisUIService(orchestrator=DummyOrchestrator())
+        app = service._create_app()
+        client = TestClient(app)
 
+        # 1. Test index HTML serving
+        res_index = client.get("/")
+        self.assertEqual(res_index.status_code, 200)
+        html = res_index.text
+        self.assertTrue("J.A.R.V.I.S. // 4.0" in html or "J.A.R.V.I.S. // 3.0" in html)
+        self.assertTrue("TACTICAL CONTROL FLANK" in html or "TACTICAL ARCHIVE" in html)
+        self.assertIn("hud-drawer", html)
+        self.assertIn("cpuMeter", html)
+        self.assertIn("ramMeter", html)
+        self.assertIn("WORK", html)
+        self.assertIn("BRIEFING", html)
+        self.assertIn("LOCKDOWN", html)
+        self.assertIn("OPTIMIZE", html)
 
-def test_ui_endpoints():
-    print("\n--- 2. Testing Starlette HTTP & REST Endpoints ---")
-    service = JarvisUIService(orchestrator=DummyOrchestrator())
-    app = service._create_app()
-    client = TestClient(app)
+        # 2. Test /api/status
+        res_status = client.get("/api/status")
+        self.assertEqual(res_status.status_code, 200)
+        data_status = res_status.json()
+        self.assertIn("cpu", data_status)
+        self.assertIn("ram_pct", data_status)
 
-    # 1. Test index HTML serving
-    res_index = client.get("/")
-    assert res_index.status_code == 200
-    html = res_index.text
-    assert ("J.A.R.V.I.S. // 4.0" in html or "J.A.R.V.I.S. // 3.0" in html)
-    assert ("TACTICAL CONTROL FLANK" in html or "TACTICAL ARCHIVE" in html)
-    assert "hud-drawer" in html
-    assert "cpuMeter" in html
-    assert "ramMeter" in html
-    assert "WORK" in html
-    assert "BRIEFING" in html
-    assert "LOCKDOWN" in html
-    assert "OPTIMIZE" in html
-    print("Index HUD template rendered with all new components!")
+        # 3. Test /api/notes
+        res_notes = client.get("/api/notes")
+        self.assertEqual(res_notes.status_code, 200)
+        data_notes = res_notes.json()
+        self.assertIn("notes", data_notes)
 
-    # 2. Test /api/status
-    res_status = client.get("/api/status")
-    assert res_status.status_code == 200
-    data_status = res_status.json()
-    assert "cpu" in data_status
-    assert "ram_pct" in data_status
-    print("GET /api/status returned valid JSON telemetry!")
+        # 4. Test /api/timers
+        res_timers = client.get("/api/timers")
+        self.assertEqual(res_timers.status_code, 200)
+        data_timers = res_timers.json()
+        self.assertIn("timers", data_timers)
 
-    # 3. Test /api/notes
-    res_notes = client.get("/api/notes")
-    assert res_notes.status_code == 200
-    data_notes = res_notes.json()
-    assert "notes" in data_notes
-    print(f"GET /api/notes returned {len(data_notes['notes'])} notes!")
+        # 5. Test volume action
+        res_act = client.post("/api/action", json={"action": "set_volume", "percent": 40})
+        self.assertEqual(res_act.status_code, 200)
+        self.assertEqual(res_act.json().get("percent"), 40)
 
-    # 4. Test /api/timers
-    res_timers = client.get("/api/timers")
-    assert res_timers.status_code == 200
-    data_timers = res_timers.json()
-    assert "timers" in data_timers
-    print(f"GET /api/timers returned {len(data_timers['timers'])} timers!")
+        # 6. Test mute action
+        res_mute = client.post("/api/action", json={"action": "toggle_mute"})
+        self.assertEqual(res_mute.status_code, 200)
+        self.assertIn("is_muted", res_mute.json())
 
-    # 5. Test volume action
-    res_act = client.post("/api/action", json={"action": "set_volume", "percent": 40})
-    assert res_act.status_code == 200
-    assert res_act.json().get("percent") == 40
-    print("POST /api/action volume control verified!")
+        # 7. Test /api/memory/nodes
+        res_mem = client.get("/api/memory/nodes")
+        self.assertEqual(res_mem.status_code, 200)
+        data_mem = res_mem.json()
+        self.assertIn("total", data_mem)
+        self.assertIn("counts", data_mem)
+        self.assertIn("facts", data_mem)
+        self.assertIn("preferences", data_mem)
 
-    # 6. Test mute action
-    res_mute = client.post("/api/action", json={"action": "toggle_mute"})
-    assert res_mute.status_code == 200
-    assert "is_muted" in res_mute.json()
-    print("POST /api/action toggle_mute verified!")
+        # 8. Test /api/memory/update & /api/memory/delete
+        res_upd = client.post("/api/memory/update", json={
+            "type": "preference",
+            "key": "test_ui_theme",
+            "value": "holographic_cyan"
+        })
+        self.assertEqual(res_upd.status_code, 200)
+        self.assertEqual(res_upd.json().get("status"), "success")
 
-    # 7. Test /api/memory/nodes
-    res_mem = client.get("/api/memory/nodes")
-    assert res_mem.status_code == 200
-    data_mem = res_mem.json()
-    assert "total" in data_mem
-    assert "counts" in data_mem
-    assert "facts" in data_mem
-    assert "preferences" in data_mem
-    print(f"GET /api/memory/nodes returned {data_mem['total']} total nodes!")
-
-    # 8. Test /api/memory/update & /api/memory/delete
-    res_upd = client.post("/api/memory/update", json={
-        "type": "preference",
-        "key": "test_ui_theme",
-        "value": "holographic_cyan"
-    })
-    assert res_upd.status_code == 200
-    assert res_upd.json().get("status") == "success"
-    print("POST /api/memory/update preference verified!")
-
-    res_del = client.post("/api/memory/delete", json={
-        "type": "preference",
-        "id": "test_ui_theme"
-    })
-    assert res_del.status_code == 200
-    assert res_del.json().get("status") == "deleted"
-    print("POST /api/memory/delete preference verified!")
-
-    print("\nALL UI ENHANCEMENT TESTS PASSED 100%!")
+        res_del = client.post("/api/memory/delete", json={
+            "type": "preference",
+            "id": "test_ui_theme"
+        })
+        self.assertEqual(res_del.status_code, 200)
+        self.assertEqual(res_del.json().get("status"), "deleted")
 
 
 if __name__ == "__main__":
-    test_ui_telemetry_gathering()
-    test_ui_endpoints()
+    unittest.main()

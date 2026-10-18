@@ -6,6 +6,7 @@ from jarvis.core.cognition.proactive_evi import (
     DeliveryModality,
     TelemetrySlice,
     CognitiveTwinEngine,
+    PrewarmedContextEntry,
 )
 
 __all__ = [
@@ -13,6 +14,7 @@ __all__ = [
     "DeliveryModality",
     "TelemetrySlice",
     "CognitiveTwinEngine",
+    "PrewarmedContextEntry",
     "MotorCadenceTracker",
     "TemporalHabitGraph",
     "HabitPrediction",
