@@ -55,6 +55,10 @@ def _set_thread_realtime_priority(tag: str = "KokoroTTS"):
     pin_and_elevate_current_thread(tag=tag)
 
 
+_CACHED_KOKORO_SESSION: Dict[Tuple[str, str], Any] = {}
+_CACHED_KOKORO_LOCK = threading.Lock()
+
+
 class TextToSpeech:
     """Streams and plays synthesized neural audio with instant interrupt capability and local fallback."""
 
@@ -170,6 +174,13 @@ class TextToSpeech:
                 pass
 
             if os.path.exists(self.kokoro_model_path) and os.path.exists(self.kokoro_voices_path):
+                cache_key = (os.path.abspath(self.kokoro_model_path), os.path.abspath(self.kokoro_voices_path))
+                with _CACHED_KOKORO_LOCK:
+                    if cache_key in _CACHED_KOKORO_SESSION:
+                        self._kokoro = _CACHED_KOKORO_SESSION[cache_key]
+                        logger.debug("Reused cached Kokoro neural engine session.")
+                        return
+
                 from jarvis.audio.stt import _setup_nvidia_dll_paths
                 _setup_nvidia_dll_paths()
                 import onnxruntime as rt
@@ -262,12 +273,8 @@ class TextToSpeech:
                 except Exception as w_err:
                     logger.debug("Kokoro startup warmup note: %s", w_err)
 
-                logger.info(
-                    "Kokoro-82M neural engine loaded (%s) via %s in %.2fs (pre-warmed for instant speech).",
-                    self.kokoro_voice,
-                    active_prov,
-                    time.time() - t0,
-                )
+                with _CACHED_KOKORO_LOCK:
+                    _CACHED_KOKORO_SESSION[cache_key] = self._kokoro
             else:
                 logger.warning("Kokoro model files not found. Defaulting to SAPI5.")
                 self.engine = "sapi5"

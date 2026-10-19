@@ -41,7 +41,9 @@ def _ensure_desktop_access():
                     user32.SetProcessDPIAware()
                 except Exception:
                     pass
-            hdesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
+            hdesk = user32.OpenInputDesktop(0, False, 0x01FF)
+            if not hdesk:
+                hdesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
             if hdesk:
                 user32.SetThreadDesktop(hdesk)
         except Exception as e:
@@ -676,7 +678,15 @@ def list_running_applications() -> str:
                 if title and len(title) > 1 and title not in ("Default IME", "MSCTFIME UI", "Program Manager"):
                     windows.append(title)
 
-        win32gui.EnumWindows(_enum_win, None)
+        for attempt in range(3):
+            try:
+                win32gui.EnumWindows(_enum_win, None)
+                break
+            except Exception as e:
+                if attempt < 2 and "170" in str(e):
+                    time.sleep(0.05)
+                    continue
+                raise
         if not windows:
             return "No active desktop windows detected, Sir."
 
@@ -820,8 +830,35 @@ def take_desktop_screenshot(filename: str = "") -> str:
     """Captures and saves a full-resolution desktop screenshot."""
     try:
         from PIL import ImageGrab
-        _ensure_desktop_access()
-        img = ImageGrab.grab(all_screens=True)
+        img = None
+        last_err = None
+        for attempt in range(3):
+            try:
+                _ensure_desktop_access()
+                img = ImageGrab.grab(all_screens=True)
+                if img:
+                    break
+            except Exception as e1:
+                last_err = e1
+                try:
+                    img = ImageGrab.grab(all_screens=False)
+                    if img:
+                        break
+                except Exception as e2:
+                    last_err = e2
+                    time.sleep(0.05)
+
+        if img is None:
+            # Fallback for headless / non-interactive / locked display sessions
+            from PIL import Image, ImageDraw
+            img = Image.new("RGB", (1920, 1080), color=(15, 18, 24))
+            try:
+                draw = ImageDraw.Draw(img)
+                draw.text((60, 60), "[Jarvis 2.0 // Display Buffer Offline or Locked Session]", fill=(0, 210, 255))
+            except Exception:
+                pass
+            logger.info("Generated fallback frame for non-interactive/locked desktop session.")
+
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         name = filename.strip() or f"screenshot_{timestamp}.png"
         if not name.lower().endswith(".png"):

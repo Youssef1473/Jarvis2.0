@@ -39,6 +39,7 @@ class TestClosedLoopAndCorePreferencesSuite(unittest.TestCase):
         prod_skills.set_memory_manager(self.memory)
 
     def tearDown(self):
+        prod_skills.set_memory_manager(None)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_update_and_get_user_preferences_memory(self):

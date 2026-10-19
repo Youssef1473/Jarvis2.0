@@ -23,8 +23,10 @@ def _ensure_desktop_access():
                 except Exception:
                     pass
 
-            # Ensure thread desktop is attached to 'Default'
-            hdesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
+            # Ensure thread desktop is attached to active interactive input desktop
+            hdesk = user32.OpenInputDesktop(0, False, 0x01FF)
+            if not hdesk:
+                hdesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
             if hdesk:
                 user32.SetThreadDesktop(hdesk)
         except Exception as e:

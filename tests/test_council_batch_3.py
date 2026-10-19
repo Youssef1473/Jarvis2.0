@@ -95,6 +95,7 @@ def test_semantic_memory_integration():
     assert "Visual Studio Code" in biased_summary
 
     # Cleanup
+    set_memory_manager(None)
     if test_db.exists():
         try:
             os.remove(test_db)

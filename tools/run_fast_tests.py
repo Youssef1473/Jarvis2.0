@@ -25,6 +25,7 @@ HARDWARE_SERIAL_TESTS = [
     "tests/test_speech_normalizer.py",
     "tests/test_whisper_prosody.py",
     "tests/test_wake_word.py",
+    "tests/test_os_skills.py",
 ]
 
 
@@ -35,7 +36,7 @@ def get_pytest_bin() -> str:
     return "pytest"
 
 
-def run_parallel_fast_suite(workers: int = 4, verbose: bool = False) -> int:
+def run_parallel_fast_suite(workers: int = 2, verbose: bool = False) -> int:
     """Runs all non-hardware test suites sharded across worker processes."""
     pytest_bin = get_pytest_bin()
     cmd = [pytest_bin, "-n", str(workers), "--dist", "loadfile"]

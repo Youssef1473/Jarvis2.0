@@ -200,6 +200,10 @@ def set_memory_manager(mgr: Any) -> None:
 
 def _get_memory():
     global _memory_instance
+    if _memory_instance is not None:
+        db_path = getattr(_memory_instance, "db_path", None)
+        if db_path and not os.path.exists(db_path):
+            _memory_instance = None
     if _memory_instance is None:
         from jarvis.core.config_loader import load_config
         from jarvis.core.memory import MemoryManager

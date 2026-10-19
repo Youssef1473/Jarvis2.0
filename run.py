@@ -88,14 +88,11 @@ def main():
         except Exception:
             pass
 
-    # Check for CLI flags (--check-health, --omniroute, --stealth, --background, -b, -s)
     if "--check-health" in sys.argv:
-        logger = logging.getLogger("Jarvis.HealthCheck")
-        logger.info("Running Jarvis 2.0 system health check...")
-        cfg = load_config()
-        logger.info("Configuration loaded: provider=%s", cfg.get("llm", {}).get("provider"))
-        logger.info("Health check complete. System operational.")
-        sys.exit(0)
+        from jarvis.core.health_check import run_system_health_check, format_health_report
+        report = run_system_health_check()
+        print(format_health_report(report))
+        sys.exit(0 if report.get("status") == "HEALTHY" else 1)
 
     if "--omniroute" in sys.argv:
         os.environ["LLM_PROVIDER"] = "omniroute"

@@ -36,6 +36,7 @@ class TestEpisodicReflectionSuite(unittest.TestCase):
         self_evo.set_memory_manager(self.memory)
 
     def tearDown(self):
+        self_evo.set_memory_manager(None)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_record_and_deduplicate_episodic_lesson(self):
