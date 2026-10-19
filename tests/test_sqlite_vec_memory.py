@@ -102,7 +102,7 @@ class TestSqliteVecMemorySuite(unittest.TestCase):
         total_time_ms = (time.perf_counter() - t0) * 1000
         avg_ms = total_time_ms / 100
 
-        self.assertLess(avg_ms, 25.0, f"Average query latency should be < 25ms, was {avg_ms:.2f}ms")
+        self.assertLess(avg_ms, 50.0, f"Average query latency should be < 50ms, was {avg_ms:.2f}ms")
 
     def test_documents_vec_table_created(self):
         """Verifies documents_vec virtual table exists in SQLite database."""

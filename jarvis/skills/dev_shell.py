@@ -451,3 +451,50 @@ def cancel_background_task(task_id: str) -> str:
         return f"Background task '{task_id}' has been terminated, Sir."
     return f"Unable to cancel task '{task_id}'. It may not exist or has already completed, Sir."
 
+
+@SkillRegistry.register(
+    name="query_codebase_graph",
+    description="Queries the project's Tree-sitter knowledge graph (Graphify) to trace callers, dependencies, blast-radius, and architectural relationships across files in <1.5s."
+)
+def query_codebase_graph(query: str, mode: str = "query") -> str:
+    """Queries the local Graphify knowledge graph (graphify query / path / explain)."""
+    graph_path = WORKSPACE_DIR / "graphify-out" / "graph.json"
+    if not graph_path.exists():
+        return "No codebase knowledge graph found at graphify-out/graph.json. Run 'graphify extract . --code-only' first, Sir."
+
+    graphify_bin = sys.executable.replace("python.exe", "graphify.exe")
+    if not os.path.exists(graphify_bin):
+        graphify_bin = "graphify"
+
+    cmd = [graphify_bin]
+    clean_mode = (mode or "query").strip().lower()
+    if clean_mode == "path":
+        parts = query.split()
+        if len(parts) >= 2:
+            cmd.extend(["path", parts[0], parts[1]])
+        else:
+            cmd.extend(["query", query])
+    elif clean_mode == "explain":
+        cmd.extend(["explain", query.strip()])
+    else:
+        cmd.extend(["query", query])
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(WORKSPACE_DIR),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
+        if proc.returncode != 0 and not out:
+            return f"Graph query failed (code {proc.returncode}): {err}"
+        return out or err or "No relational nodes identified for that query, Sir."
+    except subprocess.TimeoutExpired:
+        return "Graph query timed out after 10 seconds, Sir."
+    except Exception as e:
+        return f"Graph query error: {e}"
+
+

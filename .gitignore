@@ -79,3 +79,8 @@ Thumbs.db
 
 # Arena tournament runtime workspace
 .arena/
+
+# Graphify knowledge graph outputs and cache
+graphify-out/
+.graphify/
+
