@@ -63,7 +63,7 @@ class InterimSpeechBridge:
         with self._lock:
             self.cancel_pending()
 
-            now = time.time()
+            now = time.monotonic()
             if now - self._last_speech_time < self.cooldown_sec:
                 logger.debug("Interim speech suppressed: cooldown active (%.2fs)", now - self._last_speech_time)
                 return
@@ -77,7 +77,7 @@ class InterimSpeechBridge:
                         logger.debug("Interim speech aborted: system is already speaking.")
                         return
 
-                    self._last_speech_time = time.time()
+                    self._last_speech_time = time.monotonic()
                     self._spoken_count += 1
                     logger.info("Acoustic interim phrase triggered for '%s': %s", tool_name, phrase)
 

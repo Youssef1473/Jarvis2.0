@@ -53,11 +53,13 @@ def test_semantic_memory_integration():
     print("\n--- Testing Semantic Memory Integration in MemoryManager ---")
     cfg = load_config()
     test_db = Path("data/test_semantic_memory.db")
-    if test_db.exists():
-        try:
-            os.remove(test_db)
-        except Exception:
-            pass
+    for suffix in ("", "-wal", "-shm"):
+        f = Path(str(test_db) + suffix)
+        if f.exists():
+            try:
+                os.remove(f)
+            except Exception:
+                pass
 
     cfg["memory"]["db_path"] = "data/test_semantic_memory.db"
     mem = MemoryManager(cfg)
@@ -96,11 +98,13 @@ def test_semantic_memory_integration():
 
     # Cleanup
     set_memory_manager(None)
-    if test_db.exists():
-        try:
-            os.remove(test_db)
-        except Exception:
-            pass
+    for suffix in ("", "-wal", "-shm"):
+        f = Path(str(test_db) + suffix)
+        if f.exists():
+            try:
+                os.remove(f)
+            except Exception:
+                pass
     print("Semantic Memory Integration: PASSED")
 
 

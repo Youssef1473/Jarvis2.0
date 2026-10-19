@@ -16,7 +16,7 @@ import logging
 import sys
 import threading
 import time
-from typing import Deque, Optional, Set, Tuple
+from typing import Any, Deque, Optional, Set, Tuple
 
 from jarvis.core.win32_affinity import (
     MASK_ECORE_BACKGROUND,

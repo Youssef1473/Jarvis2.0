@@ -32,9 +32,61 @@ __all__ = [
     "TextToSpeech",
     "StreamingSentenceChunker",
     "AudioRingBuffer",
+    "StatefulPolyphaseUpsampler",
     "create_bettanys_jarvis_voice_vector",
     "apply_cinematic_jarvis_dsp",
 ]
+
+
+class StatefulPolyphaseUpsampler:
+    """Eliminates the 0.96ms FIR group-delay boundary notch when upsampling
+    streaming 24kHz prosodic chunks to 48kHz WASAPI DMA buffers.
+    """
+
+    __slots__ = ("_up", "_down", "_pad_samples", "_tail_24k")
+
+    def __init__(self, up: int = 2, down: int = 1, pad_samples: int = 32) -> None:
+        self._up = int(up)
+        self._down = int(down)
+        self._pad_samples = int(pad_samples)
+        self._tail_24k: np.ndarray | None = None
+
+    def reset(self) -> None:
+        """Flushes lookbehind filter state on turn boundary or barge-in."""
+        self._tail_24k = None
+
+    def process(self, chunk_24k: np.ndarray) -> np.ndarray:
+        """Upsamples a 1D float32 PCM chunk seamlessly across chunk boundaries."""
+        pcm = np.asarray(chunk_24k, dtype=np.float32).ravel()
+        if pcm.size == 0:
+            return pcm
+        if self._up == self._down:
+            return pcm
+
+        try:
+            from scipy.signal import resample_poly
+        except ImportError:
+            return pcm
+
+        p = self._pad_samples
+        if self._tail_24k is not None and self._tail_24k.size == p:
+            extended = np.concatenate((self._tail_24k, pcm))
+            upsampled = resample_poly(extended, up=self._up, down=self._down).astype(
+                np.float32, copy=False
+            )
+            trim = (p * self._up) // self._down
+            out = upsampled[trim:]
+        else:
+            out = resample_poly(pcm, up=self._up, down=self._down).astype(
+                np.float32, copy=False
+            )
+
+        if pcm.size >= p:
+            self._tail_24k = pcm[-p:].copy()
+        else:
+            self._tail_24k = None
+        return np.ascontiguousarray(out, dtype=np.float32)
+
 
 
 def create_bettanys_jarvis_voice_vector(kokoro_instance) -> np.ndarray:
@@ -126,6 +178,7 @@ class TextToSpeech:
         self._stream_device: Optional[int] = None
         self._stream_sample_rate: int = 24000
         self._synth_has_started: bool = False
+        self._resampler = StatefulPolyphaseUpsampler(up=2, down=1, pad_samples=32)
 
         # Kokoro engine instance
         self._kokoro = None
@@ -388,6 +441,10 @@ class TextToSpeech:
         # Reset speculative token chunker
         if hasattr(self, "_chunker"):
             self._chunker.reset()
+
+        # Reset stateful polyphase resampler lookbehind tail
+        if hasattr(self, "_resampler"):
+            self._resampler.reset()
 
         # Trigger clickless barge-in (< 1 microsecond atomic epoch reset + 2.5ms cos^2 ramp)
         if hasattr(self, "_ring_buffer"):
@@ -669,6 +726,8 @@ class TextToSpeech:
 
         if hasattr(self, "_chunker"):
             self._chunker.reset()
+        if hasattr(self, "_resampler"):
+            self._resampler.reset()
         if hasattr(self, "_ring_buffer"):
             self._ring_buffer.clear()
 
@@ -724,8 +783,7 @@ class TextToSpeech:
                             # Seamless polyphase resample to 48kHz for native WASAPI hardware stream
                             if getattr(self, "_stream_sample_rate", 24000) == 48000:
                                 try:
-                                    import scipy.signal
-                                    padded_samples = scipy.signal.resample_poly(padded_samples, 2, 1).astype(np.float32)
+                                    padded_samples = self._resampler.process(padded_samples)
                                 except Exception:
                                     pass
 

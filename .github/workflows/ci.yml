@@ -1,0 +1,38 @@
+name: Jarvis 2.0 Sovereign Test Gate
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  fast-tests:
+    name: Fast Parallel Test Suite
+    runs-on: windows-latest
+    env:
+      CI: "true"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-xdist
+          pip install -r requirements.txt
+
+      - name: Run Fast Parallel Test Suite (Non-Hardware)
+        run: |
+          python tools/run_fast_tests.py --fast -w 2

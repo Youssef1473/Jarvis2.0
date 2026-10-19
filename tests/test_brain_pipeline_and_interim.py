@@ -54,7 +54,7 @@ class TestInterimSpeechBridge(unittest.TestCase):
             speak_fn=lambda phrase: spoken.append(phrase),
             delay_step1_sec=0.03,
             delay_step_n_sec=0.02,
-            cooldown_sec=0.4,
+            cooldown_sec=2.0,
         )
 
         # Step 1 fires

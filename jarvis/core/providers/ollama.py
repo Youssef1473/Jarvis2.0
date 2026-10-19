@@ -5,6 +5,7 @@ Recursion is stripped and delegated to UnifiedRunner.
 """
 import json
 import logging
+import re
 import time
 from typing import Any, Callable, Dict, List, Optional
 

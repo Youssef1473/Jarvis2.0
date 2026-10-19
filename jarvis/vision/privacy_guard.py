@@ -20,6 +20,28 @@ logger = logging.getLogger("Jarvis.Vision.PrivacyGuard")
 # DWM Window Attributes
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
 DWMWA_CLOAKED = 14
+IS_WINDOWS = sys.platform == "win32"
+
+
+def is_window_dwm_cloaked(hwnd: int) -> bool:
+    """Returns True if `hwnd` is cloaked by Windows 11 DWM (e.g., on an inactive
+    Virtual Desktop or suspended UWP background frame) and therefore invisible
+    on the physical monitor.
+    """
+    if not IS_WINDOWS or not hwnd:
+        return False
+    try:
+        dwmapi = ctypes.windll.dwmapi
+        cloaked = wintypes.DWORD(0)
+        hr = dwmapi.DwmGetWindowAttribute(
+            wintypes.HWND(hwnd),
+            wintypes.DWORD(DWMWA_CLOAKED),
+            ctypes.byref(cloaked),
+            ctypes.sizeof(cloaked),
+        )
+        return hr == 0 and bool(cloaked.value != 0)
+    except Exception:
+        return False
 
 SENSITIVE_PROCESSES: Set[str] = {
     "1password.exe",
@@ -163,11 +185,7 @@ class ZOrderPrivacyGuard:
                 return True
 
             # 2. Skip cloaked windows (e.g. inactive virtual desktops, shell hidden)
-            cloaked = ctypes.c_int(0)
-            res_cloaked = dwmapi.DwmGetWindowAttribute(
-                hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked)
-            )
-            if res_cloaked == 0 and cloaked.value != 0:
+            if is_window_dwm_cloaked(hwnd):
                 return True
 
             # 3. Retrieve window title

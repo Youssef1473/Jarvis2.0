@@ -11,10 +11,10 @@ from pathlib import Path
 from html.parser import HTMLParser
 from typing import List, Dict, Any, Optional
 
-import warnings
-warnings.filterwarnings("ignore", category=RuntimeWarning, module="duckduckgo_search")
-
-from duckduckgo_search import DDGS
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.DeepResearch")

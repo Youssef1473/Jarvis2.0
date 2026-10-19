@@ -1,4 +1,4 @@
-﻿# Core Brain & LLM
+# Core Brain & LLM
 google-genai>=0.1.1
 openai>=1.0.0
 python-dotenv>=1.0.0
@@ -37,6 +37,7 @@ sqlite-vec>=0.1.1
 
 # Web, Documents, Productivity & Extensibility
 duckduckgo-search>=6.0.0
+ddgs>=7.0.0
 mcp>=1.0.0
 playwright>=1.40.0
 pypdf>=4.0.0

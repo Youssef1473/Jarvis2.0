@@ -3,6 +3,7 @@ Leverages authenticated Google Antigravity CLI sessions to tap into Google AI Pr
 (Gemini 3.8 Flash High/Medium/Low, Claude Sonnet 4.6, Claude Opus 4.6, and staged Gemini 4 Argon) with zero API keys.
 """
 from collections import OrderedDict
+import codecs
 import json
 import logging
 import os
@@ -167,6 +168,7 @@ class AntigravityDaemon:
             avail_bytes = wintypes.DWORD()
             deadline = (time.perf_counter() + timeout) if timeout and timeout > 0 else None
             buf = ""
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
             while True:
                 if initial_epoch is not None and int(GLOBAL_EPOCH_STATE.barge_in_epoch) != initial_epoch:
@@ -178,6 +180,7 @@ class AntigravityDaemon:
 
                 res = kernel32.PeekNamedPipe(pipe_handle, None, 0, None, ctypes.byref(avail_bytes), None)
                 if not res:
+                    buf += decoder.decode(b"", final=True)
                     if buf:
                         yield buf
                     break
@@ -187,19 +190,22 @@ class AntigravityDaemon:
                     try:
                         chunk = os.read(raw_fd, min(4096, n_avail))
                         if not chunk:
+                            buf += decoder.decode(b"", final=True)
                             if buf:
                                 yield buf
                             break
-                        buf += chunk.decode("utf-8", errors="replace")
+                        buf += decoder.decode(chunk)
                         while "\n" in buf:
                             line, buf = buf.split("\n", 1)
                             yield line + "\n"
                     except (OSError, ValueError):
+                        buf += decoder.decode(b"", final=True)
                         if buf:
                             yield buf
                         break
                 else:
                     if proc.poll() is not None:
+                        buf += decoder.decode(b"", final=True)
                         if buf:
                             yield buf
                         break
@@ -207,18 +213,21 @@ class AntigravityDaemon:
 
         elif raw_fd is not None:
             buf = ""
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             while True:
                 try:
                     chunk = os.read(raw_fd, 4096)
                     if not chunk:
+                        buf += decoder.decode(b"", final=True)
                         if buf:
                             yield buf
                         break
-                    buf += chunk.decode("utf-8", errors="replace")
+                    buf += decoder.decode(chunk)
                     while "\n" in buf:
                         line, buf = buf.split("\n", 1)
                         yield line + "\n"
                 except (OSError, ValueError):
+                    buf += decoder.decode(b"", final=True)
                     if buf:
                         yield buf
                     break

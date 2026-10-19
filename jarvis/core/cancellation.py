@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger("Jarvis.Core.Cancellation")
 

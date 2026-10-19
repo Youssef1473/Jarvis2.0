@@ -7,7 +7,7 @@ import re
 import sys
 import threading
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import numpy as np
 import sounddevice as sd
 
@@ -78,9 +78,10 @@ class JarvisOrchestrator:
         from jarvis.conversation.bookmarks import ReasoningBookmarkStack
         self.bookmarks = ReasoningBookmarkStack.get_instance()
         from jarvis.core.pipeline.latency_profiler import PipelineLatencyProfiler
+        from jarvis.skills.diagnostics import get_global_latency_profiler
         self.latency_profiler: PipelineLatencyProfiler = (
             getattr(self.brain, "latency_profiler", None)
-            or jarvis.skills.diagnostics.get_global_latency_profiler()
+            or get_global_latency_profiler()
         )
         self.tool_orchestrator = getattr(self.brain, "tool_orchestrator", None)
         self._active_turn_id: Optional[str] = None

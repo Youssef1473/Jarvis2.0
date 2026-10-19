@@ -1,5 +1,6 @@
 """System tray icon and stealth background manager for Jarvis 2.0."""
 import ctypes
+import logging
 import os
 from pathlib import Path
 import sys
@@ -10,6 +11,8 @@ from tkinter import ttk
 from typing import Optional, Callable, Any
 from PIL import Image, ImageDraw
 import pystray
+
+logger = logging.getLogger("Jarvis.UI.Tray")
 
 
 def create_tray_icon_image(status: str = "online") -> Image.Image:

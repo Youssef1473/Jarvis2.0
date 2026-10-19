@@ -126,7 +126,7 @@ class TestAudioChunkSegmentation(unittest.TestCase):
         from jarvis.audio.tts import TextToSpeech
         text = "Very well, Sir. I shall begin immediately."
         chunks = TextToSpeech._split_into_audio_chunks(None, text)
-        self.assertEqual(chunks, ["Very well,", "Sir.", "I shall begin immediately."])
+        self.assertEqual(chunks, ["Very well, Sir.", "I shall begin immediately."])
 
     def test_single_word_terminal_clause(self):
         from jarvis.audio.tts import TextToSpeech

@@ -27,6 +27,58 @@ logger = logging.getLogger("Jarvis.OSControl")
 _app_index_cache: Dict[str, str] = {}
 _app_index_initialized: bool = False
 
+IS_WINDOWS = sys.platform == "win32"
+SW_RESTORE = 9
+VK_MENU = 0x12
+KEYEVENTF_EXTENDEDKEY = 0x0001
+KEYEVENTF_KEYUP = 0x0002
+
+
+def safe_set_foreground_window(target_hwnd: int) -> bool:
+    """Brings `target_hwnd` to the foreground without risking an `AttachThreadInput`
+    kernel message-queue deadlock if the current foreground window is unresponsive.
+    """
+    if not IS_WINDOWS or not target_hwnd:
+        return False
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        hwnd = wintypes.HWND(target_hwnd)
+
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, SW_RESTORE)
+
+        fg_hwnd = user32.GetForegroundWindow()
+        if fg_hwnd == target_hwnd:
+            return True
+
+        # Never call AttachThreadInput if the current foreground window is hung
+        fg_is_hung = bool(fg_hwnd and user32.IsHungAppWindow(wintypes.HWND(fg_hwnd)))
+
+        if not fg_is_hung and fg_hwnd:
+            curr_tid = kernel32.GetCurrentThreadId()
+            fg_tid = user32.GetWindowThreadProcessId(wintypes.HWND(fg_hwnd), None)
+            if curr_tid and fg_tid and curr_tid != fg_tid:
+                attached = bool(user32.AttachThreadInput(curr_tid, fg_tid, True))
+                try:
+                    user32.BringWindowToTop(hwnd)
+                    if user32.SetForegroundWindow(hwnd):
+                        return True
+                finally:
+                    if attached:
+                        user32.AttachThreadInput(curr_tid, fg_tid, False)
+
+        # Fallback: synthetic Alt key tap releases Windows foreground lock safely
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY, 0)
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+        return bool(user32.SetForegroundWindow(hwnd))
+    except Exception as e:
+        logger.debug("safe_set_foreground_window error: %s", e)
+        return False
+
 
 def _ensure_desktop_access():
     """Ensures thread is attached to the interactive Windows desktop."""
@@ -1139,14 +1191,15 @@ def close_browser_tab(browser: str = "brave", tab_title: str = "") -> str:
 
             if matched_hwnds:
                 hwnd, found_title = matched_hwnds[0]
-                try:
-                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                    win32gui.SetForegroundWindow(hwnd)
-                except Exception:
+                if not safe_set_foreground_window(hwnd):
                     try:
-                        win32gui.BringWindowToTop(hwnd)
+                        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                        win32gui.SetForegroundWindow(hwnd)
                     except Exception:
-                        pass
+                        try:
+                            win32gui.BringWindowToTop(hwnd)
+                        except Exception:
+                            pass
             else:
                 return f"No open {browser_clean.title()} window was found to close a tab, Sir."
 
@@ -1216,14 +1269,15 @@ def focus_window(title: str) -> str:
             return f"No open window matching '{title}' was found, Sir."
 
         hwnd, found_title = matched_hwnds[0]
-        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-        try:
-            win32gui.SetForegroundWindow(hwnd)
-        except Exception:
+        if not safe_set_foreground_window(hwnd):
             try:
-                win32gui.BringWindowToTop(hwnd)
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.SetForegroundWindow(hwnd)
             except Exception:
-                pass
+                try:
+                    win32gui.BringWindowToTop(hwnd)
+                except Exception:
+                    pass
 
         # Closed-Loop Verification Gate
         time.sleep(0.04)

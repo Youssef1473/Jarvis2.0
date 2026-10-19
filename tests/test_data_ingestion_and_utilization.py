@@ -21,8 +21,13 @@ class TestDataIngestionAndUtilization(unittest.TestCase):
         cls.config = load_config()
         # Use a temporary test db to guarantee clean test isolation
         cls.test_db = Path("data/test_ingestion_utilization.db")
-        if cls.test_db.exists():
-            cls.test_db.unlink()
+        for suffix in ("", "-wal", "-shm"):
+            f = Path(str(cls.test_db) + suffix)
+            if f.exists():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
         cls.test_config = dict(cls.config)
         cls.test_config["memory"] = {"db_path": str(cls.test_db)}
         cls.memory = MemoryManager(cls.test_config)
@@ -33,11 +38,13 @@ class TestDataIngestionAndUtilization(unittest.TestCase):
         cls.memory = None
         import gc
         gc.collect()
-        if cls.test_db.exists():
-            try:
-                cls.test_db.unlink()
-            except Exception:
-                pass
+        for suffix in ("", "-wal", "-shm"):
+            f = Path(str(cls.test_db) + suffix)
+            if f.exists():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
 
     def setUp(self):
         # Reset memory instance for skills

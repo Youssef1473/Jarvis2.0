@@ -26,20 +26,34 @@ HARDWARE_SERIAL_TESTS = [
     "tests/test_whisper_prosody.py",
     "tests/test_wake_word.py",
     "tests/test_os_skills.py",
+    "tests/test_phase3_onnx_router.py",
 ]
 
 
-def get_pytest_bin() -> str:
+def get_pytest_cmd() -> list[str]:
+    """Resolves the pytest command across local, workspace, and system virtualenvs."""
+    # 1. Direct pytest.exe next to active python executable
     pytest_bin = Path(sys.executable).parent / "pytest.exe"
     if pytest_bin.exists():
-        return str(pytest_bin)
-    return "pytest"
+        return [str(pytest_bin)]
+
+    # 2. Primary workspace .venv (C:\Users\Youssef\Projects\.venv)
+    parent_pytest = WORKSPACE_ROOT.parent / ".venv" / "Scripts" / "pytest.exe"
+    if parent_pytest.exists():
+        return [str(parent_pytest)]
+
+    # 3. Local repository .venv
+    local_pytest = WORKSPACE_ROOT / ".venv" / "Scripts" / "pytest.exe"
+    if local_pytest.exists():
+        return [str(local_pytest)]
+
+    # 4. Fallback to active python -m pytest
+    return [sys.executable, "-m", "pytest"]
 
 
 def run_parallel_fast_suite(workers: int = 2, verbose: bool = False) -> int:
     """Runs all non-hardware test suites sharded across worker processes."""
-    pytest_bin = get_pytest_bin()
-    cmd = [pytest_bin, "-n", str(workers), "--dist", "loadfile"]
+    cmd = get_pytest_cmd() + ["-n", str(workers), "--dist", "loadfile"]
     if not verbose:
         cmd.append("-q")
     
@@ -57,13 +71,12 @@ def run_parallel_fast_suite(workers: int = 2, verbose: bool = False) -> int:
 
 def run_serial_hardware_suite(verbose: bool = False) -> int:
     """Runs audio, ONNX GPU, and hardware test suites serially to prevent DLL conflicts."""
-    pytest_bin = get_pytest_bin()
     existing_hw_tests = [t for t in HARDWARE_SERIAL_TESTS if (WORKSPACE_ROOT / t).exists()]
     if not existing_hw_tests:
         print("[Tier 2] No hardware tests found to run.")
         return 0
 
-    cmd = [pytest_bin]
+    cmd = list(get_pytest_cmd())
     if not verbose:
         cmd.append("-q")
     cmd.extend(existing_hw_tests)
@@ -78,12 +91,11 @@ def run_serial_hardware_suite(verbose: bool = False) -> int:
 
 def run_targeted_test(target: str, verbose: bool = False) -> int:
     """Runs a specific test file or directory directly."""
-    pytest_bin = get_pytest_bin()
     target_path = Path(target)
     if not target_path.is_absolute() and not str(target).startswith("tests"):
         target_path = Path("tests") / target
 
-    cmd = [pytest_bin]
+    cmd = list(get_pytest_cmd())
     if verbose:
         cmd.append("-v")
     cmd.append(str(target_path))
@@ -109,8 +121,7 @@ def main():
     args = parser.parse_args()
 
     if args.failed:
-        pytest_bin = get_pytest_bin()
-        cmd = [pytest_bin, "--lf"]
+        cmd = get_pytest_cmd() + ["--lf"]
         if args.verbose:
             cmd.append("-v")
         return subprocess.run(cmd, cwd=str(WORKSPACE_ROOT)).returncode

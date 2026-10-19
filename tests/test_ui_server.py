@@ -56,5 +56,4 @@ class TestUIServer(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    test_ui_server_lifecycle()
-    print("ALL UI SERVER TESTS PASSED CLEANLY!")
+    unittest.main()

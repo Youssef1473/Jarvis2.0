@@ -48,7 +48,7 @@ class ReadOnlyConnectionPool:
 
         # Connect with URI mode=ro
         uri_path = f"file:{resolved.as_posix()}?mode=ro"
-        conn = sqlite3.connect(uri_path, uri=True, check_same_thread=False)
+        conn = sqlite3.connect(uri_path, uri=True, check_same_thread=False, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only = ON;")
         conn.execute("PRAGMA synchronous = NORMAL;")
@@ -78,6 +78,10 @@ class ReadOnlyConnectionPool:
                 yield conn
             finally:
                 try:
+                    conn.commit()
+                except Exception:
+                    pass
+                try:
                     conn.close()
                 except Exception:
                     pass
@@ -90,8 +94,12 @@ class ReadOnlyConnectionPool:
 
         try:
             yield conn
-        except Exception:
-            raise
+        finally:
+            try:
+                # Release historical WAL read-mark to avoid pinning frames during checkpoint(TRUNCATE)
+                conn.commit()
+            except Exception:
+                pass
 
     def close_current_thread(self) -> None:
         """Closes all connections owned by calling thread."""

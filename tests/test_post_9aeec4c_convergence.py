@@ -182,6 +182,162 @@ class TestPost9aeec4cConvergence(unittest.TestCase):
             percentiles = orch.latency_profiler.get_percentiles()
             self.assertIn("stt_ms", percentiles)
 
+    def test_stateful_polyphase_upsampler(self):
+        """Verifies StatefulPolyphaseUpsampler carries 32-sample lookbehind tail to eliminate FIR boundary notch."""
+        import numpy as np
+        from jarvis.audio.tts import StatefulPolyphaseUpsampler
+
+        upsampler = StatefulPolyphaseUpsampler(up=2, down=1, pad_samples=32)
+        self.assertIsNone(upsampler._tail_24k)
+
+        # First chunk
+        chunk1 = np.ones(100, dtype=np.float32)
+        out1 = upsampler.process(chunk1)
+        self.assertEqual(out1.shape, (200,))
+        self.assertEqual(out1.dtype, np.float32)
+        self.assertIsNotNone(upsampler._tail_24k)
+        self.assertEqual(len(upsampler._tail_24k), 32)
+        np.testing.assert_array_equal(upsampler._tail_24k, chunk1[-32:])
+
+        # Second chunk uses previous tail
+        chunk2 = np.ones(80, dtype=np.float32) * 2.0
+        out2 = upsampler.process(chunk2)
+        self.assertEqual(out2.shape, (160,))
+        self.assertEqual(out2.dtype, np.float32)
+        np.testing.assert_array_equal(upsampler._tail_24k, chunk2[-32:])
+
+        # Reset flushes lookbehind tail
+        upsampler.reset()
+        self.assertIsNone(upsampler._tail_24k)
+
+        # Empty array handling
+        empty = np.array([], dtype=np.float32)
+        self.assertEqual(len(upsampler.process(empty)), 0)
+
+    def test_is_window_dwm_cloaked(self):
+        """Verifies is_window_dwm_cloaked detects Windows 11 DWM cloaked windows on inactive virtual desktops."""
+        import ctypes
+        from ctypes import wintypes
+        from jarvis.vision.privacy_guard import is_window_dwm_cloaked
+
+        # Invalid HWND returns False
+        self.assertFalse(is_window_dwm_cloaked(0))
+
+        # Mock dwmapi.DwmGetWindowAttribute returning cloaked != 0
+        def fake_dwm_cloaked(hwnd, attr, out_ptr, size):
+            val = wintypes.DWORD(1)
+            ctypes.memmove(out_ptr, ctypes.byref(val), ctypes.sizeof(val))
+            return 0
+
+        with patch("ctypes.windll.dwmapi.DwmGetWindowAttribute", side_effect=fake_dwm_cloaked):
+            self.assertTrue(is_window_dwm_cloaked(99999))
+
+        # Mock dwmapi.DwmGetWindowAttribute returning cloaked == 0 (uncloaked)
+        def fake_dwm_uncloaked(hwnd, attr, out_ptr, size):
+            val = wintypes.DWORD(0)
+            ctypes.memmove(out_ptr, ctypes.byref(val), ctypes.sizeof(val))
+            return 0
+
+        with patch("ctypes.windll.dwmapi.DwmGetWindowAttribute", side_effect=fake_dwm_uncloaked):
+            self.assertFalse(is_window_dwm_cloaked(99999))
+
+        # Exception fallback returns False
+        with patch("ctypes.windll.dwmapi.DwmGetWindowAttribute", side_effect=RuntimeError("DWM error")):
+            self.assertFalse(is_window_dwm_cloaked(99999))
+
+    def test_hung_app_window_safe_foreground_activation(self):
+        """Verifies safe_set_foreground_window checks IsHungAppWindow and skips AttachThreadInput on hung windows."""
+        from jarvis.skills.os_control import safe_set_foreground_window
+
+        # Invalid HWND
+        self.assertFalse(safe_set_foreground_window(0))
+
+        # Case 1: Foreground window is hung -> Must skip AttachThreadInput and fallback to VK_MENU
+        with patch("ctypes.windll.user32.IsIconic", return_value=0), \
+             patch("ctypes.windll.user32.GetForegroundWindow", return_value=5555), \
+             patch("ctypes.windll.user32.IsHungAppWindow", return_value=1) as mock_hung, \
+             patch("ctypes.windll.user32.AttachThreadInput") as mock_attach, \
+             patch("ctypes.windll.user32.keybd_event") as mock_keybd, \
+             patch("ctypes.windll.user32.SetForegroundWindow", return_value=1) as mock_set_fg:
+            success = safe_set_foreground_window(8888)
+            self.assertTrue(success)
+            mock_hung.assert_called_once()
+            # Must NOT call AttachThreadInput when foreground is hung
+            mock_attach.assert_not_called()
+            # Must call synthetic VK_MENU (Alt key) fallback
+            self.assertGreaterEqual(mock_keybd.call_count, 2)
+            mock_set_fg.assert_called_once()
+
+        # Case 2: Foreground window is NOT hung -> Can attach thread input
+        with patch("ctypes.windll.user32.IsIconic", return_value=0), \
+             patch("ctypes.windll.user32.GetForegroundWindow", return_value=5555), \
+             patch("ctypes.windll.user32.IsHungAppWindow", return_value=0) as mock_hung2, \
+             patch("ctypes.windll.kernel32.GetCurrentThreadId", return_value=101), \
+             patch("ctypes.windll.user32.GetWindowThreadProcessId", return_value=202), \
+             patch("ctypes.windll.user32.AttachThreadInput", return_value=1) as mock_attach2, \
+             patch("ctypes.windll.user32.BringWindowToTop", return_value=1), \
+             patch("ctypes.windll.user32.SetForegroundWindow", return_value=1):
+            success = safe_set_foreground_window(8888)
+            self.assertTrue(success)
+            mock_hung2.assert_called_once()
+            # Must attach and detach
+            self.assertEqual(mock_attach2.call_count, 2)
+
+    def test_incremental_utf8_pipe_decoding(self):
+        """Verifies multibyte UTF-8 characters split across pipe buffer boundaries do not corrupt."""
+        import codecs
+
+        # Test string containing multibyte characters: 3-byte unicode symbol '⚡' (b'\xe2\x9a\xa1')
+        full_text = "⚡ System status: operational → all green\n"
+        raw_bytes = full_text.encode("utf-8")
+
+        # Split directly in the middle of '⚡' (first 2 bytes in chunk1, 3rd byte in chunk2)
+        chunk1 = raw_bytes[:2]
+        chunk2 = raw_bytes[2:]
+
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        part1 = decoder.decode(chunk1)
+        self.assertEqual(part1, "", "Incomplete multibyte sequence should buffer without yielding corrupt replacement char")
+        part2 = decoder.decode(chunk2)
+        reconstructed = part1 + part2
+        self.assertEqual(reconstructed, full_text)
+        self.assertNotIn("\ufffd", reconstructed)
+
+    def test_ro_pool_wal_read_mark_unpinned(self):
+        """Verifies ro_pool connections use autocommit (isolation_level=None) and release read-marks on context exit."""
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from jarvis.memory.ro_pool import ReadOnlyConnectionPool
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "test_wal_unpin.db"
+            # Initialize WAL mode database with single writer
+            conn_w = sqlite3.connect(str(db_path))
+            conn_w.execute("PRAGMA journal_mode=WAL;")
+            conn_w.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);")
+            conn_w.execute("INSERT INTO items (name) VALUES ('alpha');")
+            conn_w.commit()
+
+            pool = ReadOnlyConnectionPool.get_instance(db_path)
+
+            # Borrow read-only connection
+            with pool.connection(db_path) as conn_ro:
+                self.assertIsNone(conn_ro.isolation_level)
+                cursor = conn_ro.execute("SELECT * FROM items WHERE name = 'alpha';")
+                row = cursor.fetchone()
+                self.assertEqual(row["name"], "alpha")
+
+            # Upon exiting context manager, read transaction snapshot must be committed/released
+            # Checkpoint TRUNCATE should succeed with zero lock contention
+            cursor_ckpt = conn_w.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            ckpt_res = cursor_ckpt.fetchone()
+            # ckpt_res is (busy, log, checkpointed) -> busy must be 0
+            self.assertEqual(ckpt_res[0], 0, f"Expected checkpoint busy=0 (unpinned), got: {ckpt_res}")
+            conn_w.close()
+            pool.close_current_thread()
+
 
 if __name__ == "__main__":
     unittest.main()
+
