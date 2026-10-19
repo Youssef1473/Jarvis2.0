@@ -62,13 +62,31 @@ class EnvironmentEpochTracker:
 
     def bump_fs_epoch(self, usn: int | None = None) -> None:
         self._fs_usn_epoch = int(usn) if usn is not None else (self._fs_usn_epoch + 1)
+        try:
+            from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker, ResourceScope
+            with FlowEpochTracker._lock:
+                FlowEpochTracker._epochs[ResourceScope.FILESYSTEM] = FlowEpochTracker._epochs.get(ResourceScope.FILESYSTEM, 0) + 1
+        except Exception:
+            pass
 
     def update_git_head(self, head_ref: str) -> None:
         digest = hashlib.blake2b(head_ref.encode("utf-8"), digest_size=4).digest()
         self._git_head_crc = int.from_bytes(digest, "little")
+        try:
+            from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker, ResourceScope
+            with FlowEpochTracker._lock:
+                FlowEpochTracker._epochs[ResourceScope.GIT] = FlowEpochTracker._epochs.get(ResourceScope.GIT, 0) + 1
+        except Exception:
+            pass
 
     def bump_terminal_seq(self) -> None:
         self._terminal_seq += 1
+        try:
+            from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker, ResourceScope
+            with FlowEpochTracker._lock:
+                FlowEpochTracker._epochs[ResourceScope.TERMINAL] = FlowEpochTracker._epochs.get(ResourceScope.TERMINAL, 0) + 1
+        except Exception:
+            pass
 
     def set_active_hwnd(self, hwnd: int) -> None:
         self._active_hwnd = int(hwnd)
@@ -90,16 +108,7 @@ class EnvironmentEpochTracker:
     @classmethod
     def bump(cls, scope: Any) -> int:
         from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker
-        res = FlowEpochTracker.bump(scope)
-        inst = cls.get_instance()
-        scope_name = getattr(scope, "name", str(scope))
-        if "FILESYSTEM" in scope_name:
-            inst.bump_fs_epoch()
-        if "TERMINAL" in scope_name:
-            inst.bump_terminal_seq()
-        if "GIT" in scope_name:
-            inst.update_git_head(str(time.time_ns()))
-        return res
+        return FlowEpochTracker.bump(scope)
 
     @classmethod
     def get_epoch(cls, scope: Any) -> int:
@@ -115,7 +124,6 @@ class EnvironmentEpochTracker:
     def reset(cls) -> None:
         from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker
         FlowEpochTracker.reset()
-        cls.get_instance().reset_instance()
 
 
 @dataclass(frozen=True)

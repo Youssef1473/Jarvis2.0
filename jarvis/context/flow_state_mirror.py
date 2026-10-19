@@ -46,7 +46,22 @@ class EnvironmentEpochTracker:
             for flag in ResourceScope:
                 if flag != ResourceScope.NONE and (scope & flag):
                     cls._epochs[flag] = cls._epochs.get(flag, 0) + 1
-            return cls._epochs.get(scope, 0)
+            res = cls._epochs.get(scope, 0)
+        try:
+            from jarvis.speculative.engine import EnvironmentEpochTracker as SpecEpochTracker
+            inst = SpecEpochTracker.get_instance()
+            scope_name = getattr(scope, "name", str(scope))
+            if "FILESYSTEM" in scope_name:
+                inst._fs_usn_epoch += 1
+            if "TERMINAL" in scope_name:
+                inst._terminal_seq += 1
+            if "GIT" in scope_name:
+                import hashlib
+                digest = hashlib.blake2b(str(time.time_ns()).encode("utf-8"), digest_size=4).digest()
+                inst._git_head_crc = int.from_bytes(digest, "little")
+        except Exception:
+            pass
+        return res
 
     @classmethod
     def get_epoch(cls, scope: ResourceScope) -> int:
@@ -70,6 +85,11 @@ class EnvironmentEpochTracker:
         with cls._lock:
             for flag in ResourceScope:
                 cls._epochs[flag] = 0
+        try:
+            from jarvis.speculative.engine import EnvironmentEpochTracker as SpecEpochTracker
+            SpecEpochTracker.get_instance().reset_instance()
+        except Exception:
+            pass
 
 
 @dataclass

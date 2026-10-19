@@ -77,6 +77,12 @@ class JarvisOrchestrator:
 
         from jarvis.conversation.bookmarks import ReasoningBookmarkStack
         self.bookmarks = ReasoningBookmarkStack.get_instance()
+        from jarvis.core.pipeline.latency_profiler import PipelineLatencyProfiler
+        self.latency_profiler: PipelineLatencyProfiler = (
+            getattr(self.brain, "latency_profiler", None)
+            or jarvis.skills.diagnostics.get_global_latency_profiler()
+        )
+        self.tool_orchestrator = getattr(self.brain, "tool_orchestrator", None)
         self._active_turn_id: Optional[str] = None
         self._active_query: str = ""
         self._active_topic_label: str = "the architecture"
@@ -552,7 +558,11 @@ class JarvisOrchestrator:
         self._active_query = utterance
         self._active_tool_outputs.clear()
 
-        bookmark_xml = self.bookmarks.format_prompt_injection(utterance) if hasattr(self, "bookmarks") else ""
+        if hasattr(self, "latency_profiler") and self.latency_profiler:
+            self.latency_profiler.begin_turn(turn_id)
+            self.latency_profiler.mark(turn_id, "stt_final_ns")
+
+        bookmark_xml = self.bookmarks.format_prompt_injection(utterance) if hasattr(self, "bookmarks") and self.bookmarks else ""
         flow_xml = ""
         try:
             from jarvis.context.flow_state_mirror import FlowStateMirror
@@ -568,6 +578,10 @@ class JarvisOrchestrator:
             )
             self._active_topic_label = topic_label
             self._active_tool_outputs.update(tool_outputs)
+            if hasattr(self, "latency_profiler") and self.latency_profiler:
+                self.latency_profiler.mark(turn_id, "tts_first_chunk_ns")
+                self.latency_profiler.mark(turn_id, "audio_first_frame_ns")
+                self.latency_profiler.complete_turn(turn_id)
             if hasattr(self.tts, "queue_response_clauses"):
                 self.tts.queue_response_clauses(turn_id=turn_id, text=response_text)
             return response_text
@@ -625,12 +639,25 @@ class JarvisOrchestrator:
         self._active_topic_label = self._extract_topic_label(query)
         self._active_tool_outputs = {}
 
+        if hasattr(self, "latency_profiler") and self.latency_profiler:
+            self.latency_profiler.begin_turn(self._active_turn_id)
+            self.latency_profiler.mark(self._active_turn_id, "stt_final_ns")
+
         try:
             self.set_state("thinking")
             self.sfx.play_think()
 
             # Start streaming pipelined speech session
             self.tts.start_streaming_session()
+
+            # Format active resumption bookmark and flow state XML
+            bookmark_xml = self.bookmarks.format_prompt_injection(query) if hasattr(self, "bookmarks") and self.bookmarks else ""
+            flow_xml = ""
+            try:
+                from jarvis.context.flow_state_mirror import FlowStateMirror
+                flow_xml = FlowStateMirror.get_instance().format_quarantined_xml()
+            except Exception:
+                pass
 
             # Check if this query is an instant deterministic reflex (<10ms) or model switch
             norm_query = re.sub(r"^[\s,;:.]+|[\s,!?:.]+$", "", (query or "").strip()).strip()
@@ -682,14 +709,27 @@ class JarvisOrchestrator:
                         self.set_state("speaking")
                     self.tts.queue_sentence(s_clean)
 
-            reply = self.brain.process_query(query, sentence_callback=queue_speech)
+            reply = self.brain.process_query(
+                query,
+                sentence_callback=queue_speech,
+                flow_state_xml=flow_xml,
+                bookmark_context=bookmark_xml,
+            )
             if cancel_token.is_cancelled:
                 logger.info("Command '%s' aborted by cancellation token.", query[:40])
                 self.set_state("idle")
                 return
 
+            # Sync tool outputs from brain
+            if hasattr(self.brain, "get_current_turn_tool_outputs"):
+                self._active_tool_outputs.update(self.brain.get_current_turn_tool_outputs())
+
             # Complete playback of remaining queued audio
             speech_completed = self.tts.finish_streaming_session()
+            if hasattr(self, "latency_profiler") and self.latency_profiler:
+                self.latency_profiler.mark(self._active_turn_id, "tts_first_chunk_ns")
+                self.latency_profiler.mark(self._active_turn_id, "audio_first_frame_ns")
+                self.latency_profiler.complete_turn(self._active_turn_id)
             if cancel_token.is_cancelled:
                 self.set_state("idle")
                 return

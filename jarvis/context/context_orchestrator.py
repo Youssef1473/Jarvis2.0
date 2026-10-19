@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from jarvis.speculative.engine import EpochVector, EnvironmentEpochTracker
 
 logger = logging.getLogger("Jarvis.ContextOrchestrator")
 
@@ -217,6 +220,12 @@ class ContextOrchestrator:
 
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         self.config = config or {}
+
+    @staticmethod
+    def get_epoch_vector() -> EpochVector:
+        """Returns the current 4-dimensional EpochVector snapshot from EnvironmentEpochTracker."""
+        from jarvis.speculative.engine import EnvironmentEpochTracker
+        return EnvironmentEpochTracker.get_instance().snapshot()
 
     @staticmethod
     def notify_environment_mutation(mutation_type: str, detail: Any = None) -> None:
@@ -443,3 +452,22 @@ class ContextOrchestrator:
             prompt += "\n" + "\n\n".join(envelopes) + "\n"
 
         return prompt
+
+
+def __getattr__(name: str) -> Any:
+    if name in ("EpochVector", "EnvironmentEpochTracker"):
+        from jarvis.speculative.engine import EpochVector as _EV, EnvironmentEpochTracker as _EET
+        if name == "EpochVector":
+            return _EV
+        return _EET
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+__all__ = [
+    "ContextOrchestrator",
+    "EpochVector",
+    "EnvironmentEpochTracker",
+    "SOVEREIGN_IDENTITY",
+    "BASE_SYSTEM_PROMPT",
+]
+

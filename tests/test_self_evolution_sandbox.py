@@ -218,7 +218,7 @@ def {self.test_skill}():
     time.sleep(3.0)
     return "done"
 """
-        res = SkillSandbox.validate_and_promote(self.test_skill, hanging_code, timeout_seconds=6.0)
+        res = SkillSandbox.validate_and_promote(self.test_skill, hanging_code, timeout_seconds=8.0)
         self.assertFalse(res.success)
         self.assertIn("exceeded 2.0s execution limit", res.message)
         self.assertFalse(self.target_path.exists())

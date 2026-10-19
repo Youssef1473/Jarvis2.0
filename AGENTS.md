@@ -136,6 +136,62 @@ These rules are loaded automatically on every interaction turn. All operations w
 * **Zero Time Restrictions on LLM Deliberation:** The model must never be terminated by inactivity limits or hard ceilings. Extended multi-file refactoring, deep research, and Council deliberations must run unhindered to natural completion while streaming sentence deltas to TTS.
 * **Sub-Second Token & Quota Exhaustion Failover:** When Claude Sonnet/Opus triggers 429 quota exhaustion or CLI exit code 3, Jarvis instantly applies a 900s cooldown and routes to Gemini 3.8 Flash High (for complex engineering) or Flash Medium in `<10ms`.
 
+### The 5-Stage Voice-to-Voice Pipeline (End-to-End Latency Architecture)
+Jarvis 2.0 routes user directives through a strict 5-stage sovereign pipeline monitored by `PipelineLatencyProfiler` (`jarvis.core.pipeline.latency_profiler`):
+```
+[Stage 1: Input]       PyAudio/WASAPI stream capture | HotkeyListener (PTT) | openWakeWord ("Hey Jarvis") | Pin to P-Cores (0xFF)
+       │               Timestamp: `vad_onset_ns` -> `vad_end_ns`
+       ▼
+[Stage 2: Ingestion]   faster-whisper CUDA INT8 transcription (`SpeechToText`) | Flow-State Mirroring (`FlowStateMirror`) |
+       │               Quarantined XML wrapping | JIT 4-Tier Memory Recall (`MemoryManager`)
+       │               Timestamp: `stt_final_ns`
+       ▼
+[Stage 3: Inference]   JarvisBrain | CognitiveRouter (Flash Low/Medium/High, Claude Sonnet) | Antigravity Sidecar pipe streaming |
+       │               ContextOrchestrator (<1.5KB prompt budget) | StreamingToolParser
+       │               Timestamps: `route_complete_ns` -> `llm_first_token_ns` (TTFT)
+       ▼
+[Stage 4: Execution]   ToolOrchestrator (5.0s per-tool timeout guard, loop cycle detector, taint tracking) |
+       │               SafetyGate dual-key authorization | SkillRegistry | E-Core MCP Sandbox (0xFF00, 512MB RAM cap) |
+       │               PASTE Speculative Engine (`jarvis.speculative.engine`) with 4-dim EpochVector TOCTOU invalidation
+       ▼
+[Stage 5: Output]      Kokoro-82M neural TTS | ProsodicChunker (8-16 word breath pauses) | ShmAudioRingTransport (float32 zero-copy IPC) |
+                       WASAPIPlaybackWorker (Champion a003 zero-allocation ring buffer, 4.64us) | Web HUD WebSocket telemetry
+                       Timestamps: `tts_first_chunk_ns` -> `audio_first_frame_ns` (TTFA)
+```
+
+### Canonical Subsystems vs. Backward-Compatibility Shims
+To maintain backward compatibility with legacy unit tests while strictly enforcing single-responsibility architecture, Jarvis uses canonical modules with re-export shims. Always import from and edit the canonical module:
+
+| Subsystem Domain | Canonical Module (Primary Implementation) | Legacy / Compatibility Shims (Re-exports) | Architecture & Invariants |
+| :--- | :--- | :--- | :--- |
+| **Win32 Thread Priority & Affinity** | `jarvis.core.win32_affinity` | `jarvis.audio.affinity`<br>`jarvis.core.thread_affinity` | Direct 64-bit kernel32/avrt bindings, MMCSS Pro Audio, P-Core (0xFF) / E-Core (0xFF00) affinity, power throttling. |
+| **Preemptive Cancellation & Barge-In** | `jarvis.core.cancellation` | `jarvis.audio.cancellation` | Unified singleton epoch state, atomic `<10ns` invalidation, re-entrancy protected flush callbacks. |
+| **Streaming Tool JSON Parser** | `jarvis.core.streaming_tool_parser` | `jarvis.core.stream_tool_parser` | Incremental tokenizer parsing partial streaming tool arguments from LLM chunks. |
+| **Prosodic Clause Chunker** | `jarvis.audio.prosodic_chunker` | `jarvis.audio.chunker` | Punctuation clause emission for Kokoro-82M TTS, 130ms comma pauses, 240ms period pauses. |
+| **Model Context Protocol (MCP)** | `jarvis.core.mcp_manager` | `jarvis.skills.mcp_manager` | E-core Win32 Job Object sandbox (512MB cap), `shutil.which` `.CMD` resolution, env expansion (`${VAR}`). |
+| **Autonomous Self-Evolution Sandbox** | `jarvis.core.evolution.sandbox` | `jarvis.skills.job_object_sandbox`<br>`jarvis.core.sandbox` | AST loop detection, 2.0s canary watchdog, Job Object memory governor, transactional snapshot/rollback. |
+| **Zero-Copy Audio Transport** | `jarvis.audio.shm_transport` | N/A (Direct core subsystem) | SPSC float32 shared memory transport, atomic 32-byte header, wrap protection, `<1µs` barge-in flush. |
+| **Nanosecond Latency Profiler** | `jarvis.core.pipeline.latency_profiler` | `jarvis.skills.diagnostics` (re-export) | Nanosecond `TurnTrace` timestamps across 5-stage pipeline, rolling P50/P95/P99 histogram. |
+
+### 4GB RTX 3050 Laptop VRAM Arbitration & ONNX CPU Affinity
+The host GPU is an NVIDIA GeForce RTX 3050 Laptop GPU with **4GB VRAM**. To prevent CUDA Out-Of-Memory (OOM) fatal crashes and Windows DWM compositor stutters:
+1. **Total VRAM Ceiling: Strictly 2.5 GB Cap.** Local neural workloads (Whisper STT + Kokoro TTS + Ollama) must never exceed 2.5GB total VRAM, leaving 1.5GB dedicated to Windows display rendering, NVML telemetry, and GPU compositor layers.
+2. **CUDA Exclusivity:** CUDA device execution is strictly reserved for `faster-whisper` (INT8/FP16 speech recognition) and `Kokoro-82M` (neural speech synthesis).
+3. **ONNX CPUExecutionProvider Enforcement:** Auxiliary ONNX models (`onnx_intent_router.py`, `onnx_embeddings.py`) MUST execute on the CPU via `CPUExecutionProvider`.
+4. **Zero-Spin Contention:** All ONNX inference sessions must configure:
+   ```python
+   session_options.intra_op.allow_spinning = "0"
+   session_options.intra_op_num_threads = 2
+   session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+   ```
+   This prevents ONNX worker threads from busy-spinning on P-Cores and starving the real-time WASAPI audio loop.
+
+### Arena Competitive Optimization & Empirical Champion Promotion
+High-performance algorithmic components in Jarvis are developed and benchmarked using the **Arena Competitive Optimization Framework** (`.agents/skills/arena/`):
+- **Tournament Engine:** `bracket.py` executes multi-agent single-elimination brackets using Windows `sys.executable`.
+- **Strategy Matrix:** 2,160 orthogonal strategy cards (`strategies.json`) exploring reasoning modes, memory structures, and defensive styles.
+- **Empirical Promotion:** Code modifications to hot paths (e.g. WASAPI ring buffer callback) must be verified against the Arena rubric. Champion `a003` was crowned for replacing slice allocations with `ctypes.memmove` and `read_into()`, proving **0 heap allocations** over 2,000 cycles at **4.64 microsecond latency**.
+
 ---
 
 ## 3. Negative Constraints (Strictly Prohibited Patterns)
@@ -144,7 +200,7 @@ These rules are loaded automatically on every interaction turn. All operations w
 2. **PROHIBITED:** Hardcoded blind sleeps (`time.sleep(1.0)` or higher) in production paths. Use condition variables, event loops, or non-blocking socket probes with tight timeouts.
 3. **PROHIBITED:** `subprocess.run(shell=True)` or raw string formatting in shell commands. Use argument lists with `close_fds=True` and pass through `SafetyGate`.
 4. **PROHIBITED:** Storing secrets, API keys, or raw user tokens in plaintext logs or database records.
-5. **PROHIBITED:** Breaking test compatibility. All 552 existing unit tests in `tests/` must remain green on every single commit.
+5. **PROHIBITED:** Breaking test compatibility. All 588 existing unit tests in `tests/` must remain green on every single commit.
 
 ---
 
@@ -162,5 +218,5 @@ These rules are loaded automatically on every interaction turn. All operations w
   * Cloud Vision Response: `< 12s` (typical 3.8s on `gemini-3-flash-preview`)
   * Browser Tab Switching / Closing: `< 25ms` (CDP) / `< 100ms` (Win32)
   * Working Memory Prompt Overhead: `< 1.5KB`
-  * Full Test Suite Baseline: **552 unit tests** (all 100% green).
+  * Full Test Suite Baseline: **588 unit tests** (all 100% green across 103 test suites, commit `9aeec4c`).
 * **Host & Shell Awareness:** This workspace runs on **Windows (PowerShell)** with a local virtual environment at `.venv`. All scripts, paths, and commands must use Windows-appropriate syntax and backslashes or forward slashes handled via `pathlib.Path`.

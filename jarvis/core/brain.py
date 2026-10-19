@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -304,7 +305,11 @@ class JarvisBrain:
 
         from jarvis.core.mcp_manager import MCPManager
         self.mcp_manager = MCPManager(config=self.config)
-        if self.config.get("mcp", {}).get("auto_start", False):
+        if (
+            self.config.get("mcp", {}).get("auto_start", False)
+            and not os.environ.get("JARVIS_TEST_MODE")
+            and "unittest" not in sys.modules
+        ):
             threading.Thread(
                 target=self.mcp_manager.start_configured_servers,
                 kwargs={"auto_register_skills": True},

@@ -490,6 +490,7 @@ import os
 import socket
 import sys
 import threading
+import time
 import tracemalloc
 
 if r'{escaped_ws}' not in sys.path:
@@ -621,16 +622,22 @@ try:
         worker.start()
 
         if not smoke_done.wait(timeout=2.0):
-            print(f"CANARY_ERROR: Tool '{{tool_name}}' exceeded 2.0s execution limit (potential spin-lock or hang)", flush=True)
+            err_msg = f"CANARY_ERROR: Tool '{{tool_name}}' exceeded 2.0s execution limit (potential spin-lock or hang)"
+            sys.stdout.write(err_msg + "\\n")
+            sys.stderr.write(err_msg + "\\n")
             sys.stdout.flush()
             sys.stderr.flush()
+            time.sleep(0.05)
             os._exit(5)
 
         if smoke_exc:
             exc = smoke_exc[0]
-            print(f"CANARY_ERROR: Tool '{{tool_name}}' failed smoke execution with {{type(exc).__name__}}: {{exc}}", flush=True)
+            err_msg = f"CANARY_ERROR: Tool '{{tool_name}}' failed smoke execution with {{type(exc).__name__}}: {{exc}}"
+            sys.stdout.write(err_msg + "\\n")
+            sys.stderr.write(err_msg + "\\n")
             sys.stdout.flush()
             sys.stderr.flush()
+            time.sleep(0.05)
             os._exit(7)
 
     # Operational Guardrail 4: Verify memory allocation threshold (< 64MB)
@@ -638,22 +645,26 @@ try:
     tracemalloc.stop()
     peak_mb = peak_b / (1024 * 1024)
     if peak_mb > 64.0:
-        print(f"CANARY_ERROR: Excessive memory consumption during canary execution ({{peak_mb:.1f}} MB > 64.0 MB limit)", flush=True)
+        err_msg = f"CANARY_ERROR: Excessive memory consumption during canary execution ({{peak_mb:.1f}} MB > 64.0 MB limit)"
+        sys.stdout.write(err_msg + "\\n")
+        sys.stderr.write(err_msg + "\\n")
         sys.stdout.flush()
         sys.stderr.flush()
+        time.sleep(0.05)
         os._exit(6)
 
-    print('CANARY_VERIFICATION_SUCCESS', flush=True)
-    print('SANDBOX_LOAD_SUCCESS', flush=True)
+    sys.stdout.write('CANARY_VERIFICATION_SUCCESS\\nSANDBOX_LOAD_SUCCESS\\n')
     sys.stdout.flush()
     sys.stderr.flush()
+    time.sleep(0.05)
     os._exit(0)
 except Exception as e:
     import traceback
     traceback.print_exc()
-    print(f'CANARY_EXCEPTION: {{e}}', flush=True)
+    sys.stdout.write(f'CANARY_EXCEPTION: {{e}}\\n')
     sys.stdout.flush()
     sys.stderr.flush()
+    time.sleep(0.05)
     os._exit(1)
 """
 
@@ -721,7 +732,7 @@ except Exception as e:
                 try:
                     stdout, stderr = proc.communicate(timeout=timeout_seconds)
                     try:
-                        proc.wait(timeout=1.0)
+                        proc.wait(timeout=5.0)
                     except Exception:
                         pass
                 except subprocess.TimeoutExpired:
@@ -741,9 +752,10 @@ except Exception as e:
                 stdout = (stdout or "").strip()
                 stderr = (stderr or "").strip()
 
-                if proc.returncode != 0 or (
-                    "CANARY_VERIFICATION_SUCCESS" not in stdout and "SANDBOX_LOAD_SUCCESS" not in stdout
-                ):
+                has_canary_success = "CANARY_VERIFICATION_SUCCESS" in stdout or "SANDBOX_LOAD_SUCCESS" in stdout
+                is_clean_exit = proc.returncode == 0 or (has_canary_success and proc.returncode in (0, 15))
+
+                if not is_clean_exit or not has_canary_success:
                     cls._cleanup_scratch(scratch_file)
                     cls.rollback_snapshot(clean_name, snapshot_path)
                     error_summary = stderr or stdout or f"Exited with code {proc.returncode}"

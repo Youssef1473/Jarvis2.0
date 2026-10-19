@@ -20,6 +20,8 @@ from jarvis.context.flow_state_mirror import FlowStateSnapshot
 logger = logging.getLogger("Jarvis.Conversation.Bookmarks")
 
 MAX_BOOKMARK_CAPACITY = 8
+DEFAULT_BOOKMARK_TTL_SEC: float = 900.0
+DEFAULT_BOOKMARK_TTL_NS: int = 900_000_000_000  # 900s (15 minutes) validity
 
 
 @dataclass(frozen=True)
@@ -33,7 +35,7 @@ class ReasoningBookmark:
     resolved_tool_outputs: Dict[str, Any] = field(default_factory=dict)
     flow_state_xml: str = ""
     created_monotonic_ns: int = field(default_factory=time.perf_counter_ns)
-    ttl_ns: int = 300_000_000_000  # 5 minutes validity
+    ttl_ns: int = DEFAULT_BOOKMARK_TTL_NS  # 900s (15 minutes) validity
     # Backwards compatibility fields:
     user_query: str = ""
     partial_llm_plan: str = ""
@@ -68,12 +70,17 @@ class ReasoningBookmarkStack:
         r"^(stop|cancel|never mind|forget it|drop that|abort|scratch that)\b",
         re.IGNORECASE,
     )
+    _RESUME_PATTERNS = re.compile(
+        r"^(continue|go on|resume|as you were saying|please continue|keep going|carry on)\b",
+        re.IGNORECASE,
+    )
 
     _instance: Optional[ReasoningBookmarkStack] = None
     _singleton_lock = threading.Lock()
 
     def __init__(self, max_depth: int = MAX_BOOKMARK_CAPACITY, capacity: Optional[int] = None) -> None:
         eff_capacity = capacity if capacity is not None else max_depth
+        self.max_depth = eff_capacity
         self.capacity = eff_capacity
         self._stack: Deque[ReasoningBookmark] = deque(maxlen=eff_capacity)
         self._lock = threading.RLock()
@@ -180,16 +187,24 @@ class ReasoningBookmarkStack:
         """
         Classifies whether a barge-in utterance is:
         - 'ABORT': Sir wants to stop the explanation completely.
-        - 'CLARIFY_AND_RESUME': Brief clarifying tangent that should auto-resume.
+        - 'CLARIFY_AND_RESUME': Brief clarifying tangent or explicit resumption intent.
         - 'PIVOT': A brand-new directive that supersedes the prior topic.
         """
         text = (utterance or "").strip()
         if cls._CANCEL_PATTERNS.search(text):
             return "ABORT"
+        if cls._RESUME_PATTERNS.search(text):
+            return "CLARIFY_AND_RESUME"
         word_count = len(text.split())
         if word_count <= 12 and (text.endswith("?") or cls._INTERJECTION_PATTERNS.search(text)):
             return "CLARIFY_AND_RESUME"
         return "PIVOT"
+
+    @classmethod
+    def is_resumption_intent(cls, utterance: str) -> bool:
+        """Returns True if utterance matches explicit multi-phrase resumption ('continue', 'go on', 'resume', 'as you were saying')."""
+        text = (utterance or "").strip()
+        return bool(cls._RESUME_PATTERNS.search(text))
 
     def format_prompt_injection(self, utterance: str) -> str:
         """
@@ -207,14 +222,23 @@ class ReasoningBookmarkStack:
         if intent == "CLARIFY_AND_RESUME":
             # Pop so we consume the bookmark on this resumption turn
             self.pop_valid()
+            if self.is_resumption_intent(utterance):
+                directive = (
+                    f"Sir requested to resume. Immediately bridge with: 'Continuing with {top.topic_label}...' "
+                    "and deliver the remaining explanation."
+                )
+            else:
+                directive = (
+                    "Answer Sir's clarifying question in 1 crisp sentence, then immediately "
+                    f"bridge with: 'Continuing with {top.topic_label}...' and deliver the remaining explanation."
+                )
             return (
                 '<active_resumption_bookmark mode="CLARIFY_AND_RESUME">\n'
                 f"  <suspended_topic>{top.topic_label}</suspended_topic>\n"
                 f"  <already_spoken>{' '.join(top.spoken_clauses_completed)}</already_spoken>\n"
                 f"  <remaining_to_speak>{top.remaining_speech_text}</remaining_to_speak>\n"
                 f"  <cached_tool_results>{top.resolved_tool_outputs}</cached_tool_results>\n"
-                "  <directive>Answer Sir's clarifying question in 1 crisp sentence, then immediately "
-                f"bridge with: 'Continuing with {top.topic_label}...' and deliver the remaining explanation.</directive>\n"
+                f"  <directive>{directive}</directive>\n"
                 "</active_resumption_bookmark>"
             )
 

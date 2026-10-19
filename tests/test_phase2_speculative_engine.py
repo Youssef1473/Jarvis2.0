@@ -91,8 +91,13 @@ class TestPhase2SpeculativeEngine(unittest.TestCase):
             call_count += 1
             return f"Read {val}"
 
-        self.engine.speculate("scoped_read_tool", val="manifest.json")
-        time.sleep(0.02)
+        key = self.engine.speculate("scoped_read_tool", val="manifest.json")
+        for _ in range(50):
+            with self.engine._entries_lock:
+                entry = self.engine._active_entries.get(key)
+            if entry and entry.future.done():
+                break
+            time.sleep(0.01)
 
         # Environment mutated: files changed
         EnvironmentEpochTracker.bump(ResourceScope.FILESYSTEM)
@@ -138,7 +143,12 @@ class TestPhase2SpeculativeEngine(unittest.TestCase):
             self.assertGreaterEqual(self.engine.metrics.stale_invalidations, 1)
         finally:
             if os.path.exists(temp_path):
-                os.remove(temp_path)
+                for _ in range(10):
+                    try:
+                        os.remove(temp_path)
+                        break
+                    except PermissionError:
+                        time.sleep(0.05)
 
     def test_epoch_vector_immutability_and_compatibility(self):
         """Verifies EpochVector is frozen, uses slots, and performs strict 4-dim equality."""
@@ -192,8 +202,13 @@ class TestPhase2SpeculativeEngine(unittest.TestCase):
             return f"Data for {arg}"
 
         # 1. Speculate
-        self.engine.speculate("epoch_sensitive_read", arg="config")
-        time.sleep(0.02)
+        key = self.engine.speculate("epoch_sensitive_read", arg="config")
+        for _ in range(50):
+            with self.engine._entries_lock:
+                entry = self.engine._active_entries.get(key)
+            if entry and entry.future.done():
+                break
+            time.sleep(0.01)
 
         # 2. Mutate active_hwnd on engine tracker
         self.engine.epoch_tracker.set_active_hwnd(88888)
