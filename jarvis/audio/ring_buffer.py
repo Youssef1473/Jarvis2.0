@@ -243,21 +243,11 @@ class AudioRingBuffer:
         self._ramp_temp_ptr = self._ramp_temp.ctypes.data
         self._ramp_temp_cfloat = ctypes.cast(self._ramp_temp_ptr, _c_float_p)
 
-        # Buffer pointer cache to eliminate .ctypes.data allocation in consumer callback
-        self._ptr_cache: Dict[int, Tuple[int, Any]] = {}
-
     def _get_buffer_ptrs(self, arr: np.ndarray) -> Tuple[int, Any]:
-        """Retrieves raw memory address and typed c_float pointer with zero runtime allocation."""
-        arr_id = id(arr)
-        ptrs = self._ptr_cache.get(arr_id)
-        if ptrs is None:
-            if len(self._ptr_cache) > 32:
-                self._ptr_cache.clear()
-            raw_ptr = arr.ctypes.data
-            cfloat_ptr = ctypes.cast(raw_ptr, _c_float_p)
-            ptrs = (raw_ptr, cfloat_ptr)
-            self._ptr_cache[arr_id] = ptrs
-        return ptrs
+        """Retrieves raw memory address and typed c_float pointer safely without stale id(arr) cache aliasing."""
+        raw_ptr = arr.ctypes.data
+        cfloat_ptr = ctypes.cast(raw_ptr, _c_float_p)
+        return raw_ptr, cfloat_ptr
 
     def barge_in(self) -> None:
         """Signals clickless barge-in interruption.
@@ -494,7 +484,7 @@ class AudioRingBuffer:
             raise ValueError(f"frames cannot be negative, got {frames}")
 
         if out is None:
-            out_buf = np.empty(frames, dtype=np.float32)
+            out_buf = np.zeros(frames, dtype=np.float32)
         else:
             if not isinstance(out, np.ndarray):
                 raise TypeError(f"out must be a numpy.ndarray, got {type(out).__name__}")

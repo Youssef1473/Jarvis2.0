@@ -52,6 +52,10 @@ class ReflexDispatcher:
     @staticmethod
     def is_disallowed_reflex(clean: str) -> bool:
         """Determines if a command is a question, debugging inquiry, or past/future directive."""
+        # Explicit self-diagnostic commands are always permitted
+        if re.search(r"^(?:run\s+)?(?:jarvis doctor|doctor|troubleshoot yourself|troubleshoot system|run system health check|system health check|health check|check your systems|diagnose system|troubleshoot jarvis|system health)$", clean):
+            return False
+
         if (
             any(clean.startswith(w) for w in (
                 "how ", "why ", "what is ", "what are ", "who is ", "can you explain", "explain ",
@@ -89,6 +93,11 @@ class ReflexDispatcher:
         def _exec(skill_name: str, **kwargs):
             if dry_run:
                 return True
+            if skill_name in ("jarvis_doctor", "run_system_troubleshooting", "profile_runtime", "audit_memory_heap"):
+                try:
+                    import jarvis.skills.diagnostics
+                except Exception:
+                    pass
             if execute_fn:
                 return execute_fn(skill_name, **kwargs)
             return SkillRegistry.execute(skill_name, **kwargs)
@@ -189,6 +198,10 @@ class ReflexDispatcher:
             return _exec("get_system_vitals")
         if re.search(r"^(?:battery status|battery level|battery percentage|check battery|how much battery)$", clean):
             return _exec("get_battery_status")
+        if re.search(r"^(?:what(?:'s|\s+is)?\s+(?:the\s+)?(?:day|date|day\s+today|time|current\s+time|time\s+is\s+it|date\s+today)|what\s+day\s+is\s+it(?:\s+today)?|what\s+time\s+is\s+it|tell\s+me\s+the\s+(?:time|date|day)|what\s+is\s+today(?:'s)?(?:\s+date)?)$", clean):
+            return _exec("get_current_time_and_date")
+        if re.search(r"^(?:run\s+)?(?:jarvis doctor|doctor|troubleshoot yourself|troubleshoot system|run system health check|system health check|health check|check your systems|diagnose system|troubleshoot jarvis|system health)$", clean):
+            return _exec("jarvis_doctor", verbose=False)
         if re.search(r"^(?:run\s+)?(?:system diagnostics|runtime diagnostics|profile runtime|thread telemetry|diagnose performance)$", clean):
             return _exec("profile_runtime")
         if re.search(r"^(?:audit\s+)?(?:memory heap|heap allocations|memory leak check|check memory leaks)$", clean):

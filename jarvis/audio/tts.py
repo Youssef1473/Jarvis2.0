@@ -88,6 +88,7 @@ class TextToSpeech:
         self.kokoro_voice = tts_cfg.get("kokoro_voice", "jarvis_bettany")
         self.kokoro_speed = float(tts_cfg.get("kokoro_speed", 1.03))
         self.kokoro_lang = tts_cfg.get("kokoro_lang", "en-gb")
+        self.device = tts_cfg.get("device", "cpu").lower()
         self.dsp_filter = bool(tts_cfg.get("dsp_filter", True))
         self.cpu_threads = int(tts_cfg.get("cpu_threads", 4))
         base_dir = config.get("_base_dir", os.getcwd())
@@ -116,11 +117,15 @@ class TextToSpeech:
         self._output_stream: Optional[sd.OutputStream] = None
         self._stream_active = False
         self._session_word_count = 0
+        self._underrun_count: int = 0
         self._retained_streams: deque = deque(maxlen=8)
 
-        # Speculative token chunker & high-throughput lock-free audio ring buffer (120s capacity)
+        # Speculative token chunker & high-throughput lock-free audio ring buffer (120s capacity at up to 48kHz)
         self._chunker = StreamingSentenceChunker()
-        self._ring_buffer = AudioRingBuffer(capacity_samples=24000 * 120)
+        self._ring_buffer = AudioRingBuffer(capacity_samples=48000 * 120)
+        self._stream_device: Optional[int] = None
+        self._stream_sample_rate: int = 24000
+        self._synth_has_started: bool = False
 
         # Kokoro engine instance
         self._kokoro = None
@@ -189,7 +194,8 @@ class TextToSpeech:
                 t0 = time.time()
                 opts = rt.SessionOptions()
                 opts.intra_op_num_threads = self.cpu_threads
-                opts.inter_op_num_threads = 2
+                opts.inter_op_num_threads = 1
+                opts.enable_cpu_mem_arena = False
                 opts.log_severity_level = 3
                 opts.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
                 # Eliminate thread-pool busy-spinning to protect Python event loops and audio callbacks
@@ -197,9 +203,12 @@ class TextToSpeech:
 
                 available = rt.get_available_providers()
                 providers = []
-                use_cuda = "CUDAExecutionProvider" in available
+                # Kokoro-82M runs with sub-50ms latency on CPU with 4 P-core threads,
+                # avoiding CUDA context collisions and 0xC0000005 access violations with faster-whisper.
+                preferred_device = getattr(self, "device", "cpu")
+                use_cuda = (preferred_device == "cuda") and ("CUDAExecutionProvider" in available)
 
-                # Dynamic VRAM arbiter check for RTX 3050 4GB ceiling
+                # Dynamic VRAM arbiter check for RTX 3050 4GB ceiling if CUDA requested
                 if use_cuda:
                     try:
                         from jarvis.skills.nvml_dxgi_vram_arbiter import audit_vram_and_thermal_budget
@@ -524,25 +533,76 @@ class TextToSpeech:
             if last_word in abbr_set:
                 continue
 
-            # Terminal punctuation (. ! ?) emits complete sentences at >= 1 word
-            if re.search(r'[.!?]$', current.strip()) and len(words) >= 1:
+            # Terminal punctuation (. ! ?) emits complete sentences at >= 3 words, or merges short tails
+            if re.search(r'[.!?]$', current.strip()):
+                if len(words) >= 3 or not chunks:
+                    chunks.append(current.strip())
+                    current = ""
+                else:
+                    chunks[-1] = chunks[-1] + " " + current.strip()
+                    current = ""
+            # Clause punctuation (, ; : —) emits only when clause has substantial breath weight (>= 5 words)
+            elif re.search(r'[,;:—–\n]$', current.strip()) and len(words) >= 5:
                 chunks.append(current.strip())
                 current = ""
-            # Clause punctuation (, ; : —) emits at >= 2 words for ultra-low TTFT
-            elif re.search(r'[,;:—–\n]$', current.strip()) and len(words) >= 2:
-                chunks.append(current.strip())
-                current = ""
-            elif len(words) >= 10:
+            elif len(words) >= 12:
                 chunks.append(current.strip())
                 current = ""
 
         if current.strip():
-            if chunks and len(current.strip().split()) < 2:
+            if chunks and len(current.strip().split()) < 3:
                 chunks[-1] = chunks[-1] + " " + current.strip()
             else:
                 chunks.append(current.strip())
 
         return [c for c in chunks if c]
+
+    def _resolve_output_stream_params(self) -> Tuple[Optional[int], int]:
+        """Resolves target audio output device index and native hardware sample rate.
+        Prefers Windows WASAPI endpoints at native sample rate (e.g. 48000 Hz) to eliminate
+        legacy MME software buffer underruns, aliasing, and PaErrorCode -9997 invalid sample rate crashes.
+        """
+        try:
+            hostapis = sd.query_hostapis()
+            wasapi_api_idx = None
+            for i, h in enumerate(hostapis):
+                if "WASAPI" in h.get("name", ""):
+                    wasapi_api_idx = i
+                    break
+
+            if wasapi_api_idx is not None:
+                devices = sd.query_devices()
+                _, def_out_idx = sd.default.device
+                def_name = ""
+                if def_out_idx is not None and 0 <= def_out_idx < len(devices):
+                    def_name = devices[def_out_idx].get("name", "").lower()
+
+                wasapi_devs = [
+                    d for d in devices
+                    if d.get("hostapi") == wasapi_api_idx and d.get("max_output_channels", 0) > 0
+                ]
+
+                # Match by default device name
+                if def_name:
+                    for d in wasapi_devs:
+                        d_name = d.get("name", "").lower()
+                        if d_name in def_name or def_name in d_name:
+                            target_sr = int(d.get("default_samplerate", 48000))
+                            return d["index"], target_sr
+
+                # Prioritize headphone / speaker
+                for d in wasapi_devs:
+                    d_name = d.get("name", "").lower()
+                    if "headphone" in d_name or "speaker" in d_name:
+                        target_sr = int(d.get("default_samplerate", 48000))
+                        return d["index"], target_sr
+
+                if wasapi_devs:
+                    return wasapi_devs[0]["index"], int(wasapi_devs[0].get("default_samplerate", 48000))
+        except Exception as e:
+            logger.warning("Could not auto-resolve WASAPI output endpoint: %s", e)
+
+        return None, 24000
 
     def _stream_audio_callback(self, outdata, frames, time_info, status):
         """Hardware WASAPI / PortAudio streaming callback reading from the lock-free audio ring buffer.
@@ -552,9 +612,26 @@ class TextToSpeech:
         to prevent ephemeral closure deallocation during CFFI lifecycle teardown.
         """
         try:
+            if status and getattr(status, "output_underflow", False):
+                self._underrun_count += 1
+
             if self._stop_event.is_set() or not self._stream_active:
                 outdata.fill(0.0)
                 return
+
+            # Pre-buffer cushion: wait until at least 4800 samples (at 48kHz) or 2400 (at 24kHz)
+            # Prevents rapid buffer-starvation underrun clicks ("electric shock / robotic bugging" sound)
+            if not getattr(self, "_prebuffer_filled", True):
+                cushion = 4800 if getattr(self, "_stream_sample_rate", 24000) == 48000 else 2400
+                synth_active = bool(getattr(self, "_synth_thread", None) and self._synth_thread.is_alive())
+                q_has_work = bool(getattr(self, "_sentence_queue", None) and not self._sentence_queue.empty())
+                synth_done = getattr(self, "_synth_has_started", False) and (not synth_active) and (not q_has_work)
+
+                if self._ring_buffer.available_samples >= cushion or (synth_done and self._ring_buffer.available_samples > 0):
+                    self._prebuffer_filled = True
+                else:
+                    outdata.fill(0.0)
+                    return
 
             samples, n = self._ring_buffer.read(frames)
             if n > 0:
@@ -571,6 +648,10 @@ class TextToSpeech:
                     outdata[n:, :].fill(0.0)
                 else:
                     outdata[n:].fill(0.0)
+                # If buffer completely emptied while synthesis is still actively generating the next chunk,
+                # re-arm prebuffer cushion to prevent rapid frame-by-frame on/off stuttering.
+                if n == 0 and bool(getattr(self, "_synth_thread", None) and self._synth_thread.is_alive()):
+                    self._prebuffer_filled = False
         except Exception:
             # Guarantee zero-fill in all failure paths; never let exceptions escape across PortAudio CFFI boundary
             outdata.fill(0.0)
@@ -580,6 +661,8 @@ class TextToSpeech:
         self._stop_event.clear()
         self._is_speaking = True
         self._stream_active = True
+        self._prebuffer_filled = False
+        self._synth_has_started = False
         self._session_word_count = 0
         self._spoken_clauses: List[str] = []
         self._enqueued_clauses: List[str] = []
@@ -588,6 +671,9 @@ class TextToSpeech:
             self._chunker.reset()
         if hasattr(self, "_ring_buffer"):
             self._ring_buffer.clear()
+
+        # Resolve output device and sample rate (native WASAPI 48kHz preferred)
+        self._stream_device, self._stream_sample_rate = self._resolve_output_stream_params()
 
         if self.engine == "kokoro" and self._kokoro:
             while not self._sentence_queue.empty():
@@ -634,6 +720,15 @@ class TextToSpeech:
                             padded_samples = self._smooth_and_pad_audio(
                                 samples, sr, chunk, apply_dsp=self.dsp_filter
                             )
+
+                            # Seamless polyphase resample to 48kHz for native WASAPI hardware stream
+                            if getattr(self, "_stream_sample_rate", 24000) == 48000:
+                                try:
+                                    import scipy.signal
+                                    padded_samples = scipy.signal.resample_poly(padded_samples, 2, 1).astype(np.float32)
+                                except Exception:
+                                    pass
+
                             if not self._stop_event.is_set():
                                 # Write directly to the audio ring buffer for gapless WASAPI playback
                                 self._ring_buffer.write(padded_samples)
@@ -653,23 +748,6 @@ class TextToSpeech:
                             logger.error(f"Kokoro synth error on '{chunk}': {e}")
                     if not self._stop_event.is_set() and self._stream_active:
                         self._spoken_clauses.append(sentence)
-
-            # Stage 2: Hardware WASAPI / sounddevice Output Stream
-            use_stream_callback = True
-            try:
-                self._output_stream = sd.OutputStream(
-                    samplerate=24000,
-                    channels=2,
-                    dtype='float32',
-                    blocksize=512,
-                    latency='low',
-                    callback=self._stream_audio_callback
-                )
-                self._output_stream.start()
-            except Exception as e:
-                logger.warning(f"Could not open hardware OutputStream callback: {e}. Falling back to standard playback.")
-                use_stream_callback = False
-                self._output_stream = None
 
             def _playback_worker():
                 if not elevate_audio_thread_mmcss("Pro Audio"):
@@ -693,10 +771,30 @@ class TextToSpeech:
 
                 self._is_speaking = False
 
+            # Launch synthesis producer thread first
             self._synth_thread = threading.Thread(target=_synth_worker, daemon=True, name="Jarvis-TTS-Synth")
             self._playback_thread = threading.Thread(target=_playback_worker, daemon=True, name="Jarvis-TTS-Play")
+            self._synth_has_started = True
             self._synth_thread.start()
             self._playback_thread.start()
+
+            # Stage 2: Hardware WASAPI Output Stream
+            use_stream_callback = True
+            try:
+                self._output_stream = sd.OutputStream(
+                    device=self._stream_device,
+                    samplerate=self._stream_sample_rate,
+                    channels=2,
+                    dtype='float32',
+                    blocksize=1024,
+                    latency='low',
+                    callback=self._stream_audio_callback
+                )
+                self._output_stream.start()
+            except Exception as e:
+                logger.warning(f"Could not open hardware OutputStream callback on device {self._stream_device} at {self._stream_sample_rate}Hz: {e}. Falling back to standard playback.")
+                use_stream_callback = False
+                self._output_stream = None
 
         else:
             # SAPI5 streaming path
@@ -945,3 +1043,12 @@ class TextToSpeech:
         """Asynchronous speak helper."""
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self.speak_sync, text)
+
+    def get_underrun_count(self) -> int:
+        """Returns the cumulative count of PortAudio / WASAPI buffer underruns detected."""
+        return getattr(self, "_underrun_count", 0)
+
+    def reset_underrun_count(self) -> None:
+        """Resets the PortAudio buffer underrun counter to zero."""
+        self._underrun_count = 0
+

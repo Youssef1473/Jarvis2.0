@@ -167,3 +167,26 @@ def get_pipeline_latency_stats() -> str:
         lines.append(f"• {stage}: {metrics['p50']}ms (P50) | {metrics['p95']}ms (P95) | {metrics['p99']}ms (P99)")
     return "\n".join(lines)
 
+
+@SkillRegistry.register(
+    name="jarvis_doctor",
+    description="Runs a 360-degree self-diagnostic and troubleshooting scan across all Jarvis 2.0 subsystems: audio streams, buffer underruns, GPU VRAM, skills registry smoke testing, neural weights, SQLite database, and background daemons."
+)
+def jarvis_doctor(verbose: bool = True) -> str:
+    """Executes full operational health check and returns synthesized diagnostic telemetry."""
+    from jarvis.core.health_check import run_system_health_check, format_health_report, format_spoken_summary
+    report = run_system_health_check()
+    if not verbose:
+        return format_spoken_summary(report)
+    return format_health_report(report)
+
+
+@SkillRegistry.register(
+    name="run_system_troubleshooting",
+    description="Alias for jarvis_doctor. Runs end-to-end operational diagnostic scan."
+)
+def run_system_troubleshooting(verbose: bool = True) -> str:
+    """Alias for jarvis_doctor."""
+    return jarvis_doctor(verbose=verbose)
+
+

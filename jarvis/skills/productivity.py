@@ -31,9 +31,29 @@ def _get_memory() -> MemoryManager:
     description="Returns the exact current local date, day of the week, and time."
 )
 def get_current_time_and_date() -> str:
-    """Returns formatted current timestamp."""
+    """Returns formatted current timestamp with authentic Bettany cadence."""
     now = datetime.datetime.now()
-    return now.strftime("Today is %A, %B %d, %Y. The current time is %I:%M:%S %p.")
+    day_name = now.strftime("%A")
+    month_name = now.strftime("%B")
+    day_num = now.day
+    suffix = "th" if 11 <= day_num <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day_num % 10, "th")
+    h = now.hour % 12 or 12
+    m = now.minute
+    h_words = {
+        1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+        7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve"
+    }
+    h_word = h_words.get(h, str(h))
+    period = "in the morning" if now.hour < 12 else ("in the afternoon" if now.hour < 18 else "in the evening")
+
+    if m == 0:
+        time_spoken = f"{h_word} o'clock {period}"
+    elif m < 10:
+        time_spoken = f"{h_word} oh {m} {period}"
+    else:
+        time_spoken = f"{h_word} {m} {period}"
+
+    return f"Today is {day_name}, the {day_num}{suffix} of {month_name}, Sir. The time is {time_spoken}."
 
 
 @SkillRegistry.register(

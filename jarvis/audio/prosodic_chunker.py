@@ -33,6 +33,8 @@ def sanitize_clause_for_ear(clause: str) -> str:
     """Strips residual visual artifacts and converts identifiers into natural spoken English."""
     if not clause:
         return ""
+    # 0. Convert em-dash and en-dash to natural comma pauses for acoustic cadence
+    clause = clause.replace("—", ", ").replace("–", ", ")
     # 1. Strip residual markdown symbols
     text = _MD_STRIP_RE.sub("", clause)
     # 2. Convert file extensions ('brain.py' -> 'brain dot py') so TTS doesn't slur the period

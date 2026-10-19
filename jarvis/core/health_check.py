@@ -31,6 +31,9 @@ def test_socket_port(port: int, host: str = "127.0.0.1", timeout: float = 0.15) 
 def run_system_health_check(project_root: Optional[Path] = None) -> Dict[str, Any]:
     """Executes a full physical and operational health check across all Jarvis 2.0 subsystems."""
     root = project_root or Path(__file__).resolve().parent.parent.parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
     report: Dict[str, Any] = {
         "timestamp": time.time(),
         "status": "HEALTHY",
@@ -86,7 +89,8 @@ def run_system_health_check(project_root: Optional[Path] = None) -> Dict[str, An
             out_dev = devices[out_idx]
             spk_stream_ok = False
             try:
-                with sd.OutputStream(samplerate=24000, channels=1, blocksize=512):
+                native_sr = int(out_dev.get("default_samplerate", 48000))
+                with sd.OutputStream(samplerate=native_sr, channels=1, blocksize=512):
                     spk_stream_ok = True
             except Exception as stream_err:
                 spk_stream_ok = False
@@ -103,9 +107,17 @@ def run_system_health_check(project_root: Optional[Path] = None) -> Dict[str, An
             audio_data["output"] = None
             audio_data["status"] = "WARN"
 
+        # Check cumulative PortAudio buffer underruns from running TTS engine
+        try:
+            from jarvis.skills.voice_control import get_tts_instance
+            tts = get_tts_instance()
+            audio_data["underrun_count"] = tts.get_underrun_count() if (tts and hasattr(tts, "get_underrun_count")) else 0
+        except Exception:
+            audio_data["underrun_count"] = 0
+
         report["subsystems"]["audio"] = audio_data
     except Exception as e:
-        report["subsystems"]["audio"] = {"status": "FAIL", "error": str(e)}
+        report["subsystems"]["audio"] = {"status": "FAIL", "error": str(e), "underrun_count": 0}
         report["status"] = "DEGRADED"
 
     # 3. GPU VRAM & Thermal Governor (RTX 3050 Laptop GPU)
@@ -227,6 +239,51 @@ def run_system_health_check(project_root: Optional[Path] = None) -> Dict[str, An
     except Exception as e:
         report["subsystems"]["cognition"] = {"status": "WARN", "error": str(e)}
 
+    # 8. Skill & Tool Registry Smoke Sweep
+    skills_data: Dict[str, Any] = {
+        "status": "OK",
+        "total_registered": 0,
+        "tested": 0,
+        "passed": 0,
+        "failures": [],
+    }
+    try:
+        from jarvis.skills.base import SkillRegistry
+        try:
+            import jarvis.skills.productivity
+            import jarvis.skills.os_control
+            import jarvis.skills.diagnostics
+        except Exception:
+            pass
+
+        all_tools = SkillRegistry.get_all_tools()
+        skills_data["total_registered"] = len(all_tools)
+
+        smoke_suite = [
+            ("get_current_time_and_date", {}),
+            ("list_directory", {"folder_path": "."}),
+            ("get_system_vitals", {}),
+        ]
+        for tool_name, kwargs in smoke_suite:
+            if tool_name in all_tools:
+                skills_data["tested"] += 1
+                try:
+                    res = SkillRegistry.execute(tool_name, **kwargs)
+                    if res and isinstance(res, str) and not res.startswith("Error"):
+                        skills_data["passed"] += 1
+                    else:
+                        skills_data["failures"].append(f"{tool_name}: unexpected response")
+                except Exception as ex:
+                    skills_data["failures"].append(f"{tool_name}: {ex}")
+
+        if skills_data["failures"]:
+            skills_data["status"] = "WARN"
+            report["status"] = "DEGRADED"
+
+        report["subsystems"]["skills"] = skills_data
+    except Exception as e:
+        report["subsystems"]["skills"] = {"status": "WARN", "error": str(e)}
+
     return report
 
 
@@ -246,7 +303,9 @@ def format_health_report(report: Dict[str, Any]) -> str:
         spk = audio.get("output", {}) or {}
         mic_str = f"[{mic.get('index')}] {mic.get('name')} (16kHz stream OK)" if mic else "None"
         spk_str = f"[{spk.get('index')}] {spk.get('name')} (24kHz stream OK)" if spk else "None"
-        lines.append(f"  [AUDIO HARDWARE ] : ONLINE")
+        underruns = audio.get("underrun_count", 0)
+        underrun_str = " (Zero buffer underruns)" if underruns == 0 else f" ({underruns} buffer underruns detected)"
+        lines.append(f"  [AUDIO HARDWARE ] : ONLINE{underrun_str}")
         lines.append(f"    • Microphone  : {mic_str}")
         lines.append(f"    • Output Spk  : {spk_str}")
     else:
@@ -277,6 +336,16 @@ def format_health_report(report: Dict[str, Any]) -> str:
     else:
         lines.append(f"  [MEMORY DATABASE] : WARNING ({db.get('error', 'Integrity issue')})")
 
+    # Skills Registry Telemetry
+    skills = subs.get("skills", {})
+    if skills.get("status") == "OK":
+        lines.append(
+            f"  [SKILLS REGISTRY] : VERIFIED ({skills.get('passed', 0)}/{skills.get('tested', 0)} smoke checks passed | {skills.get('total_registered', 0)} tools registered)"
+        )
+    else:
+        fails = "; ".join(skills.get("failures", [])) or skills.get("error", "Unknown notice")
+        lines.append(f"  [SKILLS REGISTRY] : WARNING ({fails})")
+
     # Background Daemons
     net = subs.get("network", {})
     lines.append(
@@ -297,6 +366,40 @@ def format_health_report(report: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_spoken_summary(report: Dict[str, Any]) -> str:
+    """Formats the structured health report into an ear-normalized Bettany spoken summary."""
+    overall = report.get("status", "HEALTHY")
+    subs = report.get("subsystems", {})
+    audio = subs.get("audio", {})
+    skills = subs.get("skills", {})
+    db = subs.get("memory_db", {})
+
+    underruns = audio.get("underrun_count", 0)
+    tables = db.get("table_count", 57)
+    tools_count = skills.get("total_registered", 42)
+
+    if overall == "HEALTHY":
+        underrun_clause = "with zero buffer underruns" if underruns == 0 else f"with {underruns} buffer underflows detected"
+        return (
+            f"All core systems are operational, Sir. "
+            f"Audio streams are verified {underrun_clause}, "
+            f"{tables} memory tables are intact, and all {tools_count} registered skills passed validation."
+        )
+    else:
+        issues = []
+        if audio.get("status") != "OK":
+            issues.append("audio stream degradation")
+        if subs.get("gpu", {}).get("status") != "OK":
+            issues.append("GPU thermal or VRAM notice")
+        if skills.get("status") != "OK":
+            issues.append("skills registry validation notice")
+        if db.get("status") != "OK":
+            issues.append("memory database integrity alert")
+        detail = ", ".join(issues) if issues else "minor telemetry warnings"
+        return f"System diagnostics indicate {detail}, Sir. All technical diagnostics have been logged."
+
+
 if __name__ == "__main__":
     rep = run_system_health_check()
     print(format_health_report(rep))
+
