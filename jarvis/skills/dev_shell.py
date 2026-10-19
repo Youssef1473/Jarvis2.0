@@ -336,27 +336,42 @@ def git_diff(max_chars: int = 12000) -> str:
 
 @SkillRegistry.register(
     name="run_project_tests",
-    description="Runs Python test suites in the tests/ directory to verify code changes."
+    description="Runs Python test suites using the high-performance parallel test runner (pytest-xdist) to verify code changes."
 )
-def run_project_tests(test_file: str = "") -> str:
-    """Executes tests using the current Python virtual environment."""
+def run_project_tests(test_file: str = "", run_all: bool = False, timeout_seconds: int = 120) -> str:
+    """Executes tests using the high-performance two-tier test runner."""
     py_exec = sys.executable
-    target = f"tests/{test_file}".strip("/") if test_file else "tests"
+    runner_script = WORKSPACE_DIR / "tools" / "run_fast_tests.py"
+
+    if runner_script.exists():
+        cmd = [py_exec, str(runner_script)]
+        if test_file:
+            cmd.append(test_file)
+        elif run_all:
+            cmd.append("--all")
+        else:
+            cmd.append("--fast")
+    else:
+        # Fallback to standard runner
+        if test_file:
+            target = f"tests/{test_file}".strip("/")
+            cmd = [py_exec, "-m", "pytest", target]
+        else:
+            cmd = [py_exec, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
 
     try:
-        cmd = [py_exec, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"] if not test_file else [py_exec, f"tests/{test_file}"]
         proc = subprocess.run(
             cmd,
             cwd=str(WORKSPACE_DIR),
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout_seconds,
         )
         out = (proc.stdout + "\n" + proc.stderr).strip()
         status = "PASSED" if proc.returncode == 0 else f"FAILED (Exit Code {proc.returncode})"
         return f"Test Run [{status}]:\n{out}"
     except subprocess.TimeoutExpired:
-        return "Error: Test run timed out after 30 seconds."
+        return f"Error: Test run timed out after {timeout_seconds} seconds, Sir."
     except Exception as e:
         return f"Error executing tests: {e}"
 

@@ -28,6 +28,13 @@ def _get_memory() -> MemoryManager:
     return _memory_instance
 
 
+def set_memory_manager(mem: Optional[MemoryManager]) -> None:
+    """Sets or resets the memory manager instance for document ingestion (used for test isolation)."""
+    global _memory_instance
+    _memory_instance = mem
+
+
+
 def _extract_page_content(page) -> str:
     """Extracts page text preserving 2D spatial column alignments for timetables and schedules."""
     snippets = []

@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import sqlite3
 import threading
+import time
 from typing import Dict, Any, List, Optional, Tuple, Callable
 
 logger = logging.getLogger("Jarvis.Memory")
@@ -2078,7 +2079,7 @@ class MemoryManager:
 
         semantic_section = ""
         if query:
-            matched = self.hybrid_search_facts(query, top_k=4)
+            matched = self.hybrid_search_facts(query, top_k=4, max_l2_distance=0.95)
             if matched:
                 lines = [f"• {m['key'].replace('_', ' ').capitalize()}: {m['value']}" for m in matched]
                 semantic_section = "[Directly Relevant Knowledge to Current Context]\n" + "\n".join(lines) + "\n\n"

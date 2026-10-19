@@ -155,8 +155,11 @@ def kill_orphaned_jarvis_processes(exclude_pids=None, dry_run: bool = False):
     import sys
     import psutil
 
-    # Safety: Under unit testing, default to dry-run mode to never terminate live user sessions
-    if "unittest" in sys.modules and not os.environ.get("JARVIS_FORCE_ORPHAN_KILL"):
+    # Safety: Under unit testing or pytest, default to dry-run mode to never terminate live user sessions
+    if (
+        ("unittest" in sys.modules or "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ)
+        and not os.environ.get("JARVIS_FORCE_ORPHAN_KILL")
+    ):
         dry_run = True
 
     current_pid = os.getpid()
@@ -166,6 +169,9 @@ def kill_orphaned_jarvis_processes(exclude_pids=None, dry_run: bool = False):
         parent_pid = os.getppid()
         if parent_pid:
             exclude.add(parent_pid)
+            parent_proc = psutil.Process(parent_pid)
+            for child in parent_proc.children(recursive=True):
+                exclude.add(child.pid)
     except Exception:
         pass
 
@@ -193,8 +199,8 @@ def kill_orphaned_jarvis_processes(exclude_pids=None, dry_run: bool = False):
                 cmdline_str = " ".join(cmdline_parts).lower()
                 name_str = (proc.info.get('name') or "").lower()
 
-                # Guard: Never kill IDE, language servers, terminal host, or external editor processes
-                if any(k in cmdline_str for k in ("antigravity", "language_server", "code.exe", "cursor.exe")):
+                # Guard: Never kill IDE, language servers, terminal host, test runners, or editor processes
+                if any(k in cmdline_str for k in ("antigravity", "language_server", "code.exe", "cursor.exe", "pytest", "xdist", "unittest")):
                     continue
 
                 is_jarvis_proc = False

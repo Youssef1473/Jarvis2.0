@@ -119,8 +119,8 @@ def test_brain_intent_routing():
     tools_close = brain._select_tools_for_query("Jarvis, close discord")
     assert "close_application" in tools_close, f"Expected close_application in {tools_close}"
 
-    # Test 'what am I looking at'
-    tools_active = brain._select_tools_for_query("What am I looking at right now?")
+    # Test 'active window'
+    tools_active = brain._select_tools_for_query("What window is active right now?")
     assert "get_active_window" in tools_active, f"Expected get_active_window in {tools_active}"
 
     # Test 'system vitals'

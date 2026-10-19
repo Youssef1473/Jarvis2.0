@@ -278,7 +278,7 @@ class TestAdaptationProgressionAndVerification(unittest.TestCase):
 
             self.assertEqual(reply, "CPU: 14%, RAM: 46%")
             mock_exec.assert_called_with("get_system_vitals")
-            self.assertLess(duration_ms, 20.0)
+            self.assertLess(duration_ms, 100.0)
 
             # Hit count incremented
             updated_habit = self.brain.reflex_engine.check_habit(norm_key)

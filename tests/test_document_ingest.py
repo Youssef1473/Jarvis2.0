@@ -53,84 +53,82 @@ def create_sample_pdf(file_path: Path, title: str, content_lines: list[str]) -> 
 
 
 def test_document_ingestion_suite():
+    import tempfile
+    import shutil
     print("=== Testing Context-Gated Universal Document Ingestion ===")
+    temp_dir = tempfile.mkdtemp()
+    temp_db_path = str(Path(temp_dir) / "test_doc_memory.db")
     cfg = load_config()
+    cfg["memory"] = {"db_path": temp_db_path}
     mem = MemoryManager(cfg)
+    jarvis.skills.document_ingest.set_memory_manager(mem)
 
-    # 1. Verify tools are registered in SkillRegistry
-    tools = SkillRegistry.get_all_tools()
-    assert "list_staged_documents" in tools, "list_staged_documents skill missing!"
-    assert "process_staged_document" in tools, "process_staged_document skill missing!"
-    print("Tool registration: PASS")
-
-    # 2. Create test PDF in data/intake
-    test_dir = Path("data/intake")
-    test_dir.mkdir(parents=True, exist_ok=True)
-    test_pdf = test_dir / "test_quantum_physics_syllabus.pdf"
-    
-    today_iso = datetime.date.today().isoformat()
-    syllabus_lines = [
-        f"Course: Advanced Quantum Mechanics (PHYS 401)",
-        f"Midterm Exam: {today_iso} at 10:00 AM in Hall B",
-        f"Final Project Review: {today_iso} at 3:00 PM in Lab 4",
-        f"Required Action: Submit lab notebook by end of week"
-    ]
-    create_sample_pdf(test_pdf, "Spring 2026 Physics Syllabus", syllabus_lines)
-    assert test_pdf.exists(), "Sample test PDF was not created!"
-    print(f"Sample PDF created at {test_pdf} ({test_pdf.stat().st_size} bytes)")
-
-    # 3. Test Staging document
-    doc_info = mem.stage_document(
-        filename=test_pdf.name,
-        file_path=str(test_pdf),
-        file_hash="test_sha_quantum_123",
-        file_size=test_pdf.stat().st_size
-    )
-    assert doc_info["id"] > 0, "Failed to stage document in SQLite!"
-    print(f"Document staged successfully: ID #{doc_info['id']} ({doc_info['filename']})")
-
-    # 4. Test list_staged_documents
-    staged_list_msg = SkillRegistry.execute("list_staged_documents")
-    print(f"Staged queue response:\n{staged_list_msg}")
-    assert test_pdf.name in staged_list_msg, "Staged document missing from list output!"
-
-    # 5. Process Staged Document with User Context
-    user_instruction = (
-        "Jarvis, that PDF is my university quantum physics syllabus. "
-        "Please register the Midterm Exam and Final Project Review in my calendar, "
-        "add the lab notebook task to my to-do list, and archive the syllabus."
-    )
-    print(f"\nTransmitting Sir's context: \"{user_instruction}\"")
-    result_msg = SkillRegistry.execute(
-        "process_staged_document",
-        identifier=test_pdf.name,
-        user_context=user_instruction
-    )
-    print(f"Jarvis Ingestion Output:\n{result_msg}")
-    assert "Processed" in result_msg or "registered" in result_msg
-
-    # 6. Verify SQLite Database State
-    staged_after = mem.get_staged_documents(status="PENDING_CONTEXT")
-    matching_pending = [d for d in staged_after if d["filename"] == test_pdf.name]
-    assert len(matching_pending) == 0, "Document should no longer be in PENDING_CONTEXT status!"
-
-    active_events = mem.get_calendar_events()
-    print(f"\nActive calendar events count: {len(active_events)}")
-    for ev in active_events:
-        print(f"  - #{ev['id']}: '{ev['title']}' at {ev['start_time']} ({ev.get('location')})")
-
-    # 7. Clean up test entries and test files
     try:
-        mem.cancel_calendar_event(title="Midterm Exam")
-        mem.cancel_calendar_event(title="Final Project Review")
-        mem.cancel_calendar_event(title="Quantum")
-        if test_pdf.exists():
-            test_pdf.unlink()
-        print("\nTest cleanup completed cleanly.")
-    except Exception as e:
-        print(f"Cleanup notice: {e}")
+        # 1. Verify tools are registered in SkillRegistry
+        tools = SkillRegistry.get_all_tools()
+        assert "list_staged_documents" in tools, "list_staged_documents skill missing!"
+        assert "process_staged_document" in tools, "process_staged_document skill missing!"
+        print("Tool registration: PASS")
 
-    print("\nALL CONTEXT-GATED DOCUMENT INGESTION TESTS PASSED 100%!")
+        # 2. Create test PDF in temp_dir
+        test_pdf = Path(temp_dir) / "test_quantum_physics_syllabus.pdf"
+        
+        today_iso = datetime.date.today().isoformat()
+        syllabus_lines = [
+            f"Course: Advanced Quantum Mechanics (PHYS 401)",
+            f"Midterm Exam: {today_iso} at 10:00 AM in Hall B",
+            f"Final Project Review: {today_iso} at 3:00 PM in Lab 4",
+            f"Required Action: Submit lab notebook by end of week"
+        ]
+        create_sample_pdf(test_pdf, "Spring 2026 Physics Syllabus", syllabus_lines)
+        assert test_pdf.exists(), "Sample test PDF was not created!"
+        print(f"Sample PDF created at {test_pdf} ({test_pdf.stat().st_size} bytes)")
+
+        # 3. Test Staging document
+        doc_info = mem.stage_document(
+            filename=test_pdf.name,
+            file_path=str(test_pdf),
+            file_hash="test_sha_quantum_123",
+            file_size=test_pdf.stat().st_size
+        )
+        assert doc_info["id"] > 0, "Failed to stage document in SQLite!"
+        print(f"Document staged successfully: ID #{doc_info['id']} ({doc_info['filename']})")
+
+        # 4. Test list_staged_documents
+        staged_list_msg = SkillRegistry.execute("list_staged_documents")
+        print(f"Staged queue response:\n{staged_list_msg}")
+        assert test_pdf.name in staged_list_msg, "Staged document missing from list output!"
+
+        # 5. Process Staged Document with User Context
+        user_instruction = (
+            "Jarvis, that PDF is my university quantum physics syllabus. "
+            "Please register the Midterm Exam and Final Project Review in my calendar, "
+            "add the lab notebook task to my to-do list, and archive the syllabus."
+        )
+        print(f"\nTransmitting Sir's context: \"{user_instruction}\"")
+        result_msg = SkillRegistry.execute(
+            "process_staged_document",
+            identifier=test_pdf.name,
+            user_context=user_instruction
+        )
+        print(f"Jarvis Ingestion Output:\n{result_msg}")
+        assert "Processed" in result_msg or "registered" in result_msg
+
+        # 6. Verify SQLite Database State
+        staged_after = mem.get_staged_documents(status="PENDING_CONTEXT")
+        matching_pending = [d for d in staged_after if d["filename"] == test_pdf.name]
+        assert len(matching_pending) == 0, "Document should no longer be in PENDING_CONTEXT status!"
+
+        active_events = mem.get_calendar_events()
+        print(f"\nActive calendar events count: {len(active_events)}")
+        for ev in active_events:
+            print(f"  - #{ev['id']}: '{ev['title']}' at {ev['start_time']} ({ev.get('location')})")
+
+        print("\nALL CONTEXT-GATED DOCUMENT INGESTION TESTS PASSED 100%!")
+    finally:
+        jarvis.skills.document_ingest.set_memory_manager(None)
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 
 if __name__ == "__main__":
