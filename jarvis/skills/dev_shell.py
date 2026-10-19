@@ -498,3 +498,133 @@ def query_codebase_graph(query: str, mode: str = "query") -> str:
         return f"Graph query error: {e}"
 
 
+@SkillRegistry.register(
+    name="ast_search_codebase",
+    description="Performs ultra-fast structural AST searches across the codebase using ast-grep. Matches syntax patterns (e.g. 'def $FUNC($$$ARGS): $$$BODY', '$OBJ.method($$$ARGS)') across Python, JavaScript, or JSON in <15ms."
+)
+def ast_search_codebase(pattern: str, path: str = ".", lang: Optional[str] = None, max_lines: int = 60) -> str:
+    """Performs structural AST pattern searching using ast-grep."""
+    try:
+        resolved_path = _resolve_workspace_path(path) if path and path != "." else WORKSPACE_DIR
+    except ValueError as e:
+        return f"Invalid path: {e}"
+
+    ast_grep_bin = Path(sys.executable).parent / "ast-grep.exe"
+    if not ast_grep_bin.exists():
+        ast_grep_bin = Path(sys.executable).parent / "sg.exe"
+    if not ast_grep_bin.exists():
+        candidate = shutil.which("ast-grep") or shutil.which("sg")
+        if candidate:
+            ast_grep_bin = Path(candidate)
+        else:
+            return "ast-grep binary is not installed in the environment. Run 'pip install ast-grep-cli', Sir."
+
+    cmd = [str(ast_grep_bin), "run", "--color=never", "--heading=never", "-p", pattern]
+    if lang:
+        cmd.extend(["-l", lang])
+
+    try:
+        rel_target = str(resolved_path.relative_to(WORKSPACE_DIR))
+        cmd.append("." if rel_target == "." else rel_target)
+    except ValueError:
+        cmd.append(str(resolved_path))
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(WORKSPACE_DIR),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
+
+        if proc.returncode != 0 and err:
+            return f"ast-grep execution error: {err}"
+
+        if not out:
+            return f"No AST nodes matched pattern '{pattern}' in '{path}', Sir."
+
+        lines = out.splitlines()
+        total_lines = len(lines)
+        if total_lines > max_lines:
+            truncated = "\n".join(lines[:max_lines])
+            return (
+                f"{truncated}\n\n"
+                f"[Output truncated: showing first {max_lines} of {total_lines} matched lines. "
+                f"Narrow the target path or refine pattern, Sir.]"
+            )
+        return out
+    except subprocess.TimeoutExpired:
+        return "ast-grep search timed out after 15 seconds, Sir."
+    except Exception as e:
+        return f"ast-grep search error: {e}"
+
+
+@SkillRegistry.register(
+    name="check_code_diagnostics",
+    description="Runs ultra-fast static analysis, compiler syntax checks, and linting across the codebase via Ruff in <20ms."
+)
+def check_code_diagnostics(target_path: str = ".", select: Optional[str] = None, fix: bool = False, max_lines: int = 50) -> str:
+    """Runs Ruff static analysis and diagnostics on target files or directories."""
+    try:
+        resolved_path = _resolve_workspace_path(target_path) if target_path and target_path != "." else WORKSPACE_DIR
+    except ValueError as e:
+        return f"Invalid path: {e}"
+
+    ruff_bin = Path(sys.executable).parent / "ruff.exe"
+    if not ruff_bin.exists():
+        candidate = shutil.which("ruff")
+        if candidate:
+            ruff_bin = Path(candidate)
+        else:
+            return "Ruff binary is not installed in the environment. Run 'pip install ruff', Sir."
+
+    cmd = [str(ruff_bin), "check", "--color", "never", "--output-format", "concise"]
+    if fix:
+        cmd.append("--fix")
+    if select:
+        cmd.extend(["--select", select])
+
+    try:
+        rel_target = str(resolved_path.relative_to(WORKSPACE_DIR))
+        cmd.append("." if rel_target == "." else rel_target)
+    except ValueError:
+        cmd.append(str(resolved_path))
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(WORKSPACE_DIR),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
+
+        if proc.returncode == 0:
+            return f"All diagnostics clean: zero lint or syntax violations found across '{target_path}', Sir."
+
+        display_text = out or err
+        if not display_text:
+            return f"Ruff reported non-zero exit code ({proc.returncode}) without output for '{target_path}', Sir."
+
+        lines = display_text.splitlines()
+        total_lines = len(lines)
+        if total_lines > max_lines:
+            truncated = "\n".join(lines[:max_lines])
+            return (
+                f"{truncated}\n\n"
+                f"[Output truncated: showing first {max_lines} of {total_lines} diagnostic messages. "
+                f"Target specific modules to inspect in detail, Sir.]"
+            )
+        return display_text
+    except subprocess.TimeoutExpired:
+        return "Ruff diagnostics check timed out after 15 seconds, Sir."
+    except Exception as e:
+        return f"Ruff diagnostics check error: {e}"
+
+
+
