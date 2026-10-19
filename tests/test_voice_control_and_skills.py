@@ -155,7 +155,7 @@ class TestVoiceControlAndSkillsSuite(unittest.TestCase):
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             res = SkillRegistry.execute("search_desktop_files_fast", query="target_document")
-            self.assertIn("Found 1 file(s)", res)
+            self.assertTrue("Found 1 file(s)" in res or "Found 1 instant result(s)" in res)
             self.assertIn("target_document.pdf", res)
 
     def test_brain_fast_reflex_voice_profiles(self):

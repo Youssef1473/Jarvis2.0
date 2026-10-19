@@ -1059,32 +1059,42 @@ class MemoryManager:
     # Fact & Preference Management
     def remember_fact(self, key: str, value: str, category: str = "general") -> str:
         """Stores or updates a persistent fact about the user or system."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO facts (category, key, value, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(key) DO UPDATE SET
-                    value = excluded.value,
-                    category = excluded.category,
-                    updated_at = CURRENT_TIMESTAMP
-            """, (category.lower().strip(), key.lower().strip(), value.strip()))
-
-            # Index into sqlite-vec facts_vec
+        max_retries = 5
+        for attempt in range(max_retries):
             try:
-                import sqlite_vec
-                cursor.execute("SELECT id FROM facts WHERE key = ?", (key.lower().strip(),))
-                row = cursor.fetchone()
-                if row:
-                    fact_id = row["id"]
-                    text = f"{category} {key} {value}"
-                    vec = self.vector_engine.dense_vectorize(text)
-                    blob = sqlite_vec.serialize_float32(vec)
-                    cursor.execute("INSERT OR REPLACE INTO facts_vec(fact_id, embedding) VALUES (?, ?)", (fact_id, blob))
-            except Exception as e:
-                logger.debug("sqlite-vec fact indexing notice: %s", e)
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT INTO facts (category, key, value, updated_at)
+                        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(key) DO UPDATE SET
+                            value = excluded.value,
+                            category = excluded.category,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (category.lower().strip(), key.lower().strip(), value.strip()))
 
-            conn.commit()
+                    # Index into sqlite-vec facts_vec
+                    try:
+                        import sqlite_vec
+                        cursor.execute("SELECT id FROM facts WHERE key = ?", (key.lower().strip(),))
+                        row = cursor.fetchone()
+                        if row:
+                            fact_id = row["id"]
+                            text = f"{category} {key} {value}"
+                            vec = self.vector_engine.dense_vectorize(text)
+                            blob = sqlite_vec.serialize_float32(vec)
+                            cursor.execute("INSERT OR REPLACE INTO facts_vec(fact_id, embedding) VALUES (?, ?)", (fact_id, blob))
+                    except Exception as e:
+                        logger.debug("sqlite-vec fact indexing notice: %s", e)
+
+                    conn.commit()
+                break
+            except sqlite3.OperationalError as op_err:
+                err_str = str(op_err).lower()
+                if ("vtable constructor failed" in err_str or "busy" in err_str or "locked" in err_str) and attempt < max_retries - 1:
+                    time.sleep(0.015 * (attempt + 1))
+                    continue
+                raise
         with self._context_summary_lock:
             self._context_summary_cache = None
         return f"Remembered: '{key}' is '{value}'."

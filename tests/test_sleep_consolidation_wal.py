@@ -28,6 +28,10 @@ class TestSleepConsolidationWALSuite(unittest.TestCase):
         self.memory = MemoryManager(self.config)
 
     def tearDown(self):
+        try:
+            self.memory.close()
+        except Exception:
+            pass
         self.temp_dir.cleanup()
 
     def test_discover_redundant_facts_readonly(self):

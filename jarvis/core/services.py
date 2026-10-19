@@ -123,7 +123,12 @@ class ManagedServiceManager:
         # Enforce total child process termination: sweep any descendant child of the current Jarvis process
         try:
             import os
+            import sys
             import psutil
+            # Safety: Under unit testing, never sweep arbitrary child processes not registered
+            # with this manager, preventing inadvertent termination of ephemeral test fixtures/canaries.
+            if "unittest" in sys.modules and not os.environ.get("JARVIS_FORCE_CHILD_SWEEP"):
+                return
             current_proc = psutil.Process(os.getpid())
             remaining_children = current_proc.children(recursive=True)
             if remaining_children:
