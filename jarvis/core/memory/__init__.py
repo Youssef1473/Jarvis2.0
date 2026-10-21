@@ -350,6 +350,8 @@ class MemoryManager:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.vector_engine = VectorMemoryEngine()
         self._writer_actor = SingleWriterActor(self.db_path)
+        self._ro_vector_pool: Optional[Any] = None
+        self._ro_pool_lock = threading.Lock()
         self._init_db()
 
     @contextlib.contextmanager
@@ -390,8 +392,29 @@ class MemoryManager:
         """Asynchronously dispatches a write operation through the Single-Writer Actor queue."""
         return await self._writer_actor.execute_write_async(func)
 
+    def get_vector_pool(self, pool_size: int = 4):
+        """Retrieves or lazily instantiates the async VectorMemoryPool."""
+        if self._ro_vector_pool is None:
+            with self._ro_pool_lock:
+                if self._ro_vector_pool is None:
+                    from jarvis.memory.ro_pool import VectorMemoryPool
+                    self._ro_vector_pool = VectorMemoryPool(self.db_path, pool_size=pool_size)
+        return self._ro_vector_pool
+
+    async def get_vector_pool_async(self, pool_size: int = 4):
+        """Retrieves and asynchronously pre-warms the VectorMemoryPool."""
+        pool = self.get_vector_pool(pool_size=pool_size)
+        await pool.initialize()
+        return pool
+
     def close(self) -> None:
         """Cleans up writer actor and read-only pool connections."""
+        if hasattr(self, "_ro_vector_pool") and self._ro_vector_pool is not None:
+            try:
+                self._ro_vector_pool.teardown()
+            except Exception:
+                pass
+            self._ro_vector_pool = None
         if hasattr(self, "_writer_actor") and self._writer_actor:
             self._writer_actor.stop()
         try:
@@ -1280,6 +1303,94 @@ class MemoryManager:
         fused = fuse_vec_and_fts_rrf(vec_results, fts_results, k=k_rrf, max_l2_distance=max_l2_distance)
         return fused[:top_k]
 
+    async def search_facts_async(self, query: str) -> List[Dict[str, str]]:
+        """Asynchronously searches remembered facts matching a query keyword using VectorMemoryPool."""
+        sanitized = sanitize_fts5_query(query)
+        pool = self.get_vector_pool()
+        if sanitized:
+            try:
+                def _fts_query(conn: sqlite3.Connection):
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT f.category, f.key, f.value
+                        FROM facts_fts ft
+                        JOIN facts f ON ft.rowid = f.id
+                        WHERE facts_fts MATCH ?
+                        ORDER BY bm25(facts_fts) ASC
+                    """, (sanitized,))
+                    return [dict(row) for row in cursor.fetchall()]
+
+                rows = await pool.execute_read_async(_fts_query)
+                if rows:
+                    return rows
+            except Exception as e:
+                logger.debug("Async FTS5 facts search fallback to LIKE: %s", e)
+
+        q = f"%{query.lower().strip()}%"
+        def _like_query(conn: sqlite3.Connection):
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT category, key, value FROM facts
+                WHERE key LIKE ? OR value LIKE ? OR category LIKE ?
+                ORDER BY category, key
+            """, (q, q, q))
+            return [dict(row) for row in cursor.fetchall()]
+
+        return await pool.execute_read_async(_like_query)
+
+    async def semantic_search_facts_async(
+        self, query: str, top_k: int = 5, min_score: float = 0.12
+    ) -> List[Dict[str, Any]]:
+        """Asynchronously finds stored facts semantically relevant to query using VectorMemoryPool."""
+        pool = self.get_vector_pool()
+        try:
+            import sqlite_vec
+            q_vec = await asyncio.to_thread(self.vector_engine.embed_query, query)
+            q_blob = sqlite_vec.serialize_float32(q_vec)
+
+            def _knn_query(conn: sqlite3.Connection):
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT f.category, f.key, f.value, v.distance
+                    FROM facts_vec v
+                    JOIN facts f ON v.fact_id = f.id
+                    WHERE v.embedding MATCH ? AND k = ?
+                    ORDER BY v.distance ASC
+                """, (q_blob, max(1, top_k * 2)))
+                return [dict(row) for row in cursor.fetchall()]
+
+            knn_rows = await pool.execute_read_async(_knn_query)
+            if knn_rows:
+                results = []
+                for row in knn_rows:
+                    dist = float(row["distance"])
+                    sim = max(0.0, 1.0 - (dist / 2.0))
+                    if sim >= min_score:
+                        results.append({
+                            "category": row["category"],
+                            "key": row["key"],
+                            "value": row["value"],
+                            "relevance_score": round(sim, 3),
+                            "distance": round(dist, 4),
+                        })
+                if results:
+                    results.sort(key=lambda x: x["relevance_score"], reverse=True)
+                    return results[:top_k]
+        except Exception as e:
+            logger.debug("Async sqlite-vec facts KNN search fallback: %s", e)
+
+        return await asyncio.to_thread(self.semantic_search_facts, query, top_k, min_score)
+
+    async def hybrid_search_facts_async(
+        self, query: str, top_k: int = 5, k_rrf: int = 60, max_l2_distance: float = 0.78
+    ) -> List[Dict[str, Any]]:
+        """Asynchronously performs hybrid search combining FTS5 BM25 and sqlite-vec KNN via RRF."""
+        fts_task = asyncio.create_task(self.search_facts_async(query))
+        vec_task = asyncio.create_task(self.semantic_search_facts_async(query, top_k=max(top_k * 2, 10)))
+        fts_results, vec_results = await asyncio.gather(fts_task, vec_task)
+        fused = fuse_vec_and_fts_rrf(vec_results, fts_results, k=k_rrf, max_l2_distance=max_l2_distance)
+        return fused[:top_k]
+
     def get_all_memory_nodes(
         self,
         category: Optional[str] = None,
@@ -1744,6 +1855,99 @@ class MemoryManager:
         """Hybrid search combining FTS5 BM25 and sqlite-vec KNN via Reciprocal Rank Fusion (RRF)."""
         fts_results = self.search_documents(query, limit=max(limit * 2, 10))
         vec_results = self.semantic_search_documents(query, top_k=max(limit * 2, 10))
+        fused = fuse_vec_and_fts_rrf(vec_results, fts_results, k=k_rrf, max_l2_distance=max_l2_distance)
+        return fused[:limit]
+
+    async def search_documents_async(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Asynchronously searches archived documents via FTS5 BM25 with LIKE fallback."""
+        sanitized = sanitize_fts5_query(query)
+        pool = self.get_vector_pool()
+        if sanitized:
+            try:
+                def _fts_query(conn: sqlite3.Connection):
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT d.id, d.title, d.category, d.summary, d.file_path, d.created_at
+                        FROM documents_fts ft
+                        JOIN documents d ON ft.rowid = d.id
+                        WHERE documents_fts MATCH ?
+                        ORDER BY bm25(documents_fts) ASC
+                        LIMIT ?
+                    """, (sanitized, limit))
+                    return [dict(row) for row in cursor.fetchall()]
+
+                rows = await pool.execute_read_async(_fts_query)
+                if rows:
+                    return rows
+            except Exception as e:
+                logger.debug("Async FTS5 documents search fallback: %s", e)
+
+        q = f"%{query.lower().strip()}%"
+        def _like_query(conn: sqlite3.Connection):
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, title, category, summary, file_path, created_at
+                FROM documents
+                WHERE title LIKE ? OR summary LIKE ? OR category LIKE ?
+                ORDER BY created_at DESC LIMIT ?
+            """, (q, q, q, limit))
+            return [dict(row) for row in cursor.fetchall()]
+
+        return await pool.execute_read_async(_like_query)
+
+    async def semantic_search_documents_async(
+        self, query: str, top_k: int = 5, min_score: float = 0.10
+    ) -> List[Dict[str, Any]]:
+        """Asynchronously finds archived documents semantically relevant to query using VectorMemoryPool."""
+        pool = self.get_vector_pool()
+        try:
+            import sqlite_vec
+            q_vec = await asyncio.to_thread(self.vector_engine.embed_query, query)
+            q_blob = sqlite_vec.serialize_float32(q_vec)
+
+            def _knn_query(conn: sqlite3.Connection):
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT d.id, d.title, d.category, d.summary, d.file_path, d.created_at, dv.distance
+                    FROM documents_vec dv
+                    JOIN documents d ON dv.doc_id = d.id
+                    WHERE dv.embedding MATCH ? AND k = ?
+                    ORDER BY dv.distance ASC
+                """, (q_blob, max(1, top_k * 2)))
+                return [dict(row) for row in cursor.fetchall()]
+
+            knn_rows = await pool.execute_read_async(_knn_query)
+            if knn_rows:
+                results = []
+                for row in knn_rows:
+                    dist = float(row["distance"])
+                    sim = max(0.0, 1.0 - (dist / 2.0))
+                    if sim >= min_score:
+                        results.append({
+                            "id": row["id"],
+                            "title": row["title"],
+                            "category": row["category"],
+                            "summary": row["summary"],
+                            "file_path": row["file_path"],
+                            "created_at": row["created_at"],
+                            "relevance_score": round(sim, 3),
+                            "distance": round(dist, 4),
+                        })
+                if results:
+                    results.sort(key=lambda x: x["relevance_score"], reverse=True)
+                    return results[:top_k]
+        except Exception as e:
+            logger.debug("Async sqlite-vec documents KNN search fallback: %s", e)
+
+        return await asyncio.to_thread(self.semantic_search_documents, query, top_k, min_score)
+
+    async def hybrid_search_documents_async(
+        self, query: str, limit: int = 5, k_rrf: int = 60, max_l2_distance: float = 0.78
+    ) -> List[Dict[str, Any]]:
+        """Asynchronously performs hybrid search combining FTS5 BM25 and sqlite-vec KNN via RRF."""
+        fts_task = asyncio.create_task(self.search_documents_async(query, limit=max(limit * 2, 10)))
+        vec_task = asyncio.create_task(self.semantic_search_documents_async(query, top_k=max(limit * 2, 10)))
+        fts_results, vec_results = await asyncio.gather(fts_task, vec_task)
         fused = fuse_vec_and_fts_rrf(vec_results, fts_results, k=k_rrf, max_l2_distance=max_l2_distance)
         return fused[:limit]
 

@@ -7,6 +7,8 @@ executing tool call JSON blocks cleanly under cryptographic nonce protection.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import asyncio
+import inspect
 import json
 import logging
 import secrets
@@ -60,9 +62,11 @@ class StreamingToolCallParser:
         self,
         idempotent_read_tools: Optional[Set[str]] = None,
         dispatch_callback: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+        coordinator: Optional[Any] = None,
     ) -> None:
         self.idempotent_read_tools = idempotent_read_tools or set(DEFAULT_IDEMPOTENT_READ_TOOLS)
         self.dispatch_callback = dispatch_callback
+        self.coordinator = coordinator
         self._buffer = ""
         self._dispatched_call_ids: Set[str] = set()
 
@@ -93,8 +97,84 @@ class StreamingToolCallParser:
             self._dispatched_call_ids.add(call_id)
             self._buffer = ""
             logger.info("Speculative early tool dispatch for '%s' with args %s", tool_name, list(tool_args.keys()))
+
+            # Acoustic masking via DualTrackCoordinator if configured
+            if self.coordinator is not None:
+                try:
+                    args_repr = json.dumps(tool_args or {}, sort_keys=True, default=str)
+                except Exception:
+                    args_repr = str(sorted((tool_args or {}).items()))
+                cache_key = f"{tool_name}:{args_repr}"
+                cached = self.coordinator._get_cached_result(cache_key)
+                if cached is not None:
+                    logger.debug("Fast-path cache hit for '%s' in StreamingToolCallParser", tool_name)
+                    return cached
+
+                try:
+                    loop = asyncio.get_running_loop()
+                    if loop.is_running():
+                        coro = self.coordinator.execute_with_masking(
+                            user_query="",
+                            tool_name=tool_name,
+                            tool_args=tool_args,
+                            tool_coro=(lambda: self.dispatch_callback(tool_name, tool_args)) if self.dispatch_callback else (lambda: parsed),
+                            is_read_only=True,
+                        )
+                        loop.create_task(coro)
+                except RuntimeError:
+                    pass
+
             if self.dispatch_callback:
                 return self.dispatch_callback(tool_name, tool_args)
+            return parsed
+
+        return None
+
+    async def feed_chunk_async(
+        self, delta_json: str, call_id: str = "default_0", user_query: str = ""
+    ) -> Optional[Any]:
+        """Asynchronously feeds partial JSON tokens and executes early read tools with acoustic masking."""
+        if call_id in self._dispatched_call_ids:
+            return None
+
+        self._buffer += delta_json
+        stripped = self._buffer.strip()
+        if not stripped.endswith("}"):
+            return None
+
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+
+        tool_name = parsed.get("name")
+        tool_args = parsed.get("arguments", {})
+        if isinstance(tool_args, str):
+            try:
+                tool_args = json.loads(tool_args)
+            except json.JSONDecodeError:
+                return None
+
+        if tool_name and tool_name in self.idempotent_read_tools and isinstance(tool_args, dict):
+            self._dispatched_call_ids.add(call_id)
+            self._buffer = ""
+            logger.info("Speculative early tool dispatch (async) for '%s' with args %s", tool_name, list(tool_args.keys()))
+
+            if self.coordinator is not None:
+                tool_target = (lambda: self.dispatch_callback(tool_name, tool_args)) if self.dispatch_callback else (lambda: parsed)
+                return await self.coordinator.execute_with_masking(
+                    user_query=user_query,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    tool_coro=tool_target,
+                    is_read_only=True,
+                )
+
+            if self.dispatch_callback:
+                res = self.dispatch_callback(tool_name, tool_args)
+                if inspect.isawaitable(res):
+                    return await res
+                return res
             return parsed
 
         return None
