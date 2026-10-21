@@ -4,7 +4,10 @@ Governs multi-step tool-use cycles, loop detection, taint tracking, and acoustic
 """
 import json
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from jarvis.core.pipeline.dual_track import DualTrackCoordinator
 
 from jarvis.skills.base import SkillRegistry
 from jarvis.core.security_boundaries import TurnTaintTracker, SecurityBoundaryViolation
@@ -22,11 +25,13 @@ class ToolOrchestrator:
         taint_tracker: Optional[TurnTaintTracker] = None,
         max_identical_cycles: int = 2,
         on_status_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        dual_track_coordinator: Optional[Any] = None,
     ):
         self.interim_bridge = interim_bridge or InterimSpeechBridge()
         self.taint_tracker = taint_tracker or TurnTaintTracker.get_instance()
         self.max_identical_cycles = max_identical_cycles
         self.on_status_callback = on_status_callback
+        self.dual_track_coordinator = dual_track_coordinator
         self._history: List[Tuple[str, str]] = []
 
     def reset(self) -> None:
@@ -64,6 +69,14 @@ class ToolOrchestrator:
             logger.error("SecurityBoundaryViolation in tool execution: %s", sec_err)
             return f"Error: {sec_err}"
 
+        # Check read-only fast cache if DualTrackCoordinator is present
+        cache_key = f"{tool_name}:{arg_signature}"
+        if self.dual_track_coordinator is not None and getattr(self.dual_track_coordinator, "is_read_only_tool", lambda t: False)(tool_name):
+            cached = self.dual_track_coordinator._get_cached_result(cache_key)
+            if cached is not None:
+                logger.debug("RO Cache Hit in ToolOrchestrator for '%s'", tool_name)
+                return cached
+
         # 3. Arm Acoustic Interim Bridge
         if self.interim_bridge:
             self.interim_bridge.on_tool_start(tool_name, step_index=step_index)
@@ -88,6 +101,9 @@ class ToolOrchestrator:
         try:
             # 4. Physical Execution via SkillRegistry
             result = SkillRegistry.execute(tool_name, **arguments)
+            if self.dual_track_coordinator is not None and getattr(self.dual_track_coordinator, "is_read_only_tool", lambda t: False)(tool_name):
+                if result is not None and not str(result).startswith("Error"):
+                    self.dual_track_coordinator._set_cached_result(cache_key, result)
             return result
         except Exception as err:
             logger.error("Exception during tool execution '%s': %s", tool_name, err)
@@ -106,3 +122,71 @@ class ToolOrchestrator:
                     })
                 except Exception as e:
                     logger.debug("Tool status callback notice (end): %s", e)
+
+    async def execute_step_async(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user_query: str = "",
+        step_index: int = 1,
+        dual_key_confirmed: bool = False,
+        milestone_phrase: Optional[str] = None,
+    ) -> Any:
+        """Asynchronously executes a tool step using DualTrackCoordinator for masking and gating."""
+        arg_signature = json.dumps(arguments or {}, sort_keys=True)
+        call_key = (tool_name, arg_signature)
+
+        # 1. Cycle detection
+        prior_matches = [k for k in self._history if k == call_key]
+        if len(prior_matches) >= self.max_identical_cycles:
+            logger.warning("Recursive spin-loop detected on tool '%s' with identical arguments.", tool_name)
+            return f"Loop cycle detected on tool '{tool_name}' with identical arguments. Halting recursion."
+
+        self._history.append(call_key)
+
+        # 2. Dual-Key Safety Gate & Taint Tracking
+        risk_level = SkillRegistry.get_risk_level(tool_name)
+        try:
+            self.taint_tracker.check_tool_execution(
+                tool_name, arguments, risk_level=risk_level, dual_key_confirmed=dual_key_confirmed
+            )
+        except SecurityBoundaryViolation as sec_err:
+            logger.error("SecurityBoundaryViolation in tool execution: %s", sec_err)
+            return f"Error: {sec_err}"
+
+        # 3. Execution routing
+        if self.dual_track_coordinator is not None:
+            if getattr(self, "on_status_callback", None):
+                try:
+                    self.on_status_callback({
+                        "type": "tool_status",
+                        "tool": tool_name,
+                        "status": "running",
+                        "step": step_index,
+                    })
+                except Exception as e:
+                    logger.debug("Tool status callback notice (start): %s", e)
+
+            try:
+                res = await self.dual_track_coordinator.execute_with_masking(
+                    user_query=user_query,
+                    tool_name=tool_name,
+                    tool_args=arguments,
+                    tool_coro=lambda: SkillRegistry.execute(tool_name, **arguments),
+                    milestone_phrase=milestone_phrase,
+                )
+                return res
+            finally:
+                if getattr(self, "on_status_callback", None):
+                    try:
+                        self.on_status_callback({
+                            "type": "tool_status",
+                            "tool": tool_name,
+                            "status": "completed",
+                            "step": step_index,
+                        })
+                    except Exception as e:
+                        logger.debug("Tool status callback notice (end): %s", e)
+
+        # Fallback to sync execute_step
+        return self.execute_step(tool_name, arguments, step_index=step_index, dual_key_confirmed=dual_key_confirmed)

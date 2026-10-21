@@ -158,6 +158,33 @@ class TestToolOrchestrator(unittest.TestCase):
         self.assertEqual(events[1]["status"], "completed")
         self.assertEqual(events[1]["tool"], "_test_echo_tool")
 
+    def test_tool_orchestrator_read_only_cache(self):
+        from jarvis.core.pipeline.dual_track import DualTrackCoordinator
+        coordinator = DualTrackCoordinator(cache_ttl_seconds=60.0)
+        orchestrator = ToolOrchestrator(
+            taint_tracker=self.tracker,
+            dual_track_coordinator=coordinator,
+        )
+
+        call_counter = 0
+        @SkillRegistry.register(name="_test_cached_ro_tool", description="RO tool", read_only=True)
+        def _cached_ro():
+            nonlocal call_counter
+            call_counter += 1
+            return f"computed_val_{call_counter}"
+
+        self.addCleanup(lambda: SkillRegistry.unregister("_test_cached_ro_tool"))
+
+        # First call executes and caches
+        res1 = orchestrator.execute_step("_test_cached_ro_tool", {})
+        self.assertEqual(res1, "computed_val_1")
+        self.assertEqual(call_counter, 1)
+
+        # Second call returns cached without invoking underlying function again
+        res2 = orchestrator.execute_step("_test_cached_ro_tool", {})
+        self.assertEqual(res2, "computed_val_1")
+        self.assertEqual(call_counter, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

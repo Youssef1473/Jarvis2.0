@@ -293,14 +293,30 @@ class JarvisBrain:
         self._current_turn_resolved_tool_outputs: Dict[str, Any] = {}
         self.tts = None
 
-        from jarvis.core.pipeline import InterimSpeechBridge, ToolOrchestrator, TurnTaintTracker
+        from jarvis.core.pipeline import (
+            DualTrackCoordinator,
+            InterimSpeechBridge,
+            ToolOrchestrator,
+            TurnTaintTracker,
+        )
+        from jarvis.conversation.bookmarks import ReasoningBookmarkStack
+
         self.interim_bridge = InterimSpeechBridge(
             speak_fn=self._speak_interim_phrase,
             is_speaking_fn=self._is_speaking,
         )
+        self.dual_track_coordinator = DualTrackCoordinator(
+            tts_enqueue_fn=self._async_enqueue_tts,
+            tts_wait_clause_done_fn=self._async_wait_clause_done,
+            wasapi_flush_fn=self._flush_wasapi_playback,
+            bookmark_stack=ReasoningBookmarkStack.get_instance(),
+            filler_threshold_ms=320.0,
+            cache_ttl_seconds=60.0,
+        )
         self.tool_orchestrator = ToolOrchestrator(
             interim_bridge=self.interim_bridge,
             taint_tracker=TurnTaintTracker.get_instance(),
+            dual_track_coordinator=self.dual_track_coordinator,
         )
         self.cognitive_router = CognitiveRouter(default_model=self.antigravity_model)
         self.context_orchestrator = ContextOrchestrator(config=self.config)
@@ -343,6 +359,27 @@ class JarvisBrain:
         if hasattr(self, "tts") and self.tts:
             return getattr(self.tts, "is_speaking", False)
         return False
+
+    async def _async_enqueue_tts(self, phrase: str, epoch: int) -> None:
+        """Asynchronously enqueues Track A interim milestone phrase to TTS."""
+        self._speak_interim_phrase(phrase)
+
+    async def _async_wait_clause_done(self) -> None:
+        """Acoustic Collision Gate: waits for active TTS clause synthesis/drain before Track B handoff."""
+        import asyncio
+        start_wait = time.monotonic()
+        while self._is_speaking() and (time.monotonic() - start_wait < 1.8):
+            if self._active_cancel_token and getattr(self._active_cancel_token, "is_cancelled", False):
+                break
+            await asyncio.sleep(0.04)
+
+    def _flush_wasapi_playback(self) -> None:
+        """Hardware flush callback invoked during voice barge-in to stop playback instantly."""
+        if hasattr(self, "tts") and self.tts:
+            try:
+                self.tts.stop()
+            except Exception as e:
+                logger.debug("TTS stop notice during barge-in flush: %s", e)
 
     def _execute_tool_with_orchestrator(self, tool_name: str, tool_args: Dict[str, Any], step_index: int = 1) -> Any:
         """Executes a tool call through ToolOrchestrator for taint tracking, loop guards, and interim audio."""

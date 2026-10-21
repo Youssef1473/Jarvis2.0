@@ -27,6 +27,21 @@ _INTERIM_PHRASE_MAP: Dict[str, str] = {
     "get_recent_workspace_mutations": "Scanning recent workspace mutations, Sir.",
     "compile_workflow_reflex": "Compiling deterministic reflex macro, Sir.",
     "execute_workflow_reflex": "Replaying compiled workflow reflex, Sir.",
+    "audit_webpage_accessibility": "Auditing accessibility tree via Chrome DevTools, Sir.",
+    "audit_webpage_performance": "Running Core Web Vitals performance audit, Sir.",
+    "capture_devtools_snapshot": "Capturing DOM snapshot via DevTools Protocol, Sir.",
+    "search_gemini_api_documentation": "Searching Gemini API documentation, Sir.",
+    "get_gemini_documentation_chunk": "Retrieving Gemini technical specification, Sir.",
+    "get_gemini_live_architecture_overview": "Inspecting Gemini Live API architecture, Sir.",
+    "search_modern_web_guidance": "Consulting modern web standards, Sir.",
+    "retrieve_modern_web_guide": "Retrieving modern web architectural guidance, Sir.",
+    "take_desktop_screenshot": "Capturing desktop display frame, Sir.",
+    "get_system_vitals": "Polling hardware sensor telemetry, Sir.",
+    "get_battery_status": "Querying power and battery subsystems, Sir.",
+    "search_codebase": "Searching repository AST index, Sir.",
+    "read_file": "Inspecting file contents, Sir.",
+    "patch_file": "Applying surgical code patch, Sir.",
+    "write_file": "Writing updated file to disk, Sir.",
 }
 
 DEFAULT_INTERIM_PHRASE = "One moment, Sir, coordinating subsystems."
