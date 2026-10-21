@@ -52,8 +52,12 @@ class TestContextContinuityAndAutoLearning(unittest.TestCase):
             extractor_fn=mock_extractor,
         )
 
-        # Allow background daemon thread to complete
-        time.sleep(0.3)
+        # Allow background daemon thread to complete with resilient polling
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if self.memory.get_fact("active_project_focus"):
+                break
+            time.sleep(0.05)
 
         # 1. Tier 1 Verification: user_preferences contains preference & habit
         prefs = self.memory.get_user_preferences()

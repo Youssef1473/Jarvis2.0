@@ -106,7 +106,8 @@ class TestPCControlAndPerformance(unittest.TestCase):
         self.assertIn("jarvis/core/brain.py", prompt)
         self.assertIn("jarvis/skills/os_control.py", prompt)
         self.assertIn("create_or_update_custom_skill", prompt)
-        self.assertIn("C:\\Users\\Youssef\\Projects\\Jarvis_2.0", prompt)
+        base_dir = self.config.get("_base_dir", "")
+        self.assertIn(base_dir, prompt)
 
 
 if __name__ == "__main__":

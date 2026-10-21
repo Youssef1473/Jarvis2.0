@@ -15,6 +15,9 @@ _TRACK_B_MODULES = {
     "usn_journal_delta_radar",
     "reflex_macro_compiler",
     "ast_code_surgeon",
+    "modern_web",
+    "gemini_intelligence",
+    "chrome_devtools",
 }
 
 __all__ = [

@@ -68,6 +68,15 @@ def _setup_nvidia_dll_paths():
                         logger.info(f"Registered NVIDIA DLL path: {bin_dir}")
                     except Exception:
                         pass
+        # Also check PyTorch's bundled CUDA/cuBLAS runtime libraries
+        torch_lib = Path(sys.prefix) / "Lib" / "site-packages" / "torch" / "lib"
+        if torch_lib.is_dir():
+            try:
+                os.add_dll_directory(str(torch_lib))
+                os.environ["PATH"] = f"{torch_lib};{os.environ.get('PATH', '')}"
+                logger.info(f"Registered PyTorch CUDA DLL path: {torch_lib}")
+            except Exception:
+                pass
     except Exception:
         pass
 

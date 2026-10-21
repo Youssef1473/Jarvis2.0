@@ -22,6 +22,26 @@
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
       "enabled": true
+    },
+    "chrome_devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest",
+        "--headless",
+        "--no-usage-statistics",
+        "-e",
+        "%LOCALAPPDATA%\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
+      ],
+      "enabled": true
+    },
+    "gemini_docs": {
+      "transport": "http",
+      "endpoint_url": "https://gemini-api-docs-mcp.dev",
+      "headers": {
+        "MCP-Protocol-Version": "2024-11-05"
+      },
+      "enabled": true
     }
   }
 }

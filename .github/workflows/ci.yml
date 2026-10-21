@@ -35,4 +35,4 @@ jobs:
 
       - name: Run Fast Parallel Test Suite (Non-Hardware)
         run: |
-          python tools/run_fast_tests.py --fast -w 2
+          python tools/run_fast_tests.py --fast -w 2 -v

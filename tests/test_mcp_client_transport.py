@@ -224,7 +224,9 @@ class TestMCPManager(unittest.TestCase):
             self.assertIn("github", res)
             self.assertIn("context7", res)
             self.assertIn("sequential_thinking", res)
-            self.assertEqual(mock_connect.call_count, 4)
+            self.assertIn("chrome_devtools", res)
+            self.assertIn("gemini_docs", res)
+            self.assertEqual(mock_connect.call_count, 5)
 
             # Check that GITHUB_TOKEN environment variable was expanded
             calls = mock_connect.call_args_list

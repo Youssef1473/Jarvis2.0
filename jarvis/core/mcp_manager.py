@@ -211,12 +211,13 @@ class MCPClientSession:
 
     def initialize(self, timeout: float = DEFAULT_TIMEOUT_SEC) -> Dict[str, Any]:
         """Performs protocol handshake with MCP server."""
+        proto_ver = self.headers.get("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
         payload = {
             "jsonrpc": "2.0",
             "id": self._next_id(),
             "method": "initialize",
             "params": {
-                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "protocolVersion": proto_ver,
                 "capabilities": {},
                 "clientInfo": {"name": "jarvis-mcp-client", "version": "2.0"},
             },
@@ -294,6 +295,7 @@ class MCPClientSession:
 
         req_headers = {
             "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
             "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
             "User-Agent": "Jarvis-MCP-Client/2.0",
         }
@@ -305,7 +307,14 @@ class MCPClientSession:
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 resp_bytes = resp.read()
-                return json.loads(resp_bytes.decode("utf-8"))
+                raw_text = resp_bytes.decode("utf-8").strip()
+                if raw_text.startswith("{") or raw_text.startswith("["):
+                    return json.loads(raw_text)
+                for line in raw_text.splitlines():
+                    line_str = line.strip()
+                    if line_str.startswith("data:"):
+                        return json.loads(line_str[5:].strip())
+                return json.loads(raw_text)
         except Exception as err:
             logger.error("HTTP request error to MCP server '%s': %s", self.name, err)
             raise RuntimeError(f"MCP HTTP request to '{self.name}' failed: {err}") from err
@@ -599,6 +608,8 @@ class MCPManager:
                     raw_env = server_def.get("env")
                     cwd = server_def.get("cwd")
 
+                    resolved_args = [os.path.expandvars(a) if isinstance(a, str) else str(a) for a in args]
+
                     resolved_env = {}
                     if raw_env and isinstance(raw_env, dict):
                         for k, v in raw_env.items():
@@ -610,7 +621,7 @@ class MCPManager:
                     session = self.connect_stdio(
                         server_name,
                         command=[cmd] if isinstance(cmd, str) else cmd,
-                        args=args,
+                        args=resolved_args,
                         env=resolved_env or None,
                         cwd=cwd,
                     )

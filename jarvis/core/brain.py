@@ -52,6 +52,9 @@ import jarvis.skills.reflex_macro_compiler
 import jarvis.skills.ast_code_surgeon
 import jarvis.skills.hybrid_actuator
 import jarvis.skills.mcp_manager
+import jarvis.skills.modern_web
+import jarvis.skills.gemini_intelligence
+import jarvis.skills.chrome_devtools
 from jarvis.vision.screen_capture import ScreenPerception
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
