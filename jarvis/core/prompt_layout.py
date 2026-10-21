@@ -8,8 +8,72 @@ Structure:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+import hashlib
 import json
+import logging
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("Jarvis.Core.PromptLayout")
+
+
+@dataclass
+class RadixNode:
+    """Represents a discrete, cacheable block in the prompt prefix tree."""
+
+    content: str
+    digest: bytes
+    parent: Optional[RadixNode] = None
+
+    @classmethod
+    def create_root(cls, preamble: str, tool_specs: str) -> RadixNode:
+        """Constructs the H_root node (~28k tokens).
+
+        Computed once at startup with explicit BPE barrier sentinels.
+        """
+        content = f"{preamble.strip()}\n\n[ZONE 1: TOOLS]\n\n{tool_specs.strip()}\n\n[ZONE 2: PREFERENCES]\n\n"
+        digest = hashlib.blake2b(content.encode("utf-8"), digest_size=8).digest()
+        logger.debug("H_root materialized. Digest: %s", digest.hex())
+        return cls(content=content, digest=digest)
+
+    def append_child(self, new_content: str, zone_sentinel: str) -> RadixNode:
+        """Derives a child node (e.g., H_user, H_turn_k) using a rolling hash."""
+        terminated_content = f"{new_content.strip()}\n\n[{zone_sentinel}]\n\n"
+        hasher = hashlib.blake2b(digest_size=8)
+        hasher.update(self.digest)
+        hasher.update(terminated_content.encode("utf-8"))
+        child_digest = hasher.digest()
+        return RadixNode(content=terminated_content, digest=child_digest, parent=self)
+
+    def compile_full_prompt(self, volatile_leaf: str) -> str:
+        """Traverses the tree to compile the exact string payload for the cloud API,
+
+        appending the un-cached volatile ephemera at the absolute tail.
+        """
+        nodes = []
+        current: Optional[RadixNode] = self
+        while current is not None:
+            nodes.append(current.content)
+            current = current.parent
+
+        nodes.reverse()
+        nodes.append(volatile_leaf.strip())
+        return "".join(nodes)
+
+    @property
+    def hex_digest(self) -> str:
+        """Returns the hex string representation of the 64-bit BLAKE2b digest."""
+        return self.digest.hex()
+
+    @property
+    def depth(self) -> int:
+        """Returns the depth of the node from root (root depth = 1)."""
+        count = 0
+        current: Optional[RadixNode] = self
+        while current is not None:
+            count += 1
+            current = current.parent
+        return count
 
 
 def _map_schema_type_to_ts(prop_spec: Dict[str, Any]) -> str:
@@ -158,6 +222,7 @@ def verify_prefix_stability(prompt_a: str, prompt_b: str, min_prefix_chars: int 
 
 
 __all__ = [
+    "RadixNode",
     "format_compact_typescript_tools",
     "build_canonical_4zone_prompt",
     "verify_prefix_stability",

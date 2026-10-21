@@ -112,6 +112,50 @@ class TestContextOrchestrator(unittest.TestCase):
         self.assertIn("Current task mode: software engineering.", prompt)
         self.assertIn("Inspect before editing", prompt)
 
+    def test_radix_node_tree_invariance_across_turns(self):
+        """Verifies H_root and H_user remain 100% byte-for-byte and digest-invariant across changing turns."""
+        from jarvis.core.prompt_layout import RadixNode, format_compact_typescript_tools
+
+        preamble = SOVEREIGN_IDENTITY + "\n\n" + BASE_SYSTEM_PROMPT
+        tools = [
+            {"function": {"name": "adjust_volume", "description": "Adjusts audio volume."}},
+            {"function": {"name": "take_screenshot", "description": "Captures desktop screen."}},
+        ]
+        tool_specs = format_compact_typescript_tools(tools)
+
+        # 1. Root node materialized at boot
+        root = RadixNode.create_root(preamble, tool_specs)
+        self.assertEqual(len(root.digest), 8)
+        initial_root_digest = root.hex_digest
+
+        # 2. User preference node
+        user_node = root.append_child("User prefers concise British diction.", "ZONE 2: PREFERENCES")
+        self.assertEqual(len(user_node.digest), 8)
+        initial_user_digest = user_node.hex_digest
+
+        # 3. Simulate 10 turns with fluctuating volatile state
+        current_node = user_node
+        for turn_idx in range(1, 11):
+            # Verify root and user digests have not mutated
+            self.assertEqual(root.hex_digest, initial_root_digest)
+            self.assertEqual(user_node.hex_digest, initial_user_digest)
+
+            # Append turn pair
+            turn_content = f"User: Command {turn_idx}\nJarvis: Executed action {turn_idx}, Sir."
+            current_node = current_node.append_child(turn_content, "ZONE 3: HISTORY")
+
+            # Compile full prompt with volatile tail
+            volatile_leaf = f"<flow_state>battery={100 - turn_idx}% window=Code.exe timestamp=170000{turn_idx}</flow_state>\nUser: Do step {turn_idx + 1}"
+            full_prompt = current_node.compile_full_prompt(volatile_leaf)
+
+            # Assert volatile leaf is placed strictly at the tail
+            self.assertTrue(full_prompt.endswith(volatile_leaf))
+            # Assert root preamble is preserved at index 0
+            self.assertTrue(full_prompt.startswith(preamble.strip()))
+
+        # Current node depth should be 1 (root) + 1 (user) + 10 (turns) = 12
+        self.assertEqual(current_node.depth, 12)
+
 
 if __name__ == "__main__":
     unittest.main()
