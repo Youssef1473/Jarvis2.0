@@ -1,14 +1,20 @@
 """Closed-Loop Security Boundaries, SSRF Protection, Path Confinement, and Taint Tracking for Jarvis 2.0."""
+import hashlib
+import hmac
 import ipaddress
+import json
 import logging
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
+import secrets
 import socket
 import threading
+import time
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("Jarvis.SecurityBoundaries")
 
@@ -174,6 +180,119 @@ def validate_confined_path(target_path: str, allowed_root_dir: str) -> str:
     return real_target
 
 
+def compute_action_hash(tool_name: str, arguments: Dict[str, Any]) -> str:
+    """Computes a deterministic SHA-256 hash of a tool call's payload, ignoring forged model auth fields."""
+    clean_args = {
+        k: v for k, v in (arguments or {}).items()
+        if k not in ("authorization", "user_approved", "dual_key_confirmed", "confirmed", "_dual_key_token")
+    }
+    raw = json.dumps({"tool": tool_name, "args": clean_args}, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class DualKeyAuthorization:
+    """A cryptographically bound, one-time human authorization grant."""
+    tool_name: str
+    action_hash: str
+    token: str
+    expires_at: float
+    confirmed: bool = True
+    summary: str = ""
+
+    def is_valid_for(self, tool_name: str, payload_hash: str) -> bool:
+        return (
+            self.confirmed
+            and self.tool_name == tool_name
+            and hmac.compare_digest(self.action_hash, payload_hash)
+            and time.time() <= self.expires_at
+        )
+
+
+class DualKeyApprovalManager:
+    """Central authority for human out-of-band authorization grants for high-privilege operations."""
+    _instance: Optional["DualKeyApprovalManager"] = None
+    _lock = threading.Lock()
+
+    def __init__(self) -> None:
+        self._grants: Dict[str, DualKeyAuthorization] = {}
+        self._approval_handler: Optional[Callable[[Dict[str, Any]], bool]] = None
+
+    @classmethod
+    def get_instance(cls) -> "DualKeyApprovalManager":
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls()
+            return cls._instance
+
+    def set_approval_handler(self, handler: Optional[Callable[[Dict[str, Any]], bool]]) -> None:
+        """Sets a trusted local UI or CLI approval handler to prompt human operators."""
+        self._approval_handler = handler
+
+    def grant_approval(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        ttl_seconds: float = 60.0,
+        summary: str = "",
+    ) -> DualKeyAuthorization:
+        """Grants an out-of-band authorization bound to the exact tool and arguments."""
+        action_hash = compute_action_hash(tool_name, arguments)
+        token = secrets.token_hex(16)
+        auth = DualKeyAuthorization(
+            tool_name=tool_name,
+            action_hash=action_hash,
+            token=token,
+            expires_at=time.time() + ttl_seconds,
+            confirmed=True,
+            summary=summary,
+        )
+        with self._lock:
+            self._grants[action_hash] = auth
+        logger.info("Dual-Key authorization granted for tool '%s' (hash: %s, ttl: %.0fs)", tool_name, action_hash[:12], ttl_seconds)
+        return auth
+
+    def check_and_consume(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
+        """Verifies if an active, valid human approval exists for the exact tool and arguments.
+        Consumes the grant on success (one-time use).
+        """
+        action_hash = compute_action_hash(tool_name, arguments)
+        with self._lock:
+            auth = self._grants.get(action_hash)
+            if auth and auth.is_valid_for(tool_name, action_hash):
+                del self._grants[action_hash]
+                logger.info("Dual-Key authorization consumed for tool '%s' (hash: %s)", tool_name, action_hash[:12])
+                return True
+
+            # If an interactive approval handler is registered, prompt out-of-band
+            if self._approval_handler:
+                prompt_details = {
+                    "tool_name": tool_name,
+                    "arguments": {k: v for k, v in arguments.items() if k not in ("authorization", "user_approved", "dual_key_confirmed")},
+                    "action_hash": action_hash,
+                }
+                try:
+                    if self._approval_handler(prompt_details):
+                        logger.info("Dual-Key authorization granted dynamically by approval handler for tool '%s'", tool_name)
+                        return True
+                except Exception as e:
+                    logger.warning("Approval handler error: %s", e)
+
+        return False
+
+    def has_valid_grant(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
+        """Checks if a valid grant exists without consuming it."""
+        action_hash = compute_action_hash(tool_name, arguments)
+        with self._lock:
+            auth = self._grants.get(action_hash)
+            return bool(auth and auth.is_valid_for(tool_name, action_hash))
+
+    def reset(self) -> None:
+        """Clears all pending and active authorization grants."""
+        with self._lock:
+            self._grants.clear()
+
+
 class TurnTaintTracker:
     """Tracks untrusted external context within a conversational turn and enforces Dual-Key safety."""
 
@@ -246,9 +365,14 @@ class TurnTaintTracker:
             self.mark_tainted(tool_name)
             return
 
+        # Check explicit human confirmation or verified DualKeyApprovalManager grant
+        # Note: Model-supplied arguments attempting to inject 'user_approved' or 'dual_key_confirmed'
+        # are strictly ignored when computing action hashes and checking grants.
+        is_human_authorized = bool(dual_key_confirmed) or DualKeyApprovalManager.get_instance().has_valid_grant(tool_name, arguments)
+
         # 1. Unconditional authorization check for Critical Risk (Level 2) operations
         if risk_level >= 2 or tool_name in self.CRITICAL_PRIVILEGE_TOOLS:
-            if not dual_key_confirmed:
+            if not is_human_authorized:
                 raise SecurityBoundaryViolation(
                     f"Critical Authorization Gate: Tool '{tool_name}' (risk_level={risk_level}) "
                     "modifies the host environment or live Python runtime and requires explicit, "
@@ -258,7 +382,7 @@ class TurnTaintTracker:
         # 2. Tainted turn check for High Privilege (Level 1) operations
         if self.is_tainted:
             if tool_name in self.HIGH_PRIVILEGE_MUTATION_TOOLS or risk_level >= 1:
-                if not dual_key_confirmed:
+                if not is_human_authorized:
                     raise SecurityBoundaryViolation(
                         f"Dual-Key Safety Gate: blocked high-privilege tool '{tool_name}' "
                         f"execution in a turn tainted by untrusted external data "

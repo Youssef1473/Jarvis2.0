@@ -168,7 +168,7 @@ from jarvis.skills.base import SkillRegistry
 def {self.test_skill}(arg: str = "test") -> str:
     return f"Canary success: {{arg}}"
 """
-        res = SkillSandbox.validate_and_promote(self.test_skill, valid_code)
+        res = SkillSandbox.validate_and_promote(self.test_skill, valid_code, user_approved=True)
         self.assertTrue(res.success)
         self.assertTrue(self.target_path.exists())
         self.assertIn(self.test_skill, SkillRegistry.get_all_tools())
@@ -184,7 +184,7 @@ from jarvis.skills.base import SkillRegistry
 def {self.test_skill}(num: int = 1) -> str:
     return f"V1: {{num}}"
 """
-        res1 = SkillSandbox.validate_and_promote(self.test_skill, v1_code)
+        res1 = SkillSandbox.validate_and_promote(self.test_skill, v1_code, user_approved=True)
         self.assertTrue(res1.success)
         self.assertEqual(SkillRegistry.execute(self.test_skill, num=42), "V1: 42")
 

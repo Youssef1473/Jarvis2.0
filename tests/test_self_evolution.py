@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from jarvis.skills.base import SkillRegistry
+from jarvis.core.security_boundaries import DualKeyApprovalManager
 from jarvis.skills.self_evolution import (
     create_or_update_custom_skill,
     list_custom_skills,
@@ -19,11 +20,15 @@ from jarvis.skills.self_evolution import (
 class TestSelfEvolution(unittest.TestCase):
     def setUp(self):
         # Clean any leftover test skills
+        DualKeyApprovalManager.get_instance().grant_approval("delete_custom_skill", {"skill_name": "test_mock_greeter"})
         delete_custom_skill("test_mock_greeter")
+        DualKeyApprovalManager.get_instance().grant_approval("delete_custom_skill", {"skill_name": "test_broken_skill"})
         delete_custom_skill("test_broken_skill")
 
     def tearDown(self):
+        DualKeyApprovalManager.get_instance().grant_approval("delete_custom_skill", {"skill_name": "test_mock_greeter"})
         delete_custom_skill("test_mock_greeter")
+        DualKeyApprovalManager.get_instance().grant_approval("delete_custom_skill", {"skill_name": "test_broken_skill"})
         delete_custom_skill("test_broken_skill")
 
     def test_syntax_error_rejection(self):
@@ -51,6 +56,10 @@ def test_mock_greeter(target_name: str = "Sir") -> str:
     """Greets the target warmly."""
     return f"Greetings, {target_name}. Autonomous skill is fully operational!"
 '''
+        DualKeyApprovalManager.get_instance().grant_approval(
+            "create_or_update_custom_skill",
+            {"skill_name": "test_mock_greeter", "python_code": skill_code, "description": "Test greeter"}
+        )
         res = create_or_update_custom_skill(
             skill_name="test_mock_greeter",
             python_code=skill_code,
@@ -75,6 +84,10 @@ def test_mock_greeter(target_name: str = "Sir") -> str:
         self.assertIn("test_mock_greeter", listing)
 
         # 5. Verify delete_custom_skill cleans up
+        DualKeyApprovalManager.get_instance().grant_approval(
+            "delete_custom_skill",
+            {"skill_name": "test_mock_greeter"}
+        )
         del_res = delete_custom_skill("test_mock_greeter")
         self.assertIn("Successfully deleted", del_res)
         self.assertFalse((CUSTOM_SKILLS_DIR / "test_mock_greeter.py").exists())

@@ -396,6 +396,7 @@ class JarvisBrain(
         tool_args: Dict[str, Any],
         step_index: int = 1,
         sentence_callback: Optional[Callable[[str], None]] = None,
+        dual_key_confirmed: bool = False,
     ) -> Tuple[Any, bool]:
         """Single authoritative gateway for all tool authorization, safety checks, and execution across all providers.
 
@@ -424,17 +425,28 @@ class JarvisBrain(
             self._active_cancel_token.raise_if_cancelled()
 
         # 4. Physical Execution via ToolOrchestrator (governs loop recursion, taint checking, and execution)
-        tool_result = self._execute_tool_with_orchestrator(tool_name, tool_args, step_index=step_index)
+        tool_result = self._execute_tool_with_orchestrator(
+            tool_name, tool_args, step_index=step_index, dual_key_confirmed=dual_key_confirmed
+        )
         self._record_tool_execution(tool_name, tool_args, tool_result)
         return tool_result, True
 
-    def _execute_tool_with_orchestrator(self, tool_name: str, tool_args: Dict[str, Any], step_index: int = 1) -> Any:
+    def _execute_tool_with_orchestrator(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        step_index: int = 1,
+        dual_key_confirmed: bool = False,
+    ) -> Any:
         """Executes a tool call through ToolOrchestrator for taint tracking, loop guards, and interim audio."""
         if self._active_cancel_token and hasattr(self._active_cancel_token, "raise_if_cancelled"):
             self._active_cancel_token.raise_if_cancelled()
-        if hasattr(self, "tool_orchestrator") and self.tool_orchestrator:
-            return self.tool_orchestrator.execute_step(tool_name, tool_args, step_index=step_index)
-        return SkillRegistry.execute(tool_name, **tool_args)
+        if not hasattr(self, "tool_orchestrator") or not self.tool_orchestrator:
+            from jarvis.core.pipeline.tool_orchestrator import ToolOrchestrator
+            self.tool_orchestrator = ToolOrchestrator()
+        return self.tool_orchestrator.execute_step(
+            tool_name, tool_args, step_index=step_index, dual_key_confirmed=dual_key_confirmed
+        )
 
     def shutdown(self, timeout_seconds: float = 2.0):
         """Cleanly terminates managed service subprocesses and background workers."""

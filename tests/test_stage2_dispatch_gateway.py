@@ -94,7 +94,9 @@ class TestStage2DispatchGateway(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(result, "Execution successful")
         self.assertIn("Executing test tool", narrations)
-        brain._execute_tool_with_orchestrator.assert_called_once_with("read_file", {"path": "test.txt"}, step_index=2)
+        brain._execute_tool_with_orchestrator.assert_called_once_with(
+            "read_file", {"path": "test.txt"}, step_index=2, dual_key_confirmed=False
+        )
         brain._record_tool_execution.assert_called_once_with("read_file", {"path": "test.txt"}, "Execution successful")
 
     @patch.object(JarvisBrain, "__init__", lambda self, *args, **kwargs: None)

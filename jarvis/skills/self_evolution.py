@@ -42,14 +42,27 @@ def create_or_update_custom_skill(
     skill_name: str,
     python_code: str,
     description: str = "",
+    user_approved: bool = False,
 ) -> str:
     """Validates, writes, and hot-reloads a custom Python skill via the isolated SkillSandbox."""
     from jarvis.core.evolution.sandbox import SkillSandbox
+    from jarvis.core.security_boundaries import DualKeyApprovalManager
     mem = _get_memory()
+
+    # Model-supplied user_approved=True argument is explicitly rejected/ignored.
+    # Authorization MUST originate from a verified human grant in DualKeyApprovalManager.
+    approval_mgr = DualKeyApprovalManager.get_instance()
+    is_human_authorized = approval_mgr.check_and_consume("create_or_update_custom_skill", {
+        "skill_name": skill_name,
+        "python_code": python_code,
+        "description": description,
+    })
+
     result = SkillSandbox.validate_and_promote(
         skill_name=skill_name,
         python_code=python_code,
         memory_manager=mem,
+        user_approved=is_human_authorized,
     )
     return result.message
 
@@ -81,13 +94,24 @@ def list_custom_skills() -> str:
     description="Removes a dynamically engineered custom skill from Jarvis's brain and filesystem.",
     risk_level=2,
 )
-def delete_custom_skill(skill_name: str) -> str:
+def delete_custom_skill(skill_name: str, user_approved: bool = False) -> str:
     """Deletes a custom skill module file and unloads it."""
+    from jarvis.core.security_boundaries import DualKeyApprovalManager
+
     clean_name = _sanitize_skill_name(skill_name)
     target_file = CUSTOM_SKILLS_DIR / f"{clean_name}.py"
 
     if not target_file.exists():
         return f"Custom skill '{clean_name}' does not exist."
+
+    # Model-supplied user_approved=True argument is explicitly rejected/ignored.
+    # Authorization MUST originate from a verified human grant in DualKeyApprovalManager.
+    approval_mgr = DualKeyApprovalManager.get_instance()
+    is_human_authorized = approval_mgr.check_and_consume("delete_custom_skill", {
+        "skill_name": skill_name,
+    })
+    if not is_human_authorized:
+        return "Security failure: Deleting custom skill requires explicit out-of-band human confirmation."
 
     try:
         target_file.unlink()

@@ -726,7 +726,7 @@ except Exception as e:
         python_code: str,
         timeout_seconds: float = 20.0,
         memory_manager: Optional[Any] = None,
-        user_approved: bool = True,
+        user_approved: bool = False,
     ) -> SandboxResult:
         """Executes full sandboxed lifecycle:
         1. Snapshot versioning if modifying an existing skill

@@ -48,7 +48,12 @@ class ToolOrchestrator:
         dual_key_confirmed: bool = False,
     ) -> Any:
         """Executes a single tool step with security checks and interim acoustic bridge."""
-        arg_signature = json.dumps(arguments or {}, sort_keys=True)
+        # Strip model-injected authorization fields from arguments to prevent prompt injection bypasses
+        sanitized_args = {
+            k: v for k, v in (arguments or {}).items()
+            if k not in ("dual_key_confirmed", "user_approved", "confirmed", "_dual_key_token")
+        }
+        arg_signature = json.dumps(sanitized_args, sort_keys=True)
         call_key = (tool_name, arg_signature)
 
         # 1. Cycle detection: Prevent recursive tool spin-loops
@@ -63,7 +68,7 @@ class ToolOrchestrator:
         risk_level = SkillRegistry.get_risk_level(tool_name)
         try:
             self.taint_tracker.check_tool_execution(
-                tool_name, arguments, risk_level=risk_level, dual_key_confirmed=dual_key_confirmed
+                tool_name, sanitized_args, risk_level=risk_level, dual_key_confirmed=dual_key_confirmed
             )
         except SecurityBoundaryViolation as sec_err:
             logger.error("SecurityBoundaryViolation in tool execution: %s", sec_err)
@@ -100,7 +105,7 @@ class ToolOrchestrator:
 
         try:
             # 4. Physical Execution via SkillRegistry
-            result = SkillRegistry.execute(tool_name, **arguments)
+            result = SkillRegistry.execute(tool_name, **sanitized_args)
             if self.dual_track_coordinator is not None and getattr(self.dual_track_coordinator, "is_read_only_tool", lambda t: False)(tool_name):
                 if result is not None and not str(result).startswith("Error"):
                     self.dual_track_coordinator._set_cached_result(cache_key, result)
@@ -109,6 +114,8 @@ class ToolOrchestrator:
             logger.error("Exception during tool execution '%s': %s", tool_name, err)
             return f"Error executing tool '{tool_name}': {err}"
         finally:
+            from jarvis.core.security_boundaries import DualKeyApprovalManager
+            DualKeyApprovalManager.get_instance().check_and_consume(tool_name, sanitized_args)
             # 5. Disarm Interim Bridge on completion
             if self.interim_bridge:
                 self.interim_bridge.on_tool_end()
@@ -133,7 +140,12 @@ class ToolOrchestrator:
         milestone_phrase: Optional[str] = None,
     ) -> Any:
         """Asynchronously executes a tool step using DualTrackCoordinator for masking and gating."""
-        arg_signature = json.dumps(arguments or {}, sort_keys=True)
+        # Strip model-injected authorization fields from arguments to prevent prompt injection bypasses
+        sanitized_args = {
+            k: v for k, v in (arguments or {}).items()
+            if k not in ("dual_key_confirmed", "user_approved", "confirmed", "_dual_key_token")
+        }
+        arg_signature = json.dumps(sanitized_args, sort_keys=True)
         call_key = (tool_name, arg_signature)
 
         # 1. Cycle detection
@@ -148,7 +160,7 @@ class ToolOrchestrator:
         risk_level = SkillRegistry.get_risk_level(tool_name)
         try:
             self.taint_tracker.check_tool_execution(
-                tool_name, arguments, risk_level=risk_level, dual_key_confirmed=dual_key_confirmed
+                tool_name, sanitized_args, risk_level=risk_level, dual_key_confirmed=dual_key_confirmed
             )
         except SecurityBoundaryViolation as sec_err:
             logger.error("SecurityBoundaryViolation in tool execution: %s", sec_err)
@@ -171,8 +183,8 @@ class ToolOrchestrator:
                 res = await self.dual_track_coordinator.execute_with_masking(
                     user_query=user_query,
                     tool_name=tool_name,
-                    tool_args=arguments,
-                    tool_coro=lambda: SkillRegistry.execute(tool_name, **arguments),
+                    tool_args=sanitized_args,
+                    tool_coro=lambda: SkillRegistry.execute(tool_name, **sanitized_args),
                     milestone_phrase=milestone_phrase,
                 )
                 return res
