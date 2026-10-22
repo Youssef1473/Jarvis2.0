@@ -438,6 +438,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         self.service = service
 
     SENSITIVE_GET_PREFIXES = (
+        "/api/status",
         "/api/screenshot",
         "/api/memory",
         "/api/approval",
@@ -449,6 +450,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         "/api/timers",
     )
 
+    def _add_security_headers(self, response):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: ws: http:; "
+            "img-src 'self' data: blob:; "
+            "connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:* ws: http:; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' data: https://fonts.gstatic.com;"
+        )
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
     async def dispatch(self, request, call_next):
         # 1. Validate Host and Origin headers with exact scheme, host, and port matching
         is_valid, err_msg, status_code = validate_request_host_and_origin(
@@ -457,7 +470,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             request_scheme=request.url.scheme,
         )
         if not is_valid:
-            return JSONResponse({"error": err_msg}, status_code=status_code)
+            return self._add_security_headers(JSONResponse({"error": err_msg}, status_code=status_code))
 
         # 2. Check token authentication on state-mutating and sensitive read routes
         path = request.url.path
@@ -467,9 +480,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Allow unauthenticated access to the authentication exchange endpoint
         if path == "/api/auth/unlock":
             response = await call_next(request)
-            response.headers["X-Frame-Options"] = "DENY"
-            response.headers["X-Content-Type-Options"] = "nosniff"
-            return response
+            return self._add_security_headers(response)
 
         enforce_auth = (
             getattr(self.service, "enforce_auth", True)
@@ -487,25 +498,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             is_authenticated = bool(token and secrets.compare_digest(token, _HUD_SESSION_TOKEN))
 
             if not is_authenticated:
-                return JSONResponse(
-                    {"error": "Unauthorized: Invalid or missing X-Jarvis-Token session credentials"},
-                    status_code=401,
+                return self._add_security_headers(
+                    JSONResponse(
+                        {"error": "Unauthorized: Invalid or missing X-Jarvis-Token session credentials"},
+                        status_code=401,
+                    )
                 )
 
         response = await call_next(request)
-
-        # 3. Add strict security headers to all HTTP responses
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: ws: http:; "
-            "img-src 'self' data: blob:; "
-            "connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:* ws: http:; "
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "font-src 'self' data: https://fonts.gstatic.com;"
-        )
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-
-        return response
+        return self._add_security_headers(response)
 
 
 class WorkstationMetricsCollector:

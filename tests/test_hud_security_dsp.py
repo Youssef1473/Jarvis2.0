@@ -158,12 +158,21 @@ class TestHudSecurityAndDsp(unittest.TestCase):
         self.assertEqual(res_index.headers.get("X-Frame-Options"), "DENY")
         self.assertEqual(res_index.headers.get("X-Content-Type-Options"), "nosniff")
 
-        # Test API status route headers
-        res_status = client.get("/api/status")
-        self.assertEqual(res_status.status_code, 200)
-        self.assertIn("Content-Security-Policy", res_status.headers)
-        self.assertEqual(res_status.headers.get("X-Frame-Options"), "DENY")
-        self.assertEqual(res_status.headers.get("X-Content-Type-Options"), "nosniff")
+        # Test API status route headers: unauthenticated gets 401 with security headers
+        res_status_unauth = client.get("/api/status")
+        self.assertEqual(res_status_unauth.status_code, 401)
+        self.assertIn("Content-Security-Policy", res_status_unauth.headers)
+        self.assertEqual(res_status_unauth.headers.get("X-Frame-Options"), "DENY")
+        self.assertEqual(res_status_unauth.headers.get("X-Content-Type-Options"), "nosniff")
+
+        # Authenticated gets 200 with security headers
+        from jarvis.ui.server import get_hud_session_token
+        token = get_hud_session_token()
+        res_status_auth = client.get("/api/status", headers={"X-Jarvis-Token": token})
+        self.assertEqual(res_status_auth.status_code, 200)
+        self.assertIn("Content-Security-Policy", res_status_auth.headers)
+        self.assertEqual(res_status_auth.headers.get("X-Frame-Options"), "DENY")
+        self.assertEqual(res_status_auth.headers.get("X-Content-Type-Options"), "nosniff")
 
     def test_hud_html_contains_docked_stark_pill_and_webgl_reactor(self):
         """Verifies hud.html contains StarkWebGLReactor, docked pill markup, and containment styles."""

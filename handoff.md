@@ -1,112 +1,66 @@
-# Session Handoff: Jarvis 2.0 — Security Hardening & Process Lifecycle Closure
+# Session Handoff: Jarvis 2.0 — Security Hardening & CI Determinism Baseline
 
 **Date:** 2026-10-22
 **Host Environment:** Windows 11 x64 | Intel Core i5-12500H | NVIDIA RTX 3050 Laptop GPU (4GB VRAM) | Python 3.12
-**Working Tree Status:** 26 files modified (All uncommitted; no commits or pushes performed)
-**Test Baseline:** The reported test run passed with 16 skips and one warning (`727 passed, 16 skipped, 1 warning, 2 subtests passed in 66.76s`, exit code 0)
+**Committed Baseline on `main`:** Commit [`d4c826e`](https://github.com/Youssef1473/Jarvis2.0/commit/d4c826e6a3bf8b8dd15600fa003454cf4756edf3) pushed to `origin/main` (26 files changed, 2,699 insertions, 336 deletions)
+**Follow-Up Commit:** CI test determinism fixes and `/api/status` authentication protection
+**Local Test Suite Baseline:** The reported test run passed with 16 skips and one warning (`727 passed, 16 skipped, 1 warning, 2 subtests passed in 89.87s`, exit code 0)
 **Version Branding Note:** Codebase package, repository, and configuration are canonically `Jarvis 2.0`. The console ASCII startup banner displays `JARVIS 3.0 ONLINE & OPERATIONAL` as a legacy visual banner.
 
 ---
 
-## 1. Configuration Architecture & Loading Resolution
+## 1. Committed Baseline Summary (`d4c826e`)
 
-- **Canonical Configuration File:** `config/config.yaml` is the exclusive configuration file loaded by the runtime.
-  - Inspection of `jarvis/core/config_loader.py:load_config()` confirms:
-    ```python
-    target_yaml = config_path or (BASE_DIR / "config" / "config.yaml")
-    if not target_yaml.exists():
-        raise FileNotFoundError(f"Configuration file not found at: {target_yaml}")
-    ```
-  - `config/config.json` does **not** exist anywhere in the repository.
-- **HUD Auto-Open Setting:** Line 74 of `config/config.yaml` is configured with:
-  ```yaml
-  ui:
-    auto_open: true
-  ```
-  When `jarvis/core/orchestrator.py` starts `ui_service`, it checks `self.config.get("ui", {}).get("auto_open", False)`. Setting this to `true` automatically launches the local browser via `webbrowser.open()` with the single-use bootstrap fragment (`/#bootstrap=<hex>`).
+The primary security phase was committed to `main` and pushed to GitHub in commit `d4c826e`:
+1. **HUD Zero-Trust Authentication:** Session cookies (`HttpOnly`, `SameSite=Strict`, `Path=/`), exact Host/Origin header verification, single-use 60s bootstrap fragment token delivery (`/#bootstrap=<hex>`), and immediate client URL sanitization via `window.history.replaceState`.
+2. **Windows Process Containment Lifecycle:** Eliminated the spawn-before-assignment race across `job_object_sandbox.py`, `task_manager.py`, and `mcp_manager.py` using `CreateProcessW` with `CREATE_SUSPENDED`, `AssignProcessToJobObject` with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and `NtResumeProcess`. Implemented fail-closed process termination (`proc.kill()`) and handle cleanup on failure.
+3. **Execution-Boundary Authorization:** Enforced `risk_level=2` gating on `execute_powershell`, Dual-Key approval consumption at the execution boundary, and excluded private parameters (`_allow_uncontained`) from model tool schemas.
+4. **Access-Log Query Redaction:** Bounded redaction in `jarvis/ui/server.py` decoding percent-encoded keys (`%74oken`, `%62ootstrap`) with a fail-safe `[OVERSIZED_QUERY_REDACTED]` placeholder for queries exceeding 10 MB.
+5. **Codified Directives:** Codified configuration resolution, Windows process containment lifecycle, and reporting standards in [`AGENTS.md`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/AGENTS.md).
 
 ---
 
-## 2. Verified Observations vs. Implementation Claims
+## 2. Follow-Up Improvements in Local Working Tree
 
-| Subsystem / Property | Nature | Verified Implementation Details | Empirical Evidence |
-| :--- | :--- | :--- | :--- |
-| **HUD Authentication & Cookie Security** | **Verified Observation** | Replaced script-tag tokens with `HttpOnly`, `SameSite=Strict`, `Path=/` session cookies. Strict Host/Origin header validation blocks DNS rebinding and cross-origin hijacking. | `tests/test_hud_security_dsp.py`, `tests/test_ui_server.py` (Pass) |
-| **Fragment-Based Bootstrap Onboarding** | **Verified Observation** | Bootstrap tokens delivered via URL hash fragment (`http://127.0.0.1:20129/#bootstrap=<hex>`). Fragment is never transmitted in HTTP request lines or recorded in server logs. In `jarvis/ui/server.py` (lines 1326–1328), client JS immediately calls `window.history.replaceState(null, '', window.location.pathname)` before POSTing to `/api/auth/unlock`. Valid for 60s, single-use. | `test_hud_security_dsp.py::test_bootstrap_token_exchange_success` (Pass) |
-| **Process Containment (Spawn-before-Assign)** | **Verified Observation** | Fixed Windows process-creation race. `task_manager.py` and `mcp_manager.py` use Win32 `CreateProcessW` with `CREATE_SUSPENDED`, assign to Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and resume via `NtResumeProcess`. On assignment failure, child process is terminated immediately (`TerminateProcess`) and reaped. | `tests/test_job_object_sandbox_hardening.py`, `tests/test_mcp_client_transport.py` (Pass) |
-| **PowerShell Dual-Key Gating** | **Verified Observation** | `execute_powershell` in `jarvis/skills/dev_shell.py` assigned `risk_level=2`. Physical execution strictly gated at the execution boundary by `DualKeyApprovalManager.check_and_consume()` and thread-local binding via `set_thread_authorized()`. | `tests/test_security_boundaries.py`, `tests/test_ui_approval_workflow.py` (Pass) |
-| **Query Parameter Log Redaction** | **Verified Observation** | Bounded redaction in `jarvis/ui/server.py` handles percent-encoded sensitive keys (`%74oken`, `%62ootstrap`). Queries exceeding 10 MB fail-safe to `[OVERSIZED_QUERY_REDACTED]` in access logs while preserving authentic query text for ASGI application. | Live Uvicorn log tests in `tests/test_hud_security_dsp.py` (Pass) |
-| **LLM Tool Schema Boundary** | **Verified Observation** | `_allow_uncontained` in `dev_shell.py:run_project_tests` is a private keyword-only parameter. Excluded from model tool schemas in `jarvis/skills/base.py` and stripped from model arguments in `jarvis/core/pipeline/tool_orchestrator.py`. Untrusted tool calls cannot bypass containment. | `tests/test_security_boundaries.py::test_model_cannot_pass_uncontained_override` (Pass) |
-| **Database Write Serialization & WAL** | **Architectural Note** | SQLite database operations configure WAL journal mode (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA mmap_size=268435456`). Write transactions serialize through `SingleWriterActor` in `jarvis/core/memory/storage_ops.py`. | Subsystem active in `jarvis/core/memory/` |
+### A. CI Test Determinism (`tests/test_antigravity_integration.py`)
+- **Observed CI Failure in Run #10:** 4 tests failed in GitHub Actions because the `agy` CLI binary is not installed on the GitHub Actions runner (`AntigravityBridge.is_available()` returns `False`):
+  - `test_antigravity_batch_generation_mocked`
+  - `test_antigravity_bridge_fallback_when_daemon_fails`
+  - `test_specialist_consultation_routing_mocked`
+  - `test_voice_model_switching_commands`
+- **Root Cause & Resolution:** The unit tests intended to verify deterministic routing and fallbacks without live CLI execution, but did not patch `is_available()`. Patched `is_available` to return `True` in each of the 4 unit tests. Verified that all 17 tests pass deterministically both with and without the host `agy` binary.
 
-### Definition of "Dual-Key" Authorization
-1. **Key 1 (Model Intent):** The structured tool invocation generated by the LLM (`tool_name` + canonicalized arguments).
-2. **Key 2 (Human Grant):** A cryptographically bound out-of-band human authorization grant (`DualKeyAuthorization`) or synchronous human operator approval callback (`request_human_approval`).
-- Grants are bound to `compute_action_hash(tool_name, clean_args)` using HMAC SHA-256 with a strict TTL (max 300s, default 60s).
-- Execution checks enforce single-use consumption (`consume_grant` or thread-local `verify_and_consume_active_context`). Once consumed or expired, any replay or argument mutation is rejected.
+### B. Workstation Telemetry Authentication (`/api/status`)
+- **Review Finding:** Workstation telemetry returned by `/api/status` (CPU, GPU, RAM, active window, background tasks) was previously accessible without session authentication.
+- **Resolution:**
+  - Added `"/api/status"` to `SENSITIVE_GET_PREFIXES` in `SecurityHeadersMiddleware`.
+  - Added `_add_security_headers()` to ensure CSP, `X-Frame-Options: DENY`, and `X-Content-Type-Options: nosniff` are applied uniformly across all response paths, including early 401 Unauthorized returns.
+  - Added regression assertions in `tests/test_ui_server.py` and `tests/test_hud_security_dsp.py` confirming unauthenticated requests fail closed with HTTP 401, while authenticated requests return status 200 with metrics.
+
+### C. Content Security Policy (CSP) Roadmap Note
+- **Current CSP:** `default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: ws: http:; img-src 'self' data: blob:; connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:* ws: http:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com;`
+- **Defense-in-Depth Note:** The current header allows `'unsafe-inline'` and `'unsafe-eval'` to accommodate inline WebGL and event handlers in `hud.html`. In a future UI pass, inline scripts should be refactored to use cryptographic nonces or SHA-256 script hashes.
 
 ---
 
-## 3. Exact Working-Tree Inventory (26 Files)
+## 3. Uncommitted Working-Tree Manifest (5 Files)
 
-No commits or pushes performed; working-tree changes remain uncommitted (`git status --short`):
+Current local modifications waiting for review and follow-up commit (`git status --short`):
 
 ```text
- M AGENTS.md
- M config/config.yaml
  M handoff.md
- M jarvis/core/evolution/sandbox.py
- M jarvis/core/mcp_manager.py
- M jarvis/core/orchestrator.py
- M jarvis/core/pipeline/tool_orchestrator.py
- M jarvis/core/security_boundaries.py
- M jarvis/core/task_manager.py
- M jarvis/skills/base.py
- M jarvis/skills/dev_shell.py
- M jarvis/skills/job_object_sandbox.py
- M jarvis/skills/photo_manager.py
  M jarvis/ui/server.py
- M jarvis/ui/templates/hud.html
- M tests/test_background_tasks.py
- M tests/test_brain_pipeline_and_interim.py
+ M tests/test_antigravity_integration.py
  M tests/test_hud_security_dsp.py
- M tests/test_job_object_sandbox_hardening.py
- M tests/test_mcp_client_transport.py
- M tests/test_security_boundaries.py
- M tests/test_stage1_security_hardening.py
- M tests/test_ui_approval_workflow.py
- M tests/test_ui_enhancements.py
  M tests/test_ui_server.py
- M tools/run_fast_tests.py
 ```
 
-### Detailed File Changes Summary (`git diff --stat`):
-1. [AGENTS.md](file:///C:/Users/Youssef/Projects/Jarvis_2.0/AGENTS.md) (+13, -3): Codified configuration loading invariant, Windows process containment lifecycle, and reporting integrity.
-2. [config/config.yaml](file:///C:/Users/Youssef/Projects/Jarvis_2.0/config/config.yaml) (+1, -1): Enabled `ui.auto_open: true` for browser onboarding.
-3. [handoff.md](file:///C:/Users/Youssef/Projects/Jarvis_2.0/handoff.md): Verified handoff documentation and security audit baseline.
-4. [jarvis/core/evolution/sandbox.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/evolution/sandbox.py) (+3, -4): Aligned sandbox execution with containment interfaces.
-5. [jarvis/core/mcp_manager.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/mcp_manager.py) (+48, -15): Eliminated spawn-before-assignment race using `CREATE_SUSPENDED`, Job Object limits, and fail-closed reap.
-6. [jarvis/core/orchestrator.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/orchestrator.py) (+2, -2): Subsystem coordination and error handling adjustments.
-7. [jarvis/core/pipeline/tool_orchestrator.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/pipeline/tool_orchestrator.py) (+14, -4): Strips private `_` arguments from untrusted model tool payloads before execution.
-8. [jarvis/core/security_boundaries.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/security_boundaries.py) (+13, -2): DualKeyApprovalManager, action-hash binding, taint tracking, and single-use context consumption.
-9. [jarvis/core/task_manager.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/task_manager.py) (+52, -18): Suspended process creation and Job Object assignment for background tasks.
-10. [jarvis/skills/base.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/skills/base.py) (+4, -2): Excluded private parameters (leading `_`) and `**kwargs` from LLM tool JSON schemas.
-11. [jarvis/skills/dev_shell.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/skills/dev_shell.py) (+60, -15): `risk_level=2` gating on `execute_powershell`; `run_project_tests()` fails closed on Windows without Job Object containment unless trusted `_allow_uncontained=True`.
-12. [jarvis/skills/job_object_sandbox.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/skills/job_object_sandbox.py) (+82, -23): Win32 `CreateProcessW` suspended creation, `AssignProcessToJobObject`, `NtResumeProcess`, and child termination cleanup.
-13. [jarvis/skills/photo_manager.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/skills/photo_manager.py) (+10, -4): Egress and path confinement validation integration.
-14. [jarvis/ui/server.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/ui/server.py) (+480, -135): Zero-trust HUD auth, session cookies, Host/Origin validation, live query redaction (>10MB fail-safe, percent-encoded keys), bootstrap token exchange.
-15. [jarvis/ui/templates/hud.html](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/ui/templates/hud.html) (+24, -8): Client-side token extraction from `#bootstrap=` fragment and immediate URL sanitization via `replaceState()`.
-16. [tests/test_background_tasks.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_background_tasks.py) (+6, -2): Validates background task lifecycle and Job Object containment.
-17. [tests/test_brain_pipeline_and_interim.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_brain_pipeline_and_interim.py) (+10, -4): Validates pipeline execution and interim responses.
-18. [tests/test_hud_security_dsp.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_hud_security_dsp.py) (+480, -84): Comprehensive live Uvicorn access log redaction tests (oversized and percent-encoded), bootstrap token exchange, cookie security.
-19. [tests/test_job_object_sandbox_hardening.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_job_object_sandbox_hardening.py) (+677, -0): New test suite for suspended creation, Job Object limits, failure cleanup, and process containment.
-20. [tests/test_mcp_client_transport.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_mcp_client_transport.py) (+86, -15): MCP child process containment and assignment-failure reap tests.
-21. [tests/test_security_boundaries.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_security_boundaries.py) (+235, -14): Dual-Key approval tests, action hash replay prevention, untrusted model argument stripping tests.
-22. [tests/test_stage1_security_hardening.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_stage1_security_hardening.py) (+7, -2): Baseline SSRF and path confinement tests.
-23. [tests/test_ui_approval_workflow.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_ui_approval_workflow.py) (+10, -2): UI human approval workflow tests.
-24. [tests/test_ui_enhancements.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_ui_enhancements.py) (+4, -1): HUD endpoint authorization tests.
-25. [tests/test_ui_server.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_ui_server.py) (+36, -9): HUD server route security and session tests.
-26. [tools/run_fast_tests.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tools/run_fast_tests.py) (+7, -2): Parallel test runner fast-shard optimizations.
+### File Details:
+1. [handoff.md](file:///C:/Users/Youssef/Projects/Jarvis_2.0/handoff.md): Updated handoff documenting the committed `d4c826e` baseline, CI determinism fixes, and `/api/status` protection.
+2. [jarvis/ui/server.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/ui/server.py): Added `"/api/status"` to `SENSITIVE_GET_PREFIXES`; added uniform `_add_security_headers()` for early 401 and 400 responses.
+3. [tests/test_antigravity_integration.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_antigravity_integration.py): Patched `is_available` in 4 unit tests to make CI deterministic without requiring `agy` binary on the runner.
+4. [tests/test_hud_security_dsp.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_hud_security_dsp.py): Added test coverage verifying `/api/status` fails closed with 401 unauthenticated and succeeds with 200 authenticated.
+5. [tests/test_ui_server.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_ui_server.py): Added unauthenticated 401 assertion and authenticated 200 verification for `/api/status`.
 
 ---
 
@@ -118,37 +72,19 @@ No commits or pushes performed; working-tree changes remain uncommitted (`git st
   ```
 - **Exit Code:** `0`
 - **Output Summary:**
-  `727 passed, 16 skipped, 1 warning, 2 subtests passed in 66.76s (0:01:06)`
+  `727 passed, 16 skipped, 1 warning, 2 subtests passed in 89.87s (0:01:29)`
+- **Isolated Suite Verifications:**
+  - `python -m unittest tests/test_antigravity_integration.py`: `Ran 17 tests in 7.209s. OK (skipped=3)`.
+  - `python -m unittest tests/test_ui_server.py tests/test_hud_security_dsp.py`: `Ran 29 tests in 5.901s. OK`.
 - **Git Diff Hygiene:**
   ```powershell
   git diff --check
   ```
   Exited with code `0` (clean, zero whitespace/merge errors).
-- **Single Test Warning Diagnosis:**
-  - Emitted by: `tests/test_autonomous_failure_recovery.py::TestAutonomousFailureRecovery::test_focus_window_uia_win32_backend_fallback`
-  - Warning Text: `C:\Users\Youssef\Projects\.venv\Lib\site-packages\pywinauto\__init__.py:80: UserWarning: Revert to STA COM threading mode`
-  - **Root Cause & Benign Nature:** `pywinauto` probes `pythoncom.CoInitializeEx(0)` (MTA mode). Because Windows COM was already initialized in STA mode on that worker thread (required by Win32 hooks and UI Automation), it catches `RPC_E_CHANGED_MODE` (0x80010106) and safely reverts to STA mode (`com_init_mode = 2`). No application logic or threading fixes required.
 
 ---
 
-## 5. Important Limitations & Operational Caveats
+## 5. Next Immediate Step for the Incoming Agent
 
-1. **Fragment Delivery Boundary:** Delivering the bootstrap token via URL hash fragment (`/#bootstrap=...`) eliminates exposure in HTTP request lines, reverse-proxy logs, and Uvicorn access logs. However, the token exists briefly in the local browser DOM before `window.history.replaceState` strips it. Malicious local browser extensions or DOM inspectors running on the host machine prior to sanitization could theoretically read the fragment.
-2. **Windows Job Object Environmental Variations:**
-   - Job Object behavior can vary depending on Windows OS editions and nesting configurations (Windows 8+ supports nested job objects, but breakaway permissions vary).
-   - Detached GUI processes or processes launched outside managed code paths (`job_object_sandbox.py`, `task_manager.py`, `mcp_manager.py`) are not guaranteed to be Job Object-contained.
-3. **Uncontained Test Override Boundary:** `_allow_uncontained` in `jarvis/skills/dev_shell.py` is strictly a private, keyword-only parameter intended for local test environments where nested Job Objects are prohibited by external runners. It is excluded from model-facing tool schemas and stripped by `ToolOrchestrator`. It must never be exposed as an operational bypass.
-
----
-
-## 6. Next Immediate Steps for the Incoming Agent
-
-Do not jump immediately to new roadmap milestones or UI features. Follow this verification sequence:
-
-1. **Confirm Loaded Configuration:** Verify that `jarvis/core/config_loader.py:load_config()` resolves `config/config.yaml` and that `ui.auto_open: true` is respected.
-2. **Review Consolidated Security Diff:** Run `git diff` across the 25 uncommitted files with the developer and review all modifications before staging or committing.
-3. **Execute Targeted Security Suites:** Run the specific security suites to re-confirm local passing status:
-   ```powershell
-   python -m pytest tests/test_security_boundaries.py tests/test_job_object_sandbox_hardening.py tests/test_hud_security_dsp.py -v
-   ```
-4. **Obtain Commit Sign-Off:** Once the developer approves the security diff, commit the changes using clean, atomic commits reflecting each subsystem (HUD authentication, Job Object containment, Tool schema boundary).
+1. Confirm that the latest GitHub Actions workflow run finishes completely green with 0 test failures.
+2. Review the verified security milestone baseline and proceed with the next feature roadmap phase (e.g., continuous rolling P99 turn latency graphs in the Web HUD).

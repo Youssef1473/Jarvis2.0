@@ -76,7 +76,8 @@ class TestAntigravityIntegration(unittest.TestCase):
 
     def test_antigravity_batch_generation_mocked(self):
         """Verifies deterministic response generation with mocked CLI runner."""
-        with patch.object(self.bridge, "_generate_batch", return_value={"status": "SUCCESS", "response": "System Online", "duration_seconds": 0.4}):
+        with patch.object(self.bridge, "is_available", return_value=True), \
+             patch.object(self.bridge, "_generate_batch", return_value={"status": "SUCCESS", "response": "System Online", "duration_seconds": 0.4}):
             res = self.bridge.generate_response(
                 prompt="Respond with exactly two words: System Online.",
                 model="gemini-3.8-flash-low",
@@ -110,7 +111,8 @@ class TestAntigravityIntegration(unittest.TestCase):
     def test_specialist_consultation_routing_mocked(self):
         """Verifies deterministic routing for specialist consultations without live provider access."""
         brain = JarvisBrain(self.config, self.memory, self.safety)
-        with patch.object(brain.antigravity_bridge, "generate_response", return_value={"status": "SUCCESS", "response": "Pro is ready."}):
+        with patch.object(brain.antigravity_bridge, "is_available", return_value=True), \
+             patch.object(brain.antigravity_bridge, "generate_response", return_value={"status": "SUCCESS", "response": "Pro is ready."}):
             reply = brain._consult_specialist("pro", "Status check")
             self.assertEqual(reply, "Pro is ready.")
 
@@ -241,59 +243,60 @@ class TestAntigravityIntegration(unittest.TestCase):
     def test_voice_model_switching_commands(self):
         """Verifies voice commands dynamically switch models and auto-tiering with punctuation resilience."""
         brain = JarvisBrain(self.config, self.memory, self.safety)
-        
-        # Test switch to pro with trailing period -> rerouted to gemini-3.8-flash-high
-        res_pro = brain.process_query("Switch to Pro.")
-        self.assertIn("gemini-3.8-flash-high", res_pro)
-        self.assertFalse(brain.antigravity_auto_tiering)
-        self.assertEqual(brain.provider, "antigravity")
-        self.assertEqual(brain.antigravity_model, "gemini-3.8-flash-high")
 
-        # Test switch to pro high -> gemini-3.8-flash-high
-        res_pro_high = brain.process_query("switch to pro high")
-        self.assertIn("gemini-3.8-flash-high", res_pro_high)
-        self.assertEqual(brain.antigravity_model, "gemini-3.8-flash-high")
+        with patch.object(brain.antigravity_bridge, "is_available", return_value=True):
+            # Test switch to pro with trailing period -> rerouted to gemini-3.8-flash-high
+            res_pro = brain.process_query("Switch to Pro.")
+            self.assertIn("gemini-3.8-flash-high", res_pro)
+            self.assertFalse(brain.antigravity_auto_tiering)
+            self.assertEqual(brain.provider, "antigravity")
+            self.assertEqual(brain.antigravity_model, "gemini-3.8-flash-high")
 
-        # Test switch to argon (staged)
-        res_argon = brain.process_query("switch to argon")
-        self.assertIn("gemini-4-argon-high", res_argon)
-        self.assertEqual(brain.antigravity_model, "gemini-4-argon-high")
+            # Test switch to pro high -> gemini-3.8-flash-high
+            res_pro_high = brain.process_query("switch to pro high")
+            self.assertIn("gemini-3.8-flash-high", res_pro_high)
+            self.assertEqual(brain.antigravity_model, "gemini-3.8-flash-high")
 
-        # Test switch to flash
-        res_flash = brain.process_query("switch to flash")
-        self.assertIn("gemini-3.8-flash-low", res_flash)
-        self.assertFalse(brain.antigravity_auto_tiering)
-        self.assertEqual(brain.antigravity_model, "gemini-3.8-flash-low")
+            # Test switch to argon (staged)
+            res_argon = brain.process_query("switch to argon")
+            self.assertIn("gemini-4-argon-high", res_argon)
+            self.assertEqual(brain.antigravity_model, "gemini-4-argon-high")
 
-        # Test switch to flash medium
-        res_flash_med = brain.process_query("switch to flash medium.")
-        self.assertIn("gemini-3.8-flash-medium", res_flash_med)
-        self.assertEqual(brain.antigravity_model, "gemini-3.8-flash-medium")
+            # Test switch to flash
+            res_flash = brain.process_query("switch to flash")
+            self.assertIn("gemini-3.8-flash-low", res_flash)
+            self.assertFalse(brain.antigravity_auto_tiering)
+            self.assertEqual(brain.antigravity_model, "gemini-3.8-flash-low")
 
-        # Test switch to flash high
-        res_flash_hi = brain.process_query("switch to flash high")
-        self.assertIn("gemini-3.8-flash-high", res_flash_hi)
-        self.assertEqual(brain.antigravity_model, "gemini-3.8-flash-high")
+            # Test switch to flash medium
+            res_flash_med = brain.process_query("switch to flash medium.")
+            self.assertIn("gemini-3.8-flash-medium", res_flash_med)
+            self.assertEqual(brain.antigravity_model, "gemini-3.8-flash-medium")
 
-        # Test switch to claude
-        res_claude = brain.process_query("switch to claude.")
-        self.assertIn("claude-sonnet-4-6", res_claude)
-        self.assertFalse(brain.antigravity_auto_tiering)
-        self.assertEqual(brain.antigravity_model, "claude-sonnet-4-6")
+            # Test switch to flash high
+            res_flash_hi = brain.process_query("switch to flash high")
+            self.assertIn("gemini-3.8-flash-high", res_flash_hi)
+            self.assertEqual(brain.antigravity_model, "gemini-3.8-flash-high")
 
-        # Test switch to auto
-        res_auto = brain.process_query("switch to auto.")
-        self.assertIn("Dynamic model tiering activated", res_auto)
-        self.assertTrue(brain.antigravity_auto_tiering)
+            # Test switch to claude
+            res_claude = brain.process_query("switch to claude.")
+            self.assertIn("claude-sonnet-4-6", res_claude)
+            self.assertFalse(brain.antigravity_auto_tiering)
+            self.assertEqual(brain.antigravity_model, "claude-sonnet-4-6")
 
-        # Test switch to hybrid
-        res_hybrid = brain.process_query("switch to hybrid.")
-        self.assertIn("Hybrid token-shield mode activated", res_hybrid)
-        self.assertEqual(brain.provider, "hybrid")
+            # Test switch to auto
+            res_auto = brain.process_query("switch to auto.")
+            self.assertIn("Dynamic model tiering activated", res_auto)
+            self.assertTrue(brain.antigravity_auto_tiering)
 
-        # Test what model is active in hybrid mode
-        res_active_hybrid = brain.process_query("what model are you using?")
-        self.assertIn("Hybrid Token-Shield mode", res_active_hybrid)
+            # Test switch to hybrid
+            res_hybrid = brain.process_query("switch to hybrid.")
+            self.assertIn("Hybrid token-shield mode activated", res_hybrid)
+            self.assertEqual(brain.provider, "hybrid")
+
+            # Test what model is active in hybrid mode
+            res_active_hybrid = brain.process_query("what model are you using?")
+            self.assertIn("Hybrid Token-Shield mode", res_active_hybrid)
 
     def test_hybrid_token_shield_routing(self):
         """Verifies that Hybrid mode routes OS commands locally and deep queries to Google AI Pro."""
@@ -370,7 +373,8 @@ class TestAntigravityIntegration(unittest.TestCase):
         orig_daemon = self.bridge.daemon
         self.bridge.daemon = mock_daemon
         try:
-            with patch.object(self.bridge, "_generate_batch", return_value={"status": "SUCCESS", "response": "Fallback OK", "duration_seconds": 1.0}):
+            with patch.object(self.bridge, "is_available", return_value=True), \
+                 patch.object(self.bridge, "_generate_batch", return_value={"status": "SUCCESS", "response": "Fallback OK", "duration_seconds": 1.0}):
                 res = self.bridge.generate_response(
                     prompt="Test fallback",
                     model="gemini-3.8-flash-low",

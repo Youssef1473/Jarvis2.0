@@ -54,8 +54,17 @@ class TestUIServer(unittest.TestCase):
                 self.assertIn("reactorCanvas", content_auth)
                 self.assertNotIn("window.__JARVIS_TOKEN__", content_auth)
 
-            # 2. Test status endpoint
-            req_status = urllib.request.Request(f"http://127.0.0.1:{test_port}/api/status")
+            # 2. Test status endpoint fails closed without auth, succeeds with session token
+            req_status_unauth = urllib.request.Request(f"http://127.0.0.1:{test_port}/api/status")
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req_status_unauth, timeout=3.0)
+            self.assertEqual(ctx.exception.code, 401)
+
+            token = get_hud_session_token()
+            req_status = urllib.request.Request(
+                f"http://127.0.0.1:{test_port}/api/status",
+                headers={"X-Jarvis-Token": token}
+            )
             with urllib.request.urlopen(req_status, timeout=3.0) as resp:
                 self.assertEqual(resp.status, 200)
                 data = json.loads(resp.read().decode("utf-8"))
