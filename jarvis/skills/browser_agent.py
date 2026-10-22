@@ -3,8 +3,46 @@ import os
 import subprocess
 import requests
 import webbrowser
+from html.parser import HTMLParser
 from pathlib import Path
 from jarvis.skills.base import SkillRegistry
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Lightweight streaming HTML text extractor for fallback browsing."""
+
+    def __init__(self):
+        super().__init__()
+        self.title = ""
+        self.text_chunks = []
+        self._in_title = False
+        self._skip = False
+        self._skip_tags = {"script", "style", "noscript", "svg", "head"}
+
+    def handle_starttag(self, tag, attrs):
+        t = tag.lower()
+        if t == "title":
+            self._in_title = True
+        elif t in self._skip_tags:
+            self._skip = True
+
+    def handle_endtag(self, tag):
+        t = tag.lower()
+        if t == "title":
+            self._in_title = False
+        elif t in self._skip_tags:
+            self._skip = False
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title += data.strip()
+        elif not self._skip:
+            chunk = data.strip()
+            if chunk:
+                self.text_chunks.append(chunk)
+
+    def get_text(self) -> str:
+        return " ".join(self.text_chunks)
 
 
 @SkillRegistry.register(
@@ -40,7 +78,12 @@ def browse_and_read_webpage(url: str, max_chars: int = 2500) -> str:
         # Fallback to requests + simple extraction if playwright encounters issues
         try:
             res = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-            return f"Fetched via HTTP (Status {res.status_code}). Content length: {len(res.text)} characters."
+            parser = _HTMLTextExtractor()
+            parser.feed(res.text)
+            title = parser.title or "Untitled"
+            full_text = parser.get_text()
+            truncated = full_text[:max_chars]
+            return f"Page Title: {title}\nURL: {url}\n\nExtracted Content:\n{truncated}..."
         except Exception as e2:
             return f"Failed to browse webpage '{url}': {e} (Fallback also failed: {e2})"
 

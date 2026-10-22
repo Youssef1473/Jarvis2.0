@@ -3,17 +3,15 @@ import io
 import os
 from pathlib import Path
 import tempfile
-import time
 import unittest
 from PIL import Image
 
+import jarvis.skills.photo_manager as pm
 from jarvis.skills.photo_manager import (
     save_photo,
     save_clipboard_photo,
     list_photos,
     describe_photo,
-    PHOTOS_DIR,
-    DB_PATH,
 )
 
 
@@ -22,15 +20,29 @@ class TestPhotoManager(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_photos_dir = Path(self.temp_dir.name) / "photos"
+        self.temp_photos_dir.mkdir(parents=True, exist_ok=True)
+        self.temp_db_path = Path(self.temp_dir.name) / "photos.db"
+
+        self.orig_photos_dir = pm.PHOTOS_DIR
+        self.orig_db_path = pm.DB_PATH
+        pm.PHOTOS_DIR = self.temp_photos_dir
+        pm.DB_PATH = self.temp_db_path
+
         self.test_img_path = Path(self.temp_dir.name) / "test_sample.png"
         img = Image.new("RGB", (120, 80), color="blue")
         img.save(str(self.test_img_path), format="PNG")
 
     def tearDown(self):
+        pm._db_queue.join()
+        pm.PHOTOS_DIR = self.orig_photos_dir
+        pm.DB_PATH = self.orig_db_path
+        import gc
+        gc.collect()
         self.temp_dir.cleanup()
 
     def test_save_valid_photo(self):
-        """Valid image must be verified, sanitized, and saved into data/photos/."""
+        """Valid image must be verified, sanitized, and saved into photos dir."""
         res = save_photo(str(self.test_img_path))
         self.assertIn("Successfully archived photo", res)
         self.assertIn("EXIF metadata stripped", res)
@@ -48,7 +60,7 @@ class TestPhotoManager(unittest.TestCase):
         """list_photos must return archived photo records from SQLite."""
         # Ensure at least one photo is saved
         save_photo(str(self.test_img_path))
-        time.sleep(0.1) # allow async worker commit
+        pm._db_queue.join()  # Deterministic wait for async worker commit
         listing = list_photos(limit=5)
         self.assertIn("Archived Photo Gallery:", listing)
 

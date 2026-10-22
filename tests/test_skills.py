@@ -1,5 +1,6 @@
 """Tests for native skills registry and implementations."""
 import sys
+import unittest.mock
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -30,10 +31,20 @@ def test_skills_execution():
     print(f"Dir result excerpt:\n{dir_res[:100]}...")
     assert "run.py" in dir_res
 
-    # Test weather tool (Open-Meteo free API)
-    weather_res = SkillRegistry.execute("get_weather", city="London")
-    print(f"Weather result: {weather_res}")
-    assert "Weather in London" in weather_res
+    # Test weather tool (Open-Meteo API with deterministic mock fallback)
+    with unittest.mock.patch("requests.get") as mock_get:
+        mock_geo = unittest.mock.MagicMock()
+        mock_geo.json.return_value = {
+            "results": [{"latitude": 51.5074, "longitude": -0.1278, "name": "London", "country": "United Kingdom"}]
+        }
+        mock_weather = unittest.mock.MagicMock()
+        mock_weather.json.return_value = {
+            "current_weather": {"temperature": 15.2, "windspeed": 12.0}
+        }
+        mock_get.side_effect = [mock_geo, mock_weather]
+        weather_res = SkillRegistry.execute("get_weather", city="London")
+        print(f"Weather result: {weather_res}")
+        assert "Weather in London" in weather_res
 
     print("All skills tests passed successfully!")
 

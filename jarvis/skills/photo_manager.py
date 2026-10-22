@@ -59,36 +59,41 @@ def _init_photos_table(conn: sqlite3.Connection):
 
 def _db_worker_loop():
     """Background thread consuming photo index tasks to prevent workstation stalls."""
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-    _init_photos_table(conn)
-
     while True:
         try:
             item = _db_queue.get()
             if item is None:
                 break
 
-            action = item.get("action")
-            if action == "INSERT":
-                conn.execute("""
-                    INSERT INTO photos (photo_id, file_path, file_name, file_size, dimensions, caption)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(photo_id) DO UPDATE SET
-                        caption = COALESCE(excluded.caption, photos.caption)
-                """, (
-                    item["photo_id"],
-                    item["file_path"],
-                    item["file_name"],
-                    item["file_size"],
-                    item["dimensions"],
-                    item.get("caption"),
-                ))
-                conn.commit()
-            elif action == "UPDATE_CAPTION":
-                conn.execute("UPDATE photos SET caption = ? WHERE photo_id = ?", (item["caption"], item["photo_id"]))
-                conn.commit()
+            target_db = str(DB_PATH)
+            conn = None
+            try:
+                conn = sqlite3.connect(target_db, check_same_thread=False)
+                _init_photos_table(conn)
 
-            _db_queue.task_done()
+                action = item.get("action")
+                if action == "INSERT":
+                    conn.execute("""
+                        INSERT INTO photos (photo_id, file_path, file_name, file_size, dimensions, caption)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(photo_id) DO UPDATE SET
+                            caption = COALESCE(excluded.caption, photos.caption)
+                    """, (
+                        item["photo_id"],
+                        item["file_path"],
+                        item["file_name"],
+                        item["file_size"],
+                        item["dimensions"],
+                        item.get("caption"),
+                    ))
+                    conn.commit()
+                elif action == "UPDATE_CAPTION":
+                    conn.execute("UPDATE photos SET caption = ? WHERE photo_id = ?", (item["caption"], item["photo_id"]))
+                    conn.commit()
+            finally:
+                if conn:
+                    conn.close()
+                _db_queue.task_done()
         except Exception as e:
             logger.error("Async SQLite photo worker error: %s", e)
 

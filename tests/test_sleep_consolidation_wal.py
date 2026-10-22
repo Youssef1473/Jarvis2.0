@@ -32,6 +32,8 @@ class TestSleepConsolidationWALSuite(unittest.TestCase):
             self.memory.close()
         except Exception:
             pass
+        import gc
+        gc.collect()
         self.temp_dir.cleanup()
 
     def test_discover_redundant_facts_readonly(self):

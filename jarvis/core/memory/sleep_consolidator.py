@@ -198,7 +198,7 @@ class SleepPhaseConsolidator:
         conn = sqlite3.connect(
             uri,
             uri=True,
-            timeout=0.005 if not read_only else 5.0,
+            timeout=5.0,
             isolation_level=None,
             check_same_thread=False,
         )
@@ -206,7 +206,7 @@ class SleepPhaseConsolidator:
         if not read_only:
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("PRAGMA synchronous=NORMAL;")
-            conn.execute("PRAGMA busy_timeout=50;")  # Fail fast to never starve fast-path writes
+            conn.execute("PRAGMA busy_timeout=5000;")
         try:
             import sqlite_vec
             conn.enable_load_extension(True)

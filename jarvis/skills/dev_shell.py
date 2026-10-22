@@ -528,6 +528,37 @@ def query_codebase_graph(query: str, mode: str = "query") -> str:
         return f"Graph query error: {e}"
 
 
+def _find_ast_grep() -> Optional[Path]:
+    """Locates ast-grep executable across python environment, PATH, and parent workspace."""
+    ast_grep_bin = Path(sys.executable).parent / "ast-grep.exe"
+    if ast_grep_bin.exists():
+        return ast_grep_bin
+    sg_bin = Path(sys.executable).parent / "sg.exe"
+    if sg_bin.exists():
+        return sg_bin
+    candidate = shutil.which("ast-grep") or shutil.which("sg")
+    if candidate:
+        return Path(candidate)
+    parent_venv = WORKSPACE_DIR.parent / ".venv" / "Scripts" / "ast-grep.exe"
+    if parent_venv.exists():
+        return parent_venv
+    return None
+
+
+def _find_ruff() -> Optional[Path]:
+    """Locates ruff executable across python environment, PATH, and parent workspace."""
+    ruff_bin = Path(sys.executable).parent / "ruff.exe"
+    if ruff_bin.exists():
+        return ruff_bin
+    candidate = shutil.which("ruff")
+    if candidate:
+        return Path(candidate)
+    parent_venv = WORKSPACE_DIR.parent / ".venv" / "Scripts" / "ruff.exe"
+    if parent_venv.exists():
+        return parent_venv
+    return None
+
+
 @SkillRegistry.register(
     name="ast_search_codebase",
     description="Performs ultra-fast structural AST searches across the codebase using ast-grep. Matches syntax patterns (e.g. 'def $FUNC($$$ARGS): $$$BODY', '$OBJ.method($$$ARGS)') across Python, JavaScript, or JSON in <15ms."
@@ -539,15 +570,9 @@ def ast_search_codebase(pattern: str, path: str = ".", lang: Optional[str] = Non
     except ValueError as e:
         return f"Invalid path: {e}"
 
-    ast_grep_bin = Path(sys.executable).parent / "ast-grep.exe"
-    if not ast_grep_bin.exists():
-        ast_grep_bin = Path(sys.executable).parent / "sg.exe"
-    if not ast_grep_bin.exists():
-        candidate = shutil.which("ast-grep") or shutil.which("sg")
-        if candidate:
-            ast_grep_bin = Path(candidate)
-        else:
-            return "ast-grep binary is not installed in the environment. Run 'pip install ast-grep-cli', Sir."
+    ast_grep_bin = _find_ast_grep()
+    if not ast_grep_bin:
+        return "ast-grep binary is not installed in the environment. Run 'pip install ast-grep-cli', Sir."
 
     cmd = [str(ast_grep_bin), "run", "--color=never", "--heading=never", "-p", pattern]
     if lang:
@@ -603,13 +628,9 @@ def check_code_diagnostics(target_path: str = ".", select: Optional[str] = None,
     except ValueError as e:
         return f"Invalid path: {e}"
 
-    ruff_bin = Path(sys.executable).parent / "ruff.exe"
-    if not ruff_bin.exists():
-        candidate = shutil.which("ruff")
-        if candidate:
-            ruff_bin = Path(candidate)
-        else:
-            return "Ruff binary is not installed in the environment. Run 'pip install ruff', Sir."
+    ruff_bin = _find_ruff()
+    if not ruff_bin:
+        return "Ruff binary is not installed in the environment. Run 'pip install ruff', Sir."
 
     cmd = [str(ruff_bin), "check", "--color", "never", "--output-format", "concise"]
     if fix:

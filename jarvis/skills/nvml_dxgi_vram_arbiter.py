@@ -83,18 +83,39 @@ def audit_vram_and_thermal_budget(reclaim_if_pressured: bool = True) -> Dict[str
             "vram_total_mb": 0.0,
             "vram_used_mb": 0.0,
             "vram_free_mb": 0.0,
+            "gpu_temp_c": None,
+            "compute_processes": [],
+            "reclaimed_action": None,
         }
 
     try:
         if not _nvml_initialized:
             init_res = nvml.nvmlInit_v2()
             if init_res != 0:
-                return {"status": "error", "reason": f"nvmlInit_v2 failed with code {init_res}"}
+                return {
+                    "status": "error",
+                    "reason": f"nvmlInit_v2 failed with code {init_res}",
+                    "vram_total_mb": 0.0,
+                    "vram_used_mb": 0.0,
+                    "vram_free_mb": 0.0,
+                    "gpu_temp_c": None,
+                    "compute_processes": [],
+                    "reclaimed_action": None,
+                }
             _nvml_initialized = True
 
         device = ctypes.c_void_p()
         if nvml.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(device)) != 0:
-            return {"status": "error", "reason": "Failed to acquire GPU 0 handle"}
+            return {
+                "status": "error",
+                "reason": "Failed to acquire GPU 0 handle",
+                "vram_total_mb": 0.0,
+                "vram_used_mb": 0.0,
+                "vram_free_mb": 0.0,
+                "gpu_temp_c": None,
+                "compute_processes": [],
+                "reclaimed_action": None,
+            }
 
         mem = c_nvmlMemory_t()
         nvml.nvmlDeviceGetMemoryInfo(device, ctypes.byref(mem))
@@ -143,4 +164,13 @@ def audit_vram_and_thermal_budget(reclaim_if_pressured: bool = True) -> Dict[str
             "reclaimed_action": reclaimed_action,
         }
     except Exception as e:
-        return {"status": "error", "reason": f"NVML query exception: {e}"}
+        return {
+            "status": "error",
+            "reason": f"NVML query exception: {e}",
+            "vram_total_mb": 0.0,
+            "vram_used_mb": 0.0,
+            "vram_free_mb": 0.0,
+            "gpu_temp_c": None,
+            "compute_processes": [],
+            "reclaimed_action": None,
+        }

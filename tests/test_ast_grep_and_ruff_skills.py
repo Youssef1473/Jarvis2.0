@@ -18,6 +18,8 @@ class TestAstGrepAndRuffSkills(unittest.TestCase):
 
     def test_ast_search_live_execution(self):
         """Runs a real ast-grep pattern search on safety.py."""
+        if not jarvis.skills.dev_shell._find_ast_grep():
+            self.skipTest("ast-grep binary is not installed in the environment")
         res = SkillRegistry.execute(
             "ast_search_codebase",
             pattern="def check_tool_call($$$ARGS): $$$BODY",
@@ -27,6 +29,8 @@ class TestAstGrepAndRuffSkills(unittest.TestCase):
         self.assertIn("check_tool_call", res)
 
     def test_ast_search_no_matches(self):
+        if not jarvis.skills.dev_shell._find_ast_grep():
+            self.skipTest("ast-grep binary is not installed in the environment")
         res = SkillRegistry.execute(
             "ast_search_codebase",
             pattern="def non_existent_function_xyz_123($$$ARGS): $$$BODY",
@@ -43,8 +47,7 @@ class TestAstGrepAndRuffSkills(unittest.TestCase):
         self.assertIn("Invalid path", res)
 
     def test_ast_search_missing_binary(self):
-        with patch.object(Path, "exists", return_value=False), \
-             patch("shutil.which", return_value=None):
+        with patch.object(jarvis.skills.dev_shell, "_find_ast_grep", return_value=None):
             res = SkillRegistry.execute(
                 "ast_search_codebase",
                 pattern="def $FUNC(): $$$BODY",
@@ -55,7 +58,8 @@ class TestAstGrepAndRuffSkills(unittest.TestCase):
     def test_ast_search_truncation(self):
         """Verifies output truncation when exceeding max_lines."""
         long_output = "\n".join([f"line_{i}: code" for i in range(100)])
-        with patch("subprocess.run") as mock_run:
+        with patch.object(jarvis.skills.dev_shell, "_find_ast_grep", return_value=Path("mock/ast-grep.exe")), \
+             patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=long_output, stderr="")
             res = SkillRegistry.execute(
                 "ast_search_codebase",
@@ -67,6 +71,8 @@ class TestAstGrepAndRuffSkills(unittest.TestCase):
 
     def test_ruff_diagnostics_live_execution(self):
         """Runs a real ruff check with select E9,F821 on safety.py."""
+        if not jarvis.skills.dev_shell._find_ruff():
+            self.skipTest("Ruff binary is not installed in the environment")
         res = SkillRegistry.execute(
             "check_code_diagnostics",
             target_path="jarvis/core/safety.py",
@@ -75,7 +81,8 @@ class TestAstGrepAndRuffSkills(unittest.TestCase):
         self.assertIn("All diagnostics clean", res)
 
     def test_ruff_diagnostics_with_findings(self):
-        with patch("subprocess.run") as mock_run:
+        with patch.object(jarvis.skills.dev_shell, "_find_ruff", return_value=Path("mock/ruff.exe")), \
+             patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=1,
                 stdout="jarvis\\core\\test.py:1:1: F401 `os` imported but unused",
@@ -95,8 +102,7 @@ class TestAstGrepAndRuffSkills(unittest.TestCase):
         self.assertIn("Invalid path", res)
 
     def test_ruff_diagnostics_missing_binary(self):
-        with patch.object(Path, "exists", return_value=False), \
-             patch("shutil.which", return_value=None):
+        with patch.object(jarvis.skills.dev_shell, "_find_ruff", return_value=None):
             res = SkillRegistry.execute(
                 "check_code_diagnostics",
                 target_path="jarvis/core/safety.py",
@@ -105,7 +111,8 @@ class TestAstGrepAndRuffSkills(unittest.TestCase):
 
     def test_ruff_diagnostics_truncation(self):
         long_output = "\n".join([f"error_{i}: violation" for i in range(80)])
-        with patch("subprocess.run") as mock_run:
+        with patch.object(jarvis.skills.dev_shell, "_find_ruff", return_value=Path("mock/ruff.exe")), \
+             patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout=long_output, stderr="")
             res = SkillRegistry.execute(
                 "check_code_diagnostics",
