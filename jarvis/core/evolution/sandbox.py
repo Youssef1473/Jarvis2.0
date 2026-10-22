@@ -227,9 +227,14 @@ class Win32JobObject:
             return False
         try:
             import ctypes
+            from ctypes import wintypes
             raw_handle = getattr(proc, "_handle", None)
             if raw_handle:
-                return bool(ctypes.windll.kernel32.AssignProcessToJobObject(self._handle, int(raw_handle)))
+                k32 = ctypes.windll.kernel32
+                k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+                k32.AssignProcessToJobObject.restype = wintypes.BOOL
+                res = k32.AssignProcessToJobObject(self._handle, int(raw_handle))
+                return bool(res)
         except Exception as e:
             logger.debug("Win32JobObject assign_process failed: %s", e)
         return False
@@ -273,9 +278,40 @@ class SkillSandbox:
         "compile",
         "__import__",
         "shutil.rmtree",
+        "shutil.move",
+        "shutil.copy",
+        "shutil.copy2",
         "os.rmdir",
         "os.remove",
         "os.unlink",
+        "os.mkdir",
+        "os.makedirs",
+        "os.rename",
+        "os.replace",
+        "os.truncate",
+        "os.chmod",
+        "os.chown",
+        "pathlib.Path.unlink",
+        "pathlib.Path.rmdir",
+        "pathlib.Path.rename",
+        "pathlib.Path.replace",
+        "pathlib.Path.write_text",
+        "pathlib.Path.write_bytes",
+        "pathlib.Path.mkdir",
+    }
+
+    # Prohibited method names across all receiver types (filesystem mutations / escapes)
+    BLOCKED_DESTRUCTIVE_METHODS: Set[str] = {
+        "unlink",
+        "rmdir",
+        "remove",
+        "rmtree",
+        "write_text",
+        "write_bytes",
+        "replace",
+        "rename",
+        "mkdir",
+        "truncate",
     }
 
     # Prohibited reflection functions (dynamic object attribute access / meta-programming)
@@ -377,9 +413,11 @@ class SkillSandbox:
             elif isinstance(node, ast.Call):
                 func = node.func
                 call_name = ""
+                attr_name = ""
                 if isinstance(func, ast.Name):
                     call_name = func.id
                 elif isinstance(func, ast.Attribute):
+                    attr_name = func.attr
                     val_id = func.value.id if isinstance(func.value, ast.Name) else ""
                     call_name = f"{val_id}.{func.attr}" if val_id else func.attr
 
@@ -387,6 +425,18 @@ class SkillSandbox:
                     return False, f"Security Violation: Dynamic reflection call '{call_name}' is blocked inside autonomous skills."
                 if call_name in cls.BLOCKED_CALLS or any(call_name.startswith(f"{b}.") for b in cls.BLOCKED_MODULES):
                     return False, f"Security Violation: '{call_name}' is blocked inside autonomous skills."
+                if attr_name in cls.BLOCKED_DESTRUCTIVE_METHODS:
+                    return False, f"Security Violation: Invoking destructive method '.{attr_name}()' is prohibited inside autonomous skills."
+
+                if call_name == "open":
+                    for arg in node.args[1:]:
+                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                            if any(m in arg.value for m in ("w", "a", "+", "x")):
+                                return False, f"Security Violation: File write operations are prohibited (attempted mode '{arg.value}' in open())."
+                    for kw in node.keywords:
+                        if kw.arg == "mode" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                            if any(m in kw.value.value for m in ("w", "a", "+", "x")):
+                                return False, f"Security Violation: File write operations are prohibited (attempted mode '{kw.value.value}' in open())."
 
             # 4. Operational Invariant: Infinite While Loop Detection (Unbounded Spin-Locks)
             elif isinstance(node, ast.While):
@@ -548,6 +598,7 @@ try:
             "ctypes.dlopen", "ctypes.dlsym", "ctypes.cdata", "winreg.OpenKey",
             "winreg.CreateKey", "winreg.SetValue", "shutil.rmtree",
             "sys._getframe", "sys._current_frames",
+            "os.remove", "os.unlink", "os.mkdir", "os.rmdir", "os.rename",
         }}
         if event in blocked_events:
             raise PermissionError("[Gate-2 AuditHook] Access to event '" + str(event) + "' is blocked inside the canary sandbox.")
@@ -675,6 +726,7 @@ except Exception as e:
         python_code: str,
         timeout_seconds: float = 20.0,
         memory_manager: Optional[Any] = None,
+        user_approved: bool = True,
     ) -> SandboxResult:
         """Executes full sandboxed lifecycle:
         1. Snapshot versioning if modifying an existing skill
@@ -727,7 +779,20 @@ except Exception as e:
                     text=True,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
-                job.assign_process(proc)
+                if sys.platform == "win32":
+                    if not job.assign_process(proc):
+                        proc.kill()
+                        proc.communicate()
+                        cls._cleanup_scratch(scratch_file)
+                        cls.rollback_snapshot(clean_name, snapshot_path)
+                        logger.error("Job Object containment assignment failed for canary '%s'; aborting execution.", clean_name)
+                        msg = "Security failure: Win32 Job Object assignment failed. Execution aborted to fail closed."
+                        cls._record_failure_lesson(clean_name, code, msg, memory_manager)
+                        return SandboxResult(
+                            success=False,
+                            skill_name=clean_name,
+                            message=msg,
+                        )
 
                 try:
                     stdout, stderr = proc.communicate(timeout=timeout_seconds)
@@ -776,6 +841,17 @@ except Exception as e:
                 msg = f"Subprocess execution error: {e}"
                 cls._record_failure_lesson(clean_name, code, msg, memory_manager)
                 return SandboxResult(success=False, skill_name=clean_name, message=msg)
+
+        # 3.5 Gate: Require explicit user approval before promoting to live codebase
+        if not user_approved:
+            cls._cleanup_scratch(scratch_file)
+            cls.rollback_snapshot(clean_name, snapshot_path)
+            logger.warning("Skill '%s' passed canary verification but was denied promotion due to lack of explicit user approval.", clean_name)
+            return SandboxResult(
+                success=False,
+                skill_name=clean_name,
+                message="Skill passed canary dry-run verification, but was not promoted into live process: explicit out-of-band user approval is required.",
+            )
 
         # 4. Promotion from Scratchpad to Production Custom Directory
         try:

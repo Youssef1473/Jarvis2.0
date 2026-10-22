@@ -6,7 +6,7 @@
 [![Platform: Windows 11](https://img.shields.io/badge/Platform-Windows%2011%2064--bit-0078D6.svg)](https://www.microsoft.com/windows)
 [![CUDA 12.x](https://img.shields.io/badge/CUDA-RTX%203050%20(4GB)-76B900.svg)](https://developer.nvidia.com/cuda-toolkit)
 
-An autonomous, full-duplex desktop AI operating system daemon engineered from the bare metal up for **Windows 11**. Jarvis 2.0 combines an authentic cinematic J.A.R.V.I.S. persona (voiced by Paul Bettany via Kokoro-82M ONNX latent blending), hardware-pinned MMCSS audio workers, sub-microsecond barge-in cancellation, a 4-tier vector/lexical memory pyramid, and closed-loop OS automation via Chrome DevTools Protocol (CDP) and Windows UI Automation (pywinauto).
+An autonomous, full-duplex desktop AI operating system daemon engineered from the bare metal up for **Windows 11**. Jarvis 2.0 combines an authentic cinematic J.A.R.V.I.S. persona (voiced by Paul Bettany via Kokoro-82M ONNX latent blending), hardware-pinned MMCSS audio workers, low-latency barge-in cancellation (<1ms), a 4-tier vector/lexical memory pyramid, and closed-loop OS automation via Chrome DevTools Protocol (CDP) and Windows UI Automation (pywinauto).
 
 ---
 
@@ -21,7 +21,7 @@ Jarvis 2.0 operates as a deterministic, real-time operating system service with 
   └──► Lock-Free C-Level AudioRingBuffer (120s Circular Buffer)
 
 [2. INGESTION]
-  Unified Barge-In & Acoustic Gate (sub-1us ring clear + 2.5ms cos^2 anti-click)
+  Unified Barge-In & Acoustic Gate (~0.74µs epoch cut + 2.5ms cos^2 anti-click)
   ├──► faster-whisper CUDA INT8 Transcription (with DXGI/NVML VRAM Arbiter)
   ├──► ContextOrchestrator (<1.5KB prompt budget & dynamic token bounding)
   └──► LIFO ReasoningBookmarkStack (clause snapshotting on speech interruption)
@@ -54,7 +54,7 @@ Jarvis 2.0 operates as a deterministic, real-time operating system service with 
 ### Authentic Paul Bettany Voice Persona & Acoustic DSP
 * **Latent Style Blending:** Normalizes linear combinations of $510 \times 1 \times 256$ float style tensors in StyleTTS-2 latent space (`50% bm_fable + 30% bm_george + 20% bm_daniel`), delivering authentic British diction and dry wit.
 * **Polyphase Boundary Reconstruction:** Features `StatefulPolyphaseUpsampler` with a 32-sample Kaiser-windowed FIR filter to eliminate WASAPI resampler clicks, high-frequency distortion, and boundary discontinuities.
-* **Sub-Microsecond Barge-in:** Voice Activity Detection (VAD) instantly clears audio buffers and rolls off gain in $<1\mu\text{s}$, preserving active reasoning context via `ReasoningBookmarkStack`.
+* **Sub-Millisecond Barge-in:** Voice Activity Detection (VAD) cuts audio ring buffers and invalidates stale speech via atomic epoch transitions (~0.74µs epoch cut, ~5.6µs PCM read/write), preserving active reasoning context via `ReasoningBookmarkStack`.
 
 ### 4-Tier Sovereign Memory Pyramid
 * **Tier 1 (Core Preferences):** Stored in `user_preferences` (<1KB); injected on every conversational turn under `<core_user_preferences>`.
@@ -101,7 +101,7 @@ Jarvis 2.0 exposes **143 atomic capabilities across 36 specialized modules**, go
 ### 3.4 Acoustic, Voice & Conversational Full-Duplex Subsystem
 * **Neural Bettany Voice Synthesis (`jarvis.audio.tts`):** Generates 24kHz speech via Kokoro-82M ONNX using a custom latent style tensor blend (`50% bm_fable + 30% bm_george + 20% bm_daniel`) pinned to dedicated P-core threads (`0xFF`).
 * **MCU DSP Audio Chain:** Applies a 110Hz high-pass filter, 7.5ms micro-reflection comb filter (-21.4 dB wet), 5ms Hann cross-fading, 32-sample polyphase upsampling to 48kHz, and natural conversational breath pauses (130ms / 240ms).
-* **Instant Barge-In Interruption:** Clears audio ring buffers atomically in `<1μs` whenever you speak mid-sentence, snapshotting active reasoning bookmarks onto `ReasoningBookmarkStack`.
+* **Instant Barge-In Interruption:** Clears audio ring buffers atomically in sub-millisecond cycles (~0.74µs epoch invalidation) whenever you speak mid-sentence, snapshotting active reasoning bookmarks onto `ReasoningBookmarkStack`.
 * **GPU-Accelerated Transcription (`jarvis.audio.stt`):** Low-latency CUDA INT8 Whisper transcription via `faster-whisper`, governed by dynamic silence scaling and VAD hesitation damping.
 * **Sub-1ms Timbre Switching & Device Routing (`jarvis.skills.voice_control`):** Shifts voice profiles across Bettany, Classic, Authoritative, Crisp, and Friday personas, tunes speech speed, and dynamically re-routes audio output devices (`set_voice_profile`, `get_voice_settings`, `set_speech_rate`, `list_audio_devices`, `set_audio_output_device`).
 
@@ -211,6 +211,9 @@ py -3.12 -m venv .venv
 # Install production dependencies
 pip install --upgrade pip
 pip install -r requirements.txt
+
+# (Optional) Install development and test dependencies
+pip install -r requirements-dev.txt
 ```
 
 ### 2. Configure Environment & Keys
@@ -232,13 +235,13 @@ Set-Content .env "GEMINI_API_KEY=your_key_here`nANTHROPIC_API_KEY=your_key_here"
 * **Push-to-Talk (PTT):** Hold the `End` key (`fin`), speak your directive, then release.
 * **Wake Word:** Say *"Hey Jarvis"* to activate hands-free microphone listening.
 * **Terminal Input:** Enter commands directly into the terminal prompt.
-* **Holographic HUD:** Open `http://127.0.0.1:8000` in any browser to inspect live acoustic telemetry, working memory tokens, and active tool execution streams.
+* **Holographic HUD:** Open `http://127.0.0.1:20129` in any browser to inspect live acoustic telemetry, working memory tokens, and active tool execution streams.
 
 ---
 
 ## 6. Development, Testing & Verification
 
-Jarvis 2.0 includes a specialized high-performance test runner implementing intelligent two-tier sharding:
+Running the test suite requires the development dependencies installed via `pip install -r requirements-dev.txt`. Jarvis 2.0 includes a specialized high-performance test runner implementing intelligent two-tier sharding:
 
 ```powershell
 # Run the fast parallel unit test suite (601 tests across worker processes)
@@ -256,9 +259,9 @@ Jarvis 2.0 includes a specialized high-performance test runner implementing inte
 
 ---
 
-## 7. Cryptographic Commit Verification Protocol
+## 7. Cryptographic Commit Verification Protocol (Recommended)
 
-All commits to this repository are cryptographically signed using standard Ed25519 SSH keys. To configure Git on Windows 11 for verified commit status:
+Contributors are encouraged to cryptographically sign commits using standard Ed25519 SSH keys. To configure Git on Windows 11 for verified commit status:
 
 ```powershell
 # 1. Generate a dedicated Ed25519 SSH signing key

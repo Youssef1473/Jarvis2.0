@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Callable
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 from google import genai
@@ -380,6 +380,44 @@ class JarvisBrain:
                 self.tts.stop()
             except Exception as e:
                 logger.debug("TTS stop notice during barge-in flush: %s", e)
+
+    def _dispatch_tool_pipeline(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        step_index: int = 1,
+        sentence_callback: Optional[Callable[[str], None]] = None,
+    ) -> Tuple[Any, bool]:
+        """Single authoritative gateway for all tool authorization, safety checks, and execution across all providers.
+
+        Returns:
+            (tool_result, is_success): tool_result is the output or error string;
+            is_success is True if executed without safety halts or cancellation.
+        """
+        # 1. Narrate action to UI and audio
+        if sentence_callback:
+            try:
+                narrative = self._narrate_tool_action(tool_name, tool_args)
+                sentence_callback(narrative)
+            except Exception as e:
+                logger.debug("Tool narration notice: %s", e)
+
+        # 2. Centralized SafetyGate check (destructive commands, forbidden URLs, etc.)
+        is_safe, warning = self.safety.check_tool_call(tool_name, tool_args)
+        if not is_safe:
+            halt_msg = f"Action halted: {warning}"
+            if sentence_callback:
+                sentence_callback(halt_msg)
+            return halt_msg, False
+
+        # 3. Monotonic Cancellation Preemption check
+        if self._active_cancel_token and hasattr(self._active_cancel_token, "raise_if_cancelled"):
+            self._active_cancel_token.raise_if_cancelled()
+
+        # 4. Physical Execution via ToolOrchestrator (governs loop recursion, taint checking, and execution)
+        tool_result = self._execute_tool_with_orchestrator(tool_name, tool_args, step_index=step_index)
+        self._record_tool_execution(tool_name, tool_args, tool_result)
+        return tool_result, True
 
     def _execute_tool_with_orchestrator(self, tool_name: str, tool_args: Dict[str, Any], step_index: int = 1) -> Any:
         """Executes a tool call through ToolOrchestrator for taint tracking, loop guards, and interim audio."""
@@ -1797,23 +1835,12 @@ class JarvisBrain:
                             fn_args = {}
 
                         logger.info(f"{self.provider.upper()} Tool call: {fn_name}({fn_args})")
-                        if sentence_callback:
-                            narrative = self._narrate_tool_action(fn_name, fn_args)
-                            sentence_callback(narrative)
-
-                        is_safe, warning = self.safety.check_tool_call(fn_name, fn_args)
-                        if not is_safe:
-                            tool_result = f"Action halted: {warning}"
-                            if sentence_callback:
-                                sentence_callback(f"Action halted: {warning}")
-                        else:
-                            if self._active_cancel_token and hasattr(self._active_cancel_token, "raise_if_cancelled"):
-                                self._active_cancel_token.raise_if_cancelled()
-                            tool_result = self._execute_tool_with_orchestrator(fn_name, fn_args, step_index=step_idx)
-                            self._record_tool_execution(fn_name, fn_args, tool_result)
-                            last_tool_result = str(tool_result)
-                            if fn_name in action_tools:
-                                has_action_completed = True
+                        tool_result, ok = self._dispatch_tool_pipeline(
+                            fn_name, fn_args, step_index=step_idx, sentence_callback=sentence_callback
+                        )
+                        last_tool_result = str(tool_result)
+                        if ok and fn_name in action_tools:
+                            has_action_completed = True
 
                         logger.info(f"{self.provider.upper()} Tool result: {tool_result}")
                         self.openai_messages.append({
@@ -1954,14 +1981,9 @@ class JarvisBrain:
                             fn_args[p_match.group(1)] = p_match.group(2).strip()
 
                         logger.info(f"{self.provider.upper()} Inline tool call: {fn_name}({fn_args})")
-                        is_safe, warning = self.safety.check_tool_call(fn_name, fn_args)
-                        if not is_safe:
-                            tool_result = f"Action halted: {warning}"
-                        else:
-                            if self._active_cancel_token and hasattr(self._active_cancel_token, "raise_if_cancelled"):
-                                self._active_cancel_token.raise_if_cancelled()
-                            tool_result = self._execute_tool_with_orchestrator(fn_name, fn_args, step_index=1)
-                            self._record_tool_execution(fn_name, fn_args, tool_result)
+                        tool_result, _ = self._dispatch_tool_pipeline(
+                            fn_name, fn_args, step_index=1, sentence_callback=sentence_callback
+                        )
                         last_tool_result = str(tool_result)
                         logger.info(f"{self.provider.upper()} Inline tool result: {tool_result}")
 
@@ -2134,16 +2156,9 @@ class JarvisBrain:
             for step_idx, tc in enumerate(turn_response.tool_calls, start=1):
                 fn_name, fn_args = tc.name, tc.arguments
                 logger.info("OpenRouter tool dispatch: %s(%s)", fn_name, fn_args)
-                if sentence_callback:
-                    sentence_callback(self._narrate_tool_action(fn_name, fn_args))
-                is_safe, warning = self.safety.check_tool_call(fn_name, fn_args)
-                if not is_safe:
-                    tool_result = f"Action halted: {warning}"
-                    if sentence_callback:
-                        sentence_callback(f"Action halted: {warning}")
-                else:
-                    tool_result = self._execute_tool_with_orchestrator(fn_name, fn_args, step_index=step_idx)
-                    self._record_tool_execution(fn_name, fn_args, tool_result)
+                tool_result, _ = self._dispatch_tool_pipeline(
+                    fn_name, fn_args, step_index=step_idx, sentence_callback=sentence_callback
+                )
                 self.openai_messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -2262,19 +2277,9 @@ class JarvisBrain:
                         tool_name = call.name
                         tool_args = dict(call.args) if call.args else {}
                         logger.info(f"Tool call: {tool_name}({tool_args})")
-                        if sentence_callback:
-                            narrative = self._narrate_tool_action(tool_name, tool_args)
-                            sentence_callback(narrative)
-
-                        is_safe, warning = self.safety.check_tool_call(tool_name, tool_args)
-                        if not is_safe:
-                            tool_result = f"Action halted: {warning}"
-                            if sentence_callback:
-                                sentence_callback(f"Action halted: {warning}")
-                        else:
-                            tool_result = self._execute_tool_with_orchestrator(tool_name, tool_args, step_index=gemini_tool_iterations)
-                            self._record_tool_execution(tool_name, tool_args, tool_result)
-
+                        tool_result, _ = self._dispatch_tool_pipeline(
+                            tool_name, tool_args, step_index=gemini_tool_iterations, sentence_callback=sentence_callback
+                        )
                         logger.info(f"Tool result: {tool_result}")
                         tool_responses.append(types.Part.from_function_response(
                             name=tool_name,
@@ -2544,26 +2549,15 @@ class JarvisBrain:
                 fn_args = {}
 
             logger.info("ANTIGRAVITY Tool call [%d/%d]: %s(%s)", iterations, max_tool_iterations, fn_name, fn_args)
-            if sentence_callback:
-                narrative = self._narrate_tool_action(fn_name, fn_args)
-                sentence_callback(narrative)
-
-            is_safe, warning = self.safety.check_tool_call(fn_name, fn_args)
-            if not is_safe:
-                tool_result = f"Action halted: {warning}"
-                if sentence_callback:
-                    sentence_callback(f"Action halted: {warning}")
-            else:
-                try:
-                    if self._active_cancel_token and hasattr(self._active_cancel_token, "raise_if_cancelled"):
-                        self._active_cancel_token.raise_if_cancelled()
-                    tool_result = self._execute_tool_with_orchestrator(fn_name, fn_args, step_index=iterations)
-                    self._record_tool_execution(fn_name, fn_args, tool_result)
-                except RuntimeError as err:
-                    if "preempted" in str(err).lower() or "cancelled" in str(err).lower():
-                        logger.info("Antigravity tool execution aborted by user interrupt: %s", err)
-                        return "Command cancelled, Sir."
-                    raise
+            try:
+                tool_result, _ = self._dispatch_tool_pipeline(
+                    fn_name, fn_args, step_index=iterations, sentence_callback=sentence_callback
+                )
+            except RuntimeError as err:
+                if "preempted" in str(err).lower() or "cancelled" in str(err).lower():
+                    logger.info("Antigravity tool execution aborted by user interrupt: %s", err)
+                    return "Command cancelled, Sir."
+                raise
             last_tool_result = str(tool_result)
             logger.info("ANTIGRAVITY Tool result: %s", last_tool_result[:250])
 

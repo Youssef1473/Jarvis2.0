@@ -200,6 +200,13 @@ class TurnTaintTracker:
         "kill_process",
         "write_file",
         "patch_file",
+        "create_or_update_custom_skill",
+        "delete_custom_skill",
+    }
+
+    CRITICAL_PRIVILEGE_TOOLS: Set[str] = {
+        "create_or_update_custom_skill",
+        "delete_custom_skill",
     }
 
     def __init__(self) -> None:
@@ -231,11 +238,24 @@ class TurnTaintTracker:
         risk_level: int = 0,
         dual_key_confirmed: bool = False,
     ) -> None:
-        """Enforces Dual-Key security on high-privilege mutations when turn is tainted."""
+        """Enforces mandatory out-of-band authorization on critical risk level 2 operations
+        regardless of taint state, and enforces Dual-Key safety on high-privilege mutations
+        when the turn has been tainted by external untrusted data.
+        """
         if tool_name in self.UNTRUSTED_INGESTION_TOOLS:
             self.mark_tainted(tool_name)
             return
 
+        # 1. Unconditional authorization check for Critical Risk (Level 2) operations
+        if risk_level >= 2 or tool_name in self.CRITICAL_PRIVILEGE_TOOLS:
+            if not dual_key_confirmed:
+                raise SecurityBoundaryViolation(
+                    f"Critical Authorization Gate: Tool '{tool_name}' (risk_level={risk_level}) "
+                    "modifies the host environment or live Python runtime and requires explicit, "
+                    "out-of-band user confirmation regardless of turn taint state."
+                )
+
+        # 2. Tainted turn check for High Privilege (Level 1) operations
         if self.is_tainted:
             if tool_name in self.HIGH_PRIVILEGE_MUTATION_TOOLS or risk_level >= 1:
                 if not dual_key_confirmed:

@@ -36,7 +36,6 @@ httpx>=0.27.0
 sqlite-vec>=0.1.1
 
 # Web, Documents, Productivity & Extensibility
-duckduckgo-search>=6.0.0
 ddgs>=7.0.0
 mcp>=1.0.0
 playwright>=1.40.0

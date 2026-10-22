@@ -23,44 +23,59 @@ def _resolve_workspace_path(file_path: str) -> Path:
     return resolved
 
 
+# execute_powershell uses the Job Object for *lifecycle* containment (the whole
+# process tree dies on timeout/cancel), not for CPU throttling, so these caps are
+# deliberately looser than the E-core-pinned execute_sandboxed_powershell tool.
+POWERSHELL_JOB_MAX_MEMORY_MB = 4096
+POWERSHELL_JOB_MAX_PROCESSES = 64
+POWERSHELL_OUTPUT_TAIL_CHARS = 16000
+
+
 @SkillRegistry.register(
     name="execute_powershell",
     description="Executes a PowerShell terminal command safely inside the Jarvis workspace and returns stdout and stderr."
 )
 def execute_powershell(command: str, timeout_seconds: int = 25) -> str:
-    """Executes a PowerShell command with timeout in the workspace directory."""
-    try:
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", command],
-            cwd=str(WORKSPACE_DIR),
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-        stdout = proc.stdout.strip()
-        stderr = proc.stderr.strip()
-        res = []
-        if stdout:
-            res.append(f"STDOUT:\n{stdout}")
-        if stderr:
-            res.append(f"STDERR:\n{stderr}")
-            if "being used by another process" in stderr or "WinError 32" in stderr:
-                try:
-                    from jarvis.skills.rstrtmgr_lock_surgeon import inspect_file_locks
-                    tokens = [t.strip("\"'") for t in command.split() if "." in t and not t.startswith("-")]
-                    for tok in tokens:
-                        if os.path.exists(tok):
-                            locks = inspect_file_locks(tok)
-                            if locks.get("status") == "locked":
-                                holders = [f"PID {h['pid']} ({h['app_name']})" for h in locks.get("holders", [])]
-                                res.append(f"LOCK DIAGNOSTIC (Rstrtmgr): '{tok}' locked by {', '.join(holders)}")
-                except Exception:
-                    pass
-        return "\n\n".join(res) if res else "Command completed with no output."
-    except subprocess.TimeoutExpired:
+    """Executes a PowerShell command inside a Job Object so every child it spawns dies with it."""
+    from jarvis.skills.job_object_sandbox import run_job_sandboxed_process
+
+    res = run_job_sandboxed_process(
+        command=["powershell", "-NoProfile", "-Command", command],
+        cwd=str(WORKSPACE_DIR),
+        max_memory_mb=POWERSHELL_JOB_MAX_MEMORY_MB,
+        max_processes=POWERSHELL_JOB_MAX_PROCESSES,
+        timeout_sec=float(timeout_seconds),
+        requested_affinity=0,  # no core pinning for general shell work
+        tail_chars=POWERSHELL_OUTPUT_TAIL_CHARS,
+    )
+    status = res.get("status")
+    if status == "timeout":
         return f"Error: Command timed out after {timeout_seconds} seconds."
-    except Exception as e:
-        return f"Failed to execute command: {e}"
+    if status == "cancelled":
+        return "Error: Command cancelled by voice interrupt."
+    if status not in ("ok", "failed"):
+        return f"Failed to execute command: {res.get('reason') or res.get('stderr_tail') or status}"
+
+    stdout = (res.get("stdout_tail") or "").strip()
+    stderr = (res.get("stderr_tail") or "").strip()
+    out = []
+    if stdout:
+        out.append(f"STDOUT:\n{stdout}")
+    if stderr:
+        out.append(f"STDERR:\n{stderr}")
+        if "being used by another process" in stderr or "WinError 32" in stderr:
+            try:
+                from jarvis.skills.rstrtmgr_lock_surgeon import inspect_file_locks
+                tokens = [t.strip("\"'") for t in command.split() if "." in t and not t.startswith("-")]
+                for tok in tokens:
+                    if os.path.exists(tok):
+                        locks = inspect_file_locks(tok)
+                        if locks.get("status") == "locked":
+                            holders = [f"PID {h['pid']} ({h['app_name']})" for h in locks.get("holders", [])]
+                            out.append(f"LOCK DIAGNOSTIC (Rstrtmgr): '{tok}' locked by {', '.join(holders)}")
+            except Exception:
+                pass
+    return "\n\n".join(out) if out else "Command completed with no output."
 
 
 @SkillRegistry.register(

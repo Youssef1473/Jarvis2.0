@@ -36,6 +36,7 @@ def _sanitize_skill_name(name: str) -> str:
         "into Jarvis's live brain without requiring a restart. The python_code must define function(s) "
         "decorated with @SkillRegistry.register(name='...', description='...')."
     ),
+    risk_level=2,
 )
 def create_or_update_custom_skill(
     skill_name: str,
@@ -78,6 +79,7 @@ def list_custom_skills() -> str:
 @SkillRegistry.register(
     name="delete_custom_skill",
     description="Removes a dynamically engineered custom skill from Jarvis's brain and filesystem.",
+    risk_level=2,
 )
 def delete_custom_skill(skill_name: str) -> str:
     """Deletes a custom skill module file and unloads it."""

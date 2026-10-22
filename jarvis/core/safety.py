@@ -1,4 +1,4 @@
-﻿"""Safety gatekeeper for dangerous tool executions in Jarvis 2.0."""
+"""Safety gatekeeper for dangerous tool executions in Jarvis 2.0."""
 import re
 from typing import Dict, Any, Tuple
 
@@ -40,8 +40,15 @@ class SafetyGate:
         if not self.confirm_destructive:
             return True, ""
 
-        if tool_name in ("execute_powershell", "run_background_task"):
+        if tool_name in (
+            "execute_powershell",
+            "execute_sandboxed_powershell",
+            "run_background_task",
+            "run_job_sandboxed_process",
+        ):
             cmd = arguments.get("command", "")
+            if isinstance(cmd, list):
+                cmd = " ".join(cmd)
             if self.is_command_dangerous(cmd):
                 return False, (
                     "Blocked a command matching Jarvis's destructive-command rules. "

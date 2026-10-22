@@ -200,15 +200,15 @@ class TextToSpeech:
         self._shm_transport: Optional[Any] = None
         if tts_cfg.get("use_shm_transport", False):
             try:
-                from jarvis.audio.shm_transport import ShmAudioRingTransport
-                self._shm_transport = ShmAudioRingTransport(
-                    name=tts_cfg.get("shm_name", "JarvisAudioShmRing"),
+                from jarvis.audio.shm_transport import DEFAULT_RING_NAME, ShmAudioRingTransport
+                # Attach if the DSP client already created the ring, create it otherwise.
+                self._shm_transport = ShmAudioRingTransport.open_or_create(
+                    name=tts_cfg.get("shm_name", DEFAULT_RING_NAME),
                     capacity_samples=24000 * 10,
                     sample_rate=24000,
-                    create=True,
                 )
             except Exception as e:
-                logger.debug("ShmAudioRingTransport initialization deferred: %s", e)
+                logger.warning("ShmAudioRingTransport unavailable, continuing without it: %s", e)
 
     def _init_kokoro(self):
         """Initializes Kokoro neural engine with constrained CPU threading to prevent CPU spikes."""
