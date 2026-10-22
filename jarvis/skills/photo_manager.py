@@ -63,6 +63,7 @@ def _db_worker_loop():
         try:
             item = _db_queue.get()
             if item is None:
+                _db_queue.task_done()
                 break
 
             target_db = str(DB_PATH)
@@ -98,6 +99,14 @@ def _db_worker_loop():
             logger.error("Async SQLite photo worker error: %s", e)
 
 
+def _ensure_db_worker_alive():
+    """Ensures the background SQLite worker thread is running, resurrecting if shutdown."""
+    global _db_thread
+    if _db_thread is None or not _db_thread.is_alive():
+        _db_thread = threading.Thread(target=_db_worker_loop, daemon=True, name="PhotoDBWorker")
+        _db_thread.start()
+
+
 _db_thread = threading.Thread(target=_db_worker_loop, daemon=True, name="PhotoDBWorker")
 _db_thread.start()
 
@@ -106,9 +115,10 @@ def shutdown_photo_manager(timeout: float = 2.0):
     """Signals the photo DB worker to shut down cleanly."""
     global _db_thread
     try:
-        _db_queue.put(None)
         if _db_thread and _db_thread.is_alive():
+            _db_queue.put(None)
             _db_thread.join(timeout=timeout)
+        _db_thread = None
     except Exception as e:
         logger.debug("Photo manager shutdown notice: %s", e)
 
@@ -150,6 +160,7 @@ def _process_and_save_image_stream(stream: io.BytesIO) -> Dict[str, Any]:
         "dimensions": f"{width}x{height}",
         "caption": None,
     }
+    _ensure_db_worker_alive()
     _db_queue.put(record)
 
     return {
@@ -319,6 +330,7 @@ def describe_photo(photo_id: str) -> str:
             )
             caption = response.text.strip() if response.text else "Visual analysis completed with no description."
 
+            _ensure_db_worker_alive()
             _db_queue.put({"action": "UPDATE_CAPTION", "photo_id": clean_id, "caption": caption})
 
             del image_bytes

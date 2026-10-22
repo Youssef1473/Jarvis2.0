@@ -108,7 +108,7 @@ ui:
   enabled: true                   # Holographic Web HUD interface
   host: "127.0.0.1"
   port: 20129
-  auto_open: false                # Automatically launch browser on startup
+  auto_open: true                 # Automatically launch browser on startup
 
 hud:
   desktop_overlay: false          # Floating desktop transparent Tkinter overlay (disabled by default to prevent screen overlap)

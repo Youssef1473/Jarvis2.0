@@ -6,7 +6,7 @@ from starlette.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from jarvis.ui.server import JarvisUIService
+from jarvis.ui.server import JarvisUIService, get_hud_session_token
 
 
 class DummyOrchestrator:
@@ -43,6 +43,9 @@ class TestUIEnhancements(unittest.TestCase):
         service = JarvisUIService(orchestrator=DummyOrchestrator())
         app = service._create_app()
         client = TestClient(app)
+        token = get_hud_session_token()
+        client.cookies.set("jarvis_session", token)
+        client.headers["X-Jarvis-Token"] = token
 
         # 1. Test index HTML serving
         res_index = client.get("/")

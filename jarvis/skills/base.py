@@ -152,7 +152,11 @@ class SkillRegistry:
             required = []
 
             for p_name, param in sig.parameters.items():
-                if p_name in ("self", "cls"):
+                if (
+                    p_name in ("self", "cls")
+                    or p_name.startswith("_")
+                    or param.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
+                ):
                     continue
                 p_type = "string"
                 if param.annotation != inspect.Parameter.empty:

@@ -788,7 +788,9 @@ class JarvisOrchestrator:
             if self.config.get("ui", {}).get("auto_open", False):
                 try:
                     import webbrowser
-                    webbrowser.open(f"http://{self.ui_service.host}:{self.ui_service.port}")
+                    from jarvis.ui.server import create_bootstrap_token
+                    b_token = create_bootstrap_token(ttl_seconds=60.0)
+                    webbrowser.open(f"http://{self.ui_service.host}:{self.ui_service.port}/#bootstrap={b_token}")
                 except Exception:
                     pass
 

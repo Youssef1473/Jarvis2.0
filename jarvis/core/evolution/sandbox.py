@@ -244,7 +244,12 @@ class Win32JobObject:
         if self._handle:
             try:
                 import ctypes
-                ctypes.windll.kernel32.CloseHandle(self._handle)
+                from ctypes import wintypes
+                k32 = ctypes.windll.kernel32
+                k32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+                k32.TerminateJobObject.restype = wintypes.BOOL
+                k32.TerminateJobObject(self._handle, 1)
+                k32.CloseHandle(self._handle)
             except Exception:
                 pass
             self._handle = None

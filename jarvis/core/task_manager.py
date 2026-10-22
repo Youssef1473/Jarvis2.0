@@ -30,12 +30,14 @@ class BackgroundTask:
         name: str,
         process: subprocess.Popen,
         notify_voice: bool = True,
+        job_handle: Optional[Any] = None,
     ):
         self.id = task_id
         self.command = command
         self.name = name or f"Task-{task_id}"
         self.process = process
         self.notify_voice = notify_voice
+        self.job_handle = job_handle
         self.start_time = time.time()
         self.end_time: Optional[float] = None
         self.status = "running"  # "running", "completed", "failed", "cancelled"
@@ -115,7 +117,8 @@ class BackgroundTaskManager:
         try:
             creation_flags = 0
             if os.name == "nt":
-                creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
+                from jarvis.skills.job_object_sandbox import CREATE_SUSPENDED
+                creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED
 
             proc = subprocess.Popen(
                 ["powershell", "-NoProfile", "-Command", clean_cmd],
@@ -128,12 +131,53 @@ class BackgroundTaskManager:
                 creationflags=creation_flags,
             )
 
+            job_handle = None
+            if os.name == "nt":
+                try:
+                    from jarvis.skills.job_object_sandbox import (
+                        assign_process_to_job,
+                        create_process_job_object,
+                        resume_process,
+                        terminate_and_close_job,
+                    )
+                    h_job = create_process_job_object(kill_on_close=True)
+                    if not h_job:
+                        # Fail closed: kill unstarted child, drain pipes, abort launch
+                        proc.kill()
+                        proc.communicate()
+                        logger.error("Failed to create Win32 Job Object for task %s; aborting launch.", task_id)
+                        return False, "Failed to create Windows Job Object containment for background task, Sir.", None
+
+                    if not assign_process_to_job(h_job, proc):
+                        # Fail closed: kill unstarted child, terminate job, abort launch
+                        proc.kill()
+                        proc.communicate()
+                        terminate_and_close_job(h_job)
+                        logger.error("Failed to assign process to Job Object for task %s; killing unstarted child.", task_id)
+                        return False, "Failed to assign background task to Windows Job Object containment, Sir.", None
+
+                    if not resume_process(proc):
+                        # Fail closed: could not resume child
+                        proc.kill()
+                        proc.communicate()
+                        terminate_and_close_job(h_job)
+                        logger.error("Failed to resume suspended child for task %s; job terminated.", task_id)
+                        return False, "Failed to resume background task after containment, Sir.", None
+
+                    job_handle = h_job
+                except Exception as job_err:
+                    proc.kill()
+                    proc.communicate()
+                    logger.error("Unexpected error initializing Job Object for task %s: %s", task_id, job_err)
+                    return False, f"Failed to initialize Job Object containment for background task: {job_err}", None
+
             task = BackgroundTask(
                 task_id=task_id,
                 command=clean_cmd,
                 name=task_name or f"Background Task #{task_id}",
                 process=proc,
                 notify_voice=notify_voice,
+                job_handle=job_handle,
             )
 
             with self._tasks_lock:
@@ -215,6 +259,14 @@ class BackgroundTaskManager:
             logger.error("Error monitoring background task %s: %s", task.id, e)
             task.status = "failed"
             task.end_time = time.time()
+        finally:
+            if task.job_handle:
+                try:
+                    from jarvis.skills.job_object_sandbox import terminate_and_close_job
+                    terminate_and_close_job(task.job_handle)
+                except Exception:
+                    pass
+                task.job_handle = None
 
     def _notify_user_verbally(self, task: BackgroundTask):
         """Delivers a courteous spoken announcement if Sir is not focused on the terminal."""
@@ -286,6 +338,15 @@ class BackgroundTaskManager:
                 return False
 
             try:
+                # Terminate Job Object first to guarantee process-tree death on Windows
+                if task.job_handle:
+                    try:
+                        from jarvis.skills.job_object_sandbox import terminate_and_close_job
+                        terminate_and_close_job(task.job_handle)
+                    except Exception:
+                        pass
+                    task.job_handle = None
+
                 task.process.terminate()
                 try:
                     task.process.wait(timeout=1.0)
@@ -305,6 +366,13 @@ class BackgroundTaskManager:
             running = [t for t in self._tasks.values() if t.status == "running"]
 
         for t in running:
+            if t.job_handle:
+                try:
+                    from jarvis.skills.job_object_sandbox import terminate_and_close_job
+                    terminate_and_close_job(t.job_handle)
+                except Exception:
+                    pass
+                t.job_handle = None
             try:
                 t.process.terminate()
             except Exception:

@@ -30,7 +30,7 @@ from jarvis.core.security_boundaries import (
 from jarvis.core.pipeline.tool_orchestrator import ToolOrchestrator
 from jarvis.skills.base import SkillRegistry
 from jarvis.skills.self_evolution import CUSTOM_SKILLS_DIR
-from jarvis.ui.server import JarvisUIService
+from jarvis.ui.server import JarvisUIService, get_hud_session_token
 
 
 class TestUIApprovalWorkflow(unittest.TestCase):
@@ -51,7 +51,10 @@ class TestUIApprovalWorkflow(unittest.TestCase):
         time.sleep(0.2)
 
     def _http_get(self, path: str) -> dict:
-        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            headers={"X-Jarvis-Token": get_hud_session_token()}
+        )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
@@ -60,7 +63,10 @@ class TestUIApprovalWorkflow(unittest.TestCase):
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}",
             data=data,
-            headers={"Content-Type": "application/json"}
+            headers={
+                "Content-Type": "application/json",
+                "X-Jarvis-Token": get_hud_session_token(),
+            }
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
             return json.loads(resp.read().decode("utf-8"))

@@ -2497,8 +2497,7 @@ void main() {
       }
 
       const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const tokenQuery = window.__JARVIS_TOKEN__ ? `?token=${encodeURIComponent(window.__JARVIS_TOKEN__)}` : '';
-      const wsUrl = `${proto}//${window.location.host}/ws${tokenQuery}`;
+      const wsUrl = `${proto}//${window.location.host}/ws`;
 
       try {
         ws = new WebSocket(wsUrl);
@@ -4356,25 +4355,11 @@ void main() {
     }
 
     function getJarvisToken() {
-      if (window.__JARVIS_TOKEN__) {
-        try { localStorage.setItem('jarvis_session_token', window.__JARVIS_TOKEN__); } catch (e) {}
-        return window.__JARVIS_TOKEN__;
-      }
-      try {
-        const stored = localStorage.getItem('jarvis_session_token');
-        if (stored) return stored;
-      } catch (e) {}
-      const match = document.cookie.match(/(?:^|;\s*)jarvis_session=([^;]+)/);
-      return match ? decodeURIComponent(match[1]) : '';
+      return '';
     }
 
     function jarvisHeaders(extra = {}) {
-      const headers = { 'Content-Type': 'application/json', ...extra };
-      const token = getJarvisToken();
-      if (token) {
-        headers['X-Jarvis-Token'] = token;
-      }
-      return headers;
+      return { 'Content-Type': 'application/json', ...extra };
     }
 
     function transmitCommand() {
@@ -4444,19 +4429,10 @@ void main() {
       const formData = new FormData();
       formData.append('file', file);
 
-      const token = getJarvisToken();
-      const uploadHeaders = {};
-      if (token) {
-        uploadHeaders['X-Jarvis-Token'] = token;
-      }
-
       try {
-        const uploadUrl = token
-          ? `/api/documents/upload?token=${encodeURIComponent(token)}`
-          : '/api/documents/upload';
+        const uploadUrl = '/api/documents/upload';
         const res = await fetch(uploadUrl, {
           method: 'POST',
-          headers: uploadHeaders,
           credentials: 'same-origin',
           body: formData
         });

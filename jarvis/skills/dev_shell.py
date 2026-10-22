@@ -1,4 +1,5 @@
 """Developer, codebase stewardship, and shell execution tools for Windows."""
+import logging
 import os
 import sys
 import re
@@ -7,6 +8,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 from jarvis.skills.base import SkillRegistry
+
+logger = logging.getLogger("Jarvis.Skills.DevShell")
 
 WORKSPACE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -33,7 +36,8 @@ POWERSHELL_OUTPUT_TAIL_CHARS = 16000
 
 @SkillRegistry.register(
     name="execute_powershell",
-    description="Executes a PowerShell terminal command safely inside the Jarvis workspace and returns stdout and stderr."
+    description="Executes a PowerShell terminal command safely inside the Jarvis workspace and returns stdout and stderr.",
+    risk_level=2,
 )
 def execute_powershell(command: str, timeout_seconds: int = 25) -> str:
     """Executes a PowerShell command inside a Job Object so every child it spawns dies with it."""
@@ -353,8 +357,20 @@ def git_diff(max_chars: int = 12000) -> str:
     name="run_project_tests",
     description="Runs Python test suites using the high-performance parallel test runner (pytest-xdist) to verify code changes."
 )
-def run_project_tests(test_file: str = "", run_all: bool = False, timeout_seconds: int = 120) -> str:
-    """Executes tests using the high-performance two-tier test runner."""
+def run_project_tests(
+    test_file: str = "",
+    run_all: bool = False,
+    timeout_seconds: int = 120,
+    *,
+    _allow_uncontained: bool = False,
+) -> str:
+    """Executes tests using the high-performance two-tier test runner.
+
+    Process-tree containment under Windows is strictly enforced by default.
+    Model-callable tool arguments cannot bypass containment. Trusted internal callers
+    may explicitly override containment via the internal parameter `_allow_uncontained=True`,
+    or trusted local configuration via `JARVIS_ALLOW_UNCONTAINED_TESTS=1`.
+    """
     py_exec = sys.executable
     runner_script = WORKSPACE_DIR / "tools" / "run_fast_tests.py"
 
@@ -375,6 +391,49 @@ def run_project_tests(test_file: str = "", run_all: bool = False, timeout_second
             cmd = [py_exec, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
 
     try:
+        from jarvis.skills.job_object_sandbox import run_job_sandboxed_process
+        res = run_job_sandboxed_process(
+            command=cmd,
+            cwd=str(WORKSPACE_DIR),
+            max_memory_mb=POWERSHELL_JOB_MAX_MEMORY_MB,
+            max_processes=POWERSHELL_JOB_MAX_PROCESSES,
+            timeout_sec=float(timeout_seconds),
+            requested_affinity=0,
+            tail_chars=POWERSHELL_OUTPUT_TAIL_CHARS,
+        )
+        status = res.get("status")
+        if status == "timeout":
+            return f"Error: Test run timed out after {timeout_seconds} seconds, Sir."
+        if status == "cancelled":
+            return "Error: Test run cancelled by user."
+        if status in ("ok", "failed"):
+            out = (res.get("stdout_tail", "") + "\n" + res.get("stderr_tail", "")).strip()
+            run_status = "PASSED" if res.get("exit_code") == 0 else f"FAILED (Exit Code {res.get('exit_code')})"
+            return f"Test Run [{run_status}]:\n{out}"
+
+        if status == "error":
+            reason = res.get("reason", "Job Object containment failed")
+            if sys.platform == "win32":
+                uncontained_opt_in = (
+                    _allow_uncontained
+                    or os.environ.get("JARVIS_ALLOW_UNCONTAINED_TESTS") == "1"
+                    or os.environ.get("JARVIS_ALLOW_UNCONTAINED_TEST_RUNNER") == "1"
+                )
+                if not uncontained_opt_in:
+                    return (
+                        f"Error: Job Object containment failed on Windows ({reason}). "
+                        "Process-tree containment is required by default to prevent orphan processes. "
+                        "Fallback to uncontained execution is disabled. "
+                        "To override, set JARVIS_ALLOW_UNCONTAINED_TESTS=1 in trusted local environment "
+                        "or invoke via trusted internal API (_allow_uncontained=True)."
+                    )
+                logger.warning(
+                    "Executing test runner with uncontained fallback on Windows: %s", reason
+                )
+        else:
+            return f"Error executing tests: unexpected sandbox status '{status}' ({res.get('reason', '')})"
+
+        # Fallback if Job Object is unavailable (non-Windows hosts, or explicitly opted-in on Windows)
         proc = subprocess.run(
             cmd,
             cwd=str(WORKSPACE_DIR),
@@ -383,8 +442,14 @@ def run_project_tests(test_file: str = "", run_all: bool = False, timeout_second
             timeout=timeout_seconds,
         )
         out = (proc.stdout + "\n" + proc.stderr).strip()
-        status = "PASSED" if proc.returncode == 0 else f"FAILED (Exit Code {proc.returncode})"
-        return f"Test Run [{status}]:\n{out}"
+        run_status = "PASSED" if proc.returncode == 0 else f"FAILED (Exit Code {proc.returncode})"
+        warning_banner = ""
+        if sys.platform == "win32":
+            warning_banner = (
+                "[WARNING: UNCONTAINED EXECUTION — Windows Job Object process-tree containment is DISABLED. "
+                "Descendant processes will not be tracked or automatically reaped on timeout/cancel.]\n"
+            )
+        return f"{warning_banner}Test Run [{run_status}]:\n{out}"
     except subprocess.TimeoutExpired:
         return f"Error: Test run timed out after {timeout_seconds} seconds, Sir."
     except Exception as e:

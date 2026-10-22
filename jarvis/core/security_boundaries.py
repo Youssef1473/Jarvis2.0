@@ -4,6 +4,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -272,6 +273,15 @@ class DualKeyApprovalManager:
         summary: str = "",
     ) -> DualKeyAuthorization:
         """Grants an out-of-band authorization bound to the exact tool and arguments."""
+        try:
+            ttl_val = float(ttl_seconds)
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid TTL value: {ttl_seconds}. TTL must be a positive finite number.")
+
+        if not math.isfinite(ttl_val) or ttl_val <= 0:
+            raise ValueError(f"Invalid TTL value: {ttl_seconds}. TTL must be a positive finite number.")
+
+        ttl_seconds = min(max(ttl_val, 0.05), 300.0)
         clean_args = {
             k: v for k, v in (arguments or {}).items()
             if k not in ("authorization", "user_approved", "dual_key_confirmed", "confirmed", "_dual_key_token")
@@ -442,6 +452,7 @@ class TurnTaintTracker:
     CRITICAL_PRIVILEGE_TOOLS: Set[str] = {
         "create_or_update_custom_skill",
         "delete_custom_skill",
+        "execute_powershell",
     }
 
     def __init__(self) -> None:
@@ -489,10 +500,6 @@ class TurnTaintTracker:
         )
 
         if not (is_critical or is_tainted_mutation):
-            return True
-
-        # Check explicit internal confirmation bypass
-        if dual_key_confirmed:
             return True
 
         # Validate and consume authorization at the execution boundary

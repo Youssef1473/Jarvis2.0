@@ -10,6 +10,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -135,10 +136,14 @@ def _setup_win32_job_object(proc_handle: int, max_memory_mb: int = STDIO_MEMORY_
         )
         if not set_ok:
             logger.warning("Failed to configure Job Object limits (error %s)", ctypes.get_last_error())
+            kernel32.CloseHandle(h_job)
+            return None
 
         assign_ok = kernel32.AssignProcessToJobObject(h_job, int(proc_handle))
         if not assign_ok:
             logger.warning("Failed to assign MCP process to Job Object (error %s)", ctypes.get_last_error())
+            kernel32.CloseHandle(h_job)
+            return None
 
         return int(h_job)
     except Exception as e:
@@ -347,6 +352,12 @@ class MCPClientSession:
                     else:
                         proc_env[k] = str(v)
 
+            creation_flags = 0
+            is_win = sys.platform == "win32"
+            if is_win:
+                from jarvis.skills.job_object_sandbox import CREATE_SUSPENDED
+                creation_flags = subprocess.CREATE_NO_WINDOW | CREATE_SUSPENDED
+
             proc = subprocess.Popen(
                 cmd_list,
                 cwd=cwd_path,
@@ -356,20 +367,58 @@ class MCPClientSession:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                creationflags=creation_flags,
                 close_fds=True,
             )
             self._proc = proc
 
-            # Assign to Win32 Job Object (E-Cores, 512MB RAM cap)
-            self._job_handle = _setup_win32_job_object(int(proc._handle), max_memory_mb=STDIO_MEMORY_LIMIT_MB)
+            # Assign to Win32 Job Object before child process execution (E-Cores, 512MB RAM cap)
+            if is_win:
+                h_job = None
+                try:
+                    raw_handle = int(proc._handle)
+                    h_job = _setup_win32_job_object(raw_handle, max_memory_mb=STDIO_MEMORY_LIMIT_MB)
+                except Exception as setup_err:
+                    logger.error("Job Object setup error for '%s': %s", self.name, setup_err)
+                    h_job = None
+
+                if not h_job:
+                    # Fail-closed: kill unstarted child, release pipes, abort launch
+                    try:
+                        proc.kill()
+                        proc.communicate()
+                    except Exception:
+                        pass
+                    self._proc = None
+                    raise RuntimeError(f"Failed to contain MCP stdio server '{self.name}' in Windows Job Object.")
+
+                # Resume the contained suspended process
+                try:
+                    from jarvis.skills.job_object_sandbox import resume_process
+                    resumed = resume_process(proc)
+                except Exception as res_err:
+                    logger.error("Failed to resume suspended MCP process '%s': %s", self.name, res_err)
+                    resumed = False
+
+                if not resumed:
+                    try:
+                        proc.kill()
+                        proc.communicate()
+                    except Exception:
+                        pass
+                    _close_win32_job_object(h_job)
+                    self._proc = None
+                    self._job_handle = None
+                    raise RuntimeError(f"Failed to resume suspended MCP stdio server '{self.name}' after containment.")
+
+                self._job_handle = h_job
 
             # Start asynchronous daemon stderr drain thread
             def _drain_stderr():
-                while proc.poll() is None:
+                while not self._is_closed and proc.poll() is None:
                     try:
                         line = proc.stderr.readline()
-                        if not line:
+                        if not line or not isinstance(line, str):
                             break
                         self._stderr_buffer.append(line.rstrip())
                     except Exception:
@@ -380,10 +429,10 @@ class MCPClientSession:
 
             # Start asynchronous daemon stdout reader thread
             def _drain_stdout():
-                while proc.poll() is None:
+                while not self._is_closed and proc.poll() is None:
                     try:
                         line = proc.stdout.readline()
-                        if not line:
+                        if not line or not isinstance(line, str):
                             break
                         self._stdout_queue.put(line.rstrip())
                     except Exception:

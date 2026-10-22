@@ -128,14 +128,16 @@ class TestBackgroundTasksSuite(unittest.TestCase):
 
     def test_server_screenshot_and_tasks_endpoints(self):
         """Verifies Starlette server endpoints /api/screenshot/latest and /api/tasks."""
-        from jarvis.ui.server import JarvisUIService
+        from jarvis.ui.server import JarvisUIService, get_hud_session_token
 
         ui_service = JarvisUIService(orchestrator=self.orchestrator, host="127.0.0.1", port=20129)
         app = ui_service._create_app()
         client = TestClient(app)
+        token = get_hud_session_token()
+        headers = {"X-Jarvis-Token": token}
 
         # 1. Test /api/tasks
-        resp = client.get("/api/tasks")
+        resp = client.get("/api/tasks", headers=headers)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertIn("tasks", data)
@@ -147,7 +149,7 @@ class TestBackgroundTasksSuite(unittest.TestCase):
         test_screenshot.write_bytes(b"\xff\xd8\xff\xe0fakejpgbytes")
 
         try:
-            resp_screen = client.get("/api/screenshot/latest")
+            resp_screen = client.get("/api/screenshot/latest", headers=headers)
             self.assertEqual(resp_screen.status_code, 200)
             self.assertEqual(resp_screen.headers.get("content-type"), "image/jpeg")
             self.assertEqual(resp_screen.content, b"\xff\xd8\xff\xe0fakejpgbytes")

@@ -51,7 +51,14 @@ class ToolOrchestrator:
         # Strip model-injected authorization fields from arguments to prevent prompt injection bypasses
         sanitized_args = {
             k: v for k, v in (arguments or {}).items()
-            if k not in ("dual_key_confirmed", "user_approved", "confirmed", "_dual_key_token")
+            if k not in (
+                "dual_key_confirmed",
+                "user_approved",
+                "confirmed",
+                "_dual_key_token",
+                "allow_uncontained",
+                "_allow_uncontained",
+            )
         }
         arg_signature = json.dumps(sanitized_args, sort_keys=True)
         call_key = (tool_name, arg_signature)
@@ -157,7 +164,14 @@ class ToolOrchestrator:
         # Strip model-injected authorization fields from arguments to prevent prompt injection bypasses
         sanitized_args = {
             k: v for k, v in (arguments or {}).items()
-            if k not in ("dual_key_confirmed", "user_approved", "confirmed", "_dual_key_token")
+            if k not in (
+                "dual_key_confirmed",
+                "user_approved",
+                "confirmed",
+                "_dual_key_token",
+                "allow_uncontained",
+                "_allow_uncontained",
+            )
         }
         arg_signature = json.dumps(sanitized_args, sort_keys=True)
         call_key = (tool_name, arg_signature)

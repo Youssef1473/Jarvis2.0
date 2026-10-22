@@ -19,6 +19,7 @@ HARDWARE_SERIAL_TESTS = [
     "tests/test_audio_streaming_pipeline.py",
     "tests/test_audio_affinity.py",
     "tests/test_bettany_voice_and_dsp.py",
+    "tests/test_council_batch_2.py",
     "tests/test_council_batch_3.py",
     "tests/test_streaming_voice_reflex.py",
     "tests/test_voice_control_and_skills.py",
@@ -27,6 +28,10 @@ HARDWARE_SERIAL_TESTS = [
     "tests/test_wake_word.py",
     "tests/test_os_skills.py",
     "tests/test_phase3_onnx_router.py",
+    "tests/test_onnx_embeddings.py",
+    "tests/test_windows_uia.py",
+    "tests/test_win32_affinity.py",
+    "tests/test_window_hook_daemon.py",
 ]
 
 
@@ -54,7 +59,9 @@ def get_pytest_cmd() -> list[str]:
 def run_parallel_fast_suite(workers: int = 2, verbose: bool = False) -> int:
     """Runs all non-hardware test suites sharded across worker processes."""
     cmd = get_pytest_cmd() + ["-n", str(workers), "--dist", "loadfile"]
-    if not verbose:
+    if verbose:
+        cmd.append("-v")
+    else:
         cmd.append("-q")
     
     # Exclude hardware tests from parallel execution

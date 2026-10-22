@@ -91,6 +91,8 @@ class TestToolOrchestrator(unittest.TestCase):
     """Verifies orchestration loop guards, taint tracking, and tool execution."""
 
     def setUp(self):
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
+        DualKeyApprovalManager.get_instance().reset()
         self.tracker = TurnTaintTracker.get_instance()
         self.tracker.reset_turn()
 
@@ -124,21 +126,25 @@ class TestToolOrchestrator(unittest.TestCase):
         self.assertIn("Loop cycle detected", res3)
 
     def test_taint_blocks_high_privilege_without_dual_key(self):
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
         orchestrator = ToolOrchestrator(taint_tracker=self.tracker)
 
         # 1. Taint the turn via an untrusted ingestion tool
         self.tracker.mark_tainted("web_search")
 
-        # 2. Attempt high-privilege execution without dual key confirmation -> blocked
+        # 2. Attempt critical execution without authorization -> blocked
         res = orchestrator.execute_step("execute_powershell", {"command": "dir"}, step_index=2)
-        self.assertIn("Dual-Key Safety Gate", str(res))
+        self.assertIn("Critical Authorization Gate", str(res))
 
         # 3. Attempt risk_level >= 1 execution without dual key confirmation -> blocked
         res_risk = orchestrator.execute_step("_test_high_risk_tool", {}, step_index=3)
         self.assertIn("Dual-Key Safety Gate", str(res_risk))
 
-        # 4. Attempt with dual_key_confirmed=True -> permitted
-        res_confirmed = orchestrator.execute_step("_test_high_risk_tool", {}, step_index=4, dual_key_confirmed=True)
+        # 4. Attempt with genuine dual key approval grant -> permitted
+        approval_mgr = DualKeyApprovalManager.get_instance()
+        approval_mgr.reset()
+        approval_mgr.grant_approval("_test_high_risk_tool", {})
+        res_confirmed = orchestrator.execute_step("_test_high_risk_tool", {}, step_index=4)
         self.assertEqual(res_confirmed, "Danger executed")
 
     def test_tool_status_callback_events(self):

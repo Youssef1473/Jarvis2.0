@@ -1,5 +1,6 @@
 """Unit tests for Native Stateless HTTP and Job-Sandboxed Stdio MCP Client in Jarvis 2.0."""
 import json
+import subprocess
 import sys
 import time
 import unittest
@@ -149,6 +150,103 @@ class TestMCPClientStdioTransport(unittest.TestCase):
         finally:
             session.close()
 
+    def test_stdio_assignment_failure_kills_child_fail_closed(self):
+        import psutil
+        from unittest.mock import patch
+
+        spawned_pids = []
+        real_popen = subprocess.Popen
+
+        def tracked_popen(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            spawned_pids.append(proc.pid)
+            return proc
+
+        session = MCPClientSession(
+            name="fail_closed_mcp",
+            transport="stdio",
+            command=[sys.executable, "-u", "-c", "import time; time.sleep(60)"],
+        )
+
+        with patch("subprocess.Popen", side_effect=tracked_popen), \
+             patch("jarvis.core.mcp_manager._setup_win32_job_object", return_value=None):
+            with self.assertRaises(RuntimeError) as ctx:
+                session.initialize(timeout=1.0)
+            self.assertIn("Failed to contain MCP stdio server", str(ctx.exception))
+
+        self.assertIsNone(session._proc)
+        self.assertTrue(len(spawned_pids) > 0, "Process must have been spawned")
+        pid = spawned_pids[0]
+
+        # Verify child process was immediately killed and is dead
+        t_deadline = time.monotonic() + 3.0
+        while time.monotonic() < t_deadline and psutil.pid_exists(pid):
+            time.sleep(0.05)
+        self.assertFalse(psutil.pid_exists(pid), f"MCP child PID {pid} survived failed Job Object assignment!")
+
+    def test_stdio_resume_failure_kills_child_and_cleans_handle(self):
+        import psutil
+        from unittest.mock import patch
+
+        spawned_pids = []
+        real_popen = subprocess.Popen
+
+        def tracked_popen(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            spawned_pids.append(proc.pid)
+            return proc
+
+        session = MCPClientSession(
+            name="resume_fail_mcp",
+            transport="stdio",
+            command=[sys.executable, "-u", "-c", "import time; time.sleep(60)"],
+        )
+
+        with patch("subprocess.Popen", side_effect=tracked_popen), \
+             patch("jarvis.skills.job_object_sandbox.resume_process", return_value=False):
+            with self.assertRaises(RuntimeError) as ctx:
+                session.initialize(timeout=1.0)
+            self.assertIn("Failed to resume suspended MCP stdio server", str(ctx.exception))
+
+        self.assertIsNone(session._proc)
+        self.assertIsNone(session._job_handle)
+        self.assertTrue(len(spawned_pids) > 0)
+        pid = spawned_pids[0]
+
+        t_deadline = time.monotonic() + 3.0
+        while time.monotonic() < t_deadline and psutil.pid_exists(pid):
+            time.sleep(0.05)
+        self.assertFalse(psutil.pid_exists(pid), f"MCP child PID {pid} survived failed resume!")
+
+    def test_stdio_suspended_creation_flags_on_windows(self):
+        from unittest.mock import patch
+        import subprocess
+
+        called_flags = []
+        real_popen = subprocess.Popen
+
+        def tracked_popen(*args, **kwargs):
+            called_flags.append(kwargs.get("creationflags", 0))
+            return real_popen(*args, **kwargs)
+
+        session = MCPClientSession(
+            name="flags_test_mcp",
+            transport="stdio",
+            command=[sys.executable, "-u", "-c", "import sys; sys.exit(0)"],
+        )
+
+        try:
+            with patch("subprocess.Popen", side_effect=tracked_popen):
+                try:
+                    session.initialize(timeout=1.0)
+                except Exception:
+                    pass
+            self.assertTrue(len(called_flags) > 0)
+            # CREATE_SUSPENDED is 0x4
+            self.assertTrue(called_flags[0] & 0x00000004 != 0, "CREATE_SUSPENDED must be set in creationflags")
+        finally:
+            session.close()
+
 
 class TestMCPToolRegistrationAndTaint(unittest.TestCase):
     """Tests dynamic SkillRegistry integration and TurnTaintTracker tainting."""
@@ -236,7 +334,8 @@ class TestMCPManager(unittest.TestCase):
 
     @patch("subprocess.Popen")
     @patch("jarvis.core.mcp_manager._setup_win32_job_object")
-    def test_stdio_executable_resolution_and_env_merging(self, mock_job, mock_popen):
+    @patch("jarvis.skills.job_object_sandbox.resume_process", return_value=True)
+    def test_stdio_executable_resolution_and_env_merging(self, mock_resume, mock_job, mock_popen):
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
         mock_popen.return_value = mock_proc

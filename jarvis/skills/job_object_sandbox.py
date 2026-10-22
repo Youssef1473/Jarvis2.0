@@ -188,6 +188,7 @@ def _spawn_suspended(command: List[str], cwd: str, env: Optional[Dict[str, str]]
         stderr=subprocess.PIPE,
         text=True,
         errors="replace",
+        close_fds=True,
         creationflags=CREATE_SUSPENDED | CREATE_NO_WINDOW,
     )
 
@@ -201,6 +202,11 @@ def _resume_process(proc: subprocess.Popen) -> bool:
     if ntdll is None:
         return False
     return ntdll.NtResumeProcess(_process_handle(proc)) == 0
+
+
+def resume_process(proc: subprocess.Popen) -> bool:
+    """Public helper: resumes a suspended child via NtResumeProcess."""
+    return _resume_process(proc)
 
 
 # ---------------------------------------------------------------- job helpers
@@ -234,7 +240,7 @@ def _terminate_and_drain(h_job, exit_code: int = 1, drain_timeout: float = _DRAI
         if active is None or time.monotonic() >= deadline:
             logger.error("Job Object did not drain (ActiveProcesses=%s)", active)
             return False
-        time.sleep(0.001)
+        time.sleep(0.005)
 
 
 def _collect_output(proc: subprocess.Popen, timeout: float = _COLLECT_TIMEOUT_SEC) -> tuple[str, str]:
@@ -242,8 +248,81 @@ def _collect_output(proc: subprocess.Popen, timeout: float = _COLLECT_TIMEOUT_SE
     try:
         out, err = proc.communicate(timeout=timeout)
         return out or "", err or ""
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout or ""
+        err = exc.stderr or ""
+        out_s = out if isinstance(out, str) else out.decode(errors="replace")
+        err_s = err if isinstance(err, str) else err.decode(errors="replace")
+        return out_s, err_s
     except Exception:
         return "", ""
+
+
+def create_process_job_object(
+    max_memory_mb: Optional[int] = None,
+    max_processes: Optional[int] = None,
+    kill_on_close: bool = True,
+    requested_affinity: int = 0,
+) -> Optional[int]:
+    """Creates a Win32 Job Object configured with process/memory limits and KILL_ON_JOB_CLOSE."""
+    if kernel32 is None:
+        return None
+    h_job = kernel32.CreateJobObjectW(None, None)
+    if not h_job:
+        return None
+
+    ext_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    limit_flags = JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION
+    if kill_on_close:
+        limit_flags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if max_processes:
+        limit_flags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+        ext_info.BasicLimitInformation.ActiveProcessLimit = max_processes
+    if max_memory_mb:
+        limit_flags |= JOB_OBJECT_LIMIT_JOB_MEMORY
+        ext_info.JobMemoryLimit = max_memory_mb * 1024 * 1024
+
+    safe_affinity = _resolve_safe_affinity_mask(requested_affinity) if requested_affinity else None
+    if safe_affinity:
+        limit_flags |= JOB_OBJECT_LIMIT_AFFINITY
+        ext_info.BasicLimitInformation.Affinity = safe_affinity
+
+    ext_info.BasicLimitInformation.LimitFlags = limit_flags
+    if not kernel32.SetInformationJobObject(
+        h_job,
+        JobObjectExtendedLimitInformation,
+        ctypes.byref(ext_info),
+        ctypes.sizeof(ext_info),
+    ):
+        kernel32.CloseHandle(h_job)
+        return None
+    return int(h_job)
+
+
+def assign_process_to_job(h_job: Any, proc: subprocess.Popen) -> bool:
+    """Assigns a subprocess to the given Job Object handle."""
+    if kernel32 is None or not h_job:
+        return False
+    try:
+        raw_handle = _process_handle(proc)
+        return bool(kernel32.AssignProcessToJobObject(wintypes.HANDLE(int(h_job)), wintypes.HANDLE(raw_handle)))
+    except Exception as e:
+        logger.debug("Failed to assign process to Job Object: %s", e)
+        return False
+
+
+def terminate_and_close_job(h_job: Any, exit_code: int = 1) -> bool:
+    """Terminates all processes in the Job Object and closes the handle."""
+    if kernel32 is None or not h_job:
+        return False
+    try:
+        kernel32.TerminateJobObject(wintypes.HANDLE(int(h_job)), exit_code)
+    except Exception:
+        pass
+    try:
+        return bool(kernel32.CloseHandle(wintypes.HANDLE(int(h_job))))
+    except Exception:
+        return False
 
 
 def _kill_unstarted(proc: subprocess.Popen) -> None:
@@ -374,6 +453,10 @@ def run_job_sandboxed_process(
                 stdout, stderr = proc.communicate(timeout=min(_CANCEL_POLL_SEC, remaining))
                 break
             except subprocess.TimeoutExpired:
+                if proc.poll() is not None:
+                    # Root process exited; any surviving pipe-holders are orphan descendants
+                    outcome = "completed"
+                    break
                 continue
 
         # Cessation: never report success until the kernel says the job is empty.
@@ -387,14 +470,16 @@ def run_job_sandboxed_process(
                 pass
             stdout, stderr = _collect_output(proc)
         else:
+            active = _active_process_count(h_job)
+            if active is not None and active > 0:
+                orphans = active
+                drained = _terminate_and_drain(h_job)
             try:
                 proc.wait(timeout=1.0)
             except Exception:
                 pass
-            active = _active_process_count(h_job)
-            if active is None or active > 0:
-                orphans = active or 0
-                drained = _terminate_and_drain(h_job)
+            if not stdout and not stderr:
+                stdout, stderr = _collect_output(proc)
 
         out_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         kernel32.QueryInformationJobObject(
@@ -429,10 +514,18 @@ def run_job_sandboxed_process(
         }
     finally:
         # Last-resort guard for unexpected exceptions; KILL_ON_JOB_CLOSE reaps the rest.
+        if h_job:
+            try:
+                kernel32.TerminateJobObject(h_job, 1)
+            except Exception:
+                pass
+            try:
+                kernel32.CloseHandle(h_job)
+            except Exception:
+                pass
         if proc is not None and proc.poll() is None:
             try:
                 proc.kill()
                 proc.wait(timeout=0.5)
             except Exception:
                 pass
-        kernel32.CloseHandle(h_job)

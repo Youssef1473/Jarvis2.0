@@ -7,7 +7,7 @@ import threading
 import time
 from typing import Any, Dict, Optional, Set
 from starlette.applications import Starlette
-from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse, Response, FileResponse
+from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse, Response, FileResponse, RedirectResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 import anyio
@@ -17,7 +17,7 @@ import psutil
 import os
 import re
 import secrets
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, unquote, unquote_to_bytes
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -27,6 +27,34 @@ logger = logging.getLogger("Jarvis.UI")
 
 # Ephemeral cryptographic session token generated per server run
 _HUD_SESSION_TOKEN: str = secrets.token_urlsafe(32)
+
+# Single-use, short-lived bootstrap token registry for zero-trust browser onboarding
+_BOOTSTRAP_TOKENS: dict[str, float] = {}
+_BOOTSTRAP_LOCK = threading.Lock()
+
+
+def create_bootstrap_token(ttl_seconds: float = 60.0) -> str:
+    """Creates a short-lived, single-use bootstrap token to exchange for a session cookie."""
+    token = secrets.token_urlsafe(32)
+    now = time.time()
+    with _BOOTSTRAP_LOCK:
+        expired = [t for t, exp in _BOOTSTRAP_TOKENS.items() if exp < now]
+        for t in expired:
+            del _BOOTSTRAP_TOKENS[t]
+        _BOOTSTRAP_TOKENS[token] = now + max(1.0, float(ttl_seconds))
+    return token
+
+
+def consume_bootstrap_token(token: str) -> bool:
+    """Validates and immediately consumes a single-use bootstrap token."""
+    if not token or not isinstance(token, str):
+        return False
+    now = time.time()
+    with _BOOTSTRAP_LOCK:
+        expires_at = _BOOTSTRAP_TOKENS.pop(token.strip(), None)
+        if expires_at is not None and expires_at >= now:
+            return True
+    return False
 
 
 def get_hud_session_token() -> str:
@@ -84,6 +112,324 @@ def resolve_safe_photo_path(photo_id: str, photos_dir: Optional[Path] = None) ->
     return target_path
 
 
+SENSITIVE_QUERY_PARAM_NAMES: frozenset[str] = frozenset({
+    "bootstrap",
+    "token",
+    "key",
+    "secret",
+    "auth",
+    "access_token",
+    "api_key",
+    "session",
+    "session_token",
+    "password",
+    "passwd",
+})
+
+
+MAX_QUERY_STRING_BYTES: int = 10 * 1024 * 1024  # 10 MB limit
+OVERSIZED_QUERY_PLACEHOLDER_BYTES: bytes = b"[OVERSIZED_QUERY_REDACTED]"
+OVERSIZED_QUERY_PLACEHOLDER_TEXT: str = "[OVERSIZED_QUERY_REDACTED]"
+
+
+def redact_query_string_bytes(qs: bytes) -> bytes:
+    """Parses raw query string bytes, unquotes parameter names, and redacts sensitive values.
+
+    Decodes percent-encoded names (e.g. '%74oken', '%62ootstrap', 't%6fken') and redacts matched values
+    while preserving authentic parameter casing, delimiters (&, ;), and non-sensitive query keys.
+    Processes queries up to 10MB fully so sensitive parameters near both the beginning
+    and end are guaranteed to be redacted before access logging.
+    Inputs exceeding 10MB fail safe to fixed placeholder [OVERSIZED_QUERY_REDACTED] to prevent
+    unredacted credential leaks or partial redaction bypasses.
+    """
+    if not qs:
+        return qs
+    if len(qs) > MAX_QUERY_STRING_BYTES:
+        return OVERSIZED_QUERY_PLACEHOLDER_BYTES
+    parts = re.split(rb"([&;]+)", qs)
+    out_parts: list[bytes] = []
+    for part in parts:
+        if not part or part.startswith(b"&") or part.startswith(b";"):
+            out_parts.append(part)
+            continue
+        eq_pos = part.find(b"=")
+        if eq_pos == -1:
+            out_parts.append(part)
+            continue
+        raw_key = part[:eq_pos]
+        try:
+            decoded_key = unquote_to_bytes(raw_key).decode("utf-8", errors="replace").lower().strip()
+        except Exception:
+            decoded_key = raw_key.decode("latin1", errors="replace").lower().strip()
+
+        if decoded_key in SENSITIVE_QUERY_PARAM_NAMES:
+            out_parts.append(raw_key + b"=[REDACTED]")
+        else:
+            out_parts.append(part)
+    return b"".join(out_parts)
+
+
+def redact_query_string_text(text: str) -> str:
+    """Bounded, decoded-parameter redaction for log records and formatted URLs.
+
+    Matches key=value pairs, unquotes parameter names (including percent-encoded variants),
+    and replaces sensitive values with '[REDACTED]'. Fully processes log lines up to 10MB
+    so credentials near the beginning and end are scrubbed. Inputs exceeding 10MB fail safe
+    to fixed placeholder [OVERSIZED_QUERY_REDACTED].
+    """
+    if not text:
+        return text
+    if len(text) > MAX_QUERY_STRING_BYTES:
+        return OVERSIZED_QUERY_PLACEHOLDER_TEXT
+
+    def _repl(m: re.Match) -> str:
+        k = m.group(1)
+        try:
+            decoded_k = unquote(k).lower().strip()
+        except Exception:
+            decoded_k = k.lower().strip()
+        if decoded_k in SENSITIVE_QUERY_PARAM_NAMES:
+            return f"{k}=[REDACTED]"
+        return m.group(0)
+
+    # Match key=val where key is preceded by start, &, ;, ?, quote, space, or brackets
+    return re.sub(r"(?:^|(?<=[\s\?&;\x22\x27<({\[]))([^&=;?\s\x22\x27\\]+)=([^&;\s\x22\x27\\]*)", _repl, text)
+
+
+class SensitiveQueryRedactionFilter(logging.Filter):
+    """Logging filter that redacts sensitive credentials from access log lines."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = redact_query_string_text(record.msg)
+        if record.args:
+            if isinstance(record.args, tuple):
+                record.args = tuple(
+                    redact_query_string_text(a) if isinstance(a, str) else a
+                    for a in record.args
+                )
+            elif isinstance(record.args, dict):
+                record.args = {
+                    k: (redact_query_string_text(v) if isinstance(v, str) else v)
+                    for k, v in record.args.items()
+                }
+        return True
+
+
+def attach_access_log_redaction_filters() -> None:
+    """Attaches SensitiveQueryRedactionFilter to all Uvicorn and UI loggers."""
+    redaction_filter = SensitiveQueryRedactionFilter()
+    for name in ("uvicorn.access", "uvicorn.error", "uvicorn", "Jarvis.UI"):
+        l = logging.getLogger(name)
+        l.addFilter(redaction_filter)
+        for h in l.handlers:
+            h.addFilter(redaction_filter)
+
+
+class AccessLogRedactionMiddleware:
+    """ASGI middleware that scrubs sensitive query parameters in-place from ASGI scope.
+
+    Ensures that when Uvicorn formats HTTP access logs via get_path_with_query_string(self.scope)
+    during http.response.start (or websocket.accept), credentials are already replaced with '[REDACTED]'.
+    Legitimate downstream application handlers read original unredacted query parameters before response start.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        redacted = False
+
+        def _redact_query_string() -> None:
+            nonlocal redacted
+            if not redacted:
+                qs = scope.get("query_string", b"")
+                if qs:
+                    scope["query_string"] = redact_query_string_bytes(qs)
+                redacted = True
+
+        async def send_wrapper(message: Any) -> None:
+            if message.get("type") in ("http.response.start", "websocket.accept", "websocket.close"):
+                _redact_query_string()
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            _redact_query_string()
+
+
+
+def is_browser_facing_https(request: Any, service: Any = None) -> bool:
+    """Determines whether the browser-facing connection is HTTPS.
+
+    Guarantees Secure=True whenever the browser-facing connection is HTTPS:
+    1. Direct connection is HTTPS (request.url.scheme == "https").
+    2. Request arrives from an explicitly configured trusted reverse proxy (JARVIS_TRUSTED_PROXIES)
+       with verified X-Forwarded-Proto: https or Forwarded: proto=https headers.
+    3. Secure tunnel mode (JARVIS_SECURE_TUNNEL=1) is active and tunnel telemetry indicates HTTPS.
+
+    Strictly preserves local HTTP loopback (Secure=False) when no trusted HTTPS proxy is configured,
+    and ignores forwarded scheme headers from unconfigured or untrusted clients.
+    """
+    # 1. Direct TLS connection
+    if getattr(getattr(request, "url", None), "scheme", "").lower() == "https":
+        return True
+
+    # 2. Extract client peer address
+    client_host = ""
+    if getattr(request, "client", None) and getattr(request.client, "host", None):
+        client_host = str(request.client.host).strip().lower()
+
+    # 3. Determine trusted proxy sources
+    trusted_proxies: set[str] = set()
+    raw_trusted = os.environ.get("JARVIS_TRUSTED_PROXIES", "").strip()
+    if raw_trusted:
+        for p in raw_trusted.split(","):
+            p_clean = p.strip().lower()
+            if p_clean:
+                trusted_proxies.add(p_clean)
+
+    has_tunnel = os.environ.get("JARVIS_SECURE_TUNNEL") == "1"
+    if has_tunnel:
+        # Secure tunnel daemons (cloudflared, ngrok, local tunnel) connect via loopback
+        trusted_proxies.update({"127.0.0.1", "::1", "localhost", "testserver", "testclient"})
+
+    # 4. If client is a trusted proxy, inspect forwarded scheme headers
+    if client_host and client_host in trusted_proxies:
+        xf_proto = request.headers.get("x-forwarded-proto", "").strip().lower()
+        if xf_proto == "https" or xf_proto.startswith("https,"):
+            return True
+
+        fwd = request.headers.get("forwarded", "").strip().lower()
+        if "proto=https" in fwd:
+            return True
+
+    # 5. Secure tunnel heuristics if client is loopback/trusted and tunnel host/port configured
+    if has_tunnel and (not client_host or client_host in trusted_proxies or client_host in ("127.0.0.1", "::1", "testserver", "testclient")):
+        tunnel_port = os.environ.get("JARVIS_TUNNEL_PORT", "").strip()
+        if tunnel_port == "443":
+            return True
+        origin = request.headers.get("origin", "").strip().lower()
+        if origin.startswith("https://"):
+            return True
+        tunnel_host = os.environ.get("JARVIS_TUNNEL_HOST", "").strip().lower()
+        if tunnel_host:
+            host_hdr = request.headers.get("host", "").strip().lower()
+            if tunnel_host in host_hdr:
+                return True
+
+    return False
+
+
+def validate_request_host_and_origin(
+    headers: Any,
+    service: Any,
+    request_scheme: str = "http",
+) -> tuple[bool, str, int]:
+    """Validates Host and Origin headers with exact scheme, hostname, and port verification.
+
+    Protects against DNS rebinding, cross-origin WebSocket hijacking, and CSRF attacks.
+    Supports IPv4, IPv6 ([::1]), testserver, and configured secure tunnels.
+    """
+    raw_host = headers.get("host", "").strip()
+    if not raw_host:
+        return False, "Forbidden: Invalid Host header", 403
+
+    try:
+        parsed_host = urlsplit(f"//{raw_host}")
+    except ValueError:
+        return False, "Forbidden: Malformed Host header", 403
+
+    host_name = parsed_host.hostname
+    if not host_name:
+        return False, "Forbidden: Invalid Host header", 403
+
+    host_name = host_name.lower()
+
+    # Allowed hostnames
+    allowed_hostnames = {"127.0.0.1", "localhost", "::1", "testserver"}
+    service_host = getattr(service, "host", None)
+    if service_host:
+        allowed_hostnames.add(str(service_host).lower())
+
+    has_tunnel = os.environ.get("JARVIS_SECURE_TUNNEL") == "1"
+    if has_tunnel:
+        for env_var in ("JARVIS_ALLOWED_HOSTS", "JARVIS_TUNNEL_HOST"):
+            val = os.environ.get(env_var, "").strip()
+            if val:
+                for h in val.split(","):
+                    h_clean = h.strip().lower()
+                    if h_clean:
+                        allowed_hostnames.add(h_clean)
+
+    if host_name not in allowed_hostnames:
+        return False, f"Forbidden: Invalid Host header: '{host_name}' not allowed", 403
+
+    # Allowed ports
+    service_port = getattr(service, "port", 20129)
+    try:
+        service_port = int(service_port)
+    except (TypeError, ValueError):
+        service_port = 20129
+    allowed_ports = {service_port}
+
+    if has_tunnel:
+        allowed_ports.update({80, 443})
+        tunnel_port = os.environ.get("JARVIS_TUNNEL_PORT", "").strip()
+        if tunnel_port.isdigit():
+            allowed_ports.add(int(tunnel_port))
+
+    # Host port verification (testserver is exempt)
+    if host_name != "testserver" and parsed_host.port is not None:
+        if parsed_host.port not in allowed_ports:
+            return False, f"Forbidden: Host port {parsed_host.port} not allowed", 403
+
+    # Origin header verification if present
+    origin = headers.get("origin")
+    if origin is not None:
+        origin_str = origin.strip()
+        if not origin_str or origin_str.lower() == "null":
+            return False, "Forbidden: Invalid origin header", 403
+
+        try:
+            parsed_origin = urlsplit(origin_str)
+        except ValueError:
+            return False, "Forbidden: Malformed origin header", 403
+
+        if not parsed_origin.scheme or not parsed_origin.netloc or not parsed_origin.hostname:
+            return False, "Forbidden: Malformed origin header", 403
+
+        origin_scheme = parsed_origin.scheme.lower()
+        allowed_schemes = {"http"}
+        if request_scheme in ("https", "wss") or has_tunnel:
+            allowed_schemes.add("https")
+        if request_scheme in ("https", "wss"):
+            allowed_schemes.discard("http")
+
+        if origin_scheme not in allowed_schemes:
+            return False, f"Forbidden: Origin scheme '{origin_scheme}' not allowed", 403
+
+        origin_host = parsed_origin.hostname.lower()
+        if origin_host not in allowed_hostnames:
+            return False, f"Forbidden: Origin host '{origin_host}' not allowed", 403
+
+        if origin_host != "testserver":
+            origin_port = parsed_origin.port
+            if origin_port is None:
+                implicit_port = 443 if origin_scheme == "https" else 80
+                if implicit_port not in allowed_ports:
+                    return False, f"Forbidden: Origin port {implicit_port} not allowed", 403
+            elif origin_port not in allowed_ports:
+                return False, f"Forbidden: Origin port {origin_port} not allowed", 403
+
+    return True, "", 200
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Enforces zero-trust loopback token authentication, strict origin verification, and CSP headers."""
 
@@ -91,43 +437,60 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.service = service
 
-    async def dispatch(self, request, call_next):
-        # 1. Validate Origin header if present
-        origin = request.headers.get("origin")
-        if origin:
-            parsed = urlparse(origin)
-            if parsed.hostname not in ("127.0.0.1", "localhost", "testserver"):
-                return JSONResponse({"error": "Forbidden: Invalid origin header"}, status_code=403)
+    SENSITIVE_GET_PREFIXES = (
+        "/api/screenshot",
+        "/api/memory",
+        "/api/approval",
+        "/api/tasks",
+        "/api/notes",
+        "/api/calendar",
+        "/api/documents",
+        "/api/photos",
+        "/api/timers",
+    )
 
-        # 2. Check token authentication on state-mutating API routes
-        if request.method in ("POST", "PUT", "DELETE", "PATCH") and request.url.path.startswith("/api/"):
+    async def dispatch(self, request, call_next):
+        # 1. Validate Host and Origin headers with exact scheme, host, and port matching
+        is_valid, err_msg, status_code = validate_request_host_and_origin(
+            headers=request.headers,
+            service=self.service,
+            request_scheme=request.url.scheme,
+        )
+        if not is_valid:
+            return JSONResponse({"error": err_msg}, status_code=status_code)
+
+        # 2. Check token authentication on state-mutating and sensitive read routes
+        path = request.url.path
+        is_mutating = request.method in ("POST", "PUT", "DELETE", "PATCH") and path.startswith("/api/")
+        is_sensitive_get = request.method == "GET" and any(path.startswith(p) for p in self.SENSITIVE_GET_PREFIXES)
+
+        # Allow unauthenticated access to the authentication exchange endpoint
+        if path == "/api/auth/unlock":
+            response = await call_next(request)
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            return response
+
+        enforce_auth = (
+            getattr(self.service, "enforce_auth", True)
+            and (
+                getattr(getattr(request, "app", None), "state", None) is None
+                or getattr(request.app.state, "enforce_auth", True)
+            )
+        )
+
+        if (is_mutating or is_sensitive_get) and enforce_auth:
             token = (
                 request.headers.get("x-jarvis-token")
-                or request.query_params.get("token")
                 or request.cookies.get("jarvis_session")
             )
             is_authenticated = bool(token and secrets.compare_digest(token, _HUD_SESSION_TOKEN))
 
-            enforce_auth = (
-                getattr(self.service, "enforce_auth", False)
-                or getattr(getattr(request, "app", None), "state", None) is not None
-                and getattr(request.app.state, "enforce_auth", False)
-                or os.environ.get("JARVIS_ENFORCE_AUTH") == "1"
-                or request.headers.get("x-enforce-auth") == "1"
-            )
-
-            is_test_runner = (
-                request.headers.get("host") == "testserver"
-                or getattr(getattr(request, "client", None), "host", "") in ("testclient", "testserver")
-                or request.headers.get("user-agent", "").startswith("Python-urllib")
-            )
-
             if not is_authenticated:
-                if enforce_auth or not is_test_runner:
-                    return JSONResponse(
-                        {"error": "Unauthorized: Invalid or missing X-Jarvis-Token session credentials"},
-                        status_code=401,
-                    )
+                return JSONResponse(
+                    {"error": "Unauthorized: Invalid or missing X-Jarvis-Token session credentials"},
+                    status_code=401,
+                )
 
         response = await call_next(request)
 
@@ -509,11 +872,12 @@ class JarvisUIService:
 
     _instance: Optional["JarvisUIService"] = None
 
-    def __init__(self, orchestrator: Any = None, host: str = "127.0.0.1", port: int = 20129, enforce_auth: bool = False):
+    def __init__(self, orchestrator: Any = None, host: str = "127.0.0.1", port: int = 20129, enforce_auth: bool = True, access_log: bool = False):
         self.orchestrator = orchestrator
         self.host = host
         self.port = port
         self.enforce_auth = enforce_auth
+        self.access_log = access_log
         self.telemetry_manager = TelemetryConnectionManager(max_clients=8)
         self._server: Optional[uvicorn.Server] = None
         self._thread: Optional[threading.Thread] = None
@@ -543,6 +907,7 @@ class JarvisUIService:
     def _create_app(self) -> Starlette:
         routes = [
             Route("/", endpoint=self._handle_index, methods=["GET"]),
+            Route("/api/auth/unlock", endpoint=self._handle_unlock, methods=["POST"]),
             Route("/api/status", endpoint=self._handle_status, methods=["GET"]),
             Route("/api/command", endpoint=self._handle_command, methods=["POST"]),
             Route("/api/action", endpoint=self._handle_action, methods=["POST"]),
@@ -569,9 +934,13 @@ class JarvisUIService:
             WebSocketRoute("/ws", endpoint=self._handle_websocket),
             WebSocketRoute("/api/telemetry", endpoint=self._handle_websocket),
         ]
+        middleware = [
+            Middleware(AccessLogRedactionMiddleware),
+            Middleware(SecurityHeadersMiddleware, service=self),
+        ]
         app = Starlette(
             routes=routes,
-            middleware=[Middleware(SecurityHeadersMiddleware, service=self)],
+            middleware=middleware,
         )
         app.state.enforce_auth = self.enforce_auth
         app.state.session_token = _HUD_SESSION_TOKEN
@@ -904,7 +1273,10 @@ class JarvisUIService:
 
         from jarvis.core.security_boundaries import DualKeyApprovalManager
         mgr = DualKeyApprovalManager.get_instance()
-        auth = mgr.grant_approval(tool_name, args, ttl_seconds=ttl, summary=summary)
+        try:
+            auth = mgr.grant_approval(tool_name, args, ttl_seconds=ttl, summary=summary)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=400)
         return JSONResponse({
             "status": "granted",
             "tool_name": auth.tool_name,
@@ -913,15 +1285,133 @@ class JarvisUIService:
             "summary": auth.summary,
         })
 
+    def _get_unlock_html(self) -> str:
+        """Minimal unauthenticated interface lock page with zero token disclosure."""
+        return """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>JARVIS 2.0 &mdash; Interface Locked</title>
+  <style>
+    body { background: #070b12; color: #00d2ff; font-family: 'Segoe UI', system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    .card { background: rgba(13, 22, 38, 0.95); border: 1px solid rgba(0, 210, 255, 0.3); border-radius: 8px; padding: 32px; width: 380px; text-align: center; box-shadow: 0 0 30px rgba(0, 210, 255, 0.15); }
+    h2 { margin: 0 0 8px; letter-spacing: 2px; font-weight: 600; text-shadow: 0 0 10px #00d2ff; }
+    p { color: #8ba2b9; font-size: 13px; margin: 0 0 24px; }
+    input { width: 100%; box-sizing: border-box; background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(0, 210, 255, 0.4); color: #fff; padding: 10px 12px; border-radius: 4px; font-size: 14px; margin-bottom: 16px; outline: none; }
+    input:focus { border-color: #00d2ff; box-shadow: 0 0 8px rgba(0, 210, 255, 0.4); }
+    button { width: 100%; background: #00d2ff; color: #070b12; border: none; padding: 10px; border-radius: 4px; font-weight: 700; cursor: pointer; font-size: 14px; letter-spacing: 1px; transition: background 0.2s; }
+    button:hover { background: #5ce1e6; }
+    .error { color: #ff5252; font-size: 12px; margin-top: 12px; display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>J.A.R.V.I.S.</h2>
+    <p>Sovereign Interface Locked. Provide session credentials or unlock token to authenticate.</p>
+    <form id="unlockForm" onsubmit="unlock(event)">
+      <input type="password" id="tokenInput" placeholder="Session or Bootstrap Token" autocomplete="off" required autofocus>
+      <button type="submit">AUTHENTICATE</button>
+      <div id="errMsg" class="error">Invalid credentials</div>
+    </form>
+  </div>
+  <script>
+    window.addEventListener('DOMContentLoaded', async () => {
+      let token = '';
+      if (window.location.hash.startsWith('#bootstrap=')) {
+        token = window.location.hash.substring('#bootstrap='.length).trim();
+      } else if (window.location.hash.startsWith('#token=')) {
+        token = window.location.hash.substring('#token='.length).trim();
+      }
+      if (token) {
+        if (window.history.replaceState) {
+          window.history.replaceState(null, '', window.location.pathname);
+        }
+        try {
+          const res = await fetch('/api/auth/unlock', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({token})
+          });
+          if (res.ok) {
+            window.location.replace('/');
+            return;
+          }
+        } catch (ex) {}
+        document.getElementById('errMsg').style.display = 'block';
+      }
+    });
+
+    async function unlock(e) {
+      e.preventDefault();
+      const token = document.getElementById('tokenInput').value.trim();
+      const err = document.getElementById('errMsg');
+      err.style.display = 'none';
+      try {
+        const res = await fetch('/api/auth/unlock', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({token})
+        });
+        if (res.ok) {
+          window.location.reload();
+        } else {
+          err.style.display = 'block';
+        }
+      } catch (ex) {
+        err.style.display = 'block';
+      }
+    }
+  </script>
+</body>
+</html>"""
+
+    async def _handle_unlock(self, request):
+        """Exchanges a single-use bootstrap token or session token for a session cookie."""
+        try:
+            body = await request.json()
+            token = str(body.get("token", "")).strip()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+        if not token:
+            return JSONResponse({"error": "Token required"}, status_code=400)
+
+        is_valid = secrets.compare_digest(token, _HUD_SESSION_TOKEN) or consume_bootstrap_token(token)
+        if is_valid:
+            resp = JSONResponse({"status": "authenticated"})
+            is_secure = is_browser_facing_https(request, self)
+            resp.set_cookie(key="jarvis_session", value=_HUD_SESSION_TOKEN, httponly=True, samesite="strict", secure=is_secure, path="/")
+            return resp
+        return JSONResponse({"error": "Unauthorized: Invalid token"}, status_code=401)
+
     async def _handle_index(self, request):
         if not self.template_path.exists():
             return HTMLResponse("<h3>HUD template not found.</h3>", status_code=404)
+
+        cookie_token = request.cookies.get("jarvis_session")
+        header_token = request.headers.get("x-jarvis-token")
+
+        # Zero-trust: only valid session cookies or explicit header credentials authenticate
+        # Query-string bootstrap tokens are NEVER accepted or consumed here
+        is_auth = (
+            bool(cookie_token and secrets.compare_digest(cookie_token, _HUD_SESSION_TOKEN))
+            or bool(header_token and secrets.compare_digest(header_token, _HUD_SESSION_TOKEN))
+        )
+
+        if not is_auth and self.enforce_auth:
+            return HTMLResponse(self._get_unlock_html(), status_code=200)
+
         html_content = self.template_path.read_text(encoding="utf-8")
-        token_script = f"<script>window.__JARVIS_TOKEN__ = '{_HUD_SESSION_TOKEN}';</script>"
-        if "<head>" in html_content:
-            html_content = html_content.replace("<head>", f"<head>\n  {token_script}", 1)
         response = HTMLResponse(html_content)
-        response.set_cookie(key="jarvis_session", value=_HUD_SESSION_TOKEN, httponly=False, samesite="strict", path="/")
+        is_secure = is_browser_facing_https(request, self)
+        response.set_cookie(
+            key="jarvis_session",
+            value=_HUD_SESSION_TOKEN,
+            httponly=True,
+            samesite="strict",
+            secure=is_secure,
+            path="/",
+        )
         return response
 
     async def _handle_status(self, request):
@@ -1277,32 +1767,26 @@ class JarvisUIService:
             return JSONResponse({"error": str(e)}, status_code=500)
 
     async def _handle_websocket(self, websocket: WebSocket):
-        # 1. Validate Origin header if present
-        origin = websocket.headers.get("origin")
-        if origin:
-            parsed = urlparse(origin)
-            if parsed.hostname not in ("127.0.0.1", "localhost", "testserver"):
-                await websocket.close(code=1008, reason="Forbidden origin")
-                return
+        # 1. Validate Host and Origin headers with exact scheme, host, and port matching
+        req_scheme = "https" if websocket.url.scheme in ("https", "wss") else "http"
+        is_valid, err_msg, _ = validate_request_host_and_origin(
+            headers=websocket.headers,
+            service=self,
+            request_scheme=req_scheme,
+        )
+        if not is_valid:
+            await websocket.close(code=1008, reason=err_msg)
+            return
 
-        # 2. Check token authentication if enforced
+        # 2. Check token authentication (cookie or x-jarvis-token header)
         token = (
             websocket.headers.get("x-jarvis-token")
-            or websocket.query_params.get("token")
             or websocket.cookies.get("jarvis_session")
         )
         is_authenticated = bool(token and secrets.compare_digest(token, _HUD_SESSION_TOKEN))
-        enforce_auth = (
-            getattr(self, "enforce_auth", False)
-            or getattr(getattr(websocket, "app", None), "state", None) is not None
-            and getattr(websocket.app.state, "enforce_auth", False)
-            or os.environ.get("JARVIS_ENFORCE_AUTH") == "1"
-        )
-        is_test_runner = (
-            websocket.headers.get("host") == "testserver"
-            or getattr(getattr(websocket, "client", None), "host", "") in ("testclient", "testserver")
-        )
-        if not is_authenticated and enforce_auth and not is_test_runner:
+        enforce_auth = getattr(self, "enforce_auth", True)
+
+        if not is_authenticated and enforce_auth:
             await websocket.close(code=1008, reason="Unauthorized: Missing or invalid token")
             return
 
@@ -1413,6 +1897,15 @@ class JarvisUIService:
 
     def start(self):
         """Starts the Uvicorn server in a background daemon thread with continuous live telemetry streaming."""
+        if self.host not in ("127.0.0.1", "localhost", "::1"):
+            allow_remote = os.environ.get("JARVIS_ALLOW_REMOTE") == "1"
+            has_tunnel = os.environ.get("JARVIS_SECURE_TUNNEL") == "1"
+            if not (allow_remote and has_tunnel):
+                raise RuntimeError(
+                    f"Refusing to bind Jarvis UI to non-loopback interface '{self.host}' "
+                    "without an encrypted transport or secured tunnel (set JARVIS_ALLOW_REMOTE=1 and JARVIS_SECURE_TUNNEL=1)."
+                )
+
         if self._thread and self._thread.is_alive():
             return
 
@@ -1451,11 +1944,13 @@ class JarvisUIService:
         def _run_server():
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
+            attach_access_log_redaction_filters()
             config = uvicorn.Config(
                 app=self._create_app(),
                 host=self.host,
                 port=self.port,
-                log_level="warning",
+                access_log=bool(getattr(self, "access_log", False) or os.environ.get("JARVIS_UI_ACCESS_LOG") == "1"),
+                log_level="info" if (getattr(self, "access_log", False) or os.environ.get("JARVIS_UI_ACCESS_LOG") == "1") else "warning",
                 loop="asyncio",
             )
             self._server = uvicorn.Server(config)

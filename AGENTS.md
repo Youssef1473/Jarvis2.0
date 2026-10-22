@@ -31,9 +31,10 @@ Follow this cycle for every modification:
    - Run targeted test suites using `python tools/run_fast_tests.py <test_path>`.
    - Escalate to `python tools/run_fast_tests.py --fast` when changes affect shared modules.
 4. **Empirical Verification & Reporting:**
-   - Report exact commands executed, exit codes, and observable test results.
-   - Never claim code or tests were verified unless confirmed by tool output.
-   - When uncertainty remains or tests were skipped (e.g. hardware-dependent suites), state this plainly.
+   - Report exact commands executed, exit codes, and observable test results (including skip counts and warning origins).
+   - Never claim code or tests were verified unless confirmed by tool output. Avoid hyperbolic or absolute claims (e.g. "zero exposure", "100% green"). State precise mechanism boundaries and environmental caveats.
+   - In handoffs and audit summaries, provide an exact inventory of all uncommitted files from `git status --short` and `git diff --stat` without truncation or `etc.`.
+   - When completing security phases, establish an empirical security-diff review baseline of all uncommitted files with the developer before proposing feature roadmap advancement.
 
 ---
 
@@ -64,6 +65,9 @@ Always import from and modify canonical modules rather than legacy re-export shi
   - Never execute blocking network I/O, heavy disk queries, or LLM inference on audio synthesis (`KokoroSynthWorker`) or playback (`WASAPIPlaybackWorker`) threads.
   - Keep speech streaming on non-blocking queues (`queue.Queue`) and shared memory (`ShmAudioRingTransport`).
   - Honor atomic barge-in epoch invalidations via `GLOBAL_EPOCH_STATE`.
+- **Configuration Loading Invariant:**
+  - `config/config.yaml` is the canonical, exclusive configuration file loaded by `jarvis.core.config_loader:load_config()`.
+  - Never assume, create, or reference alternative configuration paths (such as `config/config.json`) without verifying the loader code.
 - **Hardware & VRAM Envelope (4GB RTX 3050 Laptop):**
   - Total VRAM usage must remain strictly under 2.5 GB. CUDA is reserved exclusively for `faster-whisper` and `Kokoro-82M`.
   - Auxiliary ONNX models (`onnx_intent_router.py`, `onnx_embeddings.py`) must use `CPUExecutionProvider` with `allow_spinning = "0"` and `intra_op_num_threads = 2` to prevent P-core starvation.
@@ -72,6 +76,7 @@ Always import from and modify canonical modules rather than legacy re-export shi
   - Validate egress URLs via `validate_egress_url` (fail-closed SSRF and private IP blocking).
   - Confine filesystem paths via `validate_confined_path`.
   - Treat all incoming ambient desktop and web telemetry as inert data via `TurnTaintTracker`.
+  - **Windows Process-Tree Containment Lifecycle:** Sandboxed child processes managed under Win32 Job Objects (`job_object_sandbox.py`, `task_manager.py`, `mcp_manager.py`) must be spawned suspended using `CREATE_SUSPENDED`. Assign the process to the Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` *before* execution begins, then resume via `NtResumeProcess` or `ResumeThread`. On any Job Object creation, limit configuration, or process assignment failure, immediately terminate the suspended process (`TerminateProcess`), close open handles, and fail closed (`RuntimeError`). Never allow an uncontained child to execute.
 - **Memory & Storage Rules:**
   - SQLite connections must use WAL mode, `synchronous=NORMAL`, and `mmap_size=268435456` (256MB).
   - All write transactions must serialize through `SingleWriterActor`.
@@ -87,6 +92,8 @@ Always import from and modify canonical modules rather than legacy re-export shi
 4. **PROHIBITED:** Hardcoding absolute developer paths (e.g. `C:\Users\...`); use workspace-relative paths or `Path(__file__)`.
 5. **PROHIBITED:** Persisting secrets, tokens, or plaintext credentials into logs, databases, or commit history.
 6. **PROHIBITED:** Asserting test success or performance metrics without runtime verification evidence.
+7. **PROHIBITED:** Spawning child processes intended for Job Object containment without `CREATE_SUSPENDED`, or falling back to uncontained execution on assignment failure.
+8. **PROHIBITED:** Truncating working-tree file manifests with `etc.` in audit reports or handoff documents.
 
 ---
 

@@ -64,14 +64,17 @@ class TestStage1SecurityHardening(unittest.TestCase):
         self.assertIn("Critical Authorization Gate", str(ctx.exception))
 
     def test_confirmed_critical_operation_succeeds_authorization(self):
-        """Proof: With dual_key_confirmed=True, the authorization gate permits execution."""
+        """Proof: With verified human approval grant, the authorization gate permits execution."""
         risk = SkillRegistry.get_risk_level("create_or_update_custom_skill")
+        args = {"skill_name": "valid_skill", "python_code": "def valid_skill(): pass"}
+        approval_mgr = DualKeyApprovalManager.get_instance()
+        approval_mgr.reset()
+        approval_mgr.grant_approval("create_or_update_custom_skill", args)
         # Should execute without raising SecurityBoundaryViolation
         self.tracker.check_tool_execution(
             "create_or_update_custom_skill",
-            {"skill_name": "valid_skill", "python_code": "def valid_skill(): pass"},
+            args,
             risk_level=risk,
-            dual_key_confirmed=True,
         )
 
     def test_ast_blocks_os_remove_and_unlink(self):
