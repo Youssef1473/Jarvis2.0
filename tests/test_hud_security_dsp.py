@@ -1111,5 +1111,84 @@ class TestHudSecurityAndDsp(unittest.TestCase):
             else:
                 os.environ.pop("JARVIS_TUNNEL_PORT", None)
 
+    def test_hud_template_contains_zero_inline_event_handlers(self):
+        """Verifies Phase 3 CSP requirement: zero inline DOM event handlers in HUD template."""
+        from pathlib import Path
+        import re
+
+        template_path = Path(__file__).resolve().parent.parent / "jarvis" / "ui" / "templates" / "hud.html"
+        self.assertTrue(template_path.exists(), f"HUD template missing at {template_path}")
+
+        template_text = template_path.read_text(encoding="utf-8")
+        handler_pattern = re.compile(r"""(?:\s|\b)(on[a-zA-Z]+)\s*=\s*(["'])(.*?)\2""", re.DOTALL)
+        matches = [m.group(0).strip() for m in handler_pattern.finditer(template_text)]
+
+        self.assertEqual(
+            len(matches),
+            0,
+            f"Expected zero inline event handlers in hud.html, but found {len(matches)}: {matches[:10]}",
+        )
+
+        # Confirm centralized event delegation architecture is wired
+        self.assertIn("function initDomEvents()", template_text)
+        self.assertIn('data-action="toggle-mute"', template_text)
+        self.assertIn('data-action="quick-command"', template_text)
+
+    def test_hud_event_architecture_and_attribute_escaping(self):
+        """Verifies idempotence, nested propagation isolation, and HTML attribute context escaping."""
+        from pathlib import Path
+        import subprocess
+
+        template_path = Path(__file__).resolve().parent.parent / "jarvis" / "ui" / "templates" / "hud.html"
+        template_text = template_path.read_text(encoding="utf-8")
+
+        # 1. Idempotence guard verification
+        self.assertIn("let domEventsInitialized = false;", template_text)
+        self.assertIn("if (domEventsInitialized) return;", template_text)
+        self.assertIn("domEventsInitialized = true;", template_text)
+
+        # 2. Priority nested event propagation isolation checks
+        del_cal_idx = template_text.find('data-action="prompt-delete-calendar"')
+        del_event_idx = template_text.find('data-action="delete-calendar-event"')
+        general_action_idx = template_text.find("const actionEl = e.target.closest('[data-action]');")
+
+        self.assertGreater(del_cal_idx, 0)
+        self.assertGreater(del_event_idx, 0)
+        self.assertGreater(general_action_idx, 0)
+        self.assertLess(del_cal_idx, general_action_idx, "Inner calendar delete must precede general action dispatch")
+        self.assertLess(del_event_idx, general_action_idx, "Inner event delete must precede general action dispatch")
+
+        # 3. HTML attribute escaping on user-controlled fields
+        self.assertIn('data-key="${escapeHtml(key)}"', template_text)
+        self.assertIn('data-id="${escapeHtml(p.key)}"', template_text)
+        self.assertIn('data-command="Jarvis, cancel timer ${escapeHtml(t.label)}"', template_text)
+        self.assertIn('data-filename="${escapeHtml(doc.filename)}"', template_text)
+        self.assertIn('data-title="${escapeHtml(ev.title)}"', template_text)
+        self.assertIn('data-title="${escapeHtml(doc.title)}"', template_text)
+        self.assertIn('data-url="${escapeHtml(url)}"', template_text)
+
+        # 4. Syntactic validity of embedded script via Node.js (when available)
+        import shutil
+
+        start_tag = "<script>"
+        end_tag = "</script>"
+        s_idx = template_text.find(start_tag)
+        e_idx = template_text.rfind(end_tag)
+        self.assertGreater(s_idx, 0)
+        self.assertGreater(e_idx, s_idx)
+        js_code = template_text[s_idx + len(start_tag):e_idx]
+
+        node_bin = shutil.which("node")
+        if node_bin:
+            node_proc = subprocess.run(
+                [node_bin, "--check"],
+                input=js_code,
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+                shell=False,
+            )
+            self.assertEqual(node_proc.returncode, 0, f"Node syntax check failed: {node_proc.stderr}")
+
 if __name__ == "__main__":
     unittest.main()

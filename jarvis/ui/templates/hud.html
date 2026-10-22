@@ -1650,11 +1650,11 @@
 
     <!-- Quick Action Controls -->
     <div style="display: flex; align-items: center; gap: 8px;">
-      <button class="pill" id="dockedMuteBtn" onclick="toggleMute()" style="cursor: pointer; padding: 4px 10px; font-size: 0.72rem;">
+      <button class="pill" id="dockedMuteBtn" data-action="toggle-mute" style="cursor: pointer; padding: 4px 10px; font-size: 0.72rem;">
         <span class="pill-dot" id="dockedMuteDot"></span>
         <span id="dockedMuteText">MUTE</span>
       </button>
-      <button class="pill" onclick="toggleDockedMode()" title="Toggle Full HUD (Ctrl+Shift+J)" style="cursor: pointer; padding: 4px 10px; font-size: 0.72rem; color: var(--holo-cyan);">
+      <button class="pill" id="dockedExpandBtn" data-action="toggle-docked-mode" title="Toggle Full HUD (Ctrl+Shift+J)" style="cursor: pointer; padding: 4px 10px; font-size: 0.72rem; color: var(--holo-cyan);">
         EXPAND
       </button>
     </div>
@@ -1676,13 +1676,13 @@
         <span>ROUTING:</span>
         <span style="color: var(--holo-emerald); font-weight: bold;">LOCAL FIRST // CLOUD BY REQUEST</span>
       </div>
-      <div class="pill" onclick="openPhotoGalleryModal()" style="cursor: pointer; border-color: var(--holo-cyan);" title="Open Archived Visual Intel Matrix">
+      <div class="pill" data-action="open-gallery-modal" style="cursor: pointer; border-color: var(--holo-cyan);" title="Open Archived Visual Intel Matrix">
         <span style="color: var(--holo-cyan);">🖼️ INTEL MATRIX</span>
       </div>
-      <div class="pill" onclick="openCalendarModal()" style="cursor: pointer; border-color: var(--holo-cyan);" title="Open Holographic Tactical Calendar">
+      <div class="pill" data-action="open-calendar-modal" style="cursor: pointer; border-color: var(--holo-cyan);" title="Open Holographic Tactical Calendar">
         <span style="color: var(--holo-cyan);">📅 CALENDAR</span>
       </div>
-      <div class="pill" onclick="toggleDrawer()" style="cursor: pointer; border-color: var(--holo-cyan);" title="Toggle Right-Flank Tactical Control Desk [F4 / Click]">
+      <div class="pill" data-action="toggle-drawer" style="cursor: pointer; border-color: var(--holo-cyan);" title="Toggle Right-Flank Tactical Control Desk [F4 / Click]">
         <span style="color: var(--holo-cyan);">⚡ CONTROL FLANK</span>
       </div>
       <div class="pill">
@@ -1780,7 +1780,7 @@
       <div class="status-hud-box">
         <div class="status-badge" id="statusBadge">STANDBY // ONLINE</div>
         <div class="sub-status" id="subStatus">VOICE SENSORS ARMED // HOLD FIN KEY OR SAY "HEY JARVIS"</div>
-        <div id="stagedDocPill" class="staged-doc-pill" style="display:none;" onclick="focusContextInput()" title="Click to provide context for this document">
+        <div id="stagedDocPill" class="staged-doc-pill" style="display:none;" data-action="focus-context-input" title="Click to provide context for this document">
           <span>📄</span> <span id="stagedDocText">1 STAGED PDF (Awaiting Briefing)</span>
         </div>
       </div>
@@ -1809,35 +1809,35 @@
     <footer class="hud-card command-deck">
       <div class="deck-top-row">
         <div class="quick-actions">
-          <button class="btn-action" id="btnMute" onclick="toggleMute()">
+          <button class="btn-action" id="btnMute" data-action="toggle-mute">
             <span id="muteIcon">🎙️</span> <span id="muteText">MUTE VOX</span>
           </button>
-          <button class="btn-action" onclick="sendQuickCommand('Jarvis, initiate work protocol')">
+          <button class="btn-action" data-action="quick-command" data-command="Jarvis, initiate work protocol">
             <span>🛡️</span> WORK
           </button>
-          <button class="btn-action" onclick="sendQuickCommand('Jarvis, give me my daily briefing')">
+          <button class="btn-action" data-action="quick-command" data-command="Jarvis, give me my daily briefing">
             <span>🌅</span> BRIEFING
           </button>
-          <button class="btn-action" onclick="sendQuickCommand('Jarvis, initiate lockdown protocol')">
+          <button class="btn-action" data-action="quick-command" data-command="Jarvis, initiate lockdown protocol">
             <span>🔒</span> LOCKDOWN
           </button>
-          <button class="btn-action" onclick="sendQuickCommand('Jarvis, optimize my PC')">
+          <button class="btn-action" data-action="quick-command" data-command="Jarvis, optimize my PC">
             <span>🧹</span> OPTIMIZE
           </button>
-          <button class="btn-action" onclick="sendQuickCommand('Look at my screen and tell me what you see')">
+          <button class="btn-action" data-action="quick-command" data-command="Look at my screen and tell me what you see">
             <span>👁️</span> VISION
           </button>
-          <button class="btn-action" id="btnImportPdf" onclick="triggerPdfImport()" style="border-color: rgba(0, 255, 157, 0.5); color: var(--holo-emerald);" title="Import PDF Document via File Explorer">
+          <button class="btn-action" id="btnImportPdf" data-action="trigger-pdf-import" style="border-color: rgba(0, 255, 157, 0.5); color: var(--holo-emerald);" title="Import PDF Document via File Explorer">
             <span>📄</span> IMPORT PDF
           </button>
-          <input type="file" id="pdfFileInput" accept=".pdf,application/pdf" style="display:none;" onchange="handlePdfUpload(event)" aria-label="Upload PDF document">
-          <button class="btn-action" id="btnGallery" onclick="openPhotoGalleryModal()" style="border-color: rgba(0, 240, 255, 0.5); color: var(--holo-cyan);" title="Open Archived Visual Intel Matrix">
+          <input type="file" id="pdfFileInput" accept=".pdf,application/pdf" style="display:none;" aria-label="Upload PDF document">
+          <button class="btn-action" id="btnGallery" data-action="open-gallery-modal" style="border-color: rgba(0, 240, 255, 0.5); color: var(--holo-cyan);" title="Open Archived Visual Intel Matrix">
             <span>🖼️</span> GALLERY
           </button>
-          <button class="btn-action" id="btnCalendar" onclick="openCalendarModal()" style="border-color: rgba(0, 240, 255, 0.5); color: var(--holo-cyan);" title="Open Holographic Tactical Calendar">
+          <button class="btn-action" id="btnCalendar" data-action="open-calendar-modal" style="border-color: rgba(0, 240, 255, 0.5); color: var(--holo-cyan);" title="Open Holographic Tactical Calendar">
             <span>📅</span> CALENDAR
           </button>
-          <button class="btn-action" id="btnDrawer" onclick="toggleDrawer()" style="border-color: rgba(0, 240, 255, 0.7); color: var(--holo-cyan);" title="Toggle Right-Flank Tactical Control Desk">
+          <button class="btn-action" id="btnDrawer" data-action="toggle-drawer" style="border-color: rgba(0, 240, 255, 0.7); color: var(--holo-cyan);" title="Toggle Right-Flank Tactical Control Desk">
             <span>⚡</span> CONTROLS
           </button>
         </div>
@@ -1854,16 +1854,14 @@
           class="cmd-input" 
           placeholder="Transmit instruction or voice query to Jarvis..." 
           aria-label="Transmit instruction or voice query to Jarvis"
-          autocomplete="off"
-          onkeydown="if(event.key === 'Enter') transmitCommand()"
-        >
-        <button class="btn-transmit" onclick="transmitCommand()">TRANSMIT ↵</button>
+          autocomplete="off">
+        <button class="btn-transmit" id="btnTransmit" data-action="transmit-command">TRANSMIT ↵</button>
       </div>
     </footer>
   </main>
 
   <!-- Starboard Edge Toggle Pill -->
-  <button class="flank-toggle-edge-btn" id="btnFlankToggleEdge" onclick="toggleDrawer()" title="Toggle Tactical Control Flank [F4 / Click]">
+  <button class="flank-toggle-edge-btn" id="btnFlankToggleEdge" data-action="toggle-drawer" title="Toggle Tactical Control Flank [F4 / Click]">
     <span class="edge-icon">⚡</span>
     <span class="edge-text">CONTROLS</span>
   </button>
@@ -1872,15 +1870,15 @@
   <aside class="hud-drawer" id="hudDrawer">
     <div class="drawer-header">
       <span class="drawer-title">// TACTICAL CONTROL FLANK</span>
-      <button class="drawer-close-btn" onclick="toggleDrawer()">✕ CLOSE</button>
+      <button class="drawer-close-btn" data-action="toggle-drawer">✕ CLOSE</button>
     </div>
     <div class="drawer-tabs">
-      <button class="drawer-tab active" id="tabControlsBtn" onclick="switchDrawerTab('controls')">CONTROLS</button>
-      <button class="drawer-tab" id="tabIntelligenceBtn" onclick="switchDrawerTab('intelligence')">INTELLIGENCE (<span id="drawerMemoryCount">0</span>)</button>
-      <button class="drawer-tab" id="tabTimersBtn" onclick="switchDrawerTab('timers')">TIMERS (<span id="drawerTimerCount">0</span>)</button>
-      <button class="drawer-tab" id="tabNotesBtn" onclick="switchDrawerTab('notes')">NOTES</button>
-      <button class="drawer-tab" id="tabStagedBtn" onclick="switchDrawerTab('staged')">STAGED (<span id="drawerStagedCount">0</span>)</button>
-      <button class="drawer-tab" id="tabAgendaBtn" onclick="switchDrawerTab('agenda')">AGENDA (<span id="drawerAgendaCount">0</span>)</button>
+      <button class="drawer-tab active" id="tabControlsBtn" data-action="switch-drawer-tab" data-tab="controls">CONTROLS</button>
+      <button class="drawer-tab" id="tabIntelligenceBtn" data-action="switch-drawer-tab" data-tab="intelligence">INTELLIGENCE (<span id="drawerMemoryCount">0</span>)</button>
+      <button class="drawer-tab" id="tabTimersBtn" data-action="switch-drawer-tab" data-tab="timers">TIMERS (<span id="drawerTimerCount">0</span>)</button>
+      <button class="drawer-tab" id="tabNotesBtn" data-action="switch-drawer-tab" data-tab="notes">NOTES</button>
+      <button class="drawer-tab" id="tabStagedBtn" data-action="switch-drawer-tab" data-tab="staged">STAGED (<span id="drawerStagedCount">0</span>)</button>
+      <button class="drawer-tab" id="tabAgendaBtn" data-action="switch-drawer-tab" data-tab="agenda">AGENDA (<span id="drawerAgendaCount">0</span>)</button>
     </div>
     <div class="drawer-body" id="drawerBody">
       <div style="color: var(--text-dim); font-size: 0.85rem; text-align: center; margin-top: 20px;">Loading archive data...</div>
@@ -1888,7 +1886,7 @@
   </aside>
 
   <!-- Holographic Tactical Calendar Modal -->
-  <div id="calendarModalBackdrop" class="calendar-modal-backdrop" onclick="if(event.target === this) closeCalendarModal()">
+  <div id="calendarModalBackdrop" class="calendar-modal-backdrop">
     <div class="calendar-modal-dialog">
       <!-- Header -->
       <div class="cal-modal-header">
@@ -1900,13 +1898,13 @@
           </div>
         </div>
         <div class="cal-header-actions">
-          <button class="cal-btn-outline" onclick="triggerPdfImport()" title="Import new timetable or schedule document">
+          <button class="cal-btn-outline" data-action="trigger-pdf-import" title="Import new timetable or schedule document">
             <span>➕</span> IMPORT CALENDAR
           </button>
-          <button class="cal-btn-outline" onclick="loadCalendarModalData()" title="Reload calendar data from database">
+          <button class="cal-btn-outline" data-action="load-calendar-data" title="Reload calendar data from database">
             <span>🔄</span> REFRESH
           </button>
-          <button class="cal-close-btn" onclick="closeCalendarModal()">
+          <button class="cal-close-btn" data-action="close-calendar-modal">
             ✕ CLOSE
           </button>
         </div>
@@ -1929,12 +1927,12 @@
         <div id="calActiveActions" style="display:flex; align-items:center; gap:8px;">
           <!-- Holographic Week Navigator -->
           <div style="display:flex; align-items:center; gap:4px; background:rgba(0,0,0,0.4); border:1px solid var(--panel-border); border-radius:4px; padding:3px 6px;">
-            <button class="cal-btn-outline" style="padding:4px 8px; font-size:0.75rem;" onclick="calendarNavigateWeek(-1)" title="Previous Week">◀ PREV</button>
+            <button class="cal-btn-outline" style="padding:4px 8px; font-size:0.75rem;" data-action="calendar-navigate-week" data-direction="-1" title="Previous Week">◀ PREV</button>
             <span id="calCurrentWeekRangeLabel" style="font-family:'JetBrains Mono',monospace; font-size:0.78rem; color:var(--holo-cyan); font-weight:600; padding:0 8px; min-width:140px; text-align:center;">WEEK OF OCT 19</span>
-            <button class="cal-btn-outline" style="padding:4px 8px; font-size:0.75rem;" onclick="calendarNavigateWeek(1)" title="Next Week">NEXT ▶</button>
-            <button class="cal-btn-outline" style="padding:4px 6px; font-size:0.7rem; color:var(--holo-emerald); border-color:rgba(0,255,157,0.4);" onclick="calendarResetToActiveWeek()" title="Reset to active schedule week">ACTIVE</button>
+            <button class="cal-btn-outline" style="padding:4px 8px; font-size:0.75rem;" data-action="calendar-navigate-week" data-direction="1" title="Next Week">NEXT ▶</button>
+            <button class="cal-btn-outline" style="padding:4px 6px; font-size:0.7rem; color:var(--holo-emerald); border-color:rgba(0,255,157,0.4);" data-action="calendar-reset-week" title="Reset to active schedule week">ACTIVE</button>
           </div>
-          <button id="btnDeleteCalendar" class="cal-btn-danger" onclick="promptDeleteCurrentCalendar()" title="Delete or clear this calendar">
+          <button id="btnDeleteCalendar" class="cal-btn-danger" data-action="prompt-delete-current-calendar" title="Delete or clear this calendar">
             <span>🗑️</span> DELETE CALENDAR
           </button>
         </div>
@@ -1963,7 +1961,7 @@
   </div>
 
   <!-- Holographic Confirmation Modal for Calendar Deletion -->
-  <div id="calConfirmBackdrop" class="calendar-modal-backdrop" style="z-index: 2600;" onclick="if(event.target === this) closeConfirmModal()">
+  <div id="calConfirmBackdrop" class="calendar-modal-backdrop" style="z-index: 2600;">
     <div class="calendar-modal-dialog" style="max-width: 520px; border-color: var(--holo-crimson); box-shadow: 0 0 45px rgba(255, 51, 102, 0.4);">
       <div class="cal-modal-header" style="background: rgba(255, 51, 102, 0.08); border-bottom-color: rgba(255, 51, 102, 0.3);">
         <div class="cal-header-left">
@@ -1973,7 +1971,7 @@
             <div class="cal-subtitle">IRREVERSIBLE MEMORY MODIFICATION PROTOCOL</div>
           </div>
         </div>
-        <button class="cal-close-btn" onclick="closeConfirmModal()">✕</button>
+        <button class="cal-close-btn" data-action="close-confirm-modal">✕</button>
       </div>
       <div style="padding: 20px 24px; font-family: 'Rajdhani', sans-serif; font-size: 1.05rem; color: var(--text-main);">
         <p id="confirmModalText" style="margin-bottom: 16px;">Are you sure you want to delete this calendar from Jarvis?</p>
@@ -1983,14 +1981,14 @@
         </label>
       </div>
       <div style="padding: 14px 24px; background: rgba(0, 0, 0, 0.3); border-top: 1px solid rgba(255, 51, 102, 0.2); display: flex; justify-content: flex-end; gap: 10px;">
-        <button class="cal-btn-outline" style="border-color: var(--panel-border); color: var(--text-dim);" onclick="closeConfirmModal()">CANCEL</button>
-        <button id="btnExecuteDelete" class="cal-btn-danger" style="padding: 8px 18px;" onclick="executeDeleteCalendar()">CONFIRM PURGE 🗑️</button>
+        <button class="cal-btn-outline" style="border-color: var(--panel-border); color: var(--text-dim);" data-action="close-confirm-modal">CANCEL</button>
+        <button id="btnExecuteDelete" class="cal-btn-danger" style="padding: 8px 18px;" data-action="execute-delete-calendar">CONFIRM PURGE 🗑️</button>
       </div>
     </div>
   </div>
 
   <!-- Holographic Photo Gallery Modal Viewport (Zero-CLS Component) -->
-  <div id="photoGalleryModalBackdrop" class="photo-modal-backdrop" onclick="if(event.target === this) closePhotoGalleryModal()">
+  <div id="photoGalleryModalBackdrop" class="photo-modal-backdrop">
     <div class="photo-modal-dialog h-[640px] max-h-[90vh]">
       <!-- Header Deck -->
       <div class="photo-modal-header">
@@ -2003,13 +2001,13 @@
           <span id="photoCounterBadge" class="photo-counter-badge">0 ASSETS</span>
         </div>
         <div class="photo-header-actions">
-          <button class="cal-btn-outline" onclick="if(photoGallery) photoGallery.refresh()" title="Sync Archives from Database">
+          <button class="cal-btn-outline" data-action="gallery-refresh" title="Sync Archives from Database">
             <span>🔄</span> SYNC
           </button>
-          <button class="cal-btn-outline" style="border-color: var(--holo-emerald); color: var(--holo-emerald);" onclick="if(photoGallery) photoGallery.pasteClipboard()" title="Capture from Windows Clipboard">
+          <button class="cal-btn-outline" style="border-color: var(--holo-emerald); color: var(--holo-emerald);" data-action="gallery-paste-clipboard" title="Capture from Windows Clipboard">
             <span>📋</span> PASTE CLIPBOARD
           </button>
-          <button class="cal-close-btn" onclick="closePhotoGalleryModal()">
+          <button class="cal-close-btn" data-action="close-gallery-modal">
             ✕ CLOSE
           </button>
         </div>
@@ -2046,11 +2044,11 @@
   </div>
 
   <!-- Lightbox Detail Inspection Modal -->
-  <div id="photoLightboxModal" class="lightbox-modal-backdrop hidden" onclick="if(event.target === this) if(photoGallery) photoGallery.closeLightbox()">
+  <div id="photoLightboxModal" class="lightbox-modal-backdrop hidden">
     <div class="lightbox-dialog">
       <div class="lightbox-header">
         <span id="modalPhotoTitle" class="lightbox-title">INTEL INSPECTION</span>
-        <button onclick="if(photoGallery) photoGallery.closeLightbox()" class="cal-close-btn">&times;</button>
+        <button data-action="gallery-close-lightbox" class="cal-close-btn">&times;</button>
       </div>
       <div class="lightbox-preview">
         <img id="modalPhotoImg" src="" alt="Detail Preview" class="lightbox-img">
@@ -2079,7 +2077,7 @@
           <p id="modalCaptionText" class="caption-text">No visual description indexed. Click 'ANALYZE WITH VISION' to evaluate.</p>
         </div>
         <div class="lightbox-actions">
-          <button id="analyzeVisionBtn" onclick="if(photoGallery) photoGallery.analyzeCurrentPhoto()" class="cal-btn-outline" style="border-color: var(--holo-amber); color: var(--holo-amber);">
+          <button id="analyzeVisionBtn" data-action="gallery-analyze-photo" class="cal-btn-outline" style="border-color: var(--holo-amber); color: var(--holo-amber);">
             <span>👁️</span> ANALYZE WITH VISION
           </button>
         </div>
@@ -2166,6 +2164,265 @@
       domRefs.analyzeVisionBtn = document.getElementById('analyzeVisionBtn');
     }
     initDomReferences();
+
+    // Centralized Event Architecture for CSP Compliance (Zero-Inline Handlers)
+    let domEventsInitialized = false;
+    function initDomEvents() {
+      if (domEventsInitialized) return;
+      domEventsInitialized = true;
+
+      // 1. Static Command Input Enter-key listener
+      const cmdInput = document.getElementById('cmdInput');
+      if (cmdInput) {
+        cmdInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') transmitCommand();
+        });
+      }
+
+      // 2. Static PDF File Input change listener
+      const pdfFileInput = document.getElementById('pdfFileInput');
+      if (pdfFileInput) {
+        pdfFileInput.addEventListener('change', handlePdfUpload);
+      }
+
+      // 3. Modal Backdrop Direct-Click Dismissals
+      const backdropDismissMap = [
+        { id: 'calendarModalBackdrop', handler: closeCalendarModal },
+        { id: 'calConfirmBackdrop', handler: closeConfirmModal },
+        { id: 'photoGalleryModalBackdrop', handler: closePhotoGalleryModal },
+        { id: 'photoLightboxModal', handler: () => { if (window.photoGallery) window.photoGallery.closeLightbox(); } }
+      ];
+      backdropDismissMap.forEach(({ id, handler }) => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.addEventListener('click', (e) => {
+            if (e.target === el) handler();
+          });
+        }
+      });
+
+      // 4. Delegated Input Events (Volume Slider & Memory Search)
+      document.addEventListener('input', (e) => {
+        if (!e.target) return;
+        if (e.target.id === 'flankVolSlider') {
+          handleVolumeSlider(e.target.value);
+        } else if (e.target.dataset && e.target.dataset.action === 'filter-memory-search') {
+          filterMemorySearch(e.target.value);
+        }
+      });
+
+      // 5. Delegated Click Controller for Dynamic and Static Controls
+      document.addEventListener('click', (e) => {
+        // Priority 1: Actions with inner propagation isolation
+        const delCalBtn = e.target.closest('[data-action="prompt-delete-calendar"]');
+        if (delCalBtn) {
+          const calId = delCalBtn.dataset.id ? Number(delCalBtn.dataset.id) : null;
+          promptDeleteCalendar(calId, delCalBtn.dataset.title || '');
+          return;
+        }
+
+        const delEventBtn = e.target.closest('[data-action="delete-calendar-event"]');
+        if (delEventBtn) {
+          const eventId = delEventBtn.dataset.id ? Number(delEventBtn.dataset.id) : null;
+          deleteCalendarEvent(eventId, delEventBtn.dataset.title || '');
+          return;
+        }
+
+        const actionEl = e.target.closest('[data-action]');
+        if (!actionEl) return;
+
+        const action = actionEl.dataset.action;
+        switch (action) {
+          case 'toggle-mute':
+            toggleMute();
+            break;
+
+          case 'flank-toggle-mute':
+            toggleMute();
+            setTimeout(renderControlsTab, 200);
+            break;
+
+          case 'toggle-docked-mode':
+            toggleDockedMode();
+            break;
+
+          case 'open-gallery-modal':
+            openPhotoGalleryModal();
+            break;
+
+          case 'close-gallery-modal':
+            closePhotoGalleryModal();
+            break;
+
+          case 'gallery-refresh':
+            if (window.photoGallery) window.photoGallery.refresh();
+            break;
+
+          case 'gallery-paste-clipboard':
+            if (window.photoGallery) window.photoGallery.pasteClipboard();
+            break;
+
+          case 'gallery-close-lightbox':
+            if (window.photoGallery) window.photoGallery.closeLightbox();
+            break;
+
+          case 'gallery-analyze-photo':
+            if (window.photoGallery) window.photoGallery.analyzeCurrentPhoto();
+            break;
+
+          case 'open-calendar-modal':
+            openCalendarModal();
+            break;
+
+          case 'close-calendar-modal':
+            closeCalendarModal();
+            break;
+
+          case 'toggle-drawer':
+            toggleDrawer();
+            break;
+
+          case 'focus-context-input':
+            focusContextInput();
+            break;
+
+          case 'quick-command': {
+            const cmd = actionEl.dataset.command;
+            if (cmd) sendQuickCommand(cmd);
+            break;
+          }
+
+          case 'trigger-pdf-import':
+            triggerPdfImport();
+            break;
+
+          case 'transmit-command':
+            transmitCommand();
+            break;
+
+          case 'switch-drawer-tab': {
+            const tab = actionEl.dataset.tab;
+            if (tab) switchDrawerTab(tab);
+            break;
+          }
+
+          case 'load-calendar-data':
+            loadCalendarModalData();
+            break;
+
+          case 'calendar-navigate-week': {
+            const dir = parseInt(actionEl.dataset.direction, 10) || 0;
+            calendarNavigateWeek(dir);
+            break;
+          }
+
+          case 'calendar-reset-week':
+            calendarResetToActiveWeek();
+            break;
+
+          case 'prompt-delete-current-calendar':
+            promptDeleteCurrentCalendar();
+            break;
+
+          case 'close-confirm-modal':
+            closeConfirmModal();
+            break;
+
+          case 'execute-delete-calendar':
+            executeDeleteCalendar();
+            break;
+
+          case 'set-flank-volume': {
+            const vol = parseInt(actionEl.dataset.vol, 10);
+            if (!isNaN(vol)) setFlankVolume(vol);
+            break;
+          }
+
+          case 'trigger-private-browser':
+            triggerPrivateBrowser();
+            break;
+
+          case 'trigger-workstation-lock':
+            triggerWorkstationLock();
+            break;
+
+          case 'trigger-focus-ide':
+            triggerFocusIde();
+            break;
+
+          case 'trigger-pc-optimize':
+            triggerPcOptimize();
+            break;
+
+          case 'render-memory-matrix':
+            renderMemoryMatrixView();
+            break;
+
+          case 'edit-memory-node': {
+            const nodeType = actionEl.dataset.type;
+            const nodeId = actionEl.dataset.id;
+            const nodeKey = actionEl.dataset.key;
+            const nodeCat = actionEl.dataset.category || '';
+            editMemoryNode(nodeType, nodeId, nodeKey, undefined, nodeCat);
+            break;
+          }
+
+          case 'save-memory-edit': {
+            const nodeType = actionEl.dataset.type;
+            const nodeId = actionEl.dataset.id;
+            const nodeKey = actionEl.dataset.key;
+            const nodeCat = actionEl.dataset.category || '';
+            saveMemoryNodeEdit(nodeType, nodeId, nodeKey, nodeCat);
+            break;
+          }
+
+          case 'prompt-delete-memory': {
+            const nodeType = actionEl.dataset.type;
+            const nodeId = actionEl.dataset.id;
+            const btnId = actionEl.dataset.btnId || actionEl.id;
+            promptDeleteMemoryNode(nodeType, nodeId, btnId);
+            break;
+          }
+
+          case 'switch-memory-filter': {
+            const filter = actionEl.dataset.filter;
+            if (filter) switchMemoryFilter(filter);
+            break;
+          }
+
+          case 'toggle-inscribe-form':
+            toggleInscribeForm();
+            break;
+
+          case 'submit-inscribe-memory':
+            submitInscribeMemory();
+            break;
+
+          case 'brief-document': {
+            const filename = actionEl.dataset.filename;
+            if (filename) briefDocument(filename);
+            break;
+          }
+
+          case 'select-saved-calendar': {
+            const calId = actionEl.dataset.id;
+            selectSavedCalendar(calId ? Number(calId) : null);
+            break;
+          }
+
+          case 'open-snapshot-window': {
+            const url = actionEl.dataset.url;
+            if (url) window.open(url, '_blank');
+            break;
+          }
+
+          default:
+            break;
+        }
+      });
+    }
+
+    initDomEvents();
 
     // Clock display
     function updateClock() {
@@ -2843,20 +3100,20 @@ void main() {
             <span>MASTER HARDWARE VOLUME</span>
             <span id="flankVolVal" style="color:var(--holo-cyan); font-weight:bold;">${currentMasterVolume}%</span>
           </div>
-          <input type="range" min="0" max="100" value="${currentMasterVolume}" class="flank-volume-slider" id="flankVolSlider" oninput="handleVolumeSlider(this.value)">
+          <input type="range" min="0" max="100" value="${currentMasterVolume}" class="flank-volume-slider" id="flankVolSlider">
           <div class="flank-presets">
-            <button class="flank-preset-btn" onclick="setFlankVolume(25)">25%</button>
-            <button class="flank-preset-btn" onclick="setFlankVolume(50)">50%</button>
-            <button class="flank-preset-btn" onclick="setFlankVolume(75)">75%</button>
-            <button class="flank-preset-btn" style="color:var(--holo-cyan); border-color:var(--holo-cyan);" onclick="setFlankVolume(100)">100%</button>
+            <button class="flank-preset-btn" data-action="set-flank-volume" data-vol="25">25%</button>
+            <button class="flank-preset-btn" data-action="set-flank-volume" data-vol="50">50%</button>
+            <button class="flank-preset-btn" data-action="set-flank-volume" data-vol="75">75%</button>
+            <button class="flank-preset-btn" style="color:var(--holo-cyan); border-color:var(--holo-cyan);" data-action="set-flank-volume" data-vol="100">100%</button>
           </div>
         </div>
         <div class="flank-btn-grid" style="margin-top: 4px;">
-          <button class="${muteBtnClass}" id="flankBtnMute" onclick="toggleMute(); setTimeout(renderControlsTab, 200);">
+          <button class="${muteBtnClass}" id="flankBtnMute" data-action="flank-toggle-mute">
             <span class="flank-btn-icon" id="flankMuteIcon">${isMuted ? '🔇' : '🎙️'}</span>
             <span id="flankMuteText">${muteStatusText}</span>
           </button>
-          <button class="flank-btn" onclick="sendQuickCommand('Jarvis, give me your status debrief');">
+          <button class="flank-btn" data-action="quick-command" data-command="Jarvis, give me your status debrief">
             <span class="flank-btn-icon">⚡</span>
             <span>VOX DEBRIEF</span>
           </button>
@@ -2868,11 +3125,11 @@ void main() {
           <span style="font-size:0.65rem; color:var(--holo-amber);">ENFORCED</span>
         </div>
         <div class="flank-btn-grid">
-          <button class="flank-btn" onclick="triggerPrivateBrowser();">
+          <button class="flank-btn" data-action="trigger-private-browser">
             <span class="flank-btn-icon">🕵️</span>
             <span>PRIVATE WINDOW</span>
           </button>
-          <button class="flank-btn" style="border-color: rgba(255, 51, 102, 0.4); color: var(--holo-crimson);" onclick="triggerWorkstationLock();">
+          <button class="flank-btn" style="border-color: rgba(255, 51, 102, 0.4); color: var(--holo-crimson);" data-action="trigger-workstation-lock">
             <span class="flank-btn-icon">🔒</span>
             <span>LOCK WORKSTATION</span>
           </button>
@@ -2884,19 +3141,19 @@ void main() {
           <span style="font-size:0.65rem; color:var(--holo-cyan);">HOTKEYS</span>
         </div>
         <div class="flank-btn-grid">
-          <button class="flank-btn" onclick="triggerFocusIde();">
+          <button class="flank-btn" data-action="trigger-focus-ide">
             <span class="flank-btn-icon">💻</span>
             <span>FOCUS VS CODE</span>
           </button>
-          <button class="flank-btn" onclick="triggerPcOptimize();">
+          <button class="flank-btn" data-action="trigger-pc-optimize">
             <span class="flank-btn-icon">🧹</span>
             <span>OPTIMIZE MEMORY</span>
           </button>
-          <button class="flank-btn" onclick="openCalendarModal();">
+          <button class="flank-btn" data-action="open-calendar-modal">
             <span class="flank-btn-icon">📅</span>
             <span>TACTICAL AGENDA</span>
           </button>
-          <button class="flank-btn" onclick="openPhotoGalleryModal();">
+          <button class="flank-btn" data-action="open-gallery-modal">
             <span class="flank-btn-icon">🖼️</span>
             <span>INTEL MATRIX</span>
           </button>
@@ -3102,12 +3359,25 @@ void main() {
       const valEl = document.getElementById('val_' + (type === 'preference' ? 'pref_' + key : 'fact_' + id));
       if (!valEl) return;
 
+      if (currentValue === undefined && cachedMemoryData) {
+        if (type === 'preference' && cachedMemoryData.preferences) {
+          const found = cachedMemoryData.preferences.find(p => p.key === key);
+          if (found) currentValue = found.value;
+        } else if (type === 'fact' && cachedMemoryData.facts) {
+          const found = cachedMemoryData.facts.find(f => String(f.id) === String(id));
+          if (found) currentValue = found.value;
+        }
+      }
+      if (currentValue === undefined) {
+        currentValue = valEl.textContent.trim();
+      }
+
       valEl.innerHTML = `
         <div style="display: flex; flex-direction: column; gap: 6px; margin: 4px 0;">
           <textarea id="editValInput_${id}" rows="2" style="background: rgba(0, 0, 0, 0.6); border: 1px solid var(--holo-cyan); border-radius: 3px; color: var(--text-main); font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; padding: 6px; width: 100%; resize: vertical;">${escapeHtml(currentValue)}</textarea>
           <div style="display: flex; gap: 6px; justify-content: flex-end;">
-            <button class="drawer-close-btn" style="color: var(--text-dim); font-size: 0.72rem;" onclick="renderMemoryMatrixView()">CANCEL</button>
-            <button class="drawer-close-btn" style="color: var(--holo-emerald); border-color: rgba(0, 255, 157, 0.4); font-size: 0.72rem; font-weight: 700;" onclick="saveMemoryNodeEdit('${type}', '${id}', '${escapeHtml(key)}', '${escapeHtml(category || '')}')">SAVE 💾</button>
+            <button class="drawer-close-btn" style="color: var(--text-dim); font-size: 0.72rem;" data-action="render-memory-matrix">CANCEL</button>
+            <button class="drawer-close-btn" style="color: var(--holo-emerald); border-color: rgba(0, 255, 157, 0.4); font-size: 0.72rem; font-weight: 700;" data-action="save-memory-edit" data-type="${type}" data-id="${id}" data-key="${escapeHtml(key)}" data-category="${escapeHtml(category || '')}">SAVE 💾</button>
           </div>
         </div>
       `;
@@ -3180,8 +3450,8 @@ void main() {
                 ${escapeHtml(p.value)}
               </div>
               <div style="display: flex; gap: 6px; justify-content: flex-end;">
-                <button class="drawer-close-btn" style="color: var(--holo-cyan); font-size: 0.75rem;" onclick="editMemoryNode('preference', '${escapeHtml(p.key)}', '${escapeHtml(p.key)}', '${escapeHtml(p.value.replace(/'/g, "\\'"))}')">EDIT ✏️</button>
-                <button id="delBtn_pref_${escapeHtml(p.key)}" class="drawer-close-btn" style="color: var(--holo-crimson); font-size: 0.75rem;" onclick="promptDeleteMemoryNode('preference', '${escapeHtml(p.key)}', 'delBtn_pref_${escapeHtml(p.key)}')">PRUNE 🗑️</button>
+                <button class="drawer-close-btn" style="color: var(--holo-cyan); font-size: 0.75rem;" data-action="edit-memory-node" data-type="preference" data-id="${escapeHtml(p.key)}" data-key="${escapeHtml(p.key)}" data-category="">EDIT ✏️</button>
+                <button id="delBtn_pref_${escapeHtml(p.key)}" class="drawer-close-btn" style="color: var(--holo-crimson); font-size: 0.75rem;" data-action="prompt-delete-memory" data-type="preference" data-id="${escapeHtml(p.key)}" data-btn-id="delBtn_pref_${escapeHtml(p.key)}">PRUNE 🗑️</button>
               </div>
             </div>
           `).join('');
@@ -3209,8 +3479,8 @@ void main() {
                 ${escapeHtml(f.value)}
               </div>
               <div style="display: flex; gap: 6px; justify-content: flex-end;">
-                <button class="drawer-close-btn" style="color: var(--holo-cyan); font-size: 0.75rem;" onclick="editMemoryNode('fact', '${f.id}', '${escapeHtml(f.key)}', '${escapeHtml(f.value.replace(/'/g, "\\'"))}', '${escapeHtml(f.category)}')">EDIT ✏️</button>
-                <button id="delBtn_fact_${f.id}" class="drawer-close-btn" style="color: var(--holo-crimson); font-size: 0.75rem;" onclick="promptDeleteMemoryNode('fact', ${f.id}, 'delBtn_fact_${f.id}')">PRUNE 🗑️</button>
+                <button class="drawer-close-btn" style="color: var(--holo-cyan); font-size: 0.75rem;" data-action="edit-memory-node" data-type="fact" data-id="${f.id}" data-key="${escapeHtml(f.key)}" data-category="${escapeHtml(f.category || '')}">EDIT ✏️</button>
+                <button id="delBtn_fact_${f.id}" class="drawer-close-btn" style="color: var(--holo-crimson); font-size: 0.75rem;" data-action="prompt-delete-memory" data-type="fact" data-id="${f.id}" data-btn-id="delBtn_fact_${f.id}">PRUNE 🗑️</button>
               </div>
             </div>
           `).join('');
@@ -3235,7 +3505,7 @@ void main() {
                 ${escapeHtml(d.summary || 'Archived knowledge document.')}
               </div>
               <div style="display: flex; justify-content: flex-end;">
-                <button id="delBtn_doc_${d.id}" class="drawer-close-btn" style="color: var(--holo-crimson); font-size: 0.75rem;" onclick="promptDeleteMemoryNode('document', ${d.id}, 'delBtn_doc_${d.id}')">PRUNE 🗑️</button>
+                <button id="delBtn_doc_${d.id}" class="drawer-close-btn" style="color: var(--holo-crimson); font-size: 0.75rem;" data-action="prompt-delete-memory" data-type="document" data-id="${d.id}" data-btn-id="delBtn_doc_${d.id}">PRUNE 🗑️</button>
               </div>
             </div>
           `).join('');
@@ -3263,7 +3533,7 @@ void main() {
                 ${escapeHtml(l.lesson)}
               </div>
               <div style="display: flex; justify-content: flex-end;">
-                <button id="delBtn_lesson_${l.id}" class="drawer-close-btn" style="color: var(--holo-crimson); font-size: 0.75rem;" onclick="promptDeleteMemoryNode('lesson', ${l.id}, 'delBtn_lesson_${l.id}')">PRUNE 🗑️</button>
+                <button id="delBtn_lesson_${l.id}" class="drawer-close-btn" style="color: var(--holo-crimson); font-size: 0.75rem;" data-action="prompt-delete-memory" data-type="lesson" data-id="${l.id}" data-btn-id="delBtn_lesson_${l.id}">PRUNE 🗑️</button>
               </div>
             </div>
           `).join('');
@@ -3275,7 +3545,7 @@ void main() {
           <div style="color: var(--text-dim); text-align: center; margin-top: 24px; padding: 16px; font-size: 0.82rem; border: 1px dashed rgba(0, 240, 255, 0.25); border-radius: 6px; background: rgba(0,0,0,0.3);">
             <div style="color: var(--holo-amber); font-weight: 700; margin-bottom: 6px; font-family: 'Orbitron', sans-serif;">⚡ 0 EPISODIC REFLEXION LESSONS INDEXED</div>
             <div style="line-height: 1.4; color: var(--text-dim); margin-bottom: 8px;">Episodic lessons are autonomous self-correction post-mortems synthesized after runtime tool errors.</div>
-            <div style="color: var(--holo-cyan); cursor: pointer; text-decoration: underline; font-weight: 600;" onclick="switchDrawerTab('agenda')">
+            <div style="color: var(--holo-cyan); cursor: pointer; text-decoration: underline; font-weight: 600;" data-action="switch-drawer-tab" data-tab="agenda">
               Looking for university timetable courses & subjects? ➔ Open AGENDA tab
             </div>
           </div>
@@ -3294,21 +3564,21 @@ void main() {
         <!-- Top Toolbar & Search -->
         <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;">
           <input type="text" placeholder="Search memory nodes & knowledge graph..."
-                 value="${escapeHtml(currentMemorySearch)}" oninput="filterMemorySearch(this.value)"
+                 value="${escapeHtml(currentMemorySearch)}" data-action="filter-memory-search"
                  style="width: 100%; background: rgba(0, 0, 0, 0.4); border: 1px solid var(--panel-border); border-radius: 4px; padding: 7px 10px; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: var(--holo-cyan); outline: none;">
 
           <div style="display: flex; gap: 4px; overflow-x: auto; padding-bottom: 2px;">
-            <button class="drawer-tab ${currentMemoryFilter === 'all' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" onclick="switchMemoryFilter('all')">ALL (${total})</button>
-            <button class="drawer-tab ${currentMemoryFilter === 'preferences' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" onclick="switchMemoryFilter('preferences')">PREFS (${counts.preferences})</button>
-            <button class="drawer-tab ${currentMemoryFilter === 'facts' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" onclick="switchMemoryFilter('facts')">FACTS (${counts.facts})</button>
-            <button class="drawer-tab ${currentMemoryFilter === 'documents' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" onclick="switchMemoryFilter('documents')">DOCS (${counts.documents})</button>
-            <button class="drawer-tab ${currentMemoryFilter === 'lessons' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" onclick="switchMemoryFilter('lessons')">LESSONS (${counts.lessons})</button>
+            <button class="drawer-tab ${currentMemoryFilter === 'all' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" data-action="switch-memory-filter" data-filter="all">ALL (${total})</button>
+            <button class="drawer-tab ${currentMemoryFilter === 'preferences' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" data-action="switch-memory-filter" data-filter="preferences">PREFS (${counts.preferences})</button>
+            <button class="drawer-tab ${currentMemoryFilter === 'facts' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" data-action="switch-memory-filter" data-filter="facts">FACTS (${counts.facts})</button>
+            <button class="drawer-tab ${currentMemoryFilter === 'documents' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" data-action="switch-memory-filter" data-filter="documents">DOCS (${counts.documents})</button>
+            <button class="drawer-tab ${currentMemoryFilter === 'lessons' ? 'active' : ''}" style="font-size: 0.65rem; padding: 4px 8px;" data-action="switch-memory-filter" data-filter="lessons">LESSONS (${counts.lessons})</button>
           </div>
         </div>
 
         <!-- Inscribe Fact / Preference Accordion -->
         <div class="drawer-card" style="border-left-color: var(--holo-emerald); background: rgba(0, 255, 157, 0.03); margin-bottom: 8px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleInscribeForm()">
+          <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" data-action="toggle-inscribe-form">
             <span style="font-family: 'Orbitron', sans-serif; font-size: 0.72rem; color: var(--holo-emerald); font-weight: 700;">+ INSCRIBE NEW MEMORY NODE</span>
             <span id="inscribeToggleIcon" style="color: var(--holo-emerald); font-size: 0.8rem;">▼</span>
           </div>
@@ -3322,7 +3592,7 @@ void main() {
             </div>
             <input type="text" id="inscribeKey" placeholder="Key (e.g. coffee_roast)" style="background: rgba(0, 0, 0, 0.5); border: 1px solid var(--panel-border); border-radius: 3px; color: var(--text-main); font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; padding: 4px 6px;">
             <textarea id="inscribeVal" placeholder="Value / Assertion" rows="2" style="background: rgba(0, 0, 0, 0.5); border: 1px solid var(--panel-border); border-radius: 3px; color: var(--text-main); font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; padding: 4px 6px; resize: none;"></textarea>
-            <button class="drawer-close-btn" style="color: var(--holo-emerald); border-color: rgba(0, 255, 157, 0.5); padding: 6px 12px; font-weight: 700;" onclick="submitInscribeMemory()">COMMIT TO MEMORY ↵</button>
+            <button class="drawer-close-btn" style="color: var(--holo-emerald); border-color: rgba(0, 255, 157, 0.5); padding: 6px 12px; font-weight: 700;" data-action="submit-inscribe-memory">COMMIT TO MEMORY ↵</button>
           </div>
         </div>
 
@@ -3366,7 +3636,7 @@ void main() {
                 <div style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 6px;">
                   Original duration: ${t.duration} seconds
                 </div>
-                <button class="drawer-close-btn" style="color: var(--holo-crimson); border-color: rgba(255, 51, 102, 0.4);" onclick="sendQuickCommand('Jarvis, cancel timer ${escapeHtml(t.label)}')">
+                <button class="drawer-close-btn" style="color: var(--holo-crimson); border-color: rgba(255, 51, 102, 0.4);" data-action="quick-command" data-command="Jarvis, cancel timer ${escapeHtml(t.label)}">
                   CANCEL TIMER
                 </button>
               </div>
@@ -3427,7 +3697,7 @@ void main() {
                 <div style="font-size: 0.78rem; color: var(--text-dim); margin-bottom: 8px;">
                   Status: PENDING BRIEFING &middot; ID #${doc.id}
                 </div>
-                <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); width: 100%;" onclick="briefDocument('${escapeHtml(doc.filename)}')">
+                <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); width: 100%;" data-action="brief-document" data-filename="${escapeHtml(doc.filename)}">
                   BRIEF JARVIS ↵
                 </button>
               </div>
@@ -3446,7 +3716,7 @@ void main() {
 
             if (!events.length) {
               container.innerHTML = `
-                <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); width: 100%; margin-bottom: 12px; padding: 8px;" onclick="openCalendarModal()">
+                <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); width: 100%; margin-bottom: 12px; padding: 8px;" data-action="open-calendar-modal">
                   📅 OPEN FULL HOLOGRAPHIC MATRIX ⤢
                 </button>
                 <div style="color: var(--text-dim); text-align: center; margin-top: 20px; font-size: 0.88rem;">
@@ -3457,7 +3727,7 @@ void main() {
               return;
             }
             const headerBtn = `
-              <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); width: 100%; margin-bottom: 12px; padding: 8px; font-weight:700;" onclick="openCalendarModal()">
+              <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); width: 100%; margin-bottom: 12px; padding: 8px; font-weight:700;" data-action="open-calendar-modal">
                 📅 OPEN FULL HOLOGRAPHIC MATRIX (${events.length} SESSIONS) ⤢
               </button>
             `;
@@ -3487,10 +3757,10 @@ void main() {
                   </div>
                   ${ev.location ? `<div style="font-size: 0.78rem; color: var(--holo-emerald); margin-bottom: 8px;">📍 ${escapeHtml(ev.location)}</div>` : ''}
                   <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
-                    <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); font-size:0.75rem; flex:1;" onclick="sendQuickCommand('Jarvis, tell me about ${escapeHtml(ev.title)}')">
+                    <button class="drawer-close-btn" style="color: var(--holo-cyan); border-color: rgba(0, 240, 255, 0.4); font-size:0.75rem; flex:1;" data-action="quick-command" data-command="Jarvis, tell me about ${escapeHtml(ev.title)}">
                       ASK JARVIS ↵
                     </button>
-                    <button class="drawer-close-btn" style="color: var(--holo-crimson); border-color: rgba(255, 51, 102, 0.4); font-size:0.75rem;" onclick="deleteCalendarEvent(${ev.id}, '${escapeJs(ev.title)}')">
+                    <button class="drawer-close-btn" style="color: var(--holo-crimson); border-color: rgba(255, 51, 102, 0.4); font-size:0.75rem;" data-action="delete-calendar-event" data-id="${ev.id}" data-title="${escapeHtml(ev.title)}">
                       DELETE ✕
                     </button>
                   </div>
@@ -3823,7 +4093,7 @@ void main() {
       const pillsContainer = document.getElementById('savedCalendarsPills');
       if (pillsContainer) {
         let pillsHtml = `
-          <div class="cal-pill ${currentCalendarFilter === null ? 'active' : ''}" onclick="selectSavedCalendar(null)">
+          <div class="cal-pill ${currentCalendarFilter === null ? 'active' : ''}" data-action="select-saved-calendar" data-id="">
             <span>⚡</span>
             <span>MASTER ACTIVE SCHEDULE</span>
             <span class="cal-pill-tag">${events.length} SESSIONS</span>
@@ -3833,11 +4103,11 @@ void main() {
           const isActive = currentCalendarFilter === doc.id;
           const catTag = (doc.category || 'SCHEDULE').toUpperCase();
           pillsHtml += `
-            <div class="cal-pill ${isActive ? 'active' : ''}" onclick="selectSavedCalendar(${doc.id})" title="${escapeHtml(doc.summary || doc.title)}">
+            <div class="cal-pill ${isActive ? 'active' : ''}" data-action="select-saved-calendar" data-id="${doc.id}" title="${escapeHtml(doc.summary || doc.title)}">
               <span>📄</span>
               <span>${escapeHtml(doc.title)}</span>
               <span class="cal-pill-tag">${catTag}</span>
-              <button class="cal-pill-del-btn" onclick="event.stopPropagation(); promptDeleteCalendar(${doc.id}, '${escapeJs(doc.title)}')" title="Delete this calendar from Jarvis">
+              <button class="cal-pill-del-btn" data-action="prompt-delete-calendar" data-id="${doc.id}" data-title="${escapeHtml(doc.title)}" title="Delete this calendar from Jarvis">
                 🗑️
               </button>
             </div>
@@ -3950,7 +4220,7 @@ void main() {
               const endPart = (ev.end_time || '').replace(day.date, '').trim();
               const timeDisplay = endPart ? `${startPart} &ndash; ${endPart}` : startPart;
               return `
-                <div class="cal-event-card" onclick="sendQuickCommand('Jarvis, tell me about ${escapeHtml(ev.title)} on ${day.name}')" title="Click to ask Jarvis about this session">
+                <div class="cal-event-card" data-action="quick-command" data-command="Jarvis, tell me about ${escapeHtml(ev.title)} on ${day.name}" title="Click to ask Jarvis about this session">
                   <div class="cal-event-time">
                     <span>⏰</span> <span>${timeDisplay}</span>
                   </div>
@@ -3959,7 +4229,7 @@ void main() {
                     ${ev.location ? `<span class="cal-event-room">📍 ${escapeHtml(ev.location)}</span>` : '<span></span>'}
                     <div style="display:flex; align-items:center; gap:6px;">
                       <span style="color:var(--text-dim); font-size:0.7rem;">#${ev.id}</span>
-                      <button class="cal-card-del-btn" onclick="event.stopPropagation(); deleteCalendarEvent(${ev.id}, '${escapeJs(ev.title)}')" title="Delete session #${ev.id}">✕</button>
+                      <button class="cal-card-del-btn" data-action="delete-calendar-event" data-id="${ev.id}" data-title="${escapeHtml(ev.title)}" title="Delete session #${ev.id}">✕</button>
                     </div>
                   </div>
                 </div>
@@ -4180,7 +4450,7 @@ void main() {
           <div style="font-size: 0.72rem; color: var(--holo-cyan); letter-spacing: 0.05em; margin-bottom: 6px; font-weight: 600;">
             WORKSTATION SCREEN SNAPSHOT CAPTURED
           </div>
-          <div style="position: relative; border: 1px solid rgba(0, 240, 255, 0.4); border-radius: 6px; overflow: hidden; max-width: 420px; box-shadow: 0 0 15px rgba(0, 240, 255, 0.2); cursor: pointer;" onclick="window.open('${url}', '_blank')">
+          <div style="position: relative; border: 1px solid rgba(0, 240, 255, 0.4); border-radius: 6px; overflow: hidden; max-width: 420px; box-shadow: 0 0 15px rgba(0, 240, 255, 0.2); cursor: pointer;" data-action="open-snapshot-window" data-url="${escapeHtml(url)}">
             <img src="${url}" alt="Workstation Screen Snapshot" style="width: 100%; height: auto; display: block;" loading="lazy">
             <div style="position: absolute; bottom: 0; left: 0; right: 0; background: rgba(7, 11, 18, 0.85); padding: 4px 8px; font-size: 0.68rem; color: var(--text-dim); display: flex; justify-content: space-between; border-top: 1px solid rgba(0, 240, 255, 0.2);">
               <span>CLICK TO EXPAND IN FULL RESOLUTION</span>
@@ -4513,6 +4783,7 @@ void main() {
 
     window.addEventListener('load', () => {
       initDomReferences();
+      initDomEvents();
       initWebSocket();
       fetchInitialTelemetry();
       checkStagedDocuments();

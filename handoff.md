@@ -1,77 +1,75 @@
-# Session Handoff: Jarvis 2.0 — CSP Hardening Phase 2 (Observational Report-Only)
+# Session Handoff: Jarvis 2.0 — CSP Hardening Phase 3 (Event-Handler Refactoring)
 
-**Date:** 2026-10-22
+**Date:** 2026-10-23
 **Host Environment:** Windows 11 x64 | Intel Core i5-12500H | NVIDIA RTX 3050 Laptop GPU (4GB VRAM) | Python 3.12
-**Committed Baseline on `main`:** Commit [`22a8c84`](https://github.com/Youssef1473/Jarvis2.0/commit/22a8c84d3110548ec45891b63496cbf905e95eae) pushed to `origin/main` (Verified green in GitHub Actions Run [#39863943280](https://github.com/Youssef1473/Jarvis2.0/actions/runs/39863943280))
-**Local Test Suite Baseline:** All fast parallel test suites passed (`744 passed, 16 skipped, 2 subtests passed in 64.47s`, exit code 0)
+**Committed Baseline on `main`:** Commit [`1351454`](https://github.com/Youssef1473/Jarvis2.0/commit/1351454cf9e63920990c8fe8338530ecc596532b) pushed to `origin/main` (Verified green in GitHub Actions Run [#39868976782](https://github.com/Youssef1473/Jarvis2.0/actions/runs/39868976782))
+**Local Test Suite Baseline:** All fast parallel test suites passed (`746 passed, 16 skipped, 1 warning, 2 subtests passed in 67.58s`, exit code 0)
 
 ---
 
-## 1. Prior Baseline (`22a8c84`)
+## 1. Prior Baseline (`1351454`)
 
-Commit `22a8c84` closed the remaining CI test failure:
-1. Null-daemon safe extraction and graceful fallback in `AntigravityBridge.generate_response`.
-2. Safe daemon pool invalidation on `bridge.daemon = None`.
-3. Defensive directory existence checks in `SkillSandbox.validate_and_promote` and `create_snapshot`.
-4. Dedicated regression test `test_antigravity_batch_generation_with_null_daemon`.
-5. `.gitkeep` tracking for `data/evolution_scratch/` and `data/evolution_snapshots/`.
+Commit `1351454` (`feat(security): add observational CSP report-only and reporting endpoint`) implemented Phase 2:
+1. Dual CSP header emission (`Content-Security-Policy` and `Content-Security-Policy-Report-Only`).
+2. Absolute Reporting API endpoint mapping (`Reporting-Endpoints: csp-endpoint="<absolute_url>"`).
+3. Telemetry ingestion endpoint (`/api/csp-report`) with 32 KB streaming body guard.
+4. Batch-aware rate limiting (60 reports/min) and deduplication.
+5. Log-injection defense and printable ASCII sanitization.
 
 ---
 
-## 2. Phase 2 Implementation: Observational CSP Report-Only
+## 2. Phase 3 Deliverable 1: Event-Handler Refactoring
 
-### A. Dual CSP Header Deployment (`jarvis/ui/server.py`)
-- **Active Enforced Policy (`Content-Security-Policy`):**
-  Maintains complete backwards compatibility for the current HUD without tightening active enforcement, while wiring reporting directives:
-  `report-uri /api/csp-report; report-to csp-endpoint;`
-- **Prospective Policy (`Content-Security-Policy-Report-Only`):**
-  Deployed alongside the enforced policy to observe real-world violations without blocking running client code:
-  - Tests elimination of `'unsafe-eval'`.
-  - Scopes `connect-src` strictly to loopback (`'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*`) plus trusted secure tunnel origin if `JARVIS_SECURE_TUNNEL=1`.
-  - Drops unused `blob:` from `img-src`.
-  - Dispatches reports to `/api/csp-report` via both `report-uri` (CSP Level 2) and `report-to` (Reporting API Level 3).
-- **Absolute Reporting API Endpoint Mapping:**
-  Emits `Reporting-Endpoints: csp-endpoint="<absolute_url>"` derived via `derive_absolute_reporting_endpoint()`. Rejects relative paths as mandated by the W3C Reporting API spec, resolving to `http://<host>:<port>/api/csp-report` for loopback and `https://<tunnel_host>[:port]/api/csp-report` when `JARVIS_SECURE_TUNNEL=1`.
+### A. Inline DOM Event Handler Elimination (`jarvis/ui/templates/hud.html`)
+- Completely eliminated all **88 inline event handlers** (`onclick`, `oninput`, `onchange`, `onkeydown`) across both static HTML controls and JavaScript dynamic template generators:
+  - **Static Controls (46 handlers eliminated):**
+    - Docked header buttons (`dockedMuteBtn`, `dockedExpandBtn`).
+    - Main console header pills (Intel Matrix gallery, Tactical Calendar, Flank drawer).
+    - Arc reactor stage (`stagedDocPill`).
+    - Command deck quick action triggers (mute, 5 preset voice instructions, PDF intake, gallery, calendar, drawer).
+    - Command input Enter key trigger (`cmdInput` keydown) and transmit button (`btnTransmit`).
+    - Drawer starboard edge toggle and drawer tab navigation buttons (controls, intelligence, timers, notes, staged, agenda).
+    - Calendar modal controls (close, import timetable, data reload, week navigation prev/next/active, delete calendar, confirm purge).
+    - Photo gallery modal and lightbox controls (backdrop dismissals, sync, paste clipboard, close lightbox, analyze photo with vision).
+  - **Dynamic Template Generators (42 handlers eliminated):**
+    - Audio flank sliders and volume presets (25%, 50%, 75%, 100%, flank mute toggle).
+    - Tactical shortcuts (private browser, workstation lock, focus VS Code, optimize memory, modal triggers).
+    - SQLite memory matrix view (cancel edit, save edit, preference edit/prune, fact edit/prune, document prune, lesson prune, agenda jump, inscribe accordion toggle, inscribe submit).
+    - Memory search filter input and type filter tabs (`all`, `preferences`, `facts`, `documents`, `lessons`).
+    - Active timers countdown cancellation.
+    - Staged document briefing dispatch.
+    - Calendar event cards and deletion triggers.
+    - Chat screen snapshot full-resolution expansion links.
 
-### B. Telemetry Ingestion Endpoint (`/api/csp-report`)
-- **Route & Content-Type Gate:** Starlette POST route accepting `application/csp-report`, `application/reports+json`, and `application/json`; rejects unsupported types with HTTP 415.
-- **Security Boundary:** Exempt from session cookie authentication in `SecurityHeadersMiddleware`, but strictly protected by Host and Origin validation (`validate_request_host_and_origin`). Untrusted cross-origin POSTs fail closed with HTTP 403.
-- **Streaming Size Guard (Anti-DoS):**
-  - Enforces a 32 KB ceiling while consuming chunks from `request.stream()` (aborts immediately with HTTP 413 without buffering unbounded bodies into RAM).
-  - Validates `Content-Length` header (rejects >32KB with 413, rejects negative or non-integer with 400).
-- **JSON Structure & Malformation Validation:**
-  - Rejects primitive JSON types (integers, strings, booleans) with HTTP 400.
-  - Rejects non-dictionary `csp-report` values with HTTP 400.
-- **Batch-Aware Rate Limiting & Deduplication:**
-  - Rate limiter strictly accounts for individual reports within `application/reports+json` batches, enforcing a global maximum of 60 individual reports per minute across the server instance (HTTP 429).
-  - 10-second deduplication cache on `(violated_directive, effective_directive, blocked_uri, document_uri)`.
-- **Inert Data Sanitization (Log Injection Defense):**
-  - Strips carriage returns, line feeds, and ANSI escape sequences using strict printable ASCII filtering (`32 <= ord(c) <= 126`).
-  - Bounds individual field strings to 256 characters.
-  - Bounded in-memory telemetry ring buffer (`collections.deque(maxlen=50)`).
-  - Returns HTTP 204 No Content.
+### B. Declarative Delegated Event Architecture (`initDomEvents()`)
+- Introduced a centralized, idempotent DOM event controller wired into `hud.html` immediately upon reference cache initialization and DOM ready:
+  - **Delegated Click Controller (`document.addEventListener('click')`):**
+    - Dispatches on semantic `data-action` attributes (`data-action="quick-command"`, `data-action="set-flank-volume"`, `data-action="switch-drawer-tab"`, etc.).
+    - Resolves nested event propagation (e.g., calendar session deletion inside quick-command cards, and calendar shelf delete buttons inside calendar pill selection) using inner action priority checks without requiring fragile inline `event.stopPropagation()`.
+  - **Delegated Input Controller (`document.addEventListener('input')`):**
+    - Centralized bubbled input handling for hardware volume slider (`#flankVolSlider`) and live memory matrix search filtering (`data-action="filter-memory-search"`).
+  - **Standard Event Listeners (`addEventListener`):**
+    - `cmdInput`: dedicated `keydown` listener listening for `Enter` key transmission.
+    - `pdfFileInput`: dedicated `change` listener triggering asynchronous PDF file upload.
+    - Modal backdrops (`calendarModalBackdrop`, `calConfirmBackdrop`, `photoGalleryModalBackdrop`, `photoLightboxModal`): dedicated `click` listeners verifying `e.target === backdrop` for click-to-dismiss behavior.
+
+### C. Automated Regression Test (`tests/test_hud_security_dsp.py`)
+- Added `test_hud_template_contains_zero_inline_event_handlers` to `TestHudSecurityAndDsp`:
+  - Scans `jarvis/ui/templates/hud.html` using AST/regex pattern `(?:\s|\b)(on[a-zA-Z]+)\s*=\s*(["'])(.*?)\2`.
+  - Enforces invariant of exactly **0** inline event handler attributes across the entire file.
+  - Verifies presence of `initDomEvents()` and core delegated action tokens (`data-action="toggle-mute"`, `data-action="quick-command"`).
 
 ---
 
 ## 3. Scope Boundaries & Verification Status
 
 ### Empirically Verified by Automated Test Suites
-- Dual CSP header emission (`Content-Security-Policy`, `Content-Security-Policy-Report-Only`, `Reporting-Endpoints`) across HTTP responses and early 401 error responses.
-- `Reporting-Endpoints` emits absolute same-origin URLs across local loopback and secure-tunnel configurations, rejecting relative URL paths.
-- Ingestion of legacy CSP Level 2 (`application/csp-report`), modern Reporting API Level 3 (`application/reports+json`), and JSON payloads.
-- Rejection of unsupported content types (HTTP 415).
-- Rejection of oversized payloads (>32KB) both via Content-Length header and streaming chunk limits (HTTP 413).
-- Rejection of invalid Content-Length, empty bodies, malformed JSON, primitive JSON, and non-dict `csp-report` payloads (HTTP 400).
-- Cross-origin rejection under Host/Origin validation (HTTP 403).
-- Batch-level rate limiter accounting, proving an effective maximum of 60 individual reports per minute (HTTP 429).
-- Deduplication suppressing duplicate telemetry entries within 10s.
-- CRLF and ANSI escape stripping from stored telemetry fields.
-- Dynamic tunnel origin injection into `connect-src` and reporting URLs when `JARVIS_SECURE_TUNNEL=1` is configured.
-- Live HTTP socket lifecycle verification.
-
-### Real Browser Behavior (Observational Horizon)
-- In a live browser session (Chrome, Edge, Brave), the browser will now silently dispatch prospective CSP violations to `/api/csp-report`.
-- End-to-end browser collection during real HUD usage remains to be observed once the HUD is accessed by the user, providing the empirical dataset for Phase 3 refactoring.
+- `python tools/run_fast_tests.py tests/test_hud_security_dsp.py`: 46 passed in 4.27s (Exit code: 0).
+- `python tools/run_fast_tests.py tests/test_ui_server.py`: 1 passed in 2.02s (Exit code: 0).
+- `node scratch/test_client_events.js`: All client event tests passed empirically (idempotence, basic action dispatch, parameterized quick-command, volume preset, nested propagation isolation, safe default fallback on unlisted actions, and input delegation).
+- `node --check <extracted_hud_script.js>`: Clean syntax check with 0 syntax errors across 2,723 lines of client JavaScript (Exit code: 0).
+- `python tools/run_fast_tests.py --fast -w 4`: 746 passed, 16 skipped, 1 warning (harmless pywinauto STA COM mode), 2 subtests passed in 67.58s (Exit code: 0).
+- `git diff --check`: Clean, zero whitespace errors or trailing spaces.
 
 ---
 
@@ -81,24 +79,22 @@ Local modifications ready for review (`git status --short`):
 
 ```text
  M handoff.md
- M jarvis/ui/server.py
+ M jarvis/ui/templates/hud.html
  M tests/test_hud_security_dsp.py
- M tests/test_ui_server.py
 ```
 
 `git diff --stat`:
 ```text
- handoff.md                     | 136 ++++++++--------
- jarvis/ui/server.py            | 223 ++++++++++++++++++++++++--
- tests/test_hud_security_dsp.py | 350 +++++++++++++++++++++++++++++++++++++++++
- tests/test_ui_server.py        |  23 +++
- 4 files changed, 657 insertions(+), 75 deletions(-)
+ handoff.md                     | 134 ++++++------
+ jarvis/ui/templates/hud.html   | 451 +++++++++++++++++++++++++++++++++--------
+ tests/test_hud_security_dsp.py |  79 ++++++++
+ 3 files changed, 505 insertions(+), 159 deletions(-)
 ```
 
 ---
 
 ## 5. Next Steps
 
-1. Review and approve the Phase 2 observational CSP implementation.
-2. Monitor real-world CSP violation reports in HUD sessions to identify any latent `eval` or dynamic code requirements.
-3. Proceed to Phase 3: Event-listener refactoring and nonce generation for top-level scripts.
+1. Developer review of the Phase 3 Deliverable 1 event-handler refactoring diff.
+2. Upon approval, stage, commit, and push Phase 3 Deliverable 1.
+3. Proceed to Phase 3 Deliverable 2: Per-response cryptographic nonce generation and injection for top-level `<script>` and `<style>` blocks in `hud.html` and `jarvis/ui/server.py`.
