@@ -1,36 +1,54 @@
-## Code Intelligence: AST-Grep & Ruff
+---
+trigger: model_decision
+description: Code intelligence, structural AST search with ast-grep, fast static diagnostics with ruff, and token-efficient context slicing.
+---
 
-This project has `ast-grep` (Rust tree-sitter AST engine) and `ruff` (Rust static analyzer & linter) installed in `.venv\Scripts\`.
+# Code Intelligence: AST-Grep, Ruff & Context Slicing
 
-### Directives:
-1. **Intra-File & Structural AST Search (`ast-grep`):**
-   - For searching syntax structures, function signatures, decorators, method calls, or AST patterns (e.g. `def $FUNC($$$ARGS):`, `$OBJ.remember_fact($$$ARGS)`), prefer `ast-grep` over raw regex or line-based grep.
-   - Command: `& "C:\Users\Youssef\Projects\.venv\Scripts\ast-grep.exe" run -p '<pattern>' <path>`
-   - In PowerShell, always use single quotes `'...'` around patterns containing `$` to prevent PowerShell variable expansion.
-   - When matching functions/classes in Python, remember AST nodes require complete bodies or body ellipses: `def $FUNC($$$ARGS): $$$BODY` or `class $NAME($$$PARENTS): $$$BODY`.
-   - In ast-grep 0.51+, use `ast-grep` (`sg` is deprecated).
+This workspace supports `ast-grep` (tree-sitter AST engine) and `ruff` (Rust static analyzer & linter) via the virtual environment (`.venv\Scripts\` or `..\.venv\Scripts\`).
 
-2. **Instant Compiler & Syntax Diagnostics (`ruff`):**
-   - Before and after modifying Python files, run `ruff check` on the target file/directory to immediately catch syntax errors, missing imports, and undefined names in <20ms.
-   - Command: `& "C:\Users\Youssef\Projects\.venv\Scripts\ruff.exe" check --color never <path>`
-   - For syntax/undefined name triage only: `ruff check --select E9,F821 <path>`
-   - For safe auto-fixing: `ruff check --fix <path>`
+## Quick Reference Commands
 
-3. **Multi-Scale Triaging Hierarchy:**
-   - **Macro Level (Inter-file relationships):** Use Graphify (`graphify query "<concept>"`, `query_codebase_graph`) to understand caller/callee graphs and blast-radius.
-   - **Micro Level (Structural AST queries):** Use `ast-grep` (`ast_search_codebase`) for structural AST pattern matching.
-   - **Structural Outline & Skeleton:** Use `python tools/agy_context_slicer.py <file>` to inspect class and function signatures with exact line ranges before reading large files.
-   - **Diagnostic Gate:** Use `ruff` (`check_code_diagnostics`) for instant static analysis and lint/syntax verification before executing unit tests.
+```powershell
+# Structural AST search (use single quotes to avoid PowerShell variable expansion)
+ast-grep run -p '<pattern>' <path>
 
-4. **Token-Efficient Context Slicing (`tools/agy_context_slicer.py`):**
-   - Never dump or read entire >300-line source files into context.
-   - Command: `& "C:\Users\Youssef\Projects\.venv\Scripts\python.exe" tools/agy_context_slicer.py <path>`
-   - Extracts symbol signatures and line numbers in <10ms to achieve 75%+ context token reduction. Target specific line ranges with `view_file` using the extracted line ranges.
+# Instant syntax and undefined-name diagnostics
+ruff check <path>
 
-5. **Antigravity CLI Perfection & 4-Point Verification Matrix:**
-   - Before editing any file, verify:
-     1. **Public Signatures & Shims:** Never alter or remove existing interfaces or deprecation shims imported by `tests/`.
-     2. **Thread/Event-Loop Ownership:** Zero blocking calls on WASAPI playback, Kokoro neural synthesis, Whisper STT, or FastAPI/Starlette event loops.
-     3. **Compute Hardware Envelope:** Respect the 4GB RTX 3050 VRAM ceiling; enforce CPU thread pinning (`inter_op_num_threads = 1`, `allow_spinning = "0"`).
-     4. **Win32 & SQLite WAL Lifecycle:** Release all Win32 handles and SQLite read-marks (`isolation_level = None`, `conn.commit()`) to prevent WAL tail pinning.
-   - Run tests cleanly via `tools/run_fast_tests.py` to prevent context pollution.
+# Safe auto-fix for imports and lint issues
+ruff check --fix <path>
+
+# Outline class and function signatures before reading large files
+python tools/agy_context_slicer.py <path>
+```
+
+> **Executable Discovery:** If `ast-grep` or `ruff` are not directly on `PATH`, invoke them via the workspace virtualenv (e.g. `& "..\.venv\Scripts\ruff.exe"` or `& ".venv\Scripts\ruff.exe"`).
+
+---
+
+## Detailed Workflow & Progressive Guide
+
+### 1. Structural AST Search (`ast-grep`)
+- Prefer `ast-grep` over line-based regex when searching function signatures, decorators, method calls, or AST patterns (e.g. `def $FUNC($$$ARGS):`, `$OBJ.remember_fact($$$ARGS)`).
+- When matching functions or classes in Python, provide complete bodies or body ellipses:
+  - `def $FUNC($$$ARGS): $$$BODY`
+  - `class $NAME($$$PARENTS): $$$BODY`
+- Always use single quotes in PowerShell (`'...'`) around patterns containing `$` to prevent shell variable expansion.
+
+### 2. Fast Static Diagnostics (`ruff`)
+- Run `ruff check <path>` before and after editing files to catch syntax errors, missing imports, and undefined names in <20ms.
+- To focus strictly on fatal syntax and undefined names:
+  ```powershell
+  ruff check --select E9,F821 <path>
+  ```
+
+### 3. Context Slicing (`tools/agy_context_slicer.py`)
+- Avoid reading entire >300-line files when exploring unfamiliar modules.
+- Run `python tools/agy_context_slicer.py <path>` to extract top-level classes and method signatures with line numbers, then read targeted line ranges.
+
+### 4. Triaging Hierarchy
+1. **Macro Level (Inter-module dependencies):** Consult `docs/architecture/PROJECT_MAP.md` or Graphify (`graphify query "<concept>"`).
+2. **Structural Skeleton:** Use `python tools/agy_context_slicer.py <file>` for outlines.
+3. **Micro Level (Syntax patterns):** Use `ast-grep` for structural matching.
+4. **Diagnostic Gate:** Run `ruff check <path>` before running test suites.

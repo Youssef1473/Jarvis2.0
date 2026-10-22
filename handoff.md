@@ -1,12 +1,15 @@
 # Agent Handoff: Jarvis 2.0 Engineering State & Architecture Runbook
 
-**Generated At:** 2026-10-19T07:50:00+01:00  
-**Target Agent:** Incoming Jarvis AI Pair Programmer / Autonomous Continuation Agent  
-**Host Environment:** Windows 11 x64 | Intel Core i5-12500H (P-Cores + E-Cores) | NVIDIA GeForce RTX 3050 Laptop GPU (4GB VRAM) | 16GB System RAM  
-**Python Runtime:** `.\.venv\Scripts\python.exe` (Python 3.12.9 virtualenv)  
-**Git Head:** Commit [`02ef185`](https://github.com/Youssef1473/Jarvis2.0/commit/02ef185) on branch `main` (synchronized with `origin/main`)  
-**Council Rating:** **9.6 / 10.0 (Enterprise Production-Hardened)** &mdash; Top 0.01% of autonomous desktop agent architectures  
-**Regression Test Suite:** **588 / 588 PASSED (100% Green, 0 Failures, 0 Errors, 0 Skips)** in 146.04s across 103 test suites  
+> [!NOTE]
+> **Historical Milestone Snapshot:** This handoff document is a point-in-time snapshot recorded at commit [`02ef185`](https://github.com/Youssef1473/Jarvis2.0/commit/02ef185) on 2026-10-19. For the live, current architecture map, canonical modules, and executable verification workflows, consult [`docs/architecture/PROJECT_MAP.md`](./docs/architecture/PROJECT_MAP.md) and [`AGENTS.md`](./AGENTS.md). Run live tests via `python tools/run_fast_tests.py`.
+
+**Snapshot Date:** 2026-10-19T07:50:00+01:00<br>
+**Target Agent:** Incoming Jarvis AI Pair Programmer / Autonomous Continuation Agent<br>
+**Host Environment:** Windows 11 x64 | Intel Core i5-12500H (P-Cores + E-Cores) | NVIDIA GeForce RTX 3050 Laptop GPU (4GB VRAM) | 16GB System RAM<br>
+**Python Runtime:** Python 3.12 virtualenv<br>
+**Snapshot Git Head:** Commit [`02ef185`](https://github.com/Youssef1473/Jarvis2.0/commit/02ef185) on branch `main`<br>
+**Council Rating at Snapshot:** **9.6 / 10.0 (Enterprise Production-Hardened)**<br>
+**Regression Test Suite at Snapshot:** **588 / 588 PASSED (100% Green, 0 Failures, 0 Errors, 0 Skips)** in 146.04s across 103 test suites (commit `02ef185`)<br>
 
 ---
 

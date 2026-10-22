@@ -191,7 +191,7 @@ Jarvis 2.0 exposes **143 atomic capabilities across 36 specialized modules**, go
 | **OS** | Windows 11 Pro 64-bit |
 | **Audio DAC** | Realtek ALC / WASAPI 48kHz 16-bit Stereo DAC |
 | **Python** | Python 3.12 (Virtual Environment: `.venv`) |
-| **Test Baseline** | 106 test suites (601 fast parallel + 66 hardware serial = 667 total tests) |
+| **Test Architecture** | Two-tier test runner (`tools/run_fast_tests.py`): fast parallel suite + isolated serial hardware suite |
 
 ---
 
@@ -244,17 +244,17 @@ Set-Content .env "GEMINI_API_KEY=your_key_here`nANTHROPIC_API_KEY=your_key_here"
 Running the test suite requires the development dependencies installed via `pip install -r requirements-dev.txt`. Jarvis 2.0 includes a specialized high-performance test runner implementing intelligent two-tier sharding:
 
 ```powershell
-# Run the fast parallel unit test suite (601 tests across worker processes)
-.\.venv\Scripts\python.exe tools/run_fast_tests.py --fast
+# Run the fast parallel unit test suite (non-hardware)
+python tools/run_fast_tests.py --fast
+
+# Run a specific targeted test file
+python tools/run_fast_tests.py tests/test_security_boundaries.py
 
 # Run the serial hardware/audio suite (CUDA, WASAPI, and ONNX endpoints)
-.\.venv\Scripts\python.exe tools/run_fast_tests.py --hardware
+python tools/run_fast_tests.py --hardware
 
 # Run the complete test gate
-.\.venv\Scripts\python.exe tools/run_fast_tests.py --all
-
-# Standard unittest discovery
-.\.venv\Scripts\python.exe -m unittest discover tests
+python tools/run_fast_tests.py --all
 ```
 
 ---
