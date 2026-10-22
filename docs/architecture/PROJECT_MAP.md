@@ -8,10 +8,10 @@ This document provides a concise, ground-truth reference for developers and agen
 
 | Entry Point | Path | Role |
 | :--- | :--- | :--- |
-| **Daemon Entry Point** | [`run.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/run.py) | CLI bootstrap, service lifecycle, argument parser (`--stealth`, `--omniroute`, `--check-health`). |
-| **Web HUD & Telemetry Server** | [`jarvis/ui/server.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/ui/server.py) | FastAPI / Starlette server for the Holographic Web HUD (port 8000) and WebSocket feeds. |
-| **Antigravity Sidecar Worker** | [`jarvis/core/antigravity_bridge.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/antigravity_bridge.py) | Persistent warm `agy.exe` child process in `data/agy_runtime_workspace` using `--input-format stream-json`. |
-| **Fast Test Runner** | [`tools/run_fast_tests.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tools/run_fast_tests.py) | Two-tier test runner (fast parallel pytest suite + isolated serial hardware suite). |
+| **Daemon Entry Point** | [`run.py`](../../run.py) | CLI bootstrap, service lifecycle, argument parser (`--stealth`, `--omniroute`, `--check-health`). |
+| **Web HUD & Telemetry Server** | [`jarvis/ui/server.py`](../../jarvis/ui/server.py) | FastAPI / Starlette server for the Holographic Web HUD (port 8000) and WebSocket feeds. |
+| **Antigravity Sidecar Worker** | [`jarvis/core/antigravity_bridge.py`](../../jarvis/core/antigravity_bridge.py) | Persistent warm `agy.exe` child process in `data/agy_runtime_workspace` using `--input-format stream-json`. |
+| **Fast Test Runner** | [`tools/run_fast_tests.py`](../../tools/run_fast_tests.py) | Two-tier test runner (fast parallel pytest suite + isolated serial hardware suite). |
 
 ---
 
@@ -97,13 +97,13 @@ Streaming Tool Call
 
 ### C. Persistent Memory Subsystem (`jarvis/core/memory/`)
 The `MemoryManager` class combines focused mixins into a single cohesive facade:
-- **`SqliteBaseMixin`** ([`sqlite_base.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/memory/sqlite_base.py)): Manages WAL mode, 256MB `mmap_size`, read-only connection pooling, and serialized writes via `SingleWriterActor`.
-- **`TemporalGraphMixin`** ([`temporal_graph.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/memory/temporal_graph.py)): Bi-temporal knowledge graph edges and Markov habit transitions.
-- **`FactsManagerMixin`** ([`facts_manager.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/memory/facts_manager.py)): Atomic facts and core user profile preferences (Tier 1 & Tier 2).
-- **`TasksCalendarMixin`** ([`tasks_calendar.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/memory/tasks_calendar.py)): Tasks, deadlines, calendar events.
-- **`DocumentVaultMixin`** ([`document_vault.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/memory/document_vault.py)): JIT document vaults, chunk sandwiching, attention-boundary formatting (Tier 3).
-- **`InteractionMemoryMixin`** ([`interaction_memory.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/memory/interaction_memory.py)): Conversation turn logs and episodic failure lessons (Tier 4).
-- **`VectorMemoryEngine`** ([`vector_engine.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/memory/vector_engine.py)): Native `sqlite-vec` KNN virtual tables fused with FTS5 BM25 via Reciprocal Rank Fusion (RRF).
+- **`SqliteBaseMixin`** ([`sqlite_base.py`](../../jarvis/core/memory/sqlite_base.py)): Manages WAL mode, 256MB `mmap_size`, read-only connection pooling, and serialized writes via `SingleWriterActor`.
+- **`TemporalGraphMixin`** ([`temporal_graph.py`](../../jarvis/core/memory/temporal_graph.py)): Bi-temporal knowledge graph edges and Markov habit transitions.
+- **`FactsManagerMixin`** ([`facts_manager.py`](../../jarvis/core/memory/facts_manager.py)): Atomic facts and core user profile preferences (Tier 1 & Tier 2).
+- **`TasksCalendarMixin`** ([`tasks_calendar.py`](../../jarvis/core/memory/tasks_calendar.py)): Tasks, deadlines, calendar events.
+- **`DocumentVaultMixin`** ([`document_vault.py`](../../jarvis/core/memory/document_vault.py)): JIT document vaults, chunk sandwiching, attention-boundary formatting (Tier 3).
+- **`InteractionMemoryMixin`** ([`interaction_memory.py`](../../jarvis/core/memory/interaction_memory.py)): Conversation turn logs and episodic failure lessons (Tier 4).
+- **`VectorMemoryEngine`** ([`vector_engine.py`](../../jarvis/core/memory/vector_engine.py)): Native `sqlite-vec` KNN virtual tables fused with FTS5 BM25 via Reciprocal Rank Fusion (RRF).
 
 ---
 
@@ -124,7 +124,7 @@ When authoring new features or refactoring, always import from the canonical mod
 
 ## 5. Test Infrastructure & Verification
 
-Tests live in the [`tests/`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/) directory and are managed by [`tools/run_fast_tests.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tools/run_fast_tests.py):
+Tests live in the [`tests/`](../../tests/) directory and are managed by [`tools/run_fast_tests.py`](../../tools/run_fast_tests.py):
 
 | Test Mode | Command | Scope |
 | :--- | :--- | :--- |
@@ -138,7 +138,7 @@ Tests live in the [`tests/`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/
 
 ## 6. Detailed Architectural References
 
-- [AGENTS.md](file:///C:/Users/Youssef/Projects/Jarvis_2.0/AGENTS.md): Developer-agent operational directives and invariants.
-- [JARVIS_2.0_MASTER_ARCHITECTURAL_BLUEPRINT.txt](file:///C:/Users/Youssef/Projects/Jarvis_2.0/JARVIS_2.0_MASTER_ARCHITECTURAL_BLUEPRINT.txt): Deep technical specification and 8-pillar audit.
-- [handoff.md](file:///C:/Users/Youssef/Projects/Jarvis_2.0/handoff.md): Point-in-time architectural milestones and historical audit snapshot.
-- [`.agents/skills/`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/.agents/skills/): Specialized engineering skills (`systematic-debugging`, `test-driven-development`, `python-testing-patterns`, `python-profiling`, `council`, etc.).
+- [AGENTS.md](../../AGENTS.md): Developer-agent operational directives and invariants.
+- [JARVIS_2.0_MASTER_ARCHITECTURAL_BLUEPRINT.txt](../../JARVIS_2.0_MASTER_ARCHITECTURAL_BLUEPRINT.txt): Deep technical specification and 8-pillar audit.
+- [handoff.md](../../handoff.md): Point-in-time architectural milestones and historical audit snapshot.
+- [`.agents/skills/`](../../.agents/skills/): Specialized engineering skills (`systematic-debugging`, `test-driven-development`, `python-testing-patterns`, `python-profiling`, `council`, etc.).

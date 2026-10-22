@@ -2,8 +2,8 @@
 name: test-driven-development
 description: >-
   Strict RED-GREEN-REFACTOR protocol for authoring features, bugfixes, and refactors across Jarvis 2.0.
-  Enforces writing isolated reproduction or specification tests before modifying production code,
-  preserving 100% pass rates across the 524-test baseline.
+  Enforces writing isolated reproduction or specification tests before modifying production code
+  and establishing dynamic baseline verification without regressions.
   Activate when implementing new capabilities, resolving issues, or refactoring existing modules.
 ---
 
@@ -28,7 +28,7 @@ flowchart LR
     end
 
     subgraph REFACTOR ["Phase 3: REFACTOR"]
-        RF1["Clean Up AST & Typing"] --> RF2["Run Full Test Suite"] --> RF3["Verify 100% Green"]
+        RF1["Clean Up AST & Typing"] --> RF2["Run Test Suite"] --> RF3["Verify No Regressions"]
     end
 
     RED --> GREEN --> REFACTOR
@@ -40,7 +40,7 @@ flowchart LR
    - Write a single, focused test case demonstrating the desired behavior or reproducing the bug.
 2. **Execute the Test:**
    ```powershell
-   .venv\Scripts\python.exe -m unittest tests/test_<feature>.py -k "<test_method_name>"
+   python tools/run_fast_tests.py tests/test_<feature>.py
    ```
 3. **Verify the Failure:**
    - The test **must fail** with an assertion error or explicit missing behavior.
@@ -54,7 +54,7 @@ flowchart LR
    - Write *only* the code required to make the failing test pass. Do not anticipate future features or add speculative abstractions.
 2. **Execute the Targeted Test:**
    ```powershell
-   .venv\Scripts\python.exe -m unittest tests/test_<feature>.py -k "<test_method_name>"
+   python tools/run_fast_tests.py tests/test_<feature>.py
    ```
 3. **Verify Green Status:**
    - Confirm the test passes cleanly without warnings, hangs, or unhandled output.
@@ -66,12 +66,15 @@ flowchart LR
    - Add explicit Python type annotations (`typing.Optional`, `typing.Dict`, `typing.List`).
    - Remove temporary print statements or debug logs.
    - Ensure docstrings adhere to project standards.
-2. **Full Regression Verification:**
-   - Run the complete project test suite:
+2. **Regression Verification & Baseline Confirmation:**
+   - Establish the baseline before claiming success. Run the project fast test suite:
      ```powershell
-     .venv\Scripts\python.exe -m unittest discover tests
+     python tools/run_fast_tests.py --fast -w 2 -v
      ```
-   - **Baseline:** All 524 existing tests must remain 100% green. If any regression occurs, resolve it before proceeding.
+   - **Baseline Principles:**
+     - Do not assume or promise a 100% pass rate before running tests. Inspect and report the actual baseline, including pre-existing failures and skips.
+     - New tests and existing working tests must pass cleanly. If any regression occurs, resolve its root cause before proceeding.
+     - Never weaken assertions, delete tests, or add unprincipled skips merely to force a green build. Bug fixes must include a focused regression test.
 
 ---
 

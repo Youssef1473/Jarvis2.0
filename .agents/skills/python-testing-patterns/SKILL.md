@@ -101,6 +101,44 @@ class TestHUDWebSocket(unittest.TestCase):
 
 ---
 
+### Pattern D: Patching Properties Without Deleters
+Never use `unittest.mock.patch.object` on a `@property` that does not define a deleter (`@prop.deleter`). During test unpatching, `mock` attempts `delattr()`, raising `AttributeError: property 'name' of 'Class' object has no deleter`.
+* Use explicit assignment with `try...finally` restoration:
+
+```python
+orig_daemon = bridge.daemon
+bridge.daemon = mock_daemon
+try:
+    result = bridge.execute_turn("query")
+    self.assertIn("response", result)
+finally:
+    bridge.daemon = orig_daemon
+```
+
+---
+
+### Pattern E: Network Isolation & Deterministic Test Doubles
+Standard unit tests must never perform live HTTP queries or DNS lookups.
+* Mock `requests.get` or external API clients using URL-matching dispatchers:
+
+```python
+def _mock_requests_get(url, *args, **kwargs):
+    resp = MagicMock()
+    if "open-meteo.com" in url:
+        resp.json.return_value = {"current_weather": {"temperature": 15.0, "windspeed": 10.0}}
+    else:
+        resp.status_code = 200
+        resp.text = "OK"
+    return resp
+
+with patch("requests.get", side_effect=_mock_requests_get):
+    res = SkillRegistry.execute("get_weather", city="London")
+    assert "Weather in London" in res
+```
+* Gate any truly live hardware/provider smoke tests behind environment variables (e.g. `JARVIS_RUN_LIVE_INTEGRATION=1`) and skip explicitly when unset.
+
+---
+
 ## 3. Fixture Lifecycles & Resource Leak Prevention
 
 ### Use `addCleanup` Instead of `tearDown`
@@ -123,11 +161,22 @@ def setUp(self):
 ## 4. Real-World Failure Modes & Mitigations
 
 ### Failure Mode 1: Windows File Lock Contention (`WinError 32`)
-* **Symptom:** `PermissionError: [WinError 32] The process cannot access the file because it is being used by another process` during test teardown.
-* **Root Cause:** SQLite connection or file handle left open when attempting to remove a temporary test directory on Windows. Windows strictly prevents file deletion while an open handle exists.
+* **Symptom:** `PermissionError: [WinError 32] The process cannot access the file because it is being used by another process` during `tempfile.TemporaryDirectory` teardown.
+* **Root Cause:**
+  1. An open SQLite connection exists in the main thread or an idle background worker thread.
+  2. CPython on Windows has not yet garbage-collected connection handles before directory removal.
 * **Mitigation:**
-  - Explicitly close SQLite connections and cursors before teardown.
-  - In `addCleanup`, use `shutil.rmtree(path, ignore_errors=True)` or wrap in a retry loop.
+  - Background workers consuming from queues must connect per transaction and close handles upon completion rather than keeping idle connections open.
+  - In tests, replace arbitrary `time.sleep()` waits with deterministic `queue.join()` on worker queues.
+  - Always call `gc.collect()` before `temp_dir.cleanup()` in `tearDown()` to ensure handles are released by the OS:
+  ```python
+  def tearDown(self):
+      self.worker_queue.join()
+      self.memory.close()
+      import gc
+      gc.collect()
+      self.temp_dir.cleanup()
+  ```
 
 ### Failure Mode 2: Over-Mocking (False Green Tests)
 * **Symptom:** Unit tests pass with 100% green status, but the feature crashes in production.
@@ -142,3 +191,27 @@ def setUp(self):
 * **Mitigation:**
   - Save and restore global state in `setUp()` / `addCleanup()`.
   - For environment variables, use `unittest.mock.patch.dict(os.environ, {"KEY": "VALUE"})`.
+
+### Failure Mode 4: Ambient Persistent State Assumptions
+* **Symptom:** Tests pass on developer workstations with prior database history, but fail in clean CI checkouts with `AssertionError: Expected non-empty recent interactions`.
+* **Root Cause:** Tests implicitly connect to `data/jarvis_memory.db` instead of an isolated temporary fixture.
+* **Mitigation:**
+  - Never allow tests to read from or write to `data/jarvis_memory.db`.
+  - Always point `config["memory"]["db_path"]` to `tempfile.TemporaryDirectory()`.
+  - Explicitly seed baseline records inside the test before asserting on query or recall outputs.
+
+### Failure Mode 5: Hardware-Dependent Schema Incompleteness
+* **Symptom:** Skills return full metadata on developer GPU workstations, but fail schema or key-existence assertions in headless CI runners.
+* **Root Cause:** Skill return dictionaries omit optional fields when returning `unavailable` or `error`.
+* **Mitigation:**
+  - Standardize dictionary return schemas so all structural keys exist across all states:
+  ```python
+  # Always include default structures even on failure/unavailability
+  return {
+      "status": "unavailable",
+      "reason": "GPU hardware not present",
+      "vram_total_mb": 0.0,
+      "compute_processes": [],
+      "gpu_temp_c": None,
+  }
+  ```
