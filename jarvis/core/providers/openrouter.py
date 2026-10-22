@@ -12,7 +12,10 @@ import re
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None  # type: ignore
 
 from jarvis.audio.chunker import StreamingSentenceChunker
 from jarvis.core.providers.base import BaseProvider, LLMResponse, ToolCall

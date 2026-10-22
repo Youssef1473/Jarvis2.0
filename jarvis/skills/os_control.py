@@ -1160,16 +1160,18 @@ def close_browser_tab(browser: str = "brave", tab_title: str = "") -> str:
                 # Probe other candidate browsers if default Brave window is not running
                 for alt_browser in ("chrome", "msedge", "edge", "firefox"):
                     alt_hwnds = []
-                    def _enum_alt_close(h, _):
-                        try:
-                            if win32gui.IsWindowVisible(h):
-                                wt = win32gui.GetWindowText(h).strip()
-                                if wt and alt_browser in wt.lower():
-                                    alt_hwnds.append((h, wt))
-                        except Exception:
-                            pass
-                        return True
-                    win32gui.EnumWindows(_enum_alt_close, None)
+                    def _make_enum_alt(target_name: str, out_list: list):
+                        def _enum_alt_close(h, _):
+                            try:
+                                if win32gui.IsWindowVisible(h):
+                                    wt = win32gui.GetWindowText(h).strip()
+                                    if wt and target_name in wt.lower():
+                                        out_list.append((h, wt))
+                            except Exception:
+                                pass
+                            return True
+                        return _enum_alt_close
+                    win32gui.EnumWindows(_make_enum_alt(alt_browser, alt_hwnds), None)
                     if alt_hwnds:
                         matched_hwnds = alt_hwnds
                         browser_clean = alt_browser

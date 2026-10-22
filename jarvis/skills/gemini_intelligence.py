@@ -45,6 +45,8 @@ def _call_gemini_docs_mcp(method_name: str, arguments: Dict[str, Any]) -> Dict[s
         headers=headers,
         method="POST",
     )
+    if not req.full_url.startswith("https://"):
+        raise ValueError(f"Insecure scheme for Gemini Docs endpoint: {req.full_url}")
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SEC) as resp:
         resp_bytes = resp.read()
         raw_text = resp_bytes.decode("utf-8").strip()

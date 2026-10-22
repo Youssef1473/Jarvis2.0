@@ -163,7 +163,7 @@ class OnnxEmbeddingEngine:
 
         vec = [0.0] * target_dim
         for tok in tokens:
-            h = int.from_bytes(hashlib.md5(tok.encode("utf-8")).digest()[:4], "little")
+            h = int.from_bytes(hashlib.md5(tok.encode("utf-8"), usedforsecurity=False).digest()[:4], "little")
             idx = h % target_dim
             sign = 1.0 if (h // target_dim) % 2 == 0 else -1.0
             vec[idx] += sign
