@@ -24,6 +24,12 @@ class TestUIServer(unittest.TestCase):
             req_index_unauth = urllib.request.Request(f"http://127.0.0.1:{test_port}/")
             with urllib.request.urlopen(req_index_unauth, timeout=3.0) as resp:
                 self.assertEqual(resp.status, 200)
+                self.assertIn("Content-Security-Policy", resp.headers)
+                self.assertIn("Content-Security-Policy-Report-Only", resp.headers)
+                self.assertEqual(resp.headers.get("Reporting-Endpoints"), f'csp-endpoint="http://127.0.0.1:{test_port}/api/csp-report"')
+                self.assertNotEqual(resp.headers.get("Reporting-Endpoints"), 'csp-endpoint="/api/csp-report"')
+                self.assertEqual(resp.headers.get("X-Frame-Options"), "DENY")
+                self.assertEqual(resp.headers.get("X-Content-Type-Options"), "nosniff")
                 content_unauth = resp.read().decode("utf-8")
                 self.assertIn("Interface Locked", content_unauth)
                 self.assertNotIn("window.__JARVIS_TOKEN__", content_unauth)
@@ -85,6 +91,23 @@ class TestUIServer(unittest.TestCase):
                 res = json.loads(resp.read().decode("utf-8"))
                 self.assertEqual(res.get("status"), "success")
                 self.assertEqual(res.get("percent"), 50)
+
+            # 4. Test CSP violation report ingestion via live HTTP socket
+            csp_report_data = json.dumps({
+                "csp-report": {
+                    "document-uri": f"http://127.0.0.1:{test_port}/",
+                    "violated-directive": "script-src",
+                    "effective-directive": "script-src",
+                    "blocked-uri": "eval",
+                }
+            }).encode("utf-8")
+            req_csp = urllib.request.Request(
+                f"http://127.0.0.1:{test_port}/api/csp-report",
+                data=csp_report_data,
+                headers={"Content-Type": "application/csp-report"},
+            )
+            with urllib.request.urlopen(req_csp, timeout=3.0) as resp:
+                self.assertEqual(resp.status, 204)
 
         finally:
             service.stop()

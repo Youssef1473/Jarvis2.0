@@ -1,5 +1,6 @@
 """Starlette and WebSocket server powering the Jarvis 2.0 Holographic Web HUD."""
 import asyncio
+import collections
 import json
 import logging
 from pathlib import Path
@@ -314,13 +315,13 @@ def is_browser_facing_https(request: Any, service: Any = None) -> bool:
         tunnel_port = os.environ.get("JARVIS_TUNNEL_PORT", "").strip()
         if tunnel_port == "443":
             return True
-        origin = request.headers.get("origin", "").strip().lower()
+        origin = getattr(request, "headers", {}).get("origin", "").strip().lower() if request else ""
         if origin.startswith("https://"):
             return True
         tunnel_host = os.environ.get("JARVIS_TUNNEL_HOST", "").strip().lower()
         if tunnel_host:
-            host_hdr = request.headers.get("host", "").strip().lower()
-            if tunnel_host in host_hdr:
+            host_hdr = getattr(request, "headers", {}).get("host", "").strip().lower() if request else ""
+            if tunnel_host in host_hdr or request is None:
                 return True
 
     return False
@@ -430,6 +431,46 @@ def validate_request_host_and_origin(
     return True, "", 200
 
 
+def derive_absolute_reporting_endpoint(request: Any = None, service: Any = None) -> str:
+    """Derives an absolute same-origin reporting endpoint URL from the validated connection context.
+
+    Mandated by the W3C Reporting API specification (RFC 8941 / Reporting-Endpoints dictionary),
+    which requires absolute URLs with scheme, host, and port. Supports local loopback and
+    configured secure-tunnel deployments.
+    """
+    has_tunnel = os.environ.get("JARVIS_SECURE_TUNNEL") == "1"
+    tunnel_host = os.environ.get("JARVIS_TUNNEL_HOST", "").strip().lower()
+
+    # Determine scheme: secure tunnel edge is always browser-facing HTTPS
+    if has_tunnel and tunnel_host:
+        scheme = "https"
+    else:
+        is_https = is_browser_facing_https(request, service)
+        scheme = "https" if is_https else "http"
+
+    # Determine host and port
+    if has_tunnel and tunnel_host:
+        tunnel_port = os.environ.get("JARVIS_TUNNEL_PORT", "").strip()
+        if tunnel_port and tunnel_port not in ("80", "443"):
+            netloc = f"{tunnel_host}:{tunnel_port}"
+        else:
+            netloc = tunnel_host
+    elif request is not None and getattr(request, "headers", None) and request.headers.get("host"):
+        netloc = request.headers.get("host").strip()
+    elif service is not None:
+        host = getattr(service, "host", "127.0.0.1")
+        port = getattr(service, "port", 20129)
+        try:
+            port_num = int(port)
+        except (TypeError, ValueError):
+            port_num = 20129
+        netloc = f"{host}:{port_num}" if (is_https and port_num != 443) or (not is_https and port_num != 80) else host
+    else:
+        netloc = "127.0.0.1:20129"
+
+    return f"{scheme}://{netloc}/api/csp-report"
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Enforces zero-trust loopback token authentication, strict origin verification, and CSP headers."""
 
@@ -450,13 +491,34 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         "/api/timers",
     )
 
-    def _add_security_headers(self, response):
+    def _add_security_headers(self, response, request: Any = None):
+        has_tunnel = os.environ.get("JARVIS_SECURE_TUNNEL") == "1"
+        tunnel_host = os.environ.get("JARVIS_TUNNEL_HOST", "").strip().lower()
+        tunnel_connect = f" https://{tunnel_host} wss://{tunnel_host}" if (has_tunnel and tunnel_host) else ""
+
+        connect_src_enforced = f"'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:* ws: http:{tunnel_connect}"
+        connect_src_report = f"'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*{tunnel_connect}"
+
+        reporting_endpoint_url = derive_absolute_reporting_endpoint(request, self.service)
+        response.headers["Reporting-Endpoints"] = f'csp-endpoint="{reporting_endpoint_url}"'
         response.headers["Content-Security-Policy"] = (
             "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: ws: http:; "
             "img-src 'self' data: blob:; "
-            "connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:* ws: http:; "
+            f"connect-src {connect_src_enforced}; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "font-src 'self' data: https://fonts.gstatic.com;"
+            "font-src 'self' data: https://fonts.gstatic.com; "
+            "report-uri /api/csp-report; "
+            "report-to csp-endpoint;"
+        )
+        response.headers["Content-Security-Policy-Report-Only"] = (
+            "default-src 'self' 'unsafe-inline' data:; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' data: https://fonts.gstatic.com; "
+            "img-src 'self' data:; "
+            f"connect-src {connect_src_report}; "
+            "report-uri /api/csp-report; "
+            "report-to csp-endpoint;"
         )
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -470,17 +532,17 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             request_scheme=request.url.scheme,
         )
         if not is_valid:
-            return self._add_security_headers(JSONResponse({"error": err_msg}, status_code=status_code))
+            return self._add_security_headers(JSONResponse({"error": err_msg}, status_code=status_code), request=request)
 
         # 2. Check token authentication on state-mutating and sensitive read routes
         path = request.url.path
         is_mutating = request.method in ("POST", "PUT", "DELETE", "PATCH") and path.startswith("/api/")
         is_sensitive_get = request.method == "GET" and any(path.startswith(p) for p in self.SENSITIVE_GET_PREFIXES)
 
-        # Allow unauthenticated access to the authentication exchange endpoint
-        if path == "/api/auth/unlock":
+        # Allow unauthenticated access to the authentication exchange endpoint and CSP telemetry reporting
+        if path in ("/api/auth/unlock", "/api/csp-report"):
             response = await call_next(request)
-            return self._add_security_headers(response)
+            return self._add_security_headers(response, request=request)
 
         enforce_auth = (
             getattr(self.service, "enforce_auth", True)
@@ -502,11 +564,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                     JSONResponse(
                         {"error": "Unauthorized: Invalid or missing X-Jarvis-Token session credentials"},
                         status_code=401,
-                    )
+                    ),
+                    request=request,
                 )
 
         response = await call_next(request)
-        return self._add_security_headers(response)
+        return self._add_security_headers(response, request=request)
 
 
 class WorkstationMetricsCollector:
@@ -886,6 +949,10 @@ class JarvisUIService:
         self.template_path = Path(__file__).parent / "templates" / "hud.html"
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
         self._approval_lock = threading.Lock()
+        self._csp_violations_ring: collections.deque = collections.deque(maxlen=50)
+        self._csp_report_timestamps: collections.deque = collections.deque(maxlen=100)
+        self._csp_report_lock = threading.Lock()
+        self._csp_dedup_cache: Dict[str, float] = {}
         try:
             from jarvis.core.security_boundaries import DualKeyApprovalManager
             DualKeyApprovalManager.get_instance().set_approval_handler(self.handle_approval_request)
@@ -909,6 +976,7 @@ class JarvisUIService:
         routes = [
             Route("/", endpoint=self._handle_index, methods=["GET"]),
             Route("/api/auth/unlock", endpoint=self._handle_unlock, methods=["POST"]),
+            Route("/api/csp-report", endpoint=self._handle_csp_report, methods=["POST"]),
             Route("/api/status", endpoint=self._handle_status, methods=["GET"]),
             Route("/api/command", endpoint=self._handle_command, methods=["POST"]),
             Route("/api/action", endpoint=self._handle_action, methods=["POST"]),
@@ -1384,6 +1452,137 @@ class JarvisUIService:
             resp.set_cookie(key="jarvis_session", value=_HUD_SESSION_TOKEN, httponly=True, samesite="strict", secure=is_secure, path="/")
             return resp
         return JSONResponse({"error": "Unauthorized: Invalid token"}, status_code=401)
+
+    async def _handle_csp_report(self, request):
+        """Ingests, bounds, deduplicates, and logs Content Security Policy violation reports."""
+        if request.method != "POST":
+            return JSONResponse({"error": "Method Not Allowed"}, status_code=405)
+
+        # 1. Content-Type validation
+        content_type = request.headers.get("content-type", "").lower().split(";")[0].strip()
+        allowed_types = {"application/csp-report", "application/reports+json", "application/json"}
+        if content_type not in allowed_types:
+            return JSONResponse(
+                {"error": "Unsupported Media Type: expected application/csp-report or application/reports+json"},
+                status_code=415,
+            )
+
+        # 2. Strict body size bounding while consuming stream (anti-DoS, max 32KB)
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                cl_val = int(content_length)
+                if cl_val < 0:
+                    return JSONResponse({"error": "Invalid Content-Length"}, status_code=400)
+                if cl_val > 32768:
+                    return JSONResponse({"error": "Payload Too Large: max 32KB"}, status_code=413)
+            except ValueError:
+                return JSONResponse({"error": "Invalid Content-Length"}, status_code=400)
+
+        chunks = []
+        total_bytes = 0
+        max_bytes = 32768
+        async for chunk in request.stream():
+            total_bytes += len(chunk)
+            if total_bytes > max_bytes:
+                return JSONResponse({"error": "Payload Too Large: max 32KB"}, status_code=413)
+            chunks.append(chunk)
+
+        body_bytes = b"".join(chunks)
+        if not body_bytes:
+            return JSONResponse({"error": "Empty report body"}, status_code=400)
+
+        # 3. JSON parsing & primitive rejection
+        try:
+            raw_payload = json.loads(body_bytes.decode("utf-8", errors="replace"))
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+        if not isinstance(raw_payload, (dict, list)):
+            return JSONResponse({"error": "Invalid JSON: expected object or array"}, status_code=400)
+
+        # 4. Extract reports (CSP Level 2 and Reporting API Level 3 formats)
+        reports_to_process = []
+        if isinstance(raw_payload, dict):
+            if "csp-report" in raw_payload:
+                if isinstance(raw_payload["csp-report"], dict):
+                    reports_to_process.append(raw_payload["csp-report"])
+                else:
+                    return JSONResponse({"error": "Invalid CSP report structure"}, status_code=400)
+            else:
+                reports_to_process.append(raw_payload)
+        elif isinstance(raw_payload, list):
+            for item in raw_payload[:10]:
+                if isinstance(item, dict):
+                    if item.get("type") == "csp-violation" and isinstance(item.get("body"), dict):
+                        reports_to_process.append(item["body"])
+                    else:
+                        reports_to_process.append(item)
+
+        if not reports_to_process:
+            return JSONResponse({"error": "No valid CSP reports found in payload"}, status_code=400)
+
+        # 5. Rate limiting (max 60 reports per minute across individual reports in batches)
+        num_reports = len(reports_to_process)
+        now = time.monotonic()
+        with self._csp_report_lock:
+            while self._csp_report_timestamps and (now - self._csp_report_timestamps[0] > 60.0):
+                self._csp_report_timestamps.popleft()
+            if len(self._csp_report_timestamps) + num_reports > 60:
+                return JSONResponse({"error": "Too Many Requests: CSP report rate limit exceeded"}, status_code=429)
+            for _ in range(num_reports):
+                self._csp_report_timestamps.append(now)
+
+            # Purge expired deduplication keys (>30s)
+            stale_keys = [k for k, exp in self._csp_dedup_cache.items() if now > exp]
+            for k in stale_keys:
+                del self._csp_dedup_cache[k]
+
+        # 6. Sanitize, deduplicate, and record
+        for report in reports_to_process:
+            if not isinstance(report, dict):
+                continue
+
+            def _clean(val: Any, max_len: int = 256) -> str:
+                if val is None:
+                    return ""
+                s = str(val).replace("\r", " ").replace("\n", " ").strip()
+                # Strict printable ASCII (32-126) eliminates CRLF log injection and escape sequences
+                s = "".join(c for c in s if 32 <= ord(c) <= 126)
+                return s[:max_len]
+
+            blocked_uri = _clean(report.get("blocked-uri") or report.get("blockedURL") or report.get("blocked_url"))
+            violated_directive = _clean(report.get("violated-directive") or report.get("violatedDirective") or report.get("directive"), 128)
+            effective_directive = _clean(report.get("effective-directive") or report.get("effectiveDirective"), 128)
+            document_uri = _clean(report.get("document-uri") or report.get("documentURL") or report.get("url"))
+            disposition = _clean(report.get("disposition"), 32) or "report"
+
+            dedup_key = f"{violated_directive}:{effective_directive}:{blocked_uri}:{document_uri}"
+            with self._csp_report_lock:
+                if dedup_key in self._csp_dedup_cache:
+                    continue
+                self._csp_dedup_cache[dedup_key] = now + 10.0
+
+                entry = {
+                    "timestamp": time.time(),
+                    "disposition": disposition,
+                    "violated_directive": violated_directive,
+                    "effective_directive": effective_directive,
+                    "blocked_uri": blocked_uri,
+                    "document_uri": document_uri,
+                }
+                self._csp_violations_ring.append(entry)
+
+            logger.warning(
+                "CSP Violation [%s]: directive '%s' (effective: '%s') blocked '%s' on '%s'",
+                disposition,
+                violated_directive or effective_directive,
+                effective_directive,
+                blocked_uri,
+                document_uri,
+            )
+
+        return Response(status_code=204)
 
     async def _handle_index(self, request):
         if not self.template_path.exists():

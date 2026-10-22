@@ -1,7 +1,9 @@
 """Verification suite for Zero-Trust Security, WebGL 2.0 SDF Reactor, DSP Tap, and Win32 Overlay."""
+import json
 import os
 import sys
 import unittest
+from unittest import mock
 from unittest.mock import MagicMock
 import time
 from pathlib import Path
@@ -171,8 +173,356 @@ class TestHudSecurityAndDsp(unittest.TestCase):
         res_status_auth = client.get("/api/status", headers={"X-Jarvis-Token": token})
         self.assertEqual(res_status_auth.status_code, 200)
         self.assertIn("Content-Security-Policy", res_status_auth.headers)
+        self.assertIn("Content-Security-Policy-Report-Only", res_status_auth.headers)
+        self.assertIn("Reporting-Endpoints", res_status_auth.headers)
+        reporting_endpoints = res_status_auth.headers.get("Reporting-Endpoints", "")
+        self.assertIn('csp-endpoint="http://', reporting_endpoints)
+        self.assertIn("/api/csp-report", reporting_endpoints)
+        # Absolute URL requirement: must NOT be a relative URL mapping
+        self.assertNotEqual(reporting_endpoints, 'csp-endpoint="/api/csp-report"')
+        self.assertIn("report-uri /api/csp-report", res_status_auth.headers.get("Content-Security-Policy"))
+        self.assertIn("report-to csp-endpoint", res_status_auth.headers.get("Content-Security-Policy"))
+        self.assertIn("report-uri /api/csp-report", res_status_auth.headers.get("Content-Security-Policy-Report-Only"))
         self.assertEqual(res_status_auth.headers.get("X-Frame-Options"), "DENY")
         self.assertEqual(res_status_auth.headers.get("X-Content-Type-Options"), "nosniff")
+
+    def test_reporting_endpoints_absolute_url_derivation(self):
+        """Verifies Reporting-Endpoints header uses an absolute URL and rejects relative paths across local and tunnel configs."""
+        from jarvis.ui.server import derive_absolute_reporting_endpoint
+
+        service = JarvisUIService(host="127.0.0.1", port=20129)
+
+        # 1. Local loopback default derivation
+        local_endpoint = derive_absolute_reporting_endpoint(request=None, service=service)
+        self.assertTrue(local_endpoint.startswith("http://"), "Local endpoint must be an absolute http:// URL")
+        self.assertFalse(local_endpoint.startswith("/"), "Relative endpoint URL mapping is invalid under W3C Reporting API")
+        self.assertEqual(local_endpoint, "http://127.0.0.1:20129/api/csp-report")
+
+        # 2. Local loopback response header verification via client
+        client = TestClient(service._create_app())
+        res_local = client.get("/")
+        rep_hdr = res_local.headers.get("Reporting-Endpoints", "")
+        self.assertTrue(rep_hdr.startswith('csp-endpoint="http://'), "Reporting-Endpoints must emit absolute URL")
+        self.assertNotIn('csp-endpoint="/api/csp-report"', rep_hdr, "Relative path mapping must not be emitted")
+
+        # 3. Secure-tunnel configuration derivation (standard 443 HTTPS)
+        with mock.patch.dict(os.environ, {"JARVIS_SECURE_TUNNEL": "1", "JARVIS_TUNNEL_HOST": "hud.stark.internal"}):
+            tunnel_endpoint = derive_absolute_reporting_endpoint(request=None, service=service)
+            self.assertEqual(tunnel_endpoint, "https://hud.stark.internal/api/csp-report")
+
+            res_tunnel = client.get("/")
+            tunnel_rep_hdr = res_tunnel.headers.get("Reporting-Endpoints", "")
+            self.assertEqual(tunnel_rep_hdr, 'csp-endpoint="https://hud.stark.internal/api/csp-report"')
+
+        # 4. Secure-tunnel configuration derivation with custom port
+        with mock.patch.dict(os.environ, {
+            "JARVIS_SECURE_TUNNEL": "1",
+            "JARVIS_TUNNEL_HOST": "hud.stark.internal",
+            "JARVIS_TUNNEL_PORT": "8443"
+        }):
+            tunnel_port_endpoint = derive_absolute_reporting_endpoint(request=None, service=service)
+            self.assertEqual(tunnel_port_endpoint, "https://hud.stark.internal:8443/api/csp-report")
+
+    def test_csp_report_endpoint_valid_legacy_payload(self):
+        """Verifies /api/csp-report ingests application/csp-report format and records telemetry."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        report_payload = {
+            "csp-report": {
+                "document-uri": "http://127.0.0.1:20129/",
+                "referrer": "",
+                "violated-directive": "script-src 'self'",
+                "effective-directive": "script-src",
+                "original-policy": "default-src 'self'",
+                "disposition": "report",
+                "blocked-uri": "eval",
+                "status-code": 200,
+            }
+        }
+        res = client.post(
+            "/api/csp-report",
+            content=json.dumps(report_payload),
+            headers={"Content-Type": "application/csp-report"},
+        )
+        self.assertEqual(res.status_code, 204)
+        self.assertGreaterEqual(len(service._csp_violations_ring), 1)
+        last_report = service._csp_violations_ring[-1]
+        self.assertEqual(last_report["blocked_uri"], "eval")
+        self.assertEqual(last_report["effective_directive"], "script-src")
+        self.assertEqual(last_report["disposition"], "report")
+
+    def test_csp_report_endpoint_valid_reporting_api_payload(self):
+        """Verifies /api/csp-report ingests application/reports+json modern format."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        reports_payload = [
+            {
+                "type": "csp-violation",
+                "age": 10,
+                "url": "http://127.0.0.1:20129/hud",
+                "body": {
+                    "documentURL": "http://127.0.0.1:20129/hud",
+                    "blockedURL": "http://untrusted-analytics.local/track",
+                    "effectiveDirective": "connect-src",
+                    "disposition": "report",
+                },
+            }
+        ]
+        res = client.post(
+            "/api/csp-report",
+            content=json.dumps(reports_payload),
+            headers={"Content-Type": "application/reports+json"},
+        )
+        self.assertEqual(res.status_code, 204)
+        self.assertGreaterEqual(len(service._csp_violations_ring), 1)
+        last_report = service._csp_violations_ring[-1]
+        self.assertEqual(last_report["blocked_uri"], "http://untrusted-analytics.local/track")
+        self.assertEqual(last_report["effective_directive"], "connect-src")
+
+    def test_csp_report_endpoint_unsupported_media_type(self):
+        """Verifies /api/csp-report rejects non-reporting content types with HTTP 415."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        res = client.post(
+            "/api/csp-report",
+            content="document-uri: http://localhost",
+            headers={"Content-Type": "text/plain"},
+        )
+        self.assertEqual(res.status_code, 415)
+        self.assertIn("Unsupported Media Type", res.json().get("error", ""))
+
+    def test_csp_report_endpoint_oversized_payload_rejected(self):
+        """Verifies /api/csp-report rejects oversized payloads (>32KB) with HTTP 413."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        huge_payload = json.dumps({"csp-report": {"blocked-uri": "x" * 35000}})
+        res = client.post(
+            "/api/csp-report",
+            content=huge_payload,
+            headers={"Content-Type": "application/csp-report"},
+        )
+        self.assertEqual(res.status_code, 413)
+        self.assertIn("Payload Too Large", res.json().get("error", ""))
+
+    def test_csp_report_endpoint_malformed_json_rejected(self):
+        """Verifies /api/csp-report rejects malformed JSON with HTTP 400."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        res = client.post(
+            "/api/csp-report",
+            content="{bad-json: not valid}",
+            headers={"Content-Type": "application/csp-report"},
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Invalid JSON", res.json().get("error", ""))
+
+    def test_csp_report_endpoint_invalid_content_length_rejected(self):
+        """Verifies /api/csp-report rejects negative or non-integer Content-Length headers with HTTP 400."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        res_neg = client.post(
+            "/api/csp-report",
+            content=json.dumps({"csp-report": {}}),
+            headers={"Content-Type": "application/csp-report", "Content-Length": "-5"},
+        )
+        self.assertEqual(res_neg.status_code, 400)
+
+        res_invalid = client.post(
+            "/api/csp-report",
+            content=json.dumps({"csp-report": {}}),
+            headers={"Content-Type": "application/csp-report", "Content-Length": "not-a-number"},
+        )
+        self.assertEqual(res_invalid.status_code, 400)
+
+    def test_csp_report_endpoint_primitive_json_rejected(self):
+        """Verifies /api/csp-report rejects primitive JSON (integers, strings, booleans) with HTTP 400."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        res_int = client.post(
+            "/api/csp-report",
+            content="12345",
+            headers={"Content-Type": "application/csp-report"},
+        )
+        self.assertEqual(res_int.status_code, 400)
+        self.assertIn("expected object or array", res_int.json().get("error", ""))
+
+        res_str = client.post(
+            "/api/csp-report",
+            content='"just-a-string"',
+            headers={"Content-Type": "application/csp-report"},
+        )
+        self.assertEqual(res_str.status_code, 400)
+
+    def test_csp_report_endpoint_nested_structure_validation(self):
+        """Verifies /api/csp-report validates csp-report structure is a dictionary."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        res = client.post(
+            "/api/csp-report",
+            content=json.dumps({"csp-report": "not-a-dict"}),
+            headers={"Content-Type": "application/csp-report"},
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Invalid CSP report structure", res.json().get("error", ""))
+
+    def test_csp_report_log_injection_sanitization(self):
+        """Verifies CRLF and ANSI control characters in report fields are stripped to prevent log poisoning."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        malicious_payload = {
+            "csp-report": {
+                "document-uri": "http://127.0.0.1:20129/\r\nADMIN_OVERRIDE: True\x1b[31m",
+                "violated-directive": "script-src\r\nPOISONED_HEADER: 1",
+                "effective-directive": "script-src",
+                "blocked-uri": "eval\x00\x08",
+            }
+        }
+        res = client.post(
+            "/api/csp-report",
+            content=json.dumps(malicious_payload),
+            headers={"Content-Type": "application/csp-report"},
+        )
+        self.assertEqual(res.status_code, 204)
+        last_report = service._csp_violations_ring[-1]
+        self.assertNotIn("\r", last_report["document_uri"])
+        self.assertNotIn("\n", last_report["document_uri"])
+        self.assertNotIn("\x1b", last_report["document_uri"])
+        self.assertNotIn("\x00", last_report["blocked_uri"])
+        self.assertEqual(last_report["blocked_uri"], "eval")
+
+    def test_csp_report_endpoint_empty_body_rejected(self):
+        """Verifies /api/csp-report rejects empty bodies with HTTP 400."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        res = client.post(
+            "/api/csp-report",
+            content="",
+            headers={"Content-Type": "application/csp-report"},
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Empty report body", res.json().get("error", ""))
+
+    def test_csp_report_origin_validation_fail_closed(self):
+        """Verifies /api/csp-report enforces host and origin validation against unauthorized external origins."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        res = client.post(
+            "/api/csp-report",
+            content=json.dumps({"csp-report": {"blocked-uri": "eval"}}),
+            headers={
+                "Content-Type": "application/csp-report",
+                "Origin": "http://malicious-external-site.com",
+            },
+        )
+        self.assertEqual(res.status_code, 403)
+        self.assertIn("Content-Security-Policy", res.headers)
+
+    def test_csp_report_rate_limiting(self):
+        """Verifies /api/csp-report rejects excessive submissions with HTTP 429 when rate limit is exceeded."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        payload = json.dumps({"csp-report": {"blocked-uri": "eval"}})
+        headers = {"Content-Type": "application/csp-report"}
+
+        # Simulate filling rate limiter bucket (60 requests)
+        with service._csp_report_lock:
+            now = time.monotonic()
+            for _ in range(60):
+                service._csp_report_timestamps.append(now)
+
+        res = client.post("/api/csp-report", content=payload, headers=headers)
+        self.assertEqual(res.status_code, 429)
+        self.assertIn("rate limit exceeded", res.json().get("error", ""))
+
+    def test_csp_report_batch_rate_limiting_effective_maximum(self):
+        """Verifies rate limiter accounts for individual reports in application/reports+json batches (60 reports/min limit)."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        def _make_batch(start_idx: int, count: int = 10):
+            return [
+                {
+                    "type": "csp-violation",
+                    "body": {
+                        "documentURL": f"http://127.0.0.1:20129/page_{i}",
+                        "blockedURL": f"http://blocked.local/{i}",
+                        "effectiveDirective": "connect-src",
+                        "disposition": "report",
+                    },
+                }
+                for i in range(start_idx, start_idx + count)
+            ]
+
+        # 6 batches of 10 reports = 60 reports total (consumes full budget)
+        for b_idx in range(6):
+            batch = _make_batch(b_idx * 10, 10)
+            res = client.post(
+                "/api/csp-report",
+                content=json.dumps(batch),
+                headers={"Content-Type": "application/reports+json"},
+            )
+            self.assertEqual(res.status_code, 204, f"Batch {b_idx} must succeed within 60 report budget")
+
+        # 7th batch: even a single report exceeds the effective maximum and is rejected with 429
+        overflow_batch = _make_batch(60, 1)
+        res_overflow = client.post(
+            "/api/csp-report",
+            content=json.dumps(overflow_batch),
+            headers={"Content-Type": "application/reports+json"},
+        )
+        self.assertEqual(res_overflow.status_code, 429)
+        self.assertIn("rate limit exceeded", res_overflow.json().get("error", ""))
+
+    def test_csp_report_deduplication(self):
+        """Verifies repeated identical reports within 10s are deduplicated without inflating ring buffer."""
+        service = JarvisUIService()
+        client = TestClient(service._create_app())
+
+        payload = json.dumps({
+            "csp-report": {
+                "document-uri": "http://127.0.0.1:20129/",
+                "violated-directive": "script-src",
+                "effective-directive": "script-src",
+                "blocked-uri": "eval",
+            }
+        })
+        headers = {"Content-Type": "application/csp-report"}
+
+        res1 = client.post("/api/csp-report", content=payload, headers=headers)
+        self.assertEqual(res1.status_code, 204)
+        count_after_first = len(service._csp_violations_ring)
+
+        res2 = client.post("/api/csp-report", content=payload, headers=headers)
+        self.assertEqual(res2.status_code, 204)
+        # Count should remain unchanged due to deduplication cache
+        self.assertEqual(len(service._csp_violations_ring), count_after_first)
+
+    def test_csp_headers_tunnel_configuration(self):
+        """Verifies connect-src includes trusted tunnel origin when JARVIS_SECURE_TUNNEL=1 is set."""
+        service = JarvisUIService()
+        with mock.patch.dict(os.environ, {"JARVIS_SECURE_TUNNEL": "1", "JARVIS_TUNNEL_HOST": "hud.stark.internal"}):
+            client = TestClient(service._create_app())
+            res = client.get("/")
+            self.assertEqual(res.status_code, 200)
+
+            csp = res.headers.get("Content-Security-Policy", "")
+            csp_report = res.headers.get("Content-Security-Policy-Report-Only", "")
+            self.assertIn("https://hud.stark.internal", csp)
+            self.assertIn("wss://hud.stark.internal", csp)
+            self.assertIn("https://hud.stark.internal", csp_report)
+            self.assertIn("wss://hud.stark.internal", csp_report)
 
     def test_hud_html_contains_docked_stark_pill_and_webgl_reactor(self):
         """Verifies hud.html contains StarkWebGLReactor, docked pill markup, and containment styles."""
