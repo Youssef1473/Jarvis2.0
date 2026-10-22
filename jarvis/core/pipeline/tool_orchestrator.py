@@ -74,6 +74,9 @@ class ToolOrchestrator:
             logger.error("SecurityBoundaryViolation in tool execution: %s", sec_err)
             return f"Error: {sec_err}"
 
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
+        DualKeyApprovalManager.get_instance().set_thread_authorized(tool_name, sanitized_args)
+
         # Check read-only fast cache if DualTrackCoordinator is present
         cache_key = f"{tool_name}:{arg_signature}"
         if self.dual_track_coordinator is not None and getattr(self.dual_track_coordinator, "is_read_only_tool", lambda t: False)(tool_name):
@@ -105,7 +108,18 @@ class ToolOrchestrator:
 
         try:
             # 4. Physical Execution via SkillRegistry
-            result = SkillRegistry.execute(tool_name, **sanitized_args)
+            exec_kwargs = dict(sanitized_args)
+            tool_fn = SkillRegistry.get_tool(tool_name)
+            if tool_fn:
+                import inspect
+                try:
+                    sig = inspect.signature(tool_fn)
+                    if "user_approved" in sig.parameters:
+                        exec_kwargs["user_approved"] = True
+                except Exception:
+                    pass
+
+            result = SkillRegistry.execute(tool_name, **exec_kwargs)
             if self.dual_track_coordinator is not None and getattr(self.dual_track_coordinator, "is_read_only_tool", lambda t: False)(tool_name):
                 if result is not None and not str(result).startswith("Error"):
                     self.dual_track_coordinator._set_cached_result(cache_key, result)
@@ -115,7 +129,7 @@ class ToolOrchestrator:
             return f"Error executing tool '{tool_name}': {err}"
         finally:
             from jarvis.core.security_boundaries import DualKeyApprovalManager
-            DualKeyApprovalManager.get_instance().check_and_consume(tool_name, sanitized_args)
+            DualKeyApprovalManager.get_instance().clear_thread_authorized()
             # 5. Disarm Interim Bridge on completion
             if self.interim_bridge:
                 self.interim_bridge.on_tool_end()
@@ -180,11 +194,22 @@ class ToolOrchestrator:
                     logger.debug("Tool status callback notice (start): %s", e)
 
             try:
+                exec_kwargs = dict(sanitized_args)
+                tool_fn = SkillRegistry.get_tool(tool_name)
+                if tool_fn:
+                    import inspect
+                    try:
+                        sig = inspect.signature(tool_fn)
+                        if "user_approved" in sig.parameters:
+                            exec_kwargs["user_approved"] = True
+                    except Exception:
+                        pass
+
                 res = await self.dual_track_coordinator.execute_with_masking(
                     user_query=user_query,
                     tool_name=tool_name,
                     tool_args=sanitized_args,
-                    tool_coro=lambda: SkillRegistry.execute(tool_name, **sanitized_args),
+                    tool_coro=lambda: SkillRegistry.execute(tool_name, **exec_kwargs),
                     milestone_phrase=milestone_phrase,
                 )
                 return res

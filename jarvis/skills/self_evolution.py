@@ -50,9 +50,10 @@ def create_or_update_custom_skill(
     mem = _get_memory()
 
     # Model-supplied user_approved=True argument is explicitly rejected/ignored.
-    # Authorization MUST originate from a verified human grant in DualKeyApprovalManager.
+    # Authorization MUST originate from a verified human grant in DualKeyApprovalManager
+    # or active thread-local execution context established by ToolOrchestrator.
     approval_mgr = DualKeyApprovalManager.get_instance()
-    is_human_authorized = approval_mgr.check_and_consume("create_or_update_custom_skill", {
+    is_human_authorized = approval_mgr.verify_and_consume_active_context("create_or_update_custom_skill", {
         "skill_name": skill_name,
         "python_code": python_code,
         "description": description,
@@ -105,9 +106,10 @@ def delete_custom_skill(skill_name: str, user_approved: bool = False) -> str:
         return f"Custom skill '{clean_name}' does not exist."
 
     # Model-supplied user_approved=True argument is explicitly rejected/ignored.
-    # Authorization MUST originate from a verified human grant in DualKeyApprovalManager.
+    # Authorization MUST originate from a verified human grant in DualKeyApprovalManager
+    # or active thread-local execution context established by ToolOrchestrator.
     approval_mgr = DualKeyApprovalManager.get_instance()
-    is_human_authorized = approval_mgr.check_and_consume("delete_custom_skill", {
+    is_human_authorized = approval_mgr.verify_and_consume_active_context("delete_custom_skill", {
         "skill_name": skill_name,
     })
     if not is_human_authorized:

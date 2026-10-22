@@ -100,6 +100,21 @@ class JarvisOrchestrator:
             )
         else:
             self.ui_service = None
+            def _cli_approval_handler(details: Dict[str, Any]) -> bool:
+                if not sys.stdin or not hasattr(sys.stdin, "isatty") or not sys.stdin.isatty():
+                    return False
+                print(f"\n[JARVIS DUAL-KEY SECURITY GATE]")
+                print(f" Tool: {details.get('tool_name')}")
+                print(f" Action: {details.get('summary')}")
+                print(f" Hash: {details.get('action_hash')}")
+                try:
+                    ans = input(" Authorize execution? [y/N]: ").strip().lower()
+                    return ans in ("y", "yes")
+                except Exception:
+                    return False
+
+            from jarvis.core.security_boundaries import DualKeyApprovalManager
+            DualKeyApprovalManager.get_instance().set_approval_handler(_cli_approval_handler)
 
         if hasattr(self.brain, "set_tts_instance"):
             self.brain.set_tts_instance(self.tts)
