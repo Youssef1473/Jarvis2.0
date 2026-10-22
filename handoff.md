@@ -1,90 +1,93 @@
-# Session Handoff: Jarvis 2.0 — Security Hardening & CI Determinism Baseline
+# Session Handoff: Jarvis 2.0 — Null-Daemon CI Remediation & Sandbox Hardening
 
 **Date:** 2026-10-22
 **Host Environment:** Windows 11 x64 | Intel Core i5-12500H | NVIDIA RTX 3050 Laptop GPU (4GB VRAM) | Python 3.12
-**Committed Baseline on `main`:** Commit [`d4c826e`](https://github.com/Youssef1473/Jarvis2.0/commit/d4c826e6a3bf8b8dd15600fa003454cf4756edf3) pushed to `origin/main` (26 files changed, 2,699 insertions, 336 deletions)
-**Follow-Up Commit:** CI test determinism fixes and `/api/status` authentication protection
-**Local Test Suite Baseline:** The reported test run passed with 16 skips and one warning (`727 passed, 16 skipped, 1 warning, 2 subtests passed in 89.87s`, exit code 0)
-**Version Branding Note:** Codebase package, repository, and configuration are canonically `Jarvis 2.0`. The console ASCII startup banner displays `JARVIS 3.0 ONLINE & OPERATIONAL` as a legacy visual banner.
+**Committed Baseline on `main`:** Commit [`34e7e18`](https://github.com/Youssef1473/Jarvis2.0/commit/34e7e181ee4234563a34a362dbbc268d374e2d37) pushed to `origin/main` (5 files changed, 50 insertions, 8 deletions)
+**Local Test Suite Baseline:** All non-hardware fast parallel suites passed cleanly (`728 passed, 16 skipped, 1 warning, 2 subtests passed in 111.77s`, exit code 0)
+**Warning Summary:** 1 benign library warning: `tests/test_autonomous_failure_recovery.py` (`pywinauto: Revert to STA COM threading mode`)
 
 ---
 
-## 1. Committed Baseline Summary (`d4c826e`)
+## 1. Context & Prior Baseline (`34e7e18`)
 
-The primary security phase was committed to `main` and pushed to GitHub in commit `d4c826e`:
-1. **HUD Zero-Trust Authentication:** Session cookies (`HttpOnly`, `SameSite=Strict`, `Path=/`), exact Host/Origin header verification, single-use 60s bootstrap fragment token delivery (`/#bootstrap=<hex>`), and immediate client URL sanitization via `window.history.replaceState`.
-2. **Windows Process Containment Lifecycle:** Eliminated the spawn-before-assignment race across `job_object_sandbox.py`, `task_manager.py`, and `mcp_manager.py` using `CreateProcessW` with `CREATE_SUSPENDED`, `AssignProcessToJobObject` with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and `NtResumeProcess`. Implemented fail-closed process termination (`proc.kill()`) and handle cleanup on failure.
-3. **Execution-Boundary Authorization:** Enforced `risk_level=2` gating on `execute_powershell`, Dual-Key approval consumption at the execution boundary, and excluded private parameters (`_allow_uncontained`) from model tool schemas.
-4. **Access-Log Query Redaction:** Bounded redaction in `jarvis/ui/server.py` decoding percent-encoded keys (`%74oken`, `%62ootstrap`) with a fail-safe `[OVERSIZED_QUERY_REDACTED]` placeholder for queries exceeding 10 MB.
-5. **Codified Directives:** Codified configuration resolution, Windows process containment lifecycle, and reporting standards in [`AGENTS.md`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/AGENTS.md).
+The prior commit `34e7e18` resolved:
+1. Deterministic patching of `is_available` in `tests/test_antigravity_integration.py` for CI runners lacking `agy`.
+2. Session authentication gating on `/api/status` telemetry in `jarvis/ui/server.py`.
 
----
-
-## 2. Follow-Up Improvements in Local Working Tree
-
-### A. CI Test Determinism (`tests/test_antigravity_integration.py`)
-- **Observed CI Failure in Run #10:** 4 tests failed in GitHub Actions because the `agy` CLI binary is not installed on the GitHub Actions runner (`AntigravityBridge.is_available()` returns `False`):
-  - `test_antigravity_batch_generation_mocked`
-  - `test_antigravity_bridge_fallback_when_daemon_fails`
-  - `test_specialist_consultation_routing_mocked`
-  - `test_voice_model_switching_commands`
-- **Root Cause & Resolution:** The unit tests intended to verify deterministic routing and fallbacks without live CLI execution, but did not patch `is_available()`. Patched `is_available` to return `True` in each of the 4 unit tests. Verified that all 17 tests pass deterministically both with and without the host `agy` binary.
-
-### B. Workstation Telemetry Authentication (`/api/status`)
-- **Review Finding:** Workstation telemetry returned by `/api/status` (CPU, GPU, RAM, active window, background tasks) was previously accessible without session authentication.
-- **Resolution:**
-  - Added `"/api/status"` to `SENSITIVE_GET_PREFIXES` in `SecurityHeadersMiddleware`.
-  - Added `_add_security_headers()` to ensure CSP, `X-Frame-Options: DENY`, and `X-Content-Type-Options: nosniff` are applied uniformly across all response paths, including early 401 Unauthorized returns.
-  - Added regression assertions in `tests/test_ui_server.py` and `tests/test_hud_security_dsp.py` confirming unauthenticated requests fail closed with HTTP 401, while authenticated requests return status 200 with metrics.
-
-### C. Content Security Policy (CSP) Roadmap Note
-- **Current CSP:** `default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: ws: http:; img-src 'self' data: blob:; connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:* ws: http:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com;`
-- **Defense-in-Depth Note:** The current header allows `'unsafe-inline'` and `'unsafe-eval'` to accommodate inline WebGL and event handlers in `hud.html`. In a future UI pass, inline scripts should be refactored to use cryptographic nonces or SHA-256 script hashes.
+In GitHub Actions run #11, one remaining test failure was observed:
+- `tests/test_antigravity_integration.py::TestAntigravityIntegration::test_antigravity_batch_generation_mocked` failed with:
+  `AttributeError: 'NoneType' object has no attribute 'execute_turn'` in `jarvis/core/antigravity_bridge.py` line 1119.
 
 ---
 
-## 3. Uncommitted Working-Tree Manifest (5 Files)
+## 2. Root Cause Analysis & Surgical Fixes
 
-Current local modifications waiting for review and follow-up commit (`git status --short`):
+### A. Null-Daemon Safe Handling in `jarvis/core/antigravity_bridge.py`
+- **Root Cause:** In `AntigravityBridge.generate_response`, the code evaluated `hasattr(self.daemon.execute_turn, ...)` without first verifying if `self.daemon is not None`. When `self.daemon` was `None` (on environments without an active daemon process or when uninitialized), this raised `AttributeError: 'NoneType' object has no attribute 'execute_turn'`. Additionally, `daemon.setter` did not purge `self._daemon_pool` when `daemon = None` was set, leaving stale daemons active in tests.
+- **Fix:**
+  - Safely extract `current_daemon = self.daemon` and `daemon_turn = getattr(current_daemon, 'execute_turn', None) if current_daemon is not None else None`.
+  - Only route directly to `execute_turn` if mock or active daemon is present; otherwise retrieve/spawn via pool or cleanly fall through to one-shot batch generation (`_generate_batch`).
+  - Added `self._daemon_pool.clear()` when setting `daemon = None`.
+
+### B. Dynamic Directory Assurance in `jarvis/core/evolution/sandbox.py`
+- **Root Cause:** `SCRATCH_DIR` and `SNAPSHOTS_DIR` directory creation was previously executed only once at module import. In ephemeral environments or across parallel xdist workers where temporary data directories are unlinked, calls to `validate_and_promote` or `create_snapshot` could encounter `FileNotFoundError` when opening scratch files.
+- **Fix:**
+  - Added defensive `SCRATCH_DIR.mkdir(parents=True, exist_ok=True)` in `SkillSandbox.validate_and_promote` before scratch file generation.
+  - Added defensive `SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)` in `SkillSandbox.create_snapshot`.
+  - Added `.gitkeep` files in `data/evolution_scratch/` and `data/evolution_snapshots/` to ensure git creates these working directories on clean checkouts.
+
+### C. Deterministic Unit Tests in `tests/test_antigravity_integration.py`
+- Added `test_antigravity_batch_generation_with_null_daemon` to explicitly exercise and verify the fallback path when `self.bridge.daemon = None`.
+
+---
+
+## 3. Uncommitted Working-Tree Manifest
+
+Local modifications ready for review (`git status --short`):
 
 ```text
  M handoff.md
- M jarvis/ui/server.py
+ M jarvis/core/antigravity_bridge.py
+ M jarvis/core/evolution/sandbox.py
  M tests/test_antigravity_integration.py
- M tests/test_hud_security_dsp.py
- M tests/test_ui_server.py
+?? data/evolution_scratch/.gitkeep
+?? data/evolution_snapshots/.gitkeep
 ```
 
-### File Details:
-1. [handoff.md](file:///C:/Users/Youssef/Projects/Jarvis_2.0/handoff.md): Updated handoff documenting the committed `d4c826e` baseline, CI determinism fixes, and `/api/status` protection.
-2. [jarvis/ui/server.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/ui/server.py): Added `"/api/status"` to `SENSITIVE_GET_PREFIXES`; added uniform `_add_security_headers()` for early 401 and 400 responses.
-3. [tests/test_antigravity_integration.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_antigravity_integration.py): Patched `is_available` in 4 unit tests to make CI deterministic without requiring `agy` binary on the runner.
-4. [tests/test_hud_security_dsp.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_hud_security_dsp.py): Added test coverage verifying `/api/status` fails closed with 401 unauthenticated and succeeds with 200 authenticated.
-5. [tests/test_ui_server.py](file:///C:/Users/Youssef/Projects/Jarvis_2.0/tests/test_ui_server.py): Added unauthenticated 401 assertion and authenticated 200 verification for `/api/status`.
+`git diff --stat`:
+```text
+ jarvis/core/antigravity_bridge.py     | 12 +++++++++---
+ jarvis/core/evolution/sandbox.py      |  2 ++
+ tests/test_antigravity_integration.py | 17 +++++++++++++++++
+ 3 files changed, 28 insertions(+), 3 deletions(-)
+```
 
 ---
 
 ## 4. Empirical Test Verification Evidence
 
-- **Execution Command:**
+- **Fast Parallel Test Suite Execution:**
   ```powershell
   python tools/run_fast_tests.py --fast -w 4
   ```
-- **Exit Code:** `0`
-- **Output Summary:**
-  `727 passed, 16 skipped, 1 warning, 2 subtests passed in 89.87s (0:01:29)`
-- **Isolated Suite Verifications:**
-  - `python -m unittest tests/test_antigravity_integration.py`: `Ran 17 tests in 7.209s. OK (skipped=3)`.
-  - `python -m unittest tests/test_ui_server.py tests/test_hud_security_dsp.py`: `Ran 29 tests in 5.901s. OK`.
-- **Git Diff Hygiene:**
+  - **Exit Code:** `0`
+  - **Result:** `728 passed, 16 skipped, 1 warning, 2 subtests passed in 111.77s (0:01:51)`
+  - **Warning Origin:**
+    `tests/test_autonomous_failure_recovery.py::TestAutonomousFailureRecovery::test_focus_window_uia_win32_backend_fallback`
+    `C:\Users\Youssef\Projects\.venv\Lib\site-packages\pywinauto\__init__.py:80: UserWarning: Revert to STA COM threading mode`
+- **Focused Suite Runs:**
+  - `python -m unittest tests/test_antigravity_integration.py`: `Ran 18 tests in 8.259s. OK (skipped=3)`.
+  - `python -m unittest tests/test_self_evolution.py`: `Ran 3 tests in 1.902s. OK`.
+  - `python -m unittest tests/test_self_evolution_sandbox.py`: `Ran 16 tests in 3.800s. OK`.
+- **Git Diff Hygiene Check:**
   ```powershell
   git diff --check
   ```
-  Exited with code `0` (clean, zero whitespace/merge errors).
+  - **Exit Code:** `0` (clean, zero whitespace/merge errors).
 
 ---
 
-## 5. Next Immediate Step for the Incoming Agent
+## 5. Next Steps
 
-1. Confirm that the latest GitHub Actions workflow run finishes completely green with 0 test failures.
-2. Review the verified security milestone baseline and proceed with the next feature roadmap phase (e.g., continuous rolling P99 turn latency graphs in the Web HUD).
+1. Request user confirmation before staging, committing, and pushing this fix.
+2. Once pushed, inspect the remote GitHub Actions workflow run to confirm CI is completely green on remote runners.

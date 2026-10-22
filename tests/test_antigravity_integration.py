@@ -85,6 +85,23 @@ class TestAntigravityIntegration(unittest.TestCase):
             self.assertEqual(res.get("status"), "SUCCESS")
             self.assertIn("Online", res.get("response", ""))
 
+    def test_antigravity_batch_generation_with_null_daemon(self):
+        """Verifies generate_response falls back to batch generation when daemon is None without AttributeError."""
+        orig_daemon = self.bridge.daemon
+        self.bridge.daemon = None
+        try:
+            with patch.object(self.bridge, "is_available", return_value=True), \
+                 patch.object(self.bridge, "get_or_spawn_daemon", return_value=None), \
+                 patch.object(self.bridge, "_generate_batch", return_value={"status": "SUCCESS", "response": "Batch Fallback", "duration_seconds": 0.2}):
+                res = self.bridge.generate_response(
+                    prompt="Hello",
+                    model="gemini-3.8-flash-low",
+                )
+                self.assertEqual(res.get("status"), "SUCCESS")
+                self.assertEqual(res.get("response"), "Batch Fallback")
+        finally:
+            self.bridge.daemon = orig_daemon
+
     def test_antigravity_streaming_clause_extraction(self):
         """Verifies real-time speech clause extraction during token streaming."""
         buffer = "Good afternoon, Sir. All systems are operational. What would you like to review?"

@@ -472,6 +472,7 @@ class SkillSandbox:
         target_file = CUSTOM_SKILLS_DIR / f"{clean_name}.py"
         if not target_file.exists():
             return None
+        SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = int(time.time() * 1000)
         snapshot_file = SNAPSHOTS_DIR / f"{clean_name}_{timestamp}.py"
         try:
@@ -761,6 +762,7 @@ except Exception as e:
         if "SkillRegistry" not in code:
             code = "from jarvis.skills.base import SkillRegistry\n\n" + code
 
+        SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
         scratch_file = SCRATCH_DIR / f"temp_{clean_name}_{int(time.time() * 1000)}.py"
         target_file = CUSTOM_SKILLS_DIR / f"{clean_name}.py"
 

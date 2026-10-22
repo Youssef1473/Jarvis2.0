@@ -634,6 +634,8 @@ class AntigravityBridge:
             m = value.current_model or value.default_model or self.configured_model
             e = value.current_effort or value.default_effort or self.effort or ""
             self._daemon_pool[(m, e)] = value
+        else:
+            self._daemon_pool.clear()
 
     def get_or_spawn_daemon(self, model: str, effort: Optional[str] = None) -> Optional[AntigravityDaemon]:
         """Retrieves an existing warm daemon or evicts LRU to spawn a new one (max 2 slots)."""
@@ -1116,10 +1118,14 @@ class AntigravityBridge:
                 daemon_effort = self.effort
 
             # If self.daemon.execute_turn is mocked in a test, call it directly
-            if hasattr(self.daemon.execute_turn, "_mock_name") or "Mock" in type(self.daemon.execute_turn).__name__:
-                active_worker = self.daemon
+            current_daemon = self.daemon
+            daemon_turn = getattr(current_daemon, "execute_turn", None) if current_daemon is not None else None
+            if daemon_turn is not None and (hasattr(daemon_turn, "_mock_name") or "Mock" in type(daemon_turn).__name__):
+                active_worker = current_daemon
             else:
-                active_worker = self.get_or_spawn_daemon(effective_daemon_model, daemon_effort) or self.daemon
+                active_worker = self.get_or_spawn_daemon(effective_daemon_model, daemon_effort)
+                if not active_worker and current_daemon and current_daemon.is_alive():
+                    active_worker = current_daemon
 
             if active_worker:
                 try:
