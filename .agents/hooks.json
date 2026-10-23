@@ -1,4 +1,18 @@
 {
+  "safety-watchdog": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command|write_file|edit_file|replace_file_content|write_to_file|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if exist tools\\watchdog_hook.py (python tools\\watchdog_hook.py) else (python ..\\tools\\watchdog_hook.py)",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  },
   "python-lint-diagnostic": {
     "PostToolUse": [
       {
