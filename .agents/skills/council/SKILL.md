@@ -3,15 +3,15 @@ name: council
 description: >-
   Multi-agent deliberation and consensus protocol for high-stakes architectural,
   security, and concurrency decisions in Jarvis 2.0. Convenes specialized advisors
-  (Systems Architect, Security Auditor, Pragmatic Implementer) to independently
-  review, cross-critique, and synthesize robust implementations.
+  (Security Auditor, Systems Architect, Test Guardian) via native Antigravity subagents
+  to independently review, cross-critique, and synthesize robust implementations.
 ---
 
 # Council LLM Protocol for Jarvis 2.0
 
 The **Council LLM Protocol** governs high-stakes engineering decisions, architectural design, concurrency models, and security boundaries across the Jarvis 2.0 codebase.
 
-Instead of relying on single-pass model reasoning—which can suffer from sycophancy, blind spots, or missed edge cases—this skill establishes a structured deliberation pipeline among specialized perspectives before high-blast-radius code changes are executed.
+Instead of relying on single-pass model reasoning—which can suffer from sycophancy, blind spots, or missed edge cases—this skill establishes a structured deliberation pipeline among specialized native Antigravity subagents before high-blast-radius code changes are staged or committed.
 
 ---
 
@@ -21,100 +21,115 @@ Convene the Council when any of the following conditions are met:
 
 | Category | Trigger Conditions |
 | :--- | :--- |
+| **Security & Safety** | Changes to command execution, egress validation, subprocess Job Object containment, URL parsing, or untrusted external data ingestion. |
 | **Concurrency & Async** | Modifying `asyncio` event loops, background worker threads, audio streaming pipelines (STT/TTS), or WebSocket broadcast channels in [`jarvis/ui/server.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/ui/server.py). |
-| **Security & Safety** | Changes to command execution in [`jarvis/skills/dev_shell.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/skills/dev_shell.py), [`jarvis/core/safety.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/safety.py), MCP tool invocation, or handling untrusted user/web input. |
-| **Brain & Provider Routing** | Structural refactors to LLM provider fallbacks, specialist consultations (`_consult_specialist`), or context assembly in [`jarvis/core/brain.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/brain.py). |
+| **Brain & Provider Routing** | Structural refactors to LLM provider fallbacks, specialist consultations, or context assembly in [`jarvis/core/brain.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/brain.py). |
 | **Data Integrity & Memory** | Alterations to SQLite persistent memory schemas, vector recall logic, or state persistence in [`jarvis/core/memory.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/memory.py). |
-| **User Request** | Explicit prompts such as *"Convene the council on..."*, *"Run a council review for..."*, or *"Get a second opinion on this architecture."* |
+| **Milestone Review Gates** | Prior to staging complex engineering milestones (e.g. M1, B2, C1) to ensure multi-angle pre-commit verification. |
+| **User Request** | Explicit prompts such as *"Convene the council on..."*, *"Run a council review for..."*, or *"Get an independent review."* |
 
 > [!NOTE]
 > **Fast-Path Exclusion:** Do NOT convene the council for routine UI styling adjustments, simple regex tweaks, documentation updates, or isolated unit-test assertion fixes.
 
 ---
 
-## 2. Council Personas & Mandates
+## 2. Specialized Council Reviewer Roles
 
-The Council is composed of three distinct advisor roles coordinated by the lead agent (**The Chairman**):
+The Council dispatches three distinct native subagents configured in `.agents/agents/`:
 
-### 1. The Systems & Concurrency Architect
-* **Focus:** Concurrency model, thread safety, latency, resource leaks, and lifecycle management.
-* **Key Questions:**
-  * Will this block the `asyncio` loop or starve TTS/STT audio streams?
-  * Are background tasks, thread pools, and WebSocket clients cleanly shutdown on exit?
-  * Does this introduce race conditions between the voice pipeline and incoming UI events?
-
-### 2. The Security & Safety Auditor
-* **Focus:** Blast radius, command injection, safety gates, and privilege boundaries.
-* **Key Questions:**
-  * Can untrusted external data (web text, tool outputs, email bodies) escape sanitation?
-  * Does this bypass or weaken `SafetyGate` approvals for destructive actions?
-  * Are API keys, secrets, or sensitive memory records exposed in logs or telemetry?
-
-### 3. The Pragmatic Implementer & Test Guardian
-* **Focus:** Backwards compatibility, implementation simplicity, minimal blast radius, and testability.
-* **Key Questions:**
-  * Can this be solved with fewer moving parts and less indirection?
-  * Does this break existing interfaces in `SkillRegistry` or existing unit tests in `tests/`?
-  * Is the proposed solution verifiable via concrete test commands?
+| Agent File | Role Identifier | Focus & Responsibilities | Tool Permissions |
+| :--- | :--- | :--- | :--- |
+| [`.agents/agents/security-auditor.md`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/.agents/agents/security-auditor.md) | `security-auditor` | Trust boundaries, provenance propagation (`TurnTaintTracker`), secret scrubbing, SSRF/egress filtering, Windows Job Object containment, fail-closed gates. | Read-only (`read_file`, `search_web`) |
+| [`.agents/agents/systems-architect.md`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/.agents/agents/systems-architect.md) | `systems-architect` | Concurrency safety, non-blocking `asyncio` loops, audio thread starvation, atomic cancellation epochs, SQLite WAL single-writer serialization, handle lifecycles. | Read-only (`read_file`, `search_web`) |
+| [`.agents/agents/test-guardian.md`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/.agents/agents/test-guardian.md) | `test-guardian` | Observable behavior assertions, negative test fixtures, mock lifecycle cleanliness, boundary conditions, backwards compatibility, test evidence auditing. | Read-only (`read_file`, `search_web`) |
 
 ---
 
-## 3. Deliberation Protocol Workflow
-
-When activated, the Council follows a 3-stage deliberation cycle:
+## 3. Deliberation Protocol & Execution Workflow
 
 ```mermaid
 flowchart TD
-    Query["High-Stakes Technical Challenge"] --> Stage1
+    Target["Review Target: git diff HEAD / Scoped Changes"] --> Stage1
 
-    subgraph Stage1 ["Stage 1: Parallel Formulations"]
-        A["Systems Architect\n(Concurrency & Async)"]
-        B["Security Auditor\n(Safety & Boundaries)"]
-        C["Pragmatic Implementer\n(Simplicity & Tests)"]
+    subgraph Stage1 ["Stage 1: Scope Baseline & Parallel Dispatch"]
+        Lead["Lead Agent (Council Coordinator)"]
+        Lead -->|"invoke_subagent(security-auditor)"| SA["Security Auditor"]
+        Lead -->|"invoke_subagent(systems-architect)"| ARC["Systems Architect"]
+        Lead -->|"invoke_subagent(test-guardian)"| TG["Test Guardian"]
     end
 
     Stage1 --> Stage2
 
-    subgraph Stage2 ["Stage 2: Cross-Critique & Vulnerability Hunt"]
-        Critique["Cross-Review:\n- Flag race conditions\n- Challenge assumptions\n- Identify regression risks"]
+    subgraph Stage2 ["Stage 2: Independent Read-Only Audits"]
+        SA -->|"SEC Findings"| ResA["Structured Security Assessment"]
+        ARC -->|"SYS Findings"| ResB["Structured Architectural Assessment"]
+        TG -->|"TEST Findings"| ResC["Structured Test & Regression Assessment"]
     end
 
     Stage2 --> Stage3
 
-    subgraph Stage3 ["Stage 3: Chairman Synthesis & Verification Gate"]
-        Synth["The Chairman\n(Synthesizes consensus, reconciles dissent,\ndefines concrete execution plan)"]
+    subgraph Stage3 ["Stage 3: Reconciliation & Empirical Verification"]
+        Synth["Lead Coordinator:\n1. Reconcile & deduplicate findings\n2. Verify claims against source code\n3. Determine unified verdict"]
     end
 
-    Stage3 --> Exec["Execution & Test Verification"]
+    Stage3 --> Verdict{"Commit-Readiness Verdict"}
+    Verdict -->|"All Passed"| Staged["READY TO STAGE"]
+    Verdict -->|"Minor Fixes"| Fixes["READY AFTER FIXES"]
+    Verdict -->|"Blockers"| Blocked["NOT READY"]
 ```
 
-### Stage 1: Independent Formulations & Deep Technical Research
-* The Chairman presents the problem statement, affected files, and performance/safety constraints.
-* **Mandatory Deep Failure-Mode Probing:** Advisors must actively research edge cases, OS error codes (e.g. Win32 ERROR_BUSY), thread contention (Kokoro audio workers vs LLM streaming), and API quota limits rather than reviewing surface code.
-* **State-of-the-Art Research:** Each advisor evaluates production-grade systems patterns (lock-free buffers, CDP reconnection state machines, AST safety gates, sqlite-vec SIMD optimization) to find the most useful enhancements.
-* Each persona generates an independent proposal without being influenced by the others.
+### Execution Procedure
 
-### Stage 2: Cross-Critique & Vulnerability Hunt
-* Proposals are cross-examined against each advisor's mandate.
-* The Architect probes the Implementer's design for thread-safety and deadlocks.
-* The Security Auditor checks all proposals for injection vectors or safety gate bypasses.
-* The Implementer flags excessive complexity or unmaintainable abstractions.
+1. **Establish Review Baseline:**
+   - Execute and record:
+     ```powershell
+     git status --short
+     git diff HEAD
+     ```
+   - Define exact target files, base revision, and operational context.
 
-### Stage 3: Chairman Synthesis & Comprehensive Intelligence Briefing
-* The Chairman reviews all points of consensus, research discoveries, and unresolved dissent.
-* Outputs a decisive **Council Report** formatted as:
-  1. **Consensus Verdict:** Core architectural approach approved by the council.
-  2. **Technical Discoveries:** Actionable, research-backed engineering patterns uncovered to enhance Jarvis's speed, memory, or intelligence.
-  3. **Identified Failure Modes & Mitigations:** Explicit traps spotted during cross-critique and how they are countered.
-  4. **Implementation Plan:** Contiguous, minimal file edits to be made.
-  5. **Verification Gate:** Specific test commands (`.venv\Scripts\python.exe -m unittest discover tests`) to confirm zero regressions.
+2. **Parallel Subagent Dispatch:**
+   - Dispatch all three specialized reviewers concurrently using native `invoke_subagent`:
+     ```python
+     # Example dispatch contract
+     invoke_subagent(
+         TypeName="security-auditor",
+         Role="Security Auditor",
+         Prompt="<Target files, diff snippet, and review objectives>",
+         Workspace="inherit"
+     )
+     ```
+   - Provide the **identical review scope and diff baseline** to all three reviewers.
+
+3. **Collect & Structure Findings:**
+   - Collect responses from each subagent.
+   - Every finding reported must follow the standard contract:
+     - **Finding ID:** Stable identifier (e.g. `SEC-01`, `SYS-01`, `TEST-01`)
+     - **Severity:** `HIGH` | `MEDIUM` | `LOW` | `INFORMATIONAL`
+     - **File & Line:** Exact file path and line numbers
+     - **Evidence & Technical Reasoning:** Concrete code pattern and explanation
+     - **Failure Scenario:** Exploit, deadlock, crash, or regression mechanism
+     - **Confidence:** `HIGH` | `MEDIUM` | `LOW`
+     - **Remediation:** Surgical code adjustment
+     - **Regression Test:** Proposed test case
+   - If a reviewer identifies zero defects, it must state which files and invariants were examined.
+   - Never equate silence, subagent timeout, or incomplete output with a clean audit.
+
+4. **Reconcile Disagreements & Verify Claims:**
+   - The Lead Coordinator cross-checks reported findings against the actual source code and tests.
+   - Do not silently discard conflicting assessments; document trade-offs explicitly.
+   - Verify any high-severity vulnerability or deadlock claim by inspecting call sites.
+
+5. **Emit Decisive Synthesis Report:**
+   - Deliver a single, consolidated Council Review Report with one unambiguous verdict:
+     - **READY TO STAGE:** All reviewers report clean or informational-only notes; no blockers.
+     - **READY AFTER FIXES:** Minor non-blocking issues or test coverage gaps identified; remediate before staging.
+     - **NOT READY:** Architectural flaws, security vulnerabilities, or failing tests detected; must be resolved first.
 
 ---
 
-## 4. Execution Directives for the Agent
+## 4. Platform Security Boundaries & Limitations
 
-When executing this skill during a session:
-1. **Spawn or Model the Personas:** Use `invoke_subagent` for parallel independent reviews, or explicitly delineate the three perspectives in your deliberation trace.
-2. **Comprehensive Intelligence Feedback:** Never summarize away crucial technical nuance. Gather all specialized insights, research discoveries, and trade-offs from the Council and brief Sir with complete, non-generic clarity.
-3. **Present Clear Findings:** Provide the synthesized Council Report to the user with actionable next steps before executing high-risk file modifications.
-3. **Verify Empirically:** Never declare a council-approved implementation complete without executing the relevant test suites and checking tool outputs.
+- **Tool Allowlists:** Reviewers configure explicit tool allowlists (`read_file`, `search_web`), excluding `write_file`, `edit_file`, and `run_command`.
+- **Inherited Workspace:** Reviews run with `Workspace="inherit"` to inspect the parent workspace without duplicating disk storage.
+- **Limitation Transparency:** Agent tool allowlists restrict tool calling within Antigravity's model execution environment. They do not constitute an OS-level hypervisor boundary.
