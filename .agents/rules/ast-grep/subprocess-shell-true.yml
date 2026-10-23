@@ -1,0 +1,10 @@
+id: jarvis-subprocess-shell-true
+message: "PROHIBITED: subprocess invocation with shell=True is forbidden by AGENTS.md §4. Use argument lists with close_fds=True."
+severity: error
+language: python
+rule:
+  any:
+    - pattern: subprocess.$_($$$ARGS, shell=True, $$$MORE)
+    - pattern: subprocess.$_($$$ARGS, shell=True)
+    - pattern: subprocess.$_(shell=True, $$$MORE)
+    - pattern: subprocess.$_(shell=True)

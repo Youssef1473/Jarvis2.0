@@ -102,6 +102,9 @@ Always import from and modify canonical modules rather than legacy re-export shi
 The workspace environment uses Python 3.12 under Windows (PowerShell):
 
 ```powershell
+# Combined static analysis & AST structural invariant diagnostics
+python tools/diagnostics.py check <path>
+
 # Fast parallel test suite (sharded across non-hardware suites)
 python tools/run_fast_tests.py --fast
 
@@ -111,8 +114,9 @@ python tools/run_fast_tests.py tests/test_security_boundaries.py
 # Static analysis and lint diagnostics (via reliable cross-platform wrapper)
 python tools/lint.py check <path>
 
-# Structural AST search
-ast-grep run -p '<pattern>' <path>
+# Structural AST search & invariant rule scanning
+python tools/diagnostics.py search '<pattern>' <path>
+python tools/diagnostics.py scan <path>
 ```
 
 For complete subsystem maps, see [docs/architecture/PROJECT_MAP.md](file:///C:/Users/Youssef/Projects/Jarvis_2.0/docs/architecture/PROJECT_MAP.md).

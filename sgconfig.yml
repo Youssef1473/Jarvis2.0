@@ -1,0 +1,4 @@
+# AST-Grep Project Configuration for Jarvis 2.0
+# Enforces architectural and security invariants across the codebase.
+ruleDirs:
+  - .agents/rules/ast-grep

@@ -10,8 +10,14 @@ This workspace supports `ast-grep` (tree-sitter AST engine) and `ruff` (Rust sta
 ## Quick Reference Commands
 
 ```powershell
-# Structural AST search (use single quotes to avoid PowerShell variable expansion)
-ast-grep run -p '<pattern>' <path>
+# Combined static analysis & AST structural invariant diagnostics
+python tools/diagnostics.py check <path>
+
+# Structural AST search (portable wrapper, single quotes protect '$' wildcards)
+python tools/diagnostics.py search '<pattern>' <path>
+
+# AST-Grep architectural invariant rule scan (.agents/rules/ast-grep)
+python tools/diagnostics.py scan <path>
 
 # Instant syntax and undefined-name diagnostics
 python tools/lint.py check <path>
@@ -23,7 +29,7 @@ python tools/lint.py check --fix <path>
 python tools/agy_context_slicer.py <path>
 ```
 
-> **Executable Discovery:** `python tools/lint.py` automatically resolves Ruff across all local/parent virtualenvs and PATH without hardcoded paths. For `ast-grep`, if not directly on `PATH`, invoke via `& "..\.venv\Scripts\ast-grep.exe"` or `& ".venv\Scripts\ast-grep.exe"`.
+> **Executable Discovery:** Both `python tools/lint.py` and `python tools/diagnostics.py` automatically resolve Ruff and ast-grep across all local/parent virtual environments (`.venv`, `..\.venv`) and system PATH without hardcoded paths or environment variables. Direct CLI `ast-grep run -p '<pattern>' <path>` is also supported when ast-grep is on PATH.
 
 ---
 

@@ -1,0 +1,6 @@
+id: jarvis-prohibited-os-system
+message: "PROHIBITED: os.system() is forbidden by AGENTS.md §4. Use subprocess argument lists with close_fds=True or sandboxed execution."
+severity: error
+language: python
+rule:
+  pattern: os.system($$$ARGS)

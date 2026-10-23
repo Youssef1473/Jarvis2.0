@@ -72,7 +72,7 @@ Verify:
 * **Re-export Shims:** Are callers importing from legacy shims still functional without breaking changes?
 * **Error Handling:** Are exceptions caught specifically rather than via bare `except:` or `except Exception:`?
 * **Resource & Handle Lifecycle:** Are OS handles, sockets, Win32 Job Objects, and files closed cleanly via context managers or explicit `try...finally`?
-* **Negative Constraints:** Ensure no `subprocess.run(shell=True)` or raw string formatting in shell commands.
+* **Negative Constraints:** Ensure no `subprocess.run(shell=True)` or raw string formatting in shell commands. Use structural AST scans (`python tools/diagnostics.py scan <path>` or `python tools/diagnostics.py search ...`) as supporting evidence, never as a substitute for manually reading and tracing security-critical execution paths.
 
 #### Reviewer C: Performance, Threading & System Invariants
 * **Thread Safety & Barge-In:** Does any change block the WASAPI playback or Kokoro synthesis worker threads? Is `GLOBAL_EPOCH_STATE` honored?

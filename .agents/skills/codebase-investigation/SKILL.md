@@ -87,13 +87,13 @@ Never read an entire >300-line file without inspecting its structural layout fir
 
 ### Tier 3: Micro Syntax & Call-Site Discovery
 Identify all callers, consumers, and overrides across the repository before modifying a function signature:
-1. **Structural AST Matching (`ast-grep`):**
+1. **Structural AST Matching (`ast-grep` / `tools/diagnostics.py search`):**
    - Use tree-sitter AST queries rather than fragile regex:
      ```powershell
-     # Find all calls to a specific method
-     ast-grep run -p '$OBJ.record_ingestion($$$ARGS)' jarvis/
+     # Find all calls to a specific method (via portable diagnostic wrapper)
+     python tools/diagnostics.py search '$OBJ.record_ingestion($$$ARGS)' jarvis/
 
-     # Find function declarations with parameters
+     # Find function declarations with parameters (or direct ast-grep if on PATH)
      ast-grep run -p 'def validate_egress_url($$$PARAMS): $$$BODY' jarvis/
      ```
    - *PowerShell Invariant:* Always wrap patterns in single quotes (`'...'`) to prevent `$VARIABLE` interpolation.

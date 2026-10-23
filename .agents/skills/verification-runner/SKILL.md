@@ -61,14 +61,20 @@ flowchart TD
 
 ## 2. Verification Steps & Commands
 
-### Tier 1: Static Analysis & Diagnostics
-Run instant static checks on modified files using the cross-platform wrapper:
+### Tier 1: Static Analysis & Structural Invariant Diagnostics
+Run instant static checks on modified files using the cross-platform diagnostic workflow:
 ```powershell
-# Full diagnostic check on modified files
+# Canonical combined diagnostic procedure (Ruff linter + AST-Grep invariant scan)
+python tools/diagnostics.py check <path>
+
+# Focused lint diagnostics on modified files (Ruff)
 python tools/lint.py check <path>
 
 # Fatal syntax and undefined name gate across workspace
 python tools/lint.py check --select E9,F821 jarvis tests tools
+
+# Architectural invariant rule scan (.agents/rules/ast-grep)
+python tools/diagnostics.py scan <path>
 ```
 *Pass Criteria:* Exit code `0` with zero diagnostics.
 
