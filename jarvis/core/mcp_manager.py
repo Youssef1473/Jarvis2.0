@@ -17,7 +17,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from jarvis.core.security_boundaries import TurnTaintTracker, validate_egress_url, SecurityBoundaryViolation
+from jarvis.core.security_boundaries import TurnTaintTracker, validate_egress_url, resolve_and_validate_destination, SecurityBoundaryViolation, build_safe_url_opener
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Core.MCP")
@@ -200,6 +200,7 @@ class MCPClientSession:
         self._tool_cache: Optional[List[Dict[str, Any]]] = None
         self._cache_timestamp: float = 0.0
         self._is_closed: bool = False
+        self._http_opener: Optional[urllib.request.OpenerDirector] = None
 
         # Stdio specific state
         self._proc: Optional[subprocess.Popen] = None
@@ -295,8 +296,8 @@ class MCPClientSession:
         if not self.endpoint_url:
             raise ValueError(f"HTTP transport requires endpoint_url for session '{self.name}'.")
 
-        # Validate URL via SSRF boundary, allowing user-configured local MCP endpoints
-        clean_url = validate_egress_url(self.endpoint_url, allow_local_mcp=True)
+        # Validate URL via SSRF boundary, resolving and pinning IP to prevent DNS rebinding
+        clean_url, _, pinned_ip = resolve_and_validate_destination(self.endpoint_url, allow_local_mcp=True)
 
         req_headers = {
             "Content-Type": "application/json",
@@ -308,9 +309,11 @@ class MCPClientSession:
 
         body_bytes = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(clean_url, data=body_bytes, headers=req_headers, method="POST")
+        req._pinned_ip = pinned_ip
 
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            opener = self._http_opener or build_safe_url_opener(allow_local_mcp=True)
+            with opener.open(req, timeout=timeout) as resp:
                 resp_bytes = resp.read()
                 raw_text = resp_bytes.decode("utf-8").strip()
                 if raw_text.startswith("{") or raw_text.startswith("["):

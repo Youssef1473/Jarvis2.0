@@ -1,6 +1,7 @@
 """Closed-Loop Security Boundaries, SSRF Protection, Path Confinement, and Taint Tracking for Jarvis 2.0."""
 import hashlib
 import hmac
+import http.client
 import ipaddress
 import json
 import logging
@@ -31,51 +32,91 @@ WINDOWS_RESERVED_DEVICE_NAMES: Set[str] = {
     "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 }
 
+SENSITIVE_AUTH_HEADERS: Set[str] = {
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "cookie2",
+    "x-api-key",
+    "x-auth-token",
+}
 
-def validate_egress_url(
+
+def resolve_and_validate_destination(
     url: str,
     allowed_schemes: Tuple[str, ...] = ("http", "https"),
     allow_local_mcp: bool = False,
     allow_localhost: bool = False,
-) -> str:
-    """Validates an egress URL against SSRF, DNS rebinding, and private network access.
+) -> Tuple[str, urllib.parse.SplitResult, str]:
+    """Parses, resolves, and validates destination URL against SSRF, non-global IPs, and DNS rebinding.
 
-    Performs fail-closed DNS pre-resolution and blocks all loopback, link-local,
-    private RFC 1918, and multicast IP destinations.
+    Performs fail-closed DNS pre-resolution, validates all returned candidate IP addresses against
+    loopback, link-local, private RFC 1918, CGNAT, multicast, reserved, and non-global ranges,
+    and returns the validated clean URL, SplitResult, and selected pinned IP literal.
+
+    Returns:
+        (clean_url, parsed_result, pinned_ip)
+    Raises:
+        SecurityBoundaryViolation: If the destination is invalid, forbidden, or unreachable.
     """
     if not url or not isinstance(url, str):
         raise SecurityBoundaryViolation("Empty or invalid URL provided.")
 
     clean_url = url.strip()
-    # Reject CRLF injection
+    # Reject CRLF or null byte injection
     if any(c in clean_url for c in ("\r", "\n", "\x00")):
         raise SecurityBoundaryViolation("URL contains illegal CRLF or null byte characters.")
 
-    parsed = urllib.parse.urlsplit(clean_url)
-    scheme = (parsed.scheme or "").lower()
+    try:
+        parsed = urllib.parse.urlsplit(clean_url)
+    except Exception as err:
+        raise SecurityBoundaryViolation(f"Malformed URL: {err}") from err
 
+    scheme = (parsed.scheme or "").lower()
     if scheme not in allowed_schemes:
         raise SecurityBoundaryViolation(
             f"Blocked URL scheme '{scheme}'. Permitted schemes: {allowed_schemes}"
         )
 
-    hostname = parsed.hostname
+    try:
+        hostname = parsed.hostname
+    except Exception as err:
+        raise SecurityBoundaryViolation(f"Malformed hostname in URL: {err}") from err
+
     if not hostname:
         raise SecurityBoundaryViolation("Egress URL must contain a valid hostname.")
 
     hostname_lower = hostname.lower()
 
-    # Reject localhost aliases outright unless allow_local_mcp or allow_localhost is explicitly granted
-    permit_loopback = allow_local_mcp or allow_localhost
+    # Determine whether destination hostname is an explicitly configured local destination
+    # (exact 'localhost' or IPv4/IPv6 loopback literal)
+    is_explicit_local = False
+    try:
+        ip_parsed = ipaddress.ip_address(hostname)
+        if isinstance(ip_parsed, ipaddress.IPv6Address) and getattr(ip_parsed, "ipv4_mapped", None):
+            ip_parsed = ip_parsed.ipv4_mapped
+        if ip_parsed.is_loopback:
+            is_explicit_local = True
+    except ValueError:
+        if hostname_lower == "localhost":
+            is_explicit_local = True
+
+    # Loopback permission is strictly restricted to explicitly configured local destinations.
+    # Arbitrary remote hostnames resolving to loopback via DNS must never receive loopback permission.
+    permit_loopback = (allow_local_mcp or allow_localhost) and is_explicit_local
     if not permit_loopback:
         if (
             hostname_lower == "localhost"
             or hostname_lower.endswith(".localhost")
             or hostname_lower in ("127.0.0.1", "::1", "0.0.0.0")
+            or is_explicit_local
         ):
             raise SecurityBoundaryViolation(f"Egress to localhost '{hostname}' is blocked.")
 
-    port = parsed.port or (443 if scheme == "https" else 80)
+    try:
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except Exception as err:
+        raise SecurityBoundaryViolation(f"Malformed port in URL: {err}") from err
 
     # DNS Resolution (Fail Closed)
     try:
@@ -88,7 +129,9 @@ def validate_egress_url(
     if not addr_info:
         raise SecurityBoundaryViolation(f"No IP addresses resolved for host '{hostname}'.")
 
-    # Inspect all resolved IPs
+    validated_ips: List[str] = []
+
+    # Inspect all resolved IPs - every address answer must be valid and global (or permitted loopback)
     for entry in addr_info:
         raw_ip = entry[4][0]
         try:
@@ -100,12 +143,20 @@ def validate_egress_url(
         if isinstance(ip_obj, ipaddress.IPv6Address) and getattr(ip_obj, "ipv4_mapped", None):
             ip_obj = ip_obj.ipv4_mapped
 
-        # If permit_loopback is set, permit loopback for user-configured MCP servers or local dev browser tabs
-        if permit_loopback and ip_obj.is_loopback:
+        # When an explicitly local destination is permitted (e.g. local MCP or dev CDP),
+        # enforce destination integrity: every resolved address MUST be a loopback address.
+        # Any non-loopback answer (whether private or public) is rejected and fails closed.
+        if permit_loopback:
+            if not ip_obj.is_loopback:
+                raise SecurityBoundaryViolation(
+                    f"Local destination '{hostname}' resolved to non-loopback address '{ip_obj}'."
+                )
+            validated_ips.append(str(ip_obj))
             continue
 
         if (
-            ip_obj.is_private
+            not ip_obj.is_global
+            or ip_obj.is_private
             or ip_obj.is_loopback
             or ip_obj.is_link_local
             or ip_obj.is_multicast
@@ -116,31 +167,234 @@ def validate_egress_url(
                 f"SSRF Protection: Host '{hostname}' resolved to non-global address '{ip_obj}'."
             )
 
+        validated_ips.append(str(ip_obj))
+
+    if not validated_ips:
+        raise SecurityBoundaryViolation(f"No valid IP addresses available for host '{hostname}'.")
+
+    # Select the first validated IP for socket-level connection pinning
+    pinned_ip = validated_ips[0]
+
+    return clean_url, parsed, pinned_ip
+
+
+def validate_egress_url(
+    url: str,
+    allowed_schemes: Tuple[str, ...] = ("http", "https"),
+    allow_local_mcp: bool = False,
+    allow_localhost: bool = False,
+) -> str:
+    """Validates an egress URL against SSRF, DNS rebinding, and private network access.
+
+    Performs fail-closed DNS pre-resolution and blocks all loopback, link-local,
+    private RFC 1918, CGNAT, multicast, reserved, and non-global IP destinations.
+    """
+    clean_url, _, _ = resolve_and_validate_destination(
+        url,
+        allowed_schemes=allowed_schemes,
+        allow_local_mcp=allow_local_mcp,
+        allow_localhost=allow_localhost,
+    )
     return clean_url
 
 
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Custom HTTP redirect handler that validates every redirect destination hop."""
+    """Custom HTTP redirect handler that validates every redirect destination hop.
+
+    Uses request-scoped hop accounting and destination pinning to prevent SSRF,
+    hop limit exhaustion across concurrent requests, and DNS rebinding on redirect hops.
+    """
 
     def __init__(self, max_hops: int = 4, allowed_schemes: Tuple[str, ...] = ("http", "https")):
         super().__init__()
         self.max_hops = max_hops
         self.allowed_schemes = allowed_schemes
-        self.hops = 0
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        self.hops += 1
-        if self.hops > self.max_hops:
+        hops = getattr(req, "_jarvis_hops", 0) + 1
+        if hops > self.max_hops:
             raise SecurityBoundaryViolation(f"Redirect limit exceeded (maximum {self.max_hops} hops).")
 
-        # Validate destination hop through SSRF filter
-        validated_url = validate_egress_url(newurl, allowed_schemes=self.allowed_schemes)
-        return super().redirect_request(req, fp, code, msg, headers, validated_url)
+        # Resolve relative redirects against request full_url
+        resolved_url = urllib.parse.urljoin(req.full_url, newurl)
+
+        # Disallow insecure redirect downgrade from HTTPS to HTTP
+        old_parsed = urllib.parse.urlsplit(req.full_url)
+        new_parsed = urllib.parse.urlsplit(resolved_url)
+        if (old_parsed.scheme or "").lower() == "https" and (new_parsed.scheme or "").lower() == "http":
+            raise SecurityBoundaryViolation(
+                f"Insecure redirect downgrade from HTTPS to HTTP blocked: '{req.full_url}' -> '{resolved_url}'"
+            )
+
+        # Validate destination hop through SSRF filter (never authorize loopback/private for redirect hops)
+        clean_url, parsed_dest, pinned_ip = resolve_and_validate_destination(
+            resolved_url,
+            allowed_schemes=self.allowed_schemes,
+            allow_local_mcp=False,
+            allow_localhost=False,
+        )
+
+        new_req = super().redirect_request(req, fp, code, msg, headers, clean_url)
+        if new_req is None:
+            return None
+
+        # Cross-origin redirect: strip sensitive auth credentials
+        origin_changed = (
+            (old_parsed.hostname or "").lower() != (new_parsed.hostname or "").lower()
+            or old_parsed.port != new_parsed.port
+            or (old_parsed.scheme or "").lower() != (new_parsed.scheme or "").lower()
+        )
+        if origin_changed:
+            if hasattr(new_req, "headers"):
+                for header_key in list(new_req.headers.keys()):
+                    if header_key.lower() in SENSITIVE_AUTH_HEADERS:
+                        del new_req.headers[header_key]
+            if hasattr(new_req, "unredirected_hdrs"):
+                for header_key in list(new_req.unredirected_hdrs.keys()):
+                    if header_key.lower() in SENSITIVE_AUTH_HEADERS:
+                        del new_req.unredirected_hdrs[header_key]
+
+        # Scope hops and pinned destination to the new request
+        new_req._jarvis_hops = hops
+        new_req._pinned_ip = pinned_ip
+
+        return new_req
 
 
-def build_safe_url_opener(max_hops: int = 4) -> urllib.request.OpenerDirector:
-    """Builds a urllib opener director equipped with SafeRedirectHandler."""
-    return urllib.request.build_opener(SafeRedirectHandler(max_hops=max_hops))
+class NoProxyHandler(urllib.request.ProxyHandler):
+    """Disables environment and system proxy auto-detection to prevent proxy SSRF bypass."""
+
+    def __init__(self):
+        super().__init__(proxies={})
+
+    def default_open(self, req):
+        return None
+
+
+class PinnedIPHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection that connects directly to a pre-validated IP to eliminate DNS rebinding."""
+
+    def __init__(self, host, port=None, pinned_ip: Optional[str] = None, **kwargs):
+        super().__init__(host, port=port, **kwargs)
+        self.pinned_ip = pinned_ip
+
+    def connect(self):
+        dest_host = self.pinned_ip or self.host
+        self.sock = self._create_connection(
+            (dest_host, self.port), self.timeout, self.source_address
+        )
+        try:
+            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class PinnedIPHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection that connects to a pre-validated IP while preserving SNI and cert verification."""
+
+    def __init__(self, host, port=None, pinned_ip: Optional[str] = None, **kwargs):
+        super().__init__(host, port=port, **kwargs)
+        self.pinned_ip = pinned_ip
+
+    def connect(self):
+        dest_host = self.pinned_ip or self.host
+        self.sock = self._create_connection(
+            (dest_host, self.port), self.timeout, self.source_address
+        )
+        try:
+            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+
+        if self._tunnel_host:
+            server_hostname = self._tunnel_host
+        else:
+            server_hostname = self.host
+
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=server_hostname)
+
+
+class PinnedHTTPHandler(urllib.request.HTTPHandler):
+    """HTTPHandler that resolves/validates destination and pins the socket to the pre-validated IP."""
+
+    def __init__(self, allow_local_mcp: bool = False, allow_localhost: bool = False):
+        super().__init__()
+        self.allow_local_mcp = allow_local_mcp
+        self.allow_localhost = allow_localhost
+
+    def http_open(self, req):
+        pinned_ip = getattr(req, "_pinned_ip", None)
+        if not pinned_ip:
+            clean_url, _, pinned_ip = resolve_and_validate_destination(
+                req.full_url,
+                allowed_schemes=("http", "https"),
+                allow_local_mcp=self.allow_local_mcp,
+                allow_localhost=self.allow_localhost,
+            )
+            req._pinned_ip = pinned_ip
+
+        def conn_factory(host, timeout=req.timeout, **kwargs):
+            return PinnedIPHTTPConnection(host, port=None, pinned_ip=pinned_ip, timeout=timeout, **kwargs)
+
+        return self.do_open(conn_factory, req)
+
+
+class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    """HTTPSHandler that resolves/validates destination and pins the socket to the pre-validated IP."""
+
+    def __init__(self, allow_local_mcp: bool = False, allow_localhost: bool = False, context=None):
+        super().__init__(context=context)
+        self.allow_local_mcp = allow_local_mcp
+        self.allow_localhost = allow_localhost
+
+    def https_open(self, req):
+        pinned_ip = getattr(req, "_pinned_ip", None)
+        if not pinned_ip:
+            clean_url, _, pinned_ip = resolve_and_validate_destination(
+                req.full_url,
+                allowed_schemes=("http", "https"),
+                allow_local_mcp=self.allow_local_mcp,
+                allow_localhost=self.allow_localhost,
+            )
+            req._pinned_ip = pinned_ip
+
+        ctx = self._context
+
+        def conn_factory(host, timeout=req.timeout, **kwargs):
+            conn_kwargs = dict(kwargs)
+            if ctx is not None:
+                conn_kwargs["context"] = ctx
+            return PinnedIPHTTPSConnection(host, port=None, pinned_ip=pinned_ip, timeout=timeout, **conn_kwargs)
+
+        return self.do_open(conn_factory, req)
+
+
+def build_safe_url_opener(
+    max_hops: int = 4,
+    allow_local_mcp: bool = False,
+    allow_localhost: bool = False,
+) -> urllib.request.OpenerDirector:
+    """Builds a hardened urllib opener director equipped with SafeRedirectHandler,
+    NoProxyHandler, and destination-pinned HTTP/HTTPS handlers to eliminate SSRF and DNS rebinding.
+
+    Explicitly excludes default urllib protocol handlers (FileHandler, FTPHandler, DataHandler)
+    to prevent local file disclosure and non-HTTP protocol smuggling.
+    """
+    opener = urllib.request.OpenerDirector()
+    for handler in (
+        NoProxyHandler(),
+        SafeRedirectHandler(max_hops=max_hops),
+        PinnedHTTPHandler(allow_local_mcp=allow_local_mcp, allow_localhost=allow_localhost),
+        PinnedHTTPSHandler(allow_local_mcp=allow_local_mcp, allow_localhost=allow_localhost),
+        urllib.request.HTTPErrorProcessor(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        urllib.request.UnknownHandler(),
+    ):
+        opener.add_handler(handler)
+    return opener
 
 
 def validate_confined_path(target_path: str, allowed_root_dir: str) -> str:

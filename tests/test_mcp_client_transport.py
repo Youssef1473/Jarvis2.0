@@ -24,10 +24,10 @@ class TestMCPClientHTTPTransport(unittest.TestCase):
         self.tracker = TurnTaintTracker.get_instance()
         self.tracker.reset_turn()
 
-    @patch("jarvis.core.mcp_manager.validate_egress_url")
-    @patch("urllib.request.urlopen")
-    def test_http_handshake_and_caching(self, mock_urlopen, mock_validate_url):
-        mock_validate_url.return_value = "http://127.0.0.1:8000/mcp"
+    @patch("jarvis.core.mcp_manager.resolve_and_validate_destination")
+    @patch("jarvis.core.mcp_manager.build_safe_url_opener")
+    def test_http_handshake_and_caching(self, mock_build_opener, mock_resolve_dest):
+        mock_resolve_dest.return_value = ("http://127.0.0.1:8000/mcp", MagicMock(), "127.0.0.1")
 
         # Mock responses for initialize, tools/list, and tools/call
         mock_resp = MagicMock()
@@ -40,7 +40,9 @@ class TestMCPClientHTTPTransport(unittest.TestCase):
             }).encode("utf-8"),
         ]
         mock_resp.__enter__.return_value = mock_resp
-        mock_urlopen.return_value = mock_resp
+        mock_opener = MagicMock()
+        mock_opener.open.return_value = mock_resp
+        mock_build_opener.return_value = mock_opener
 
         session = MCPClientSession(
             name="test_http",
@@ -60,15 +62,15 @@ class TestMCPClientHTTPTransport(unittest.TestCase):
         # Second list_tools call within TTL uses cached tools without network request
         tools2 = session.list_tools()
         self.assertEqual(len(tools2), 1)
-        self.assertEqual(mock_urlopen.call_count, 2)  # 1 for init, 1 for tools/list
+        self.assertEqual(mock_opener.open.call_count, 2)  # 1 for init, 1 for tools/list
 
         # Verify outgoing headers contained protocol version
-        last_req = mock_urlopen.call_args[0][0]
+        last_req = mock_opener.open.call_args[0][0]
         self.assertEqual(last_req.headers.get("Mcp-protocol-version"), MCP_PROTOCOL_VERSION)
 
-    @patch("jarvis.core.mcp_manager.validate_egress_url")
-    def test_http_egress_ssrf_blocked(self, mock_validate_url):
-        mock_validate_url.side_effect = SecurityBoundaryViolation("SSRF blocked")
+    @patch("jarvis.core.mcp_manager.resolve_and_validate_destination")
+    def test_http_egress_ssrf_blocked(self, mock_resolve_dest):
+        mock_resolve_dest.side_effect = SecurityBoundaryViolation("SSRF blocked")
         session = MCPClientSession(
             name="malicious",
             transport="http",
