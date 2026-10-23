@@ -7,6 +7,7 @@ deterministic cycle detection into a single robust engine.
 from abc import ABC, abstractmethod
 import asyncio
 import concurrent.futures
+import contextvars
 from dataclasses import dataclass, field
 import json
 import logging
@@ -147,8 +148,9 @@ class UnifiedRunner:
         """Executes a tool offloaded asynchronously to a dedicated worker thread with strict timeout guard."""
         tool_timeout = timeout if timeout is not None else self.tool_timeout
         executor = self._get_executor_for_tool(fn_name)
+        ctx = contextvars.copy_context()
         try:
-            future = executor.submit(SkillRegistry.execute, fn_name, **fn_args)
+            future = executor.submit(ctx.run, SkillRegistry.execute, fn_name, **fn_args)
             result = future.result(timeout=tool_timeout)
             return str(result)
         except concurrent.futures.TimeoutError:
@@ -171,8 +173,9 @@ class UnifiedRunner:
         tool_timeout = timeout if timeout is not None else self.tool_timeout
         executor = self._get_executor_for_tool(fn_name)
         loop = asyncio.get_running_loop()
+        ctx = contextvars.copy_context()
         try:
-            future = loop.run_in_executor(executor, lambda: SkillRegistry.execute(fn_name, **fn_args))
+            future = loop.run_in_executor(executor, ctx.run, lambda: SkillRegistry.execute(fn_name, **fn_args))
             result = await asyncio.wait_for(future, timeout=tool_timeout)
             return str(result)
         except asyncio.TimeoutError:

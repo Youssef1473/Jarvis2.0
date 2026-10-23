@@ -1,3 +1,4 @@
+import threading
 """Unit tests for Closed-Loop Security Boundaries, SSRF Protection, Taint Tracking, and Shell Approval."""
 import socket
 import time
@@ -325,6 +326,288 @@ class TestSecurityBoundaries(unittest.TestCase):
         # 3. Original grant is still valid and consumable only for the exact tool and arguments
         self.assertTrue(self.approval_mgr.has_valid_grant("execute_powershell", ps_args))
         self.assertTrue(self.approval_mgr.consume_grant("execute_powershell", ps_args))
+
+
+class TestTurnTaintConcurrencyIsolation(unittest.TestCase):
+    """H2 Regression Tests: Per-Turn Taint State Isolation across concurrent execution threads and contexts."""
+
+    def setUp(self):
+        self.tracker = TurnTaintTracker.get_instance()
+        self.tracker.reset_turn()
+
+    def test_concurrent_turn_reset_does_not_clear_active_turn_taint(self):
+        """Turn A's taint state must not be reset or wiped by concurrent Turn B calling reset_turn()."""
+        turn1_started = threading.Event()
+        turn2_reset_done = threading.Event()
+        turn1_tainted_after_turn2_reset = None
+
+        def turn1_worker():
+            nonlocal turn1_tainted_after_turn2_reset
+            self.tracker.mark_tainted("web_search")
+            turn1_started.set()
+            # Wait until Turn 2 has invoked reset_turn()
+            self.assertTrue(turn2_reset_done.wait(timeout=2.0))
+            turn1_tainted_after_turn2_reset = self.tracker.is_tainted
+
+        def turn2_worker():
+            self.assertTrue(turn1_started.wait(timeout=2.0))
+            self.tracker.reset_turn()
+            turn2_reset_done.set()
+
+        t1 = threading.Thread(target=turn1_worker)
+        t2 = threading.Thread(target=turn2_worker)
+        t1.start()
+        t2.start()
+        t1.join(timeout=3.0)
+        t2.join(timeout=3.0)
+
+        self.assertFalse(t1.is_alive(), "Turn 1 thread timed out")
+        self.assertFalse(t2.is_alive(), "Turn 2 thread timed out")
+        self.assertTrue(
+            turn1_tainted_after_turn2_reset,
+            "VULNERABILITY: Turn A taint was wiped out by concurrent Turn B calling reset_turn()!"
+        )
+
+    def test_turn_does_not_inherit_taint_from_another_turn(self):
+        """A new turn running in a separate thread must not inherit taint from an earlier or concurrent tainted turn."""
+        turn1_tainted_done = threading.Event()
+        turn2_inherited_taint = None
+
+        def turn1_worker():
+            self.tracker.mark_tainted("browser_get_dom")
+            turn1_tainted_done.set()
+
+        def turn2_worker():
+            nonlocal turn2_inherited_taint
+            self.assertTrue(turn1_tainted_done.wait(timeout=2.0))
+            # Turn 2 has not executed any untrusted tool and has not called reset_turn
+            turn2_inherited_taint = self.tracker.is_tainted
+
+        t1 = threading.Thread(target=turn1_worker)
+        t2 = threading.Thread(target=turn2_worker)
+        t1.start()
+        t2.start()
+        t1.join(timeout=3.0)
+        t2.join(timeout=3.0)
+
+        self.assertFalse(t1.is_alive())
+        self.assertFalse(t2.is_alive())
+        self.assertFalse(
+            turn2_inherited_taint,
+            "VULNERABILITY: Turn B inherited Turn A's taint state across thread boundaries!"
+        )
+
+    def test_concurrent_tool_execution_gate_isolation(self):
+        """Turn A (tainted) must be blocked by Dual-Key gate, while concurrent Turn B (untainted) is permitted."""
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
+        approval_mgr = DualKeyApprovalManager.get_instance()
+        approval_mgr.reset()
+
+        turn1_tainted_ready = threading.Event()
+        turn2_finished = threading.Event()
+        turn1_result = None
+        turn2_result = None
+
+        tool_args = {"command": "Get-Date"}
+
+        def turn1_worker():
+            nonlocal turn1_result
+            self.tracker.mark_tainted("web_search")
+            turn1_tainted_ready.set()
+            self.assertTrue(turn2_finished.wait(timeout=2.0))
+            try:
+                # Level 1 mutation must be blocked on tainted turn without approval
+                self.tracker.check_tool_execution("execute_sandboxed_powershell", tool_args, risk_level=1)
+                turn1_result = "allowed"
+            except SecurityBoundaryViolation:
+                turn1_result = "blocked"
+
+        def turn2_worker():
+            nonlocal turn2_result
+            self.assertTrue(turn1_tainted_ready.wait(timeout=2.0))
+            # Turn 2 calls reset_turn() and executes level 1 mutation
+            self.tracker.reset_turn()
+            try:
+                allowed = self.tracker.check_tool_execution("execute_sandboxed_powershell", tool_args, risk_level=1)
+                turn2_result = "allowed" if allowed else "disallowed"
+            except SecurityBoundaryViolation:
+                turn2_result = "blocked"
+            finally:
+                turn2_finished.set()
+
+        t1 = threading.Thread(target=turn1_worker)
+        t2 = threading.Thread(target=turn2_worker)
+        t1.start()
+        t2.start()
+        t1.join(timeout=3.0)
+        t2.join(timeout=3.0)
+
+        self.assertEqual(turn2_result, "allowed", "Turn B was untainted and should have been allowed")
+        self.assertEqual(turn1_result, "blocked", "Turn A was tainted and should have been blocked by Dual-Key gate")
+    def test_child_asyncio_task_cannot_clear_parent_taint(self):
+        """SEC-H2-01: A child asyncio task cannot clear its parent's established taint state."""
+        import asyncio
+
+        async def run():
+            self.tracker.reset_turn()
+            self.tracker.mark_tainted("web_search")
+            self.assertTrue(self.tracker.is_tainted)
+
+            async def child():
+                self.tracker.is_tainted = False
+
+            await asyncio.create_task(child())
+            self.assertTrue(
+                self.tracker.is_tainted,
+                "VULNERABILITY: Child task untainted parent via shared mutable state!"
+            )
+
+        asyncio.run(run())
+
+    def test_child_task_cannot_clear_parent_taint_sources(self):
+        """SEC-H2-01: A child task cannot mutate or wipe parent's exposed tainting sources."""
+        import asyncio
+
+        async def run():
+            self.tracker.reset_turn()
+            self.tracker.mark_tainted("web_search")
+
+            async def child():
+                try:
+                    self.tracker._tainting_sources.clear()
+                except Exception:
+                    pass
+                try:
+                    self.tracker._tainting_sources = []
+                except Exception:
+                    pass
+
+            await asyncio.create_task(child())
+            self.assertIn(
+                "web_search",
+                self.tracker._tainting_sources,
+                "VULNERABILITY: Child task cleared parent tainting sources!"
+            )
+
+        asyncio.run(run())
+
+    def test_unseeded_worker_thread_fails_closed_at_security_gate(self):
+        """SEC-H2-02: An unseeded worker thread without turn context cannot execute privileged mutations."""
+        err = None
+
+        def worker():
+            nonlocal err
+            try:
+                self.tracker.check_tool_execution(
+                    "execute_sandboxed_powershell", {"command": "Get-Process"}, risk_level=1
+                )
+            except SecurityBoundaryViolation as e:
+                err = e
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=3.0)
+
+        self.assertIsNotNone(
+            err,
+            "VULNERABILITY: Unseeded worker thread executed privileged tool without context or authorization!"
+        )
+
+    def test_unseeded_context_allows_safe_read_only_tool(self):
+        """SEC-H2-02: Safe read-only inspections (risk_level=0) are permitted even in unseeded contexts."""
+        err = None
+        allowed = None
+
+        def worker():
+            nonlocal err, allowed
+            try:
+                allowed = self.tracker.check_tool_execution(
+                    "list_directory", {"folder_path": "."}, risk_level=0
+                )
+            except Exception as e:
+                err = e
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=3.0)
+
+        self.assertIsNone(err)
+        self.assertTrue(allowed)
+
+    def test_child_task_taint_propagates_to_parent_turn(self):
+        """SEC-H2-03: Untrusted ingestion in a child task taints the logical turn for the parent."""
+        import asyncio
+
+        async def run():
+            self.tracker.reset_turn()
+            self.assertFalse(self.tracker.is_tainted)
+
+            async def child():
+                self.tracker.mark_tainted("web_search")
+
+            await asyncio.create_task(child())
+            self.assertTrue(
+                self.tracker.is_tainted,
+                "VULNERABILITY: Child task ingestion taint was not propagated to parent turn!"
+            )
+
+        asyncio.run(run())
+
+    def test_concurrent_sibling_ingestion_protects_parallel_sibling(self):
+        """SEC-H2-03: Concurrent sibling tasks within the same turn share taint protection."""
+        import asyncio
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
+        DualKeyApprovalManager.get_instance().reset()
+
+        async def run():
+            self.tracker.reset_turn()
+            step1 = asyncio.Event()
+
+            async def sibling_a():
+                self.tracker.mark_tainted("browser_get_dom")
+                step1.set()
+
+            async def sibling_b():
+                await step1.wait()
+                self.tracker.check_tool_execution(
+                    "execute_sandboxed_powershell", {"command": "dir"}, risk_level=1
+                )
+
+            await asyncio.gather(sibling_a(), sibling_b())
+
+        with self.assertRaises(SecurityBoundaryViolation):
+            asyncio.run(run())
+
+    def test_dynamic_mcp_tool_recognized_as_untrusted_ingestion_in_gate(self):
+        """SEC-H2-04: Dynamic MCP tools (mcp_*) are recognized as untrusted ingestion at check_tool_execution."""
+        self.tracker.reset_turn()
+        self.assertFalse(self.tracker.is_tainted)
+        allowed = self.tracker.check_tool_execution("mcp_github_create_issue", {"title": "Test"}, risk_level=1)
+        self.assertTrue(allowed)
+        self.assertTrue(
+            self.tracker.is_tainted,
+            "VULNERABILITY: Dynamic MCP tool call was not recognized as untrusted ingestion at the gate!"
+        )
+        self.assertIn("mcp_github_create_issue", self.tracker._tainting_sources)
+
+    def test_delegated_threadpool_execution_propagates_mcp_taint_to_parent(self):
+        """SEC-H2-04: Delegated threadpool execution of MCP ingestion propagates taint to parent turn."""
+        import concurrent.futures
+        import contextvars
+        self.tracker.reset_turn()
+        self.assertFalse(self.tracker.is_tainted)
+
+        ctx = contextvars.copy_context()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            f = ex.submit(ctx.run, self.tracker.mark_tainted, "mcp_custom_api")
+            f.result()
+
+        self.assertTrue(
+            self.tracker.is_tainted,
+            "VULNERABILITY: Worker thread taint in copied context did not update logical turn state!"
+        )
+        self.assertIn("mcp_custom_api", self.tracker._tainting_sources)
+
 
 
 if __name__ == "__main__":

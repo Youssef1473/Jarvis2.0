@@ -1,6 +1,7 @@
 """Closed-Loop Security Boundaries, SSRF Protection, Path Confinement, and Taint Tracking for Jarvis 2.0."""
 import hashlib
 import hmac
+import contextvars
 import http.client
 import ipaddress
 import json
@@ -673,8 +674,44 @@ class DualKeyApprovalManager:
             self._grants.clear()
 
 
+class _TurnTaintState:
+    """Thread-safe turn-scoped taint state holder enforcing monotonic taint within a logical turn."""
+    __slots__ = ("_is_tainted", "_tainting_sources", "_lock", "turn_id")
+
+    def __init__(self, turn_id: Optional[str] = None) -> None:
+        self.turn_id = turn_id or secrets.token_hex(8)
+        self._is_tainted: bool = False
+        self._tainting_sources: List[str] = []
+        self._lock = threading.Lock()
+
+    @property
+    def is_tainted(self) -> bool:
+        with self._lock:
+            return self._is_tainted
+
+    @property
+    def tainting_sources(self) -> Tuple[str, ...]:
+        with self._lock:
+            return tuple(self._tainting_sources)
+
+    def mark_tainted(self, source: str) -> None:
+        with self._lock:
+            self._is_tainted = True
+            if source not in self._tainting_sources:
+                self._tainting_sources.append(source)
+
+
+_turn_taint_context: contextvars.ContextVar[Optional[_TurnTaintState]] = contextvars.ContextVar(
+    "turn_taint_context", default=None
+)
+
+
 class TurnTaintTracker:
-    """Tracks untrusted external context within a conversational turn and enforces Dual-Key safety."""
+    """Tracks untrusted external context within a conversational turn and enforces Dual-Key safety.
+
+    Enforces logical-turn scoping, monotonic taint inheritance across child tasks and workers,
+    fail-closed security gating on unseeded contexts, and isolation between independent turns.
+    """
 
     _instance: Optional["TurnTaintTracker"] = None
     _lock = threading.Lock()
@@ -710,8 +747,43 @@ class TurnTaintTracker:
     }
 
     def __init__(self) -> None:
-        self.is_tainted: bool = False
-        self._tainting_sources: List[str] = []
+        pass
+
+    @staticmethod
+    def _get_context_state(create_if_missing: bool = True) -> Optional[_TurnTaintState]:
+        state = _turn_taint_context.get()
+        if state is None and create_if_missing:
+            state = _TurnTaintState()
+            _turn_taint_context.set(state)
+        return state
+
+    @property
+    def is_tainted(self) -> bool:
+        state = _turn_taint_context.get()
+        return state.is_tainted if state is not None else False
+
+    @is_tainted.setter
+    def is_tainted(self, value: bool) -> None:
+        state = self._get_context_state(create_if_missing=True)
+        if not value and state.is_tainted:
+            logger.warning("Attempt to clear established taint within active turn ignored (taint is monotonic).")
+            return
+        if value:
+            state.mark_tainted("manual_override")
+
+    @property
+    def _tainting_sources(self) -> List[str]:
+        state = _turn_taint_context.get()
+        return list(state.tainting_sources) if state is not None else []
+
+    @_tainting_sources.setter
+    def _tainting_sources(self, value: List[str]) -> None:
+        state = self._get_context_state(create_if_missing=True)
+        if state.is_tainted and not value:
+            logger.warning("Attempt to clear tainting sources within active turn ignored (taint is monotonic).")
+            return
+        for src in value:
+            state.mark_tainted(src)
 
     @classmethod
     def get_instance(cls) -> "TurnTaintTracker":
@@ -721,15 +793,14 @@ class TurnTaintTracker:
             return cls._instance
 
     def mark_tainted(self, source: str) -> None:
-        """Marks the current turn as tainted by untrusted external data."""
-        self.is_tainted = True
-        self._tainting_sources.append(source)
+        """Marks the current turn context as tainted by untrusted external data."""
+        state = self._get_context_state(create_if_missing=True)
+        state.mark_tainted(source)
         logger.warning("Turn marked as TAINTED by untrusted source: %s", source)
 
     def reset_turn(self) -> None:
-        """Resets the taint tracking state at the start of a new conversational turn."""
-        self.is_tainted = False
-        self._tainting_sources.clear()
+        """Resets the taint tracking state for the current conversational turn context."""
+        _turn_taint_context.set(_TurnTaintState())
 
     def check_tool_execution(
         self,
@@ -740,18 +811,22 @@ class TurnTaintTracker:
     ) -> bool:
         """Enforces mandatory out-of-band authorization on critical risk level 2 operations
         regardless of taint state, and enforces Dual-Key safety on high-privilege mutations
-        when the turn has been tainted by external untrusted data.
+        when the turn has been tainted by external untrusted data or when security context is missing.
 
         Validates and consumes authorization at the execution boundary BEFORE tool execution.
         """
-        if tool_name in self.UNTRUSTED_INGESTION_TOOLS:
+        # 1. Untrusted ingestion tools or dynamic MCP tools mark the turn tainted immediately
+        if tool_name in self.UNTRUSTED_INGESTION_TOOLS or tool_name.startswith("mcp_"):
             self.mark_tainted(tool_name)
             return True
 
         is_critical = (risk_level >= 2) or (tool_name in self.CRITICAL_PRIVILEGE_TOOLS)
-        is_tainted_mutation = self.is_tainted and (
-            risk_level >= 1 or tool_name in self.HIGH_PRIVILEGE_MUTATION_TOOLS
-        )
+        is_privileged_mutation = (risk_level >= 1) or (tool_name in self.HIGH_PRIVILEGE_MUTATION_TOOLS)
+
+        state = _turn_taint_context.get()
+        # SEC-H2-02: An uninitialized context has no provenance; treat as tainted for privileged mutations
+        is_tainted = (state.is_tainted) if state is not None else is_privileged_mutation
+        is_tainted_mutation = is_tainted and is_privileged_mutation
 
         if not (is_critical or is_tainted_mutation):
             return True
@@ -770,10 +845,16 @@ class TurnTaintTracker:
 
         # 2. Tainted turn check for High Privilege (Level 1) operations
         if is_tainted_mutation and not is_human_authorized:
+            if state is None:
+                raise SecurityBoundaryViolation(
+                    f"Dual-Key Safety Gate: blocked high-privilege tool '{tool_name}' "
+                    "execution in an uninitialized security context without turn provenance."
+                )
+            sources_str = ", ".join(state.tainting_sources) or "untrusted input"
             raise SecurityBoundaryViolation(
                 f"Dual-Key Safety Gate: blocked high-privilege tool '{tool_name}' "
                 f"execution in a turn tainted by untrusted external data "
-                f"(sources: {', '.join(self._tainting_sources)})."
+                f"(sources: {sources_str})."
             )
 
         return True
