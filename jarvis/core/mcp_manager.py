@@ -527,8 +527,8 @@ def register_discovered_mcp_tools(session: MCPClientSession) -> List[str]:
         # Closure generator binding session and tool name
         def _build_handler(sess: MCPClientSession, t_name: str, reg_name: str, doc_desc: str):
             def _handler(**kwargs):
-                # Mark current turn tainted upon invoking external MCP tool
-                TurnTaintTracker.get_instance().mark_tainted(reg_name)
+                # Mark current turn tainted upon invoking external MCP tool with provenance
+                TurnTaintTracker.get_instance().record_ingestion(reg_name, kwargs)
                 return sess.call_tool(t_name, kwargs)
 
             _handler.__name__ = reg_name
@@ -536,8 +536,9 @@ def register_discovered_mcp_tools(session: MCPClientSession) -> List[str]:
             return _handler
 
         handler_fn = _build_handler(session, raw_name, registered_name, desc)
-        # Register with risk_level=1 (tainting & gated)
-        SkillRegistry.register(name=registered_name, description=desc, risk_level=1)(handler_fn)
+        # Register with risk_level=1 (tainting & gated) and external_ingestion=True
+        SkillRegistry.register(name=registered_name, description=desc, risk_level=1, external_ingestion=True)(handler_fn)
+        TurnTaintTracker.get_instance().register_ingestion_tool(registered_name)
         registered_names.append(registered_name)
         logger.info("Registered dynamic MCP skill: %s (risk_level=1)", registered_name)
 

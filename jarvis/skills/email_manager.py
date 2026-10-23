@@ -299,7 +299,8 @@ def _get_credentials(account: str) -> Tuple[Optional[str], Optional[str], Option
 
 @SkillRegistry.register(
     name="check_unread_emails",
-    description="Checks and summarizes unread emails from your Gmail and/or Outlook inboxes. account parameter can be 'all', 'gmail', 'outlook', or your email address."
+    description="Checks and summarizes unread emails from your Gmail and/or Outlook inboxes. account parameter can be 'all', 'gmail', 'outlook', or your email address.",
+    external_ingestion=True,
 )
 def check_unread_emails(account: str = "all", max_emails: int = 5) -> str:
     """Checks unread emails from configured Gmail and Outlook accounts."""
@@ -359,7 +360,8 @@ def check_unread_emails(account: str = "all", max_emails: int = 5) -> str:
 
 @SkillRegistry.register(
     name="search_emails",
-    description="Searches your Gmail or Outlook inbox for emails matching a keyword, sender, or subject query."
+    description="Searches your Gmail or Outlook inbox for emails matching a keyword, sender, or subject query.",
+    external_ingestion=True,
 )
 def search_emails(query: str, account: str = "gmail", max_emails: int = 5) -> str:
     """Searches emails matching query."""
@@ -391,7 +393,8 @@ def search_emails(query: str, account: str = "gmail", max_emails: int = 5) -> st
 
 @SkillRegistry.register(
     name="read_email_details",
-    description="Fetches and displays the full sanitized body and headers of a specific email by its ID."
+    description="Fetches and displays the full sanitized body and headers of a specific email by its ID.",
+    external_ingestion=True,
 )
 def read_email_details(email_id: str, account: str = "gmail") -> str:
     """Reads full content of a specific email."""

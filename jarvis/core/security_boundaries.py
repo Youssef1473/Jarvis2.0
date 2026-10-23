@@ -944,14 +944,26 @@ class DualKeyApprovalManager:
         self.clear_active_authorized()
 
 
+@dataclass(frozen=True)
+class IngestionRecord:
+    """Immutable audit record documenting untrusted external-data ingestion provenance."""
+    source: str
+    timestamp: float = field(default_factory=time.time)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
 class _TurnTaintState:
     """Thread-safe turn-scoped taint state holder enforcing monotonic taint within a logical turn."""
-    __slots__ = ("_is_tainted", "_tainting_sources", "_lock", "turn_id")
+    __slots__ = ("_is_tainted", "_tainting_sources", "_provenance_records", "_lock", "turn_id")
+
+    MAX_SOURCES_PER_TURN: int = 128
+    MAX_SOURCE_LENGTH: int = 128
 
     def __init__(self, turn_id: Optional[str] = None) -> None:
         self.turn_id = turn_id or secrets.token_hex(8)
         self._is_tainted: bool = False
         self._tainting_sources: List[str] = []
+        self._provenance_records: List[IngestionRecord] = []
         self._lock = threading.Lock()
 
     @property
@@ -964,11 +976,81 @@ class _TurnTaintState:
         with self._lock:
             return tuple(self._tainting_sources)
 
-    def mark_tainted(self, source: str) -> None:
+    @property
+    def provenance_records(self) -> Tuple[IngestionRecord, ...]:
+        with self._lock:
+            # Return defensive copy of records with copied metadata dicts
+            return tuple(
+                IngestionRecord(
+                    source=r.source,
+                    timestamp=r.timestamp,
+                    metadata=dict(r.metadata),
+                )
+                for r in self._provenance_records
+            )
+
+    @classmethod
+    def _sanitize_source(cls, source: Any) -> str:
+        if source is None:
+            clean = ""
+        elif isinstance(source, str):
+            clean = source
+        else:
+            try:
+                clean = str(source)
+            except Exception:
+                clean = ""
+        clean = clean.strip()
+        clean = re.sub(r"[\r\n\x00-\x1f]", "", clean)
+        if len(clean) > cls.MAX_SOURCE_LENGTH:
+            clean = clean[:cls.MAX_SOURCE_LENGTH]
+        return clean or "unknown_external_source"
+
+    @classmethod
+    def _sanitize_metadata(cls, meta: Optional[Dict[str, Any]], max_depth: int = 3) -> Dict[str, Any]:
+        if not meta or not isinstance(meta, dict) or max_depth < 0:
+            return {}
+        safe: Dict[str, Any] = {}
+        # Sensitive field key patterns (normalized by stripping non-alphanumeric characters)
+        sensitive_normalized_tokens = {
+            "token", "password", "passwd", "secret", "auth", "authorization",
+            "apikey", "privatekey", "session", "credential", "cookie",
+            "bearer", "cert", "certificate", "signature",
+        }
+        for k, v in meta.items():
+            k_str = str(k).lower().strip()
+            k_norm = re.sub(r"[^a-z0-9]", "", k_str)
+            if any(s in k_norm for s in sensitive_normalized_tokens):
+                continue
+            if isinstance(v, (int, float, bool)):
+                safe[k_str] = v
+            elif isinstance(v, str):
+                safe[k_str] = v[:64]
+            elif isinstance(v, dict) and max_depth > 0:
+                nested_safe = cls._sanitize_metadata(v, max_depth=max_depth - 1)
+                if nested_safe:
+                    safe[k_str] = nested_safe
+        return safe
+
+    def mark_tainted(self, source: Any, metadata: Optional[Dict[str, Any]] = None) -> None:
+        clean_source = self._sanitize_source(source)
+        clean_meta = self._sanitize_metadata(metadata)
         with self._lock:
             self._is_tainted = True
-            if source not in self._tainting_sources:
-                self._tainting_sources.append(source)
+            if clean_source not in self._tainting_sources:
+                if len(self._tainting_sources) < self.MAX_SOURCES_PER_TURN:
+                    self._tainting_sources.append(clean_source)
+
+            # Record provenance for each distinct ingestion event up to MAX_SOURCES_PER_TURN
+            if len(self._provenance_records) < self.MAX_SOURCES_PER_TURN:
+                if (
+                    not self._provenance_records
+                    or self._provenance_records[-1].source != clean_source
+                    or self._provenance_records[-1].metadata != clean_meta
+                ):
+                    self._provenance_records.append(
+                        IngestionRecord(source=clean_source, timestamp=time.time(), metadata=clean_meta)
+                    )
 
 
 _turn_taint_context: contextvars.ContextVar[Optional[_TurnTaintState]] = contextvars.ContextVar(
@@ -991,8 +1073,25 @@ class TurnTaintTracker:
         "deep_research",
         "browser_navigate",
         "browser_get_dom",
+        "read_webpage_content",
         "read_webpage_content_cdp",
+        "browse_and_read_webpage",
         "get_tech_news_headlines",
+        "get_weather",
+        "get_wikipedia_summary",
+        "check_unread_emails",
+        "search_emails",
+        "read_email_details",
+        "execute_browser_javascript",
+        "audit_webpage_accessibility",
+        "audit_webpage_performance",
+        "capture_devtools_snapshot",
+        "get_daily_briefing",
+        "search_modern_web_guidance",
+        "retrieve_modern_web_guide",
+        "search_gemini_api_documentation",
+        "get_gemini_documentation_chunk",
+        "scrape_and_archive_webpage",
         "mcp_call_tool",
         "fetch_url",
     }
@@ -1017,7 +1116,7 @@ class TurnTaintTracker:
     }
 
     def __init__(self) -> None:
-        pass
+        self._dynamic_ingestion_tools: Set[str] = set()
 
     @staticmethod
     def _get_context_state(create_if_missing: bool = True) -> Optional[_TurnTaintState]:
@@ -1042,6 +1141,11 @@ class TurnTaintTracker:
             state.mark_tainted("manual_override")
 
     @property
+    def tainting_sources(self) -> Tuple[str, ...]:
+        state = _turn_taint_context.get()
+        return state.tainting_sources if state is not None else ()
+
+    @property
     def _tainting_sources(self) -> List[str]:
         state = _turn_taint_context.get()
         return list(state.tainting_sources) if state is not None else []
@@ -1055,6 +1159,14 @@ class TurnTaintTracker:
         for src in value:
             state.mark_tainted(src)
 
+    @property
+    def provenance_records(self) -> Tuple[IngestionRecord, ...]:
+        state = _turn_taint_context.get()
+        return state.provenance_records if state is not None else ()
+
+    def get_provenance_records(self) -> Tuple[IngestionRecord, ...]:
+        return self.provenance_records
+
     @classmethod
     def get_instance(cls) -> "TurnTaintTracker":
         with cls._lock:
@@ -1062,11 +1174,67 @@ class TurnTaintTracker:
                 cls._instance = cls()
             return cls._instance
 
-    def mark_tainted(self, source: str) -> None:
-        """Marks the current turn context as tainted by untrusted external data."""
+    def is_untrusted_ingestion(self, tool_name: str) -> bool:
+        """Determines if a tool represents an untrusted external data ingestion boundary."""
+        if not tool_name:
+            return False
+        clean_name = tool_name.strip()
+        if clean_name.startswith("mcp_") or clean_name == "mcp_call_tool":
+            return True
+        if clean_name in self.UNTRUSTED_INGESTION_TOOLS:
+            return True
+        with self._lock:
+            if clean_name in self._dynamic_ingestion_tools:
+                return True
+        try:
+            from jarvis.skills.base import SkillRegistry
+            if SkillRegistry.is_ingestion_tool(clean_name):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def register_ingestion_tool(self, tool_name: Any) -> None:
+        """Registers a dynamic tool name as an untrusted external ingestion source."""
+        clean = _TurnTaintState._sanitize_source(tool_name)
+        if clean and clean != "unknown_external_source":
+            with self._lock:
+                self._dynamic_ingestion_tools.add(clean)
+
+    def mark_tainted(self, source: Any, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Marks the current turn context as tainted by untrusted external data with provenance."""
         state = self._get_context_state(create_if_missing=True)
-        state.mark_tainted(source)
+        state.mark_tainted(source, metadata=metadata)
         logger.warning("Turn marked as TAINTED by untrusted source: %s", source)
+
+    def record_ingestion(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> None:
+        """Records provenance of external untrusted data ingestion into the active turn."""
+        meta: Dict[str, Any] = {"tool": tool_name}
+        if arguments and isinstance(arguments, dict):
+            url_val = arguments.get("url")
+            if not url_val and "tab_name_or_url" in arguments:
+                cand = arguments["tab_name_or_url"]
+                if isinstance(cand, str) and (cand.startswith("http://") or cand.startswith("https://")):
+                    url_val = cand
+            if url_val and isinstance(url_val, str):
+                try:
+                    parsed = urllib.parse.urlsplit(url_val)
+                    # Use parsed.hostname to strictly exclude username, password, and port
+                    host = parsed.hostname
+                    if not host and parsed.netloc:
+                        netloc_clean = parsed.netloc.split("@")[-1]
+                        host = netloc_clean.split(":")[0]
+                    if host:
+                        meta["host"] = host[:64]
+                except Exception:
+                    pass
+            if "query" in arguments and isinstance(arguments["query"], str):
+                meta["query_length"] = len(arguments["query"])
+            if "topic" in arguments and isinstance(arguments["topic"], str):
+                meta["topic_length"] = len(arguments["topic"])
+            if "city" in arguments and isinstance(arguments["city"], str):
+                meta["city"] = arguments["city"][:64]
+        self.mark_tainted(tool_name, metadata=meta)
 
     def reset_turn(self) -> None:
         """Resets the taint tracking state for the current conversational turn context."""
@@ -1084,8 +1252,8 @@ class TurnTaintTracker:
         Ordinary/untainted tool executions return GateDecision(allowed=True, grant=None).
         """
         # 1. Untrusted ingestion tools or dynamic MCP tools mark the turn tainted immediately
-        if tool_name in self.UNTRUSTED_INGESTION_TOOLS or tool_name.startswith("mcp_"):
-            self.mark_tainted(tool_name)
+        if self.is_untrusted_ingestion(tool_name):
+            self.record_ingestion(tool_name, arguments)
             return GateDecision(allowed=True, grant=None)
 
         is_critical = (risk_level >= 2) or (tool_name in self.CRITICAL_PRIVILEGE_TOOLS)

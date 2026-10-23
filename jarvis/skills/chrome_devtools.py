@@ -36,6 +36,7 @@ def _get_brave_executable() -> Optional[str]:
     name="audit_webpage_accessibility",
     description="Audits a webpage or the Jarvis Web HUD for accessibility (a11y) conformance, missing ARIA labels, unlabelled buttons/inputs, and semantic landmark structure using Chrome DevTools.",
     read_only=True,
+    external_ingestion=True,
 )
 def audit_webpage_accessibility(url: str = "http://127.0.0.1:20129") -> str:
     """Performs an automated accessibility audit on the specified URL.
@@ -113,6 +114,7 @@ def audit_webpage_accessibility(url: str = "http://127.0.0.1:20129") -> str:
     name="audit_webpage_performance",
     description="Profiles webpage performance and Core Web Vitals (Largest Contentful Paint, DOM node count, load time, and script memory) using Chrome DevTools Performance APIs.",
     read_only=True,
+    external_ingestion=True,
 )
 def audit_webpage_performance(url: str = "http://127.0.0.1:20129") -> str:
     """Profiles page load performance and Core Web Vitals metrics.
@@ -192,6 +194,7 @@ def audit_webpage_performance(url: str = "http://127.0.0.1:20129") -> str:
     name="capture_devtools_snapshot",
     description="Captures a semantic, text-based accessibility and DOM snapshot of a webpage using Chrome DevTools, identifying element UIDs and text without verbose HTML.",
     read_only=True,
+    external_ingestion=True,
 )
 def capture_devtools_snapshot(url: str = "http://127.0.0.1:20129", max_elements: int = 50) -> str:
     """Captures a clean accessibility snapshot of the specified webpage.

@@ -63,6 +63,7 @@ def _call_gemini_docs_mcp(method_name: str, arguments: Dict[str, Any]) -> Dict[s
     name="search_gemini_api_documentation",
     description="Searches current upstream Google Gemini API, Interactions API, Live API, and SDK documentation for method signatures, parameters, and official examples.",
     read_only=True,
+    external_ingestion=True,
 )
 def search_gemini_api_documentation(
     query: str,
@@ -136,6 +137,7 @@ def search_gemini_api_documentation(
     name="get_gemini_documentation_chunk",
     description="Retrieves the full content of an official Google Gemini documentation section using its chunk_id from search results.",
     read_only=True,
+    external_ingestion=True,
 )
 def get_gemini_documentation_chunk(chunk_id: str, max_chars: int = 4000) -> str:
     """Retrieves full text of a specific Google Gemini documentation chunk.

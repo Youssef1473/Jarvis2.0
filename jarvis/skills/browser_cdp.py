@@ -535,7 +535,8 @@ def switch_to_browser_tab(tab_name_or_url: str) -> str:
 
 @SkillRegistry.register(
     name="read_webpage_content",
-    description="Extracts clean readable text, articles, or documentation directly from the active or specified browser tab via silent Chrome DevTools Protocol without stealing focus or copying to clipboard."
+    description="Extracts clean readable text, articles, or documentation directly from the active or specified browser tab via silent Chrome DevTools Protocol without stealing focus or copying to clipboard.",
+    external_ingestion=True,
 )
 def read_webpage_content(tab_name_or_url: str = "") -> str:
     """Reads readable text from active or specified browser tab via CDP."""
@@ -560,7 +561,8 @@ def read_webpage_content(tab_name_or_url: str = "") -> str:
 
 @SkillRegistry.register(
     name="execute_browser_javascript",
-    description="Executes a JavaScript expression in the active or target browser tab via DevTools Protocol and returns the evaluated result."
+    description="Executes a JavaScript expression in the active or target browser tab via DevTools Protocol and returns the evaluated result.",
+    external_ingestion=True,
 )
 def execute_browser_javascript(script: str, tab_name: str = "") -> str:
     """Executes JavaScript in the browser tab via CDP."""
@@ -585,7 +587,8 @@ def launch_debug_browser(browser: str = "brave", dedicated_profile: bool = True)
 
 @SkillRegistry.register(
     name="scrape_and_archive_webpage",
-    description="Extracts the readable text and documentation from an open browser tab and archives it directly into Jarvis's local JIT document memory vault for future semantic retrieval."
+    description="Extracts the readable text and documentation from an open browser tab and archives it directly into Jarvis's local JIT document memory vault for future semantic retrieval.",
+    external_ingestion=True,
 )
 def scrape_and_archive_webpage(tab_name_or_url: str = "", category: str = "web_intel") -> str:
     """Extracts webpage content via CDP and permanently stores it in Tier 3 Document Memory."""

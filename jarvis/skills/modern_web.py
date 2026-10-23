@@ -34,6 +34,7 @@ def _get_npx_executable() -> str:
     name="search_modern_web_guidance",
     description="Searches modern web platform best practices and architectural guidance (CSS layout, container queries, popover API, HTML semantics, CWV performance, accessibility, Chrome extensions) using the Modern Web Guidance knowledge base.",
     read_only=True,
+    external_ingestion=True,
 )
 def search_modern_web_guidance(query: str, limit: int = 5) -> str:
     """Searches modern web best practice guides via modern-web-guidance CLI.
@@ -98,6 +99,7 @@ def search_modern_web_guidance(query: str, limit: int = 5) -> str:
     name="retrieve_modern_web_guide",
     description="Retrieves the authoritative implementation steps and best practice markdown guide for a specific Modern Web Guidance topic ID (e.g., 'css-layout', 'declarative-dialog-popover-control', 'drag', 'html', 'accessibility').",
     read_only=True,
+    external_ingestion=True,
 )
 def retrieve_modern_web_guide(guide_id: str, max_chars: int = 4000) -> str:
     """Retrieves full documentation for a given Modern Web Guidance guide ID.

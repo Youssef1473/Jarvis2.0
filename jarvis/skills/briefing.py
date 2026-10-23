@@ -13,7 +13,8 @@ logger = logging.getLogger("Jarvis.Briefing")
 
 @SkillRegistry.register(
     name="get_daily_briefing",
-    description="Provides a complete, cinematic morning or daily briefing including time, weather, top news, and workstation vitals."
+    description="Provides a complete, cinematic morning or daily briefing including time, weather, top news, and workstation vitals.",
+    external_ingestion=True,
 )
 def get_daily_briefing() -> str:
     """Aggregates time, weather, headlines, and system vitals concurrently into a polished executive briefing."""

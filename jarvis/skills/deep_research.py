@@ -127,7 +127,8 @@ def _slugify(text: str) -> str:
 
 @SkillRegistry.register(
     name="deep_research",
-    description="Conducts autonomous multi-source deep web research on any technical topic or current event, synthesizing key insights into a structured report (e.g. 'deep research quantum computing breakthroughs')."
+    description="Conducts autonomous multi-source deep web research on any technical topic or current event, synthesizing key insights into a structured report (e.g. 'deep research quantum computing breakthroughs').",
+    external_ingestion=True,
 )
 def deep_research(topic: str, max_sources: int = 3) -> str:
     """Orchestrates multi-source search, concurrent webpage extraction, and structured intelligence briefing."""

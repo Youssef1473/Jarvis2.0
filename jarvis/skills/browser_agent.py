@@ -47,7 +47,8 @@ class _HTMLTextExtractor(HTMLParser):
 
 @SkillRegistry.register(
     name="browse_and_read_webpage",
-    description="Autonomously navigates to any URL using headless Chromium, parses the DOM, and extracts the core textual content."
+    description="Autonomously navigates to any URL using headless Chromium, parses the DOM, and extracts the core textual content.",
+    external_ingestion=True,
 )
 def browse_and_read_webpage(url: str, max_chars: int = 2500) -> str:
     """Navigates to URL using Playwright and extracts body text."""
@@ -105,7 +106,8 @@ def open_url_in_desktop_browser(url: str) -> str:
 
 @SkillRegistry.register(
     name="get_tech_news_headlines",
-    description="Fetches live breaking tech news and top stories from Hacker News."
+    description="Fetches live breaking tech news and top stories from Hacker News.",
+    external_ingestion=True,
 )
 def get_tech_news_headlines(count: int = 5) -> str:
     """Retrieves top live headlines from Hacker News API."""

@@ -1055,5 +1055,389 @@ class TestAsyncApprovalPropagation(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(bool(denied_decision), "VULNERABILITY: GateDecision(allowed=False) evaluated truthy!")
 
 
+class TestExternalIngestionProvenance(unittest.TestCase):
+    """M1: External-Ingestion Provenance Tracking and Classification Test Suite."""
+
+    def setUp(self):
+        self.tracker = TurnTaintTracker.get_instance()
+        self.tracker.reset_turn()
+        self.approval_mgr = DualKeyApprovalManager.get_instance()
+        self.approval_mgr.reset()
+        self.approval_mgr.set_approval_handler(None)
+
+    def tearDown(self):
+        self.tracker.reset_turn()
+        self.approval_mgr.reset()
+
+    def test_wikipedia_summary_path_correctly_classified_and_taints_turn(self):
+        """M1 Req 1: Previously missed Wikipedia summary path taints turn and records provenance."""
+        self.assertFalse(self.tracker.is_tainted)
+        decision = self.tracker.evaluate_tool_execution(
+            "get_wikipedia_summary", {"topic": "Alan Turing"}
+        )
+        self.assertTrue(decision.allowed)
+        self.assertTrue(
+            self.tracker.is_tainted,
+            "FAIL M1: get_wikipedia_summary did not taint the conversational turn!",
+        )
+        self.assertIn(
+            "get_wikipedia_summary",
+            self.tracker.tainting_sources,
+            "FAIL M1: get_wikipedia_summary not present in tainting_sources!",
+        )
+
+    def test_all_canonical_web_and_external_tools_classified_and_recorded(self):
+        """M1 Req 2: Canonical web, email, and external data ingestion tools are classified and recorded."""
+        external_tools = [
+            "web_search",
+            "get_wikipedia_summary",
+            "get_weather",
+            "get_tech_news_headlines",
+            "browse_and_read_webpage",
+            "read_webpage_content",
+            "check_unread_emails",
+            "search_emails",
+            "read_email_details",
+            "deep_research",
+            "execute_browser_javascript",
+            "audit_webpage_accessibility",
+            "audit_webpage_performance",
+            "capture_devtools_snapshot",
+            "get_daily_briefing",
+            "search_modern_web_guidance",
+            "retrieve_modern_web_guide",
+            "search_gemini_api_documentation",
+            "get_gemini_documentation_chunk",
+        ]
+        for tool_name in external_tools:
+            self.tracker.reset_turn()
+            self.assertFalse(self.tracker.is_tainted, f"Turn should start untainted for {tool_name}")
+            decision = self.tracker.evaluate_tool_execution(tool_name, {"query": "test"})
+            self.assertTrue(decision.allowed)
+            self.assertTrue(
+                self.tracker.is_tainted,
+                f"FAIL M1: Tool '{tool_name}' was not recognized as untrusted ingestion!",
+            )
+            self.assertIn(
+                tool_name,
+                self.tracker.tainting_sources,
+                f"FAIL M1: Tool '{tool_name}' missing from tainting_sources!",
+            )
+
+    def test_dynamic_mcp_tool_classified_before_output_influences_decisions(self):
+        """M1 Req 3: Dynamically registered MCP tools are classified as untrusted before output influences decisions."""
+        mcp_tool = "mcp_weather_get_forecast"
+        self.assertFalse(self.tracker.is_tainted)
+
+        decision = self.tracker.evaluate_tool_execution(mcp_tool, {"city": "Paris"})
+        self.assertTrue(decision.allowed)
+        self.assertTrue(self.tracker.is_tainted)
+        self.assertIn(mcp_tool, self.tracker.tainting_sources)
+
+        # Subsequent privileged mutation in the same turn must be blocked
+        with self.assertRaises(SecurityBoundaryViolation):
+            self.tracker.evaluate_tool_execution(
+                "execute_powershell", {"command": "Get-Process"}, risk_level=2
+            )
+
+    def test_source_identity_distinct_stable_and_bounded(self):
+        """M1 Req 4: Multiple external sources are distinctly recorded, bounded, and sanitized."""
+        sources = ["web_search", "get_wikipedia_summary", "check_unread_emails"]
+        for s in sources:
+            self.tracker.mark_tainted(s)
+
+        # Distinct sources preserved
+        for s in sources:
+            self.assertIn(s, self.tracker.tainting_sources)
+
+        # Repeated ingestion from same source does not cause unbounded duplicate growth
+        for _ in range(50):
+            self.tracker.mark_tainted("web_search")
+
+        self.assertEqual(
+            len(self.tracker.tainting_sources),
+            len(sources),
+            "FAIL M1: Duplicate source markings caused unbounded growth in tainting_sources!",
+        )
+
+        # Unbounded payload strings or malicious names are sanitized/bounded
+        dirty_source = "   " + "x" * 200 + "   "
+        self.tracker.mark_tainted(dirty_source)
+        # Verify bounded length
+        recorded = [s for s in self.tracker.tainting_sources if "x" in s]
+        self.assertEqual(len(recorded), 1)
+        self.assertLessEqual(len(recorded[0]), 128)
+
+    def test_subsequent_high_risk_mutation_denied_after_ingestion_without_grant(self):
+        """M1 Req 5: After untrusted ingestion, high-privilege mutations are blocked without dual-key grant."""
+        self.tracker.evaluate_tool_execution("get_wikipedia_summary", {"topic": "Security"})
+        self.assertTrue(self.tracker.is_tainted)
+
+        # High-privilege mutation (risk_level=1) must raise SecurityBoundaryViolation
+        with self.assertRaises(SecurityBoundaryViolation) as ctx:
+            self.tracker.evaluate_tool_execution(
+                "execute_sandboxed_powershell", {"command": "dir"}, risk_level=1
+            )
+        self.assertIn("get_wikipedia_summary", str(ctx.exception))
+
+        # Once granted by human, execution is allowed
+        self.approval_mgr.grant_approval("execute_sandboxed_powershell", {"command": "dir"})
+        allowed_decision = self.tracker.evaluate_tool_execution(
+            "execute_sandboxed_powershell", {"command": "dir"}, risk_level=1
+        )
+        self.assertTrue(allowed_decision.allowed)
+        self.assertIsNotNone(allowed_decision.grant)
+
+    def test_same_turn_async_and_worker_propagation(self):
+        """M1 Req 6: Untrusted ingestion in worker thread updates current turn's shared provenance."""
+        import concurrent.futures
+        import contextvars
+
+        self.assertFalse(self.tracker.is_tainted)
+        ctx = contextvars.copy_context()
+
+        def worker():
+            self.tracker.mark_tainted("browse_and_read_webpage")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            fut = executor.submit(ctx.run, worker)
+            fut.result()
+
+        self.assertTrue(
+            self.tracker.is_tainted,
+            "FAIL M1: Ingestion in worker thread did not propagate to parent turn context!",
+        )
+        self.assertIn("browse_and_read_webpage", self.tracker.tainting_sources)
+
+    def test_independent_turns_do_not_leak_provenance_or_taint(self):
+        """M1 Req 7: Taint and provenance from one turn do not leak into another turn."""
+        # Turn 1: Ingest
+        self.tracker.mark_tainted("web_search")
+        self.assertTrue(self.tracker.is_tainted)
+        self.assertIn("web_search", self.tracker.tainting_sources)
+
+        # Turn 2: Fresh turn
+        self.tracker.reset_turn()
+        self.assertFalse(
+            self.tracker.is_tainted,
+            "FAIL M1: Fresh turn inherited taint from previous turn!",
+        )
+        self.assertEqual(self.tracker.tainting_sources, ())
+
+    def test_trusted_local_operations_do_not_taint(self):
+        """M1 Req 8: Ordinary trusted local operations do not mark the turn as tainted."""
+        local_tools = [
+            ("recall_fact", {"key": "user_name"}),
+            ("list_directory", {"path": "."}),
+            ("get_current_time_and_date", {}),
+            ("get_active_window", {}),
+        ]
+        for tool_name, args in local_tools:
+            decision = self.tracker.evaluate_tool_execution(tool_name, args, risk_level=0)
+            self.assertTrue(decision.allowed)
+            self.assertFalse(
+                self.tracker.is_tainted,
+                f"FAIL M1: Trusted local tool '{tool_name}' erroneously tainted the turn!",
+            )
+            self.assertEqual(self.tracker.tainting_sources, ())
+
+    def test_failure_handling_preserves_monotonicity_and_does_not_taint_on_trusted_errors(self):
+        """M1 Req 9: Errors in local operations do not taint; errors during ingestion do not clear taint."""
+        # Error in trusted local tool does not taint
+        @SkillRegistry.register(name="_failing_local_tool", description="Test failure", risk_level=0)
+        def _failing_fn():
+            raise FileNotFoundError("Local file not found")
+
+        orchestrator = ToolOrchestrator(taint_tracker=self.tracker)
+        res = orchestrator.execute_step("_failing_local_tool", {})
+        self.assertIn("Local file not found", res)
+        self.assertFalse(
+            self.tracker.is_tainted,
+            "FAIL M1: Failure of trusted local tool tainted the turn!",
+        )
+
+        # Ingestion established taint cannot be cleared or downgraded on tool error
+        self.tracker.mark_tainted("web_search")
+        self.assertTrue(self.tracker.is_tainted)
+
+        # Attempt to set is_tainted = False or clear sources
+        self.tracker.is_tainted = False
+        self.tracker._tainting_sources = []
+        self.assertTrue(
+            self.tracker.is_tainted,
+            "FAIL M1: Established taint was downgraded!",
+        )
+        self.assertIn("web_search", self.tracker.tainting_sources)
+
+    def test_classification_completeness_audit(self):
+        """M1 Req 10: Audit test checking registered ingestion tools are classified in TurnTaintTracker."""
+        expected_ingestion = {
+            "web_search",
+            "get_wikipedia_summary",
+            "get_weather",
+            "get_tech_news_headlines",
+            "browse_and_read_webpage",
+            "read_webpage_content",
+            "check_unread_emails",
+            "search_emails",
+            "read_email_details",
+            "deep_research",
+            "execute_browser_javascript",
+            "audit_webpage_accessibility",
+            "audit_webpage_performance",
+            "capture_devtools_snapshot",
+            "get_daily_briefing",
+            "search_modern_web_guidance",
+            "retrieve_modern_web_guide",
+            "search_gemini_api_documentation",
+            "get_gemini_documentation_chunk",
+        }
+        for tool_name in expected_ingestion:
+            self.assertTrue(
+                self.tracker.is_untrusted_ingestion(tool_name),
+                f"FAIL M1: Ingestion tool '{tool_name}' is not recognized by is_untrusted_ingestion()!",
+            )
+
+    def test_provenance_metadata_scrubs_basic_auth_credentials(self):
+        """M1 Hardening (Finding 1): Host extraction must not leak Basic Auth credentials into provenance metadata."""
+        self.tracker.record_ingestion(
+            "browse_and_read_webpage",
+            {"url": "https://admin:supersecretpassword@api.example.com:8443/data"},
+        )
+        records = self.tracker.provenance_records
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].source, "browse_and_read_webpage")
+        self.assertEqual(records[0].metadata.get("host"), "api.example.com")
+        self.assertNotIn("supersecretpassword", str(records[0].metadata))
+        self.assertNotIn("admin", str(records[0].metadata))
+
+    def test_subsequent_ingestions_from_same_tool_preserve_provenance(self):
+        """M1 Hardening (Finding 2): Multiple distinct ingestions from the same tool preserve individual provenance."""
+        self.tracker.record_ingestion("browse_and_read_webpage", {"url": "https://docs.python.org"})
+        self.tracker.record_ingestion("browse_and_read_webpage", {"url": "https://evil-prompt-injection.com"})
+        records = self.tracker.provenance_records
+        self.assertEqual(len(records), 2, "FAIL M1: Second ingestion from same tool was dropped from provenance_records!")
+        hosts = [r.metadata.get("host") for r in records]
+        self.assertEqual(hosts, ["docs.python.org", "evil-prompt-injection.com"])
+        # Unique sources list preserves distinct tool names
+        self.assertEqual(self.tracker.tainting_sources, ("browse_and_read_webpage",))
+
+    def test_duplicate_back_to_back_identical_ingestion_deduplicated(self):
+        """M1 Hardening (Finding 2 bound): Repeated identical ingestion calls are deduplicated."""
+        for _ in range(10):
+            self.tracker.record_ingestion("browse_and_read_webpage", {"url": "https://docs.python.org"})
+        records = self.tracker.provenance_records
+        self.assertEqual(len(records), 1, "FAIL M1: Repeated identical ingestion created duplicate records!")
+
+    def test_sensitive_metadata_key_variants_and_nesting_redacted(self):
+        """M1 Hardening (Finding 3): Sensitive key variants (api-key, apikey, bearer, etc.) and nested dicts are sanitized."""
+        raw_meta = {
+            "api-key": "secret1",
+            "apikey": "secret2",
+            "x-api-key": "secret3",
+            "bearer_token": "secret4",
+            "client_cert": "cert_val",
+            "user_password": "pw_val",
+            "keyboard_shortcut": "ctrl+c",
+            "safe_count": 42,
+            "headers": {
+                "Authorization": "Bearer secret5",
+                "Content-Type": "application/json",
+                "apikey": "secret6",
+            },
+        }
+        self.tracker.mark_tainted("custom_source", metadata=raw_meta)
+        records = self.tracker.provenance_records
+        self.assertEqual(len(records), 1)
+        meta = records[0].metadata
+        # Redacted keys
+        self.assertNotIn("api-key", meta)
+        self.assertNotIn("apikey", meta)
+        self.assertNotIn("x-api-key", meta)
+        self.assertNotIn("bearer_token", meta)
+        self.assertNotIn("client_cert", meta)
+        self.assertNotIn("user_password", meta)
+        # Preserved safe keys
+        self.assertEqual(meta.get("keyboard_shortcut"), "ctrl+c")
+        self.assertEqual(meta.get("safe_count"), 42)
+        # Nested dict sanitization
+        self.assertIn("headers", meta)
+        self.assertIsInstance(meta["headers"], dict)
+        self.assertEqual(meta["headers"].get("content-type"), "application/json")
+        self.assertNotIn("authorization", meta["headers"])
+        self.assertNotIn("apikey", meta["headers"])
+
+    def test_non_string_source_handling_and_resilience(self):
+        """M1 Hardening (Finding 4): Non-string sources do not raise AttributeError."""
+        try:
+            self.tracker.mark_tainted(12345)
+            self.tracker.mark_tainted(None)
+            self.tracker.register_ingestion_tool(99999)
+        except AttributeError as e:
+            self.fail(f"FAIL M1: mark_tainted/register_ingestion_tool raised AttributeError: {e}")
+        self.assertIn("12345", self.tracker.tainting_sources)
+        self.assertIn("unknown_external_source", self.tracker.tainting_sources)
+
+    def test_provenance_records_immutability_defensive_copy(self):
+        """M1 Hardening (Finding 5): External mutation of returned provenance records does not corrupt internal state."""
+        self.tracker.record_ingestion("web_search", {"query": "python"})
+        records = self.tracker.get_provenance_records()
+        self.assertTrue(len(records) >= 1)
+        # Attempt to tamper with returned metadata dictionary
+        records[0].metadata["tampered"] = True
+        # Fresh retrieval must not reflect tampering
+        fresh_records = self.tracker.get_provenance_records()
+        self.assertNotIn("tampered", fresh_records[0].metadata)
+
+    @mock.patch("jarvis.skills.web_search.web_search", return_value="Mocked search results")
+    def test_skill_registry_direct_execution_records_provenance(self, mock_search):
+        """M1 Hardening (Findings 5 & 6): Direct SkillRegistry.execute taints turn and records provenance."""
+        from jarvis.skills import web_search  # Ensure skill registered
+        self.assertFalse(self.tracker.is_tainted)
+        # Execute tool via SkillRegistry
+        res = SkillRegistry.execute("web_search", query="safe test query")
+        self.assertTrue(self.tracker.is_tainted, "FAIL M1: SkillRegistry.execute did not taint turn!")
+        self.assertIn("web_search", self.tracker.tainting_sources)
+        records = self.tracker.provenance_records
+        self.assertTrue(any(r.source == "web_search" for r in records))
+
+    def test_provenance_records_timestamps_and_bounds(self):
+        """M1 Hardening (Finding 5): Provenance records include valid timestamps and obey MAX_SOURCES_PER_TURN."""
+        t_before = time.time()
+        self.tracker.record_ingestion("web_search", {"query": "test"})
+        t_after = time.time()
+        records = self.tracker.provenance_records
+        self.assertEqual(len(records), 1)
+        r = records[0]
+        self.assertIsInstance(r.timestamp, float)
+        self.assertGreaterEqual(r.timestamp, t_before)
+        self.assertLessEqual(r.timestamp, t_after)
+
+        # Enforce maximum bounds
+        for i in range(150):
+            self.tracker.record_ingestion("web_search", {"query": f"query_{i}"})
+        bounded_records = self.tracker.provenance_records
+        self.assertLessEqual(len(bounded_records), 128)
+
+    def test_provenance_malformed_url_and_missing_host(self):
+        """M1 Hardening (Finding 1 & 5): Malformed or missing URLs do not crash and do not inject malformed hosts."""
+        malformed_inputs = [
+            {"url": ""},
+            {"url": "not_a_url"},
+            {"url": "http://"},
+            {"url": 12345},
+            {"url": None},
+        ]
+        for arg in malformed_inputs:
+            self.tracker.reset_turn()
+            self.tracker.record_ingestion("fetch_url", arg)
+            records = self.tracker.provenance_records
+            self.assertEqual(len(records), 1)
+            # Malformed or missing host should not persist a malformed host
+            if "host" in records[0].metadata:
+                self.assertTrue(isinstance(records[0].metadata["host"], str))
+                self.assertNotIn("@", records[0].metadata["host"])
+
+
 if __name__ == "__main__":
     unittest.main()

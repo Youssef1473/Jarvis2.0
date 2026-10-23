@@ -10,7 +10,8 @@ from jarvis.skills.base import SkillRegistry
 
 @SkillRegistry.register(
     name="web_search",
-    description="Performs a real-time internet search using DuckDuckGo to find current information, news, or answers."
+    description="Performs a real-time internet search using DuckDuckGo to find current information, news, or answers.",
+    external_ingestion=True,
 )
 def web_search(query: str, max_results: int = 4) -> str:
     """Searches the web via DuckDuckGo."""
@@ -34,7 +35,8 @@ def web_search(query: str, max_results: int = 4) -> str:
 
 @SkillRegistry.register(
     name="get_weather",
-    description="Retrieves current weather and temperature for any city worldwide using Open-Meteo (free, no API key)."
+    description="Retrieves current weather and temperature for any city worldwide using Open-Meteo (free, no API key).",
+    external_ingestion=True,
 )
 def get_weather(city: str) -> str:
     """Gets real-time weather from Open-Meteo."""
@@ -67,7 +69,8 @@ def get_weather(city: str) -> str:
 
 @SkillRegistry.register(
     name="get_wikipedia_summary",
-    description="Fetches an informative encyclopedic summary of a concept, person, or historical event from Wikipedia."
+    description="Fetches an informative encyclopedic summary of a concept, person, or historical event from Wikipedia.",
+    external_ingestion=True,
 )
 def get_wikipedia_summary(topic: str) -> str:
     """Fetches summary from Wikipedia API."""

@@ -20,6 +20,7 @@ class SkillMetadata:
     name: str
     func: Callable
     read_only: bool = False
+    external_ingestion: bool = False
     scopes: ResourceScope = ResourceScope.NONE
     path_arg_names: Tuple[str, ...] = ()
     default_timeout_ms: int = 1500
@@ -41,6 +42,7 @@ class SkillRegistry:
         description: str | None = None,
         risk_level: int = 0,
         read_only: bool = False,
+        external_ingestion: bool = False,
         scopes: ResourceScope = ResourceScope.NONE,
         path_arg_names: Tuple[str, ...] = (),
         default_timeout_ms: int = 1500,
@@ -50,7 +52,7 @@ class SkillRegistry:
         Supports:
         - Bare: @SkillRegistry.register
         - Call without args: @SkillRegistry.register()
-        - Parameterized: @SkillRegistry.register(name="foo", read_only=True, scopes=ResourceScope.FILESYSTEM)
+        - Parameterized: @SkillRegistry.register(name="foo", read_only=True, external_ingestion=True)
         """
         # Case 1: Bare decorator @SkillRegistry.register
         if callable(name):
@@ -64,6 +66,7 @@ class SkillRegistry:
                 name=tool_name,
                 func=func,
                 read_only=read_only,
+                external_ingestion=external_ingestion,
                 scopes=scopes,
                 path_arg_names=tuple(path_arg_names),
                 default_timeout_ms=default_timeout_ms,
@@ -82,6 +85,7 @@ class SkillRegistry:
                 name=tool_name,
                 func=func,
                 read_only=read_only,
+                external_ingestion=external_ingestion,
                 scopes=scopes,
                 path_arg_names=tuple(path_arg_names),
                 default_timeout_ms=default_timeout_ms,
@@ -92,6 +96,12 @@ class SkillRegistry:
         return decorator
 
     @classmethod
+    def is_ingestion_tool(cls, name: str) -> bool:
+        """Returns True if the tool is explicitly classified as an external ingestion source."""
+        meta = cls.get_metadata(name)
+        return bool(meta and getattr(meta, "external_ingestion", False))
+
+    @classmethod
     def get_metadata(cls, name: str) -> Optional[SkillMetadata]:
         """Returns the SkillMetadata for a registered tool, or a synthesized fallback."""
         meta = cls._metadata.get(name)
@@ -99,7 +109,7 @@ class SkillRegistry:
             return meta
         func = cls.get_tool(name)
         if func is not None:
-            return SkillMetadata(name=name, func=func, read_only=False)
+            return SkillMetadata(name=name, func=func, read_only=False, external_ingestion=False)
         return None
 
     @classmethod
@@ -196,6 +206,22 @@ class SkillRegistry:
         tool = cls.get_tool(resolved)
         if not tool:
             return f"Error: Tool '{name}' not found."
+
+        # Ingestion boundary: reliably record untrusted external data intake
+        try:
+            from jarvis.core.security_boundaries import TurnTaintTracker
+            tracker = TurnTaintTracker.get_instance()
+            if tracker.is_untrusted_ingestion(resolved) or cls.is_ingestion_tool(resolved):
+                tracker.record_ingestion(resolved, kwargs)
+        except Exception as e:
+            # Defensive isolation: ensure taint tracking evaluation errors never mask the physical skill invocation
+            import logging
+            logging.getLogger("Jarvis.SkillRegistry").debug(
+                "Ingestion taint tracking skipped for tool '%s' (exception: %s)",
+                resolved,
+                type(e).__name__,
+            )
+
         try:
             return tool(**kwargs)
         except Exception as e:
