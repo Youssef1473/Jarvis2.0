@@ -1,3 +1,10 @@
+# Structural rule forbidding subprocess invocations with shell=True per AGENTS.md §4.
+# Coverage:
+#   - Detects subprocess.run, Popen, call, check_call, check_output with shell=True.
+#   - Matches shell=True in leading, trailing, and sandwiched keyword argument positions.
+# Unsupported / Deferred:
+#   - Dynamic keyword unpacking (`**kwargs` where kwargs contains shell=True)
+#     is deferred to dynamic runtime security boundaries.
 id: jarvis-subprocess-shell-true
 message: "PROHIBITED: subprocess invocation with shell=True is forbidden by AGENTS.md §4. Use argument lists with close_fds=True."
 severity: error

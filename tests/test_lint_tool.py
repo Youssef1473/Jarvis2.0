@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,7 +30,8 @@ class TestLintToolResolution(unittest.TestCase):
         return ruff_file
 
     def test_resolve_from_virtual_env_var(self) -> None:
-        venv_dir = self.base / "my_venv"
+        """Accepts VIRTUAL_ENV candidate in designated local workspace .venv."""
+        venv_dir = self.base / "ws" / ".venv"
         scripts_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
         expected = self._create_mock_ruff(scripts_dir)
 
@@ -43,7 +45,8 @@ class TestLintToolResolution(unittest.TestCase):
         self.assertEqual(result, [str(expected)])
 
     def test_resolve_from_conda_prefix_var(self) -> None:
-        conda_dir = self.base / "conda_env"
+        """Accepts CONDA_PREFIX candidate in designated local workspace .venv."""
+        conda_dir = self.base / "ws" / ".venv"
         scripts_dir = conda_dir / ("Scripts" if os.name == "nt" else "bin")
         expected = self._create_mock_ruff(scripts_dir)
 
@@ -51,6 +54,94 @@ class TestLintToolResolution(unittest.TestCase):
             workspace_root=self.base / "ws",
             environ={"CONDA_PREFIX": str(conda_dir)},
             sys_exec=str(self.base / "python_exec"),
+            which_func=lambda _: None,
+            module_checker=lambda: False,
+        )
+        self.assertEqual(result, [str(expected)])
+
+    def test_resolve_rejects_arbitrary_in_repo_subdirectory(self) -> None:
+        """Rejects VIRTUAL_ENV candidate located in arbitrary in-repository subdirectory."""
+        ws_root = self.base / "ws"
+        sub_dir = ws_root / "arbitrary_folder" / "custom_env"
+        scripts_dir = sub_dir / ("Scripts" if os.name == "nt" else "bin")
+        self._create_mock_ruff(scripts_dir)
+
+        with self.assertRaises(RuffNotFoundError):
+            resolve_ruff_command(
+                workspace_root=ws_root,
+                environ={"VIRTUAL_ENV": str(sub_dir)},
+                sys_exec=str(self.base / "isolated" / "python.exe"),
+                which_func=lambda _: None,
+                module_checker=lambda: False,
+            )
+
+    def test_resolve_untrusted_env_var_falls_through_to_next_tier(self) -> None:
+        """Verifies rejected VIRTUAL_ENV falls through to next permitted discovery tier."""
+        ws_root = self.base / "ws"
+        untrusted_base = Path("C:\\untrusted\\env" if os.name == "nt" else "/tmp/untrusted/env")
+        scripts_untrusted = untrusted_base / ("Scripts" if os.name == "nt" else "bin")
+        self._create_mock_ruff(scripts_untrusted)
+
+        # Valid Tier 2 binary in python interpreter directory
+        python_home = self.base / "python_home"
+        expected = self._create_mock_ruff(python_home)
+        sys_exec = python_home / "python.exe"
+
+        result = resolve_ruff_command(
+            workspace_root=ws_root,
+            environ={"VIRTUAL_ENV": str(untrusted_base)},
+            sys_exec=str(sys_exec),
+            which_func=lambda _: None,
+            module_checker=lambda: False,
+        )
+        self.assertEqual(result, [str(expected)])
+
+    def test_resolve_rejects_untrusted_virtual_env(self) -> None:
+        """Rejects VIRTUAL_ENV candidate located outside trusted workspace roots."""
+        untrusted_base = Path("C:\\untrusted_attacker_root\\env" if os.name == "nt" else "/tmp/untrusted_root/env")
+        scripts_dir = untrusted_base / ("Scripts" if os.name == "nt" else "bin")
+        fake_ruff = scripts_dir / ("ruff.exe" if os.name == "nt" else "ruff")
+
+        def fake_isfile(p: Path) -> bool:
+            return p == fake_ruff
+
+        with patch("pathlib.Path.is_file", autospec=True, side_effect=fake_isfile), \
+             self.assertRaises(RuffNotFoundError):
+            resolve_ruff_command(
+                workspace_root=self.base / "ws",
+                environ={"VIRTUAL_ENV": str(untrusted_base)},
+                sys_exec=str(self.base / "ws" / ".venv" / "Scripts" / "python.exe"),
+                which_func=lambda _: None,
+                module_checker=lambda: False,
+            )
+
+    def test_resolve_rejects_arbitrary_sibling_directory(self) -> None:
+        """Rejects VIRTUAL_ENV candidate located in arbitrary sibling directory under workspace parent."""
+        ws_root = self.base / "ws"
+        sibling_base = self.base / "unrelated_sibling_project" / ".venv"
+        scripts_dir = sibling_base / ("Scripts" if os.name == "nt" else "bin")
+        self._create_mock_ruff(scripts_dir)
+
+        with self.assertRaises(RuffNotFoundError):
+            resolve_ruff_command(
+                workspace_root=ws_root,
+                environ={"VIRTUAL_ENV": str(sibling_base)},
+                sys_exec=str(ws_root / ".venv" / ("Scripts" if os.name == "nt" else "bin") / "python.exe"),
+                which_func=lambda _: None,
+                module_checker=lambda: False,
+            )
+
+    def test_resolve_accepts_designated_adjacent_venv_env_var(self) -> None:
+        """Accepts VIRTUAL_ENV candidate located in designated adjacent workspace_root.parent/.venv."""
+        ws_root = self.base / "ws"
+        adjacent_venv = self.base / ".venv"
+        scripts_dir = adjacent_venv / ("Scripts" if os.name == "nt" else "bin")
+        expected = self._create_mock_ruff(scripts_dir)
+
+        result = resolve_ruff_command(
+            workspace_root=ws_root,
+            environ={"VIRTUAL_ENV": str(adjacent_venv)},
+            sys_exec=str(self.base / "python_home" / "python.exe"),
             which_func=lambda _: None,
             module_checker=lambda: False,
         )
@@ -150,7 +241,13 @@ class TestLintToolExecution(unittest.TestCase):
         code = main(["check", "jarvis/core", "--fix"])
 
         mock_resolve.assert_called_once()
-        mock_run.assert_called_once_with(["dummy_ruff.exe", "check", "jarvis/core", "--fix"], check=False)
+        mock_run.assert_called_once_with(
+            ["dummy_ruff.exe", "check", "jarvis/core", "--fix"],
+            check=False,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            timeout=300.0,
+        )
         self.assertEqual(code, 0)
 
     @patch("tools.lint.resolve_ruff_command", return_value=["C:\\Program Files\\Ruff\\ruff.exe"])
@@ -166,6 +263,9 @@ class TestLintToolExecution(unittest.TestCase):
         mock_run.assert_called_once_with(
             ["C:\\Program Files\\Ruff\\ruff.exe", "check", path_with_space],
             check=False,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            timeout=300.0,
         )
         self.assertEqual(code, 0)
 
@@ -221,7 +321,23 @@ class TestLintToolExecution(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertIn("Jarvis 2.0 Ruff Linter & Formatter Wrapper", stdout_buf.getvalue())
-        mock_run.assert_called_once_with(["C:\\tools\\ruff.exe", "--help"], check=False)
+        mock_run.assert_called_once_with(
+            ["C:\\tools\\ruff.exe", "--help"],
+            check=False,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            timeout=15.0,
+        )
+
+    @patch("tools.lint.resolve_ruff_command", return_value=["dummy_ruff.exe"])
+    @patch("subprocess.run")
+    def test_main_timeout_handling(self, mock_run: MagicMock, mock_resolve: MagicMock) -> None:
+        mock_run.side_effect = subprocess.TimeoutExpired(["dummy_ruff.exe"], 300.0)
+        stderr_buf = io.StringIO()
+        with patch("sys.stderr", stderr_buf):
+            code = main(["check", "jarvis"])
+        self.assertEqual(code, 124)
+        self.assertIn("timed out after 300.0 seconds", stderr_buf.getvalue())
 
 
 if __name__ == "__main__":

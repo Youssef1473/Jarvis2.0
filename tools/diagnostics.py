@@ -28,6 +28,7 @@ from tools.lint import RuffNotFoundError, resolve_ruff_command
 
 DEFAULT_RULES_DIR = WORKSPACE_ROOT / ".agents" / "rules" / "ast-grep"
 DEFAULT_SGCONFIG = WORKSPACE_ROOT / "sgconfig.yml"
+DEFAULT_SUBPROCESS_TIMEOUT: float = 300.0
 
 
 class AstGrepNotFoundError(FileNotFoundError):
@@ -53,6 +54,70 @@ def _search_env_dir(env_dir: Path) -> Path | None:
     return None
 
 
+def _is_trusted_env_path(
+    candidate: Path,
+    workspace_root: Path,
+    sys_exec: str | None = None,
+) -> bool:
+    """Validates that a binary candidate from an environment variable (VIRTUAL_ENV,
+    CONDA_PREFIX) resides within an approved virtual environment location.
+
+    Approved locations:
+    1. Designated local workspace virtual environment: workspace_root / ".venv".
+    2. Designated adjacent workspace virtual environment: workspace_root.parent / ".venv".
+    3. Active Python interpreter environment: sys.prefix or active virtual environment root.
+
+    Arbitrary in-repository subdirectories and unrelated sibling directories are rejected.
+
+    Returns:
+        True if candidate is confined within approved locations, False otherwise.
+    """
+    try:
+        cand_resolved = candidate.resolve()
+    except (OSError, RuntimeError):
+        return False
+
+    trusted_roots: list[Path] = []
+
+    # 1. Designated workspace virtual environments ONLY (not arbitrary in-repo subdirectories)
+    try:
+        ws_resolved = workspace_root.resolve()
+        trusted_roots.append(ws_resolved / ".venv")
+        trusted_roots.append(ws_resolved.parent / ".venv")
+    except (OSError, RuntimeError):
+        pass
+
+    # 2. Active Python interpreter virtual environment prefix
+    try:
+        trusted_roots.append(Path(sys.prefix).resolve())
+    except (OSError, RuntimeError):
+        pass
+
+    # 3. If sys_exec explicitly points inside a virtualenv (e.g. Scripts/python or bin/python)
+    if sys_exec:
+        try:
+            exec_resolved = Path(sys_exec).resolve()
+            if exec_resolved.parent.name.lower() in ("scripts", "bin"):
+                trusted_roots.append(exec_resolved.parent.parent)
+            else:
+                trusted_roots.append(exec_resolved.parent)
+        except (OSError, RuntimeError):
+            pass
+
+    for root in trusted_roots:
+        try:
+            if cand_resolved.is_relative_to(root):
+                return True
+        except (ValueError, AttributeError):
+            try:
+                cand_resolved.relative_to(root)
+                return True
+            except ValueError:
+                pass
+
+    return False
+
+
 def resolve_ast_grep_command(
     workspace_root: Path | None = None,
     environ: dict[str, str] | None = None,
@@ -62,7 +127,8 @@ def resolve_ast_grep_command(
     """Resolves the command list required to invoke ast-grep.
 
     Search precedence:
-    1. Active virtual environment from environment variables (VIRTUAL_ENV, CONDA_PREFIX).
+    1. Active virtual environment from environment variables (VIRTUAL_ENV, CONDA_PREFIX),
+       validated against trusted root containment policies.
     2. Active Python interpreter environment (sys.executable directory / Scripts).
     3. Adjacent workspace virtual environments (WORKSPACE_ROOT.parent / .venv).
     4. Local repository virtual environment (WORKSPACE_ROOT / .venv).
@@ -79,12 +145,12 @@ def resolve_ast_grep_command(
     active_python = sys_exec if sys_exec is not None else sys.executable
     which = which_func if which_func is not None else shutil.which
 
-    # 1. Environment variables (VIRTUAL_ENV / CONDA_PREFIX)
+    # 1. Environment variables (VIRTUAL_ENV / CONDA_PREFIX) - validated against trusted roots
     for env_var in ("VIRTUAL_ENV", "CONDA_PREFIX"):
         env_path_str = env.get(env_var)
         if env_path_str:
             candidate = _search_env_dir(Path(env_path_str))
-            if candidate:
+            if candidate and _is_trusted_env_path(candidate, root, active_python):
                 return [str(candidate)]
 
     # 2. Directory containing current Python interpreter
@@ -138,7 +204,7 @@ def run_ruff(args: list[str]) -> int:
     return lint.main(args)
 
 
-def run_ast_grep(args: list[str]) -> int:
+def run_ast_grep(args: list[str], timeout: float = DEFAULT_SUBPROCESS_TIMEOUT) -> int:
     """Executes ast-grep with resolved binary and forwarded arguments."""
     try:
         ast_grep_cmd = resolve_ast_grep_command()
@@ -148,13 +214,75 @@ def run_ast_grep(args: list[str]) -> int:
 
     full_cmd = ast_grep_cmd + args
     try:
-        result = subprocess.run(full_cmd, check=False)
+        result = subprocess.run(
+            full_cmd,
+            check=False,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+        )
         return result.returncode
     except KeyboardInterrupt:
         return 130
+    except subprocess.TimeoutExpired as err:
+        bin_name = Path(full_cmd[0]).name if full_cmd else "ast-grep"
+        sys.stderr.write(f"Error: {bin_name} timed out after {err.timeout} seconds.\n")
+        return 124
     except OSError as err:
-        sys.stderr.write(f"Error executing ast-grep process ({full_cmd}): {err}\n")
+        bin_name = Path(full_cmd[0]).name if full_cmd else "ast-grep"
+        sys.stderr.write(f"Error executing ast-grep process ({bin_name}): {err}\n")
         return 1
+
+
+DISALLOWED_RUN_MUTATION_FLAGS = {
+    "--rewrite",
+    "-r",
+    "--update-all",
+    "-U",
+    "--interactive",
+    "-i",
+}
+DISALLOWED_SCAN_MUTATION_FLAGS = {
+    "--update-all",
+    "-U",
+    "--interactive",
+    "-i",
+}
+
+
+def _find_disallowed_mutation_flag(subcommand: str, args: list[str]) -> str | None:
+    """Detects flags capable of modifying or rewriting files in AST-Grep invocations."""
+    disallowed = DISALLOWED_RUN_MUTATION_FLAGS if subcommand in ("run", "search") else DISALLOWED_SCAN_MUTATION_FLAGS
+    for arg in args:
+        if arg in disallowed:
+            return arg
+        for flag in disallowed:
+            if flag.startswith("--") and arg.startswith(f"{flag}="):
+                return arg
+            if flag.startswith("-") and not flag.startswith("--") and arg.startswith(flag) and len(arg) > len(flag) and arg[len(flag)] == "=":
+                return arg
+        # Catch combined short options like -iU or -Ui
+        if arg.startswith("-") and not arg.startswith("--") and len(arg) > 1:
+            chars = set(arg[1:])
+            for flag in disallowed:
+                if flag.startswith("-") and len(flag) == 2 and flag[1] in chars:
+                    return arg
+    return None
+
+
+def _is_safe_workspace_path(path_str: str) -> bool:
+    """Checks whether path_str refers to an existing local file or directory confined
+    to the workspace without performing remote network probes or UNC lookups."""
+    if path_str.startswith(("\\\\", "//")):
+        return False
+    try:
+        p = Path(path_str)
+        resolved = (WORKSPACE_ROOT / p).resolve() if not p.is_absolute() else p.resolve()
+        if resolved.is_relative_to(WORKSPACE_ROOT) or resolved.is_relative_to(WORKSPACE_ROOT.parent):
+            return resolved.exists()
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return False
 
 
 def run_combined_check(paths: list[str] | None = None) -> int:
@@ -183,15 +311,31 @@ def run_combined_check(paths: list[str] | None = None) -> int:
     print("=" * 64)
     sys.stdout.flush()
 
-    scan_args = ["scan"]
-    if DEFAULT_SGCONFIG.is_file():
-        scan_args.extend(["-c", str(DEFAULT_SGCONFIG)])
-    elif DEFAULT_RULES_DIR.is_dir():
-        # Fall back to iterating rule files if no sgconfig.yml
-        pass
-    scan_args.extend(target_paths)
+    active_rules: list[Path] = []
+    if DEFAULT_RULES_DIR.is_dir():
+        found = set(DEFAULT_RULES_DIR.glob("*.yml")) | set(DEFAULT_RULES_DIR.glob("*.yaml"))
+        active_rules = sorted(found)
 
-    ast_code = run_ast_grep(scan_args)
+    if DEFAULT_SGCONFIG.is_file():
+        scan_args = ["scan", "-c", str(DEFAULT_SGCONFIG)] + target_paths
+        ast_code = run_ast_grep(scan_args)
+    elif active_rules:
+        # sgconfig.yml is absent; fall back to executing every discovered rule individually
+        sys.stdout.write(
+            f"Notice: {DEFAULT_SGCONFIG.name} not found; scanning {len(active_rules)} individual rule file(s).\n"
+        )
+        sys.stdout.flush()
+        codes: list[int] = []
+        for rule_file in active_rules:
+            rc = run_ast_grep(["scan", "-r", str(rule_file)] + target_paths)
+            codes.append(rc)
+        ast_code = max(codes) if codes else 0
+    else:
+        sys.stderr.write(
+            "Error: AST-Grep structural verification cannot proceed.\n"
+            f"Configuration file not found ({DEFAULT_SGCONFIG}) and no rule files found in {DEFAULT_RULES_DIR}.\n"
+        )
+        ast_code = 2
 
     print()
     print("=" * 64)
@@ -256,7 +400,7 @@ def print_wrapper_info() -> int:
     # Rules configuration
     print(f"sgconfig.yml:     {DEFAULT_SGCONFIG} ({'exists' if DEFAULT_SGCONFIG.is_file() else 'missing'})")
     if DEFAULT_RULES_DIR.is_dir():
-        rules = list(DEFAULT_RULES_DIR.glob("*.yml")) + list(DEFAULT_RULES_DIR.glob("*.yaml"))
+        rules = sorted(set(DEFAULT_RULES_DIR.glob("*.yml")) | set(DEFAULT_RULES_DIR.glob("*.yaml")))
         print(f"Active rules ({len(rules)}):")
         for r in rules:
             print(f"  - {r.name}")
@@ -287,10 +431,13 @@ def main(argv: list[str] | None = None) -> int:
         return run_combined_check(subargs)
 
     if subcommand == "lint":
-        # Forward to tools/lint.py check if first arg isn't already check or format
-        if not subargs or not subargs[0].startswith(("-", "check", "format")):
-            return run_ruff(["check"] + subargs)
-        return run_ruff(subargs)
+        # Forward to tools/lint.py check if first arg isn't already a known Ruff subcommand
+        KNOWN_RUFF_SUBCOMMANDS = {"check", "format", "rule", "config", "linter", "clean", "version"}
+        if not subargs:
+            return run_ruff(["check"])
+        if subargs[0].lower() in KNOWN_RUFF_SUBCOMMANDS:
+            return run_ruff(subargs)
+        return run_ruff(["check"] + subargs)
 
     if subcommand == "format":
         return run_ruff(["format"] + subargs)
@@ -302,24 +449,68 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         pattern = subargs[0]
         paths = subargs[1:]
+        mutation_flag = _find_disallowed_mutation_flag("search", paths)
+        if mutation_flag:
+            sys.stderr.write(
+                f"Error: Mutation flag '{mutation_flag}' is forbidden via diagnostics.py search.\n"
+                "This tool is restricted to read-only diagnostics and queries.\n"
+            )
+            return 2
         ast_args = ["run", "-p", pattern] + paths
         return run_ast_grep(ast_args)
 
     if subcommand == "run":
+        mutation_flag = _find_disallowed_mutation_flag("run", subargs)
+        if mutation_flag:
+            sys.stderr.write(
+                f"Error: Mutation flag '{mutation_flag}' is forbidden via diagnostics.py run.\n"
+                "This tool is restricted to read-only diagnostics and queries.\n"
+            )
+            return 2
         return run_ast_grep(["run"] + subargs)
 
     if subcommand == "scan":
-        scan_args = ["scan"]
-        if DEFAULT_SGCONFIG.is_file() and "-c" not in subargs and "--config" not in subargs:
-            scan_args.extend(["-c", str(DEFAULT_SGCONFIG)])
-        scan_args.extend(subargs)
-        return run_ast_grep(scan_args)
+        mutation_flag = _find_disallowed_mutation_flag("scan", subargs)
+        if mutation_flag:
+            sys.stderr.write(
+                f"Error: Mutation flag '{mutation_flag}' is forbidden via diagnostics.py scan.\n"
+                "This tool is restricted to read-only diagnostics and queries.\n"
+            )
+            return 2
 
-    # If first token looks like a path or flag, default to check
-    if subcommand.startswith("-") or Path(subcommand).exists():
+        active_rules: list[Path] = []
+        if DEFAULT_RULES_DIR.is_dir():
+            found = set(DEFAULT_RULES_DIR.glob("*.yml")) | set(DEFAULT_RULES_DIR.glob("*.yaml"))
+            active_rules = sorted(found)
+
+        has_explicit_config = "-c" in subargs or "--config" in subargs
+        has_explicit_rule = "-r" in subargs or "--rule" in subargs
+
+        if not has_explicit_config and not has_explicit_rule:
+            if DEFAULT_SGCONFIG.is_file():
+                scan_args = ["scan", "-c", str(DEFAULT_SGCONFIG)] + subargs
+                return run_ast_grep(scan_args)
+            elif active_rules:
+                sys.stdout.write(
+                    f"Notice: {DEFAULT_SGCONFIG.name} not found; scanning {len(active_rules)} individual rule(s).\n"
+                )
+                sys.stdout.flush()
+                codes = [run_ast_grep(["scan", "-r", str(rf)] + subargs) for rf in active_rules]
+                return max(codes) if codes else 0
+            else:
+                sys.stderr.write(
+                    "Error: No AST-Grep configuration (sgconfig.yml) or rules found.\n"
+                    "Specify -c/--config or -r/--rule explicitly, or configure sgconfig.yml.\n"
+                )
+                return 2
+
+        return run_ast_grep(["scan"] + subargs)
+
+    # If first token looks like a flag or a confined local workspace path, default to check
+    if subcommand.startswith("-") or _is_safe_workspace_path(subcommand):
         return run_combined_check(argv)
 
-    sys.stderr.write(f"Unknown diagnostic subcommand: '{subcommand}'\n")
+    sys.stderr.write(f"Unknown diagnostic subcommand or unconfined path: '{subcommand}'\n")
     sys.stderr.write("Run 'python tools/diagnostics.py --help' for available commands.\n")
     return 1
 

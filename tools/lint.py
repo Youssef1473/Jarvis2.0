@@ -16,6 +16,8 @@ from pathlib import Path
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 
+DEFAULT_SUBPROCESS_TIMEOUT: float = 300.0
+
 
 class RuffNotFoundError(FileNotFoundError):
     """Raised when Ruff cannot be located in any supported environment."""
@@ -40,6 +42,70 @@ def _search_env_dir(env_dir: Path) -> Path | None:
     return None
 
 
+def _is_trusted_env_path(
+    candidate: Path,
+    workspace_root: Path,
+    sys_exec: str | None = None,
+) -> bool:
+    """Validates that a binary candidate from an environment variable (VIRTUAL_ENV,
+    CONDA_PREFIX) resides within an approved virtual environment location.
+
+    Approved locations:
+    1. Designated local workspace virtual environment: workspace_root / ".venv".
+    2. Designated adjacent workspace virtual environment: workspace_root.parent / ".venv".
+    3. Active Python interpreter environment: sys.prefix or active virtual environment root.
+
+    Arbitrary in-repository subdirectories and unrelated sibling directories are rejected.
+
+    Returns:
+        True if candidate is confined within approved locations, False otherwise.
+    """
+    try:
+        cand_resolved = candidate.resolve()
+    except (OSError, RuntimeError):
+        return False
+
+    trusted_roots: list[Path] = []
+
+    # 1. Designated workspace virtual environments ONLY (not arbitrary in-repo subdirectories)
+    try:
+        ws_resolved = workspace_root.resolve()
+        trusted_roots.append(ws_resolved / ".venv")
+        trusted_roots.append(ws_resolved.parent / ".venv")
+    except (OSError, RuntimeError):
+        pass
+
+    # 2. Active Python interpreter virtual environment prefix
+    try:
+        trusted_roots.append(Path(sys.prefix).resolve())
+    except (OSError, RuntimeError):
+        pass
+
+    # 3. If sys_exec explicitly points inside a virtualenv (e.g. Scripts/python or bin/python)
+    if sys_exec:
+        try:
+            exec_resolved = Path(sys_exec).resolve()
+            if exec_resolved.parent.name.lower() in ("scripts", "bin"):
+                trusted_roots.append(exec_resolved.parent.parent)
+            else:
+                trusted_roots.append(exec_resolved.parent)
+        except (OSError, RuntimeError):
+            pass
+
+    for root in trusted_roots:
+        try:
+            if cand_resolved.is_relative_to(root):
+                return True
+        except (ValueError, AttributeError):
+            try:
+                cand_resolved.relative_to(root)
+                return True
+            except ValueError:
+                pass
+
+    return False
+
+
 def resolve_ruff_command(
     workspace_root: Path | None = None,
     environ: dict[str, str] | None = None,
@@ -50,7 +116,8 @@ def resolve_ruff_command(
     """Resolves the command list required to invoke Ruff.
 
     Search precedence:
-    1. Active virtual environment from environment variables (VIRTUAL_ENV, CONDA_PREFIX).
+    1. Active virtual environment from environment variables (VIRTUAL_ENV, CONDA_PREFIX),
+       validated against trusted root containment policies.
     2. Active Python interpreter environment (sys.executable directory / Scripts).
     3. Adjacent workspace virtual environments (WORKSPACE_ROOT.parent / .venv).
     4. Local repository virtual environment (WORKSPACE_ROOT / .venv).
@@ -73,12 +140,12 @@ def resolve_ruff_command(
 
     has_ruff_module = module_checker if module_checker is not None else _default_module_check
 
-    # 1. Environment variables (VIRTUAL_ENV / CONDA_PREFIX)
+    # 1. Environment variables (VIRTUAL_ENV / CONDA_PREFIX) - validated against trusted roots
     for env_var in ("VIRTUAL_ENV", "CONDA_PREFIX"):
         env_path_str = env.get(env_var)
         if env_path_str:
             candidate = _search_env_dir(Path(env_path_str))
-            if candidate:
+            if candidate and _is_trusted_env_path(candidate, root, active_python):
                 return [str(candidate)]
 
     # 2. Directory containing current Python interpreter
@@ -171,8 +238,14 @@ def main(argv: list[str] | None = None) -> int:
         try:
             cmd = resolve_ruff_command()
             print("\n" + "=" * 30 + " Native Ruff Help " + "=" * 30 + "\n")
-            return subprocess.run(cmd + ["--help"], check=False).returncode
-        except (RuffNotFoundError, OSError):
+            return subprocess.run(
+                cmd + ["--help"],
+                check=False,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                timeout=15.0,
+            ).returncode
+        except (RuffNotFoundError, OSError, subprocess.TimeoutExpired):
             return 0
 
     try:
@@ -190,12 +263,23 @@ def main(argv: list[str] | None = None) -> int:
     full_cmd = ruff_cmd + argv
     try:
         # shell=False ensures argument list is passed directly without shell expansion
-        result = subprocess.run(full_cmd, check=False)
+        result = subprocess.run(
+            full_cmd,
+            check=False,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            timeout=DEFAULT_SUBPROCESS_TIMEOUT,
+        )
         return result.returncode
     except KeyboardInterrupt:
         return 130
+    except subprocess.TimeoutExpired as err:
+        bin_name = Path(full_cmd[0]).name if full_cmd else "Ruff"
+        sys.stderr.write(f"Error: {bin_name} timed out after {err.timeout} seconds.\n")
+        return 124
     except OSError as err:
-        sys.stderr.write(f"Error executing Ruff process ({full_cmd}): {err}\n")
+        bin_name = Path(full_cmd[0]).name if full_cmd else "Ruff"
+        sys.stderr.write(f"Error executing Ruff process ({bin_name}): {err}\n")
         return 1
 
 

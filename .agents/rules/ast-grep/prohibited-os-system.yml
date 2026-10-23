@@ -1,3 +1,10 @@
+# Structural rule forbidding direct invocations of os.system() per AGENTS.md §4.
+# Coverage:
+#   - Detects all qualified os.system(...) calls regardless of argument count or formatting.
+# Unsupported / Deferred:
+#   - Aliased imports like `from os import system; system(...)` are not matched here
+#     to prevent false positives on domain-specific system() functions; these are
+#     caught via Ruff static analysis.
 id: jarvis-prohibited-os-system
 message: "PROHIBITED: os.system() is forbidden by AGENTS.md §4. Use subprocess argument lists with close_fds=True or sandboxed execution."
 severity: error
