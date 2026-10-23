@@ -1,0 +1,16 @@
+{
+  "python-lint-diagnostic": {
+    "PostToolUse": [
+      {
+        "matcher": "edit_file|write_file|replace_file_content|write_to_file|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if exist tools\\lint_hook.py (python tools\\lint_hook.py) else (python ..\\tools\\lint_hook.py)",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
