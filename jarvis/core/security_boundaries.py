@@ -42,6 +42,16 @@ SENSITIVE_AUTH_HEADERS: Set[str] = {
     "x-auth-token",
 }
 
+IGNORED_MODEL_AUTH_FIELDS: Set[str] = {
+    "authorization",
+    "user_approved",
+    "dual_key_confirmed",
+    "confirmed",
+    "_dual_key_token",
+    "allow_uncontained",
+    "_allow_uncontained",
+}
+
 
 def resolve_and_validate_destination(
     url: str,
@@ -440,7 +450,7 @@ def compute_action_hash(tool_name: str, arguments: Dict[str, Any]) -> str:
     """Computes a deterministic SHA-256 hash of a tool call's payload, ignoring forged model auth fields."""
     clean_args = {
         k: v for k, v in (arguments or {}).items()
-        if k not in ("authorization", "user_approved", "dual_key_confirmed", "confirmed", "_dual_key_token")
+        if k not in IGNORED_MODEL_AUTH_FIELDS
     }
     raw = json.dumps({"tool": tool_name, "args": clean_args}, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -450,7 +460,7 @@ def format_action_summary(tool_name: str, arguments: dict) -> str:
     """Generates an intuitive, readable summary of a proposed tool execution for human review."""
     clean_args = {
         k: v for k, v in (arguments or {}).items()
-        if k not in ("authorization", "user_approved", "dual_key_confirmed", "confirmed", "_dual_key_token")
+        if k not in IGNORED_MODEL_AUTH_FIELDS
     }
     if tool_name == "create_or_update_custom_skill":
         name = clean_args.get("skill_name", "unnamed_skill")
@@ -479,14 +489,16 @@ def format_action_summary(tool_name: str, arguments: dict) -> str:
         return f"Execute tool '{tool_name}' with arguments {arg_preview}"
 
 
-@dataclass(frozen=True)
+@dataclass
 class DualKeyAuthorization:
-    """A cryptographically bound, one-time human authorization grant."""
+    """A cryptographically bound, one-time human authorization grant with authoritative manager lifecycle state."""
     tool_name: str
     action_hash: str
     token: str
     expires_at: float
+    grant_id: str = ""
     confirmed: bool = True
+    status: str = "pending"  # "pending", "gate_consumed", "active", "consumed", "invalidated", "expired"
     summary: str = ""
 
     def is_valid_for(self, tool_name: str, payload_hash: str) -> bool:
@@ -495,7 +507,90 @@ class DualKeyAuthorization:
             and self.tool_name == tool_name
             and hmac.compare_digest(self.action_hash, payload_hash)
             and time.time() <= self.expires_at
+            and self.status not in ("consumed", "invalidated", "expired")
         )
+
+
+@dataclass(frozen=True)
+class GateDecision:
+    """Decision returned by TurnTaintTracker.evaluate_tool_execution."""
+    allowed: bool
+    grant: Optional[DualKeyAuthorization] = None
+
+    def __bool__(self) -> bool:
+        return bool(self.allowed)
+
+
+class _ActiveAuthToken:
+    """Thread-safe, single-use active authorization token propagating through ContextVar.
+    Cryptographically derived from a validated, manager-issued DualKeyAuthorization grant.
+    """
+    __slots__ = ("grant_id", "tool_name", "action_hash", "grant_token", "expires_at", "_consumed", "_invalidated", "_disarmed", "_lock", "manager")
+
+    def __init__(
+        self,
+        grant_id: str = "",
+        tool_name: str = "",
+        action_hash: str = "",
+        grant_token: str = "",
+        expires_at: float = 0.0,
+        disarmed: bool = False,
+        manager: Optional["DualKeyApprovalManager"] = None,
+    ) -> None:
+        self.grant_id = grant_id
+        self.tool_name = tool_name
+        self.action_hash = action_hash
+        self.grant_token = grant_token
+        self.expires_at = expires_at
+        self._consumed = False
+        self._invalidated = False
+        self._disarmed = disarmed
+        self._lock = threading.Lock()
+        self.manager = manager
+
+    def consume(self, tool_name: str, action_hash: str) -> bool:
+        """Atomically checks and consumes the active authorization token.
+        Returns True exactly once if tool_name and action_hash match, unexpired, and registered grant is active.
+        """
+        if self._disarmed:
+            return False
+        if self.tool_name != tool_name or not hmac.compare_digest(self.action_hash, action_hash):
+            return False
+        if time.time() > self.expires_at:
+            return False
+        with self._lock:
+            if self._consumed or self._invalidated:
+                return False
+            if self.manager is not None:
+                if not self.manager._mark_grant_consumed(self.grant_id, self.grant_token):
+                    self._invalidated = True
+                    return False
+            self._consumed = True
+            return True
+
+    def invalidate(self) -> None:
+        """Permanently disarms the token regardless of whether it was consumed."""
+        with self._lock:
+            self._invalidated = True
+            if self.manager is not None and self.grant_id:
+                self.manager._mark_grant_invalidated(self.grant_id, self.grant_token)
+
+    @property
+    def is_consumed(self) -> bool:
+        with self._lock:
+            return self._consumed
+
+    @property
+    def is_valid(self) -> bool:
+        with self._lock:
+            return (not self._disarmed) and (not self._consumed) and (not self._invalidated) and (time.time() <= self.expires_at)
+
+
+_DISARMED_TOKEN = _ActiveAuthToken(disarmed=True)
+
+_active_auth_context: contextvars.ContextVar[Optional[_ActiveAuthToken]] = contextvars.ContextVar(
+    "_active_auth_context", default=None
+)
 
 
 class DualKeyApprovalManager:
@@ -506,6 +601,7 @@ class DualKeyApprovalManager:
 
     def __init__(self) -> None:
         self._grants: Dict[str, DualKeyAuthorization] = {}
+        self._grants_by_id: Dict[str, DualKeyAuthorization] = {}
         self._approval_handler: Optional[Callable[[Dict[str, Any]], bool]] = None
 
     @classmethod
@@ -514,6 +610,26 @@ class DualKeyApprovalManager:
             if cls._instance is None:
                 cls._instance = cls()
             return cls._instance
+
+    def _mark_grant_consumed(self, grant_id: str, grant_token: str) -> bool:
+        """Authoritatively marks a grant as consumed. Returns True iff grant was active and token matches."""
+        with self._lock:
+            auth = self._grants_by_id.get(grant_id)
+            if not auth:
+                return False
+            if not hmac.compare_digest(auth.token, grant_token):
+                return False
+            if auth.status != "active":
+                return False
+            auth.status = "consumed"
+            return True
+
+    def _mark_grant_invalidated(self, grant_id: str, grant_token: str) -> None:
+        with self._lock:
+            auth = self._grants_by_id.get(grant_id)
+            if auth and hmac.compare_digest(auth.token, grant_token):
+                if auth.status == "active":
+                    auth.status = "invalidated"
 
     def set_approval_handler(self, handler: Optional[Callable[[Dict[str, Any]], bool]]) -> None:
         """Sets a trusted local UI or CLI approval handler to prompt human operators."""
@@ -539,53 +655,66 @@ class DualKeyApprovalManager:
         ttl_seconds = min(max(ttl_val, 0.05), 300.0)
         clean_args = {
             k: v for k, v in (arguments or {}).items()
-            if k not in ("authorization", "user_approved", "dual_key_confirmed", "confirmed", "_dual_key_token")
+            if k not in IGNORED_MODEL_AUTH_FIELDS
         }
         action_hash = compute_action_hash(tool_name, clean_args)
+        grant_id = secrets.token_hex(16)
         token = secrets.token_hex(16)
         if not summary:
             summary = format_action_summary(tool_name, clean_args)
         auth = DualKeyAuthorization(
+            grant_id=grant_id,
             tool_name=tool_name,
             action_hash=action_hash,
             token=token,
             expires_at=time.time() + ttl_seconds,
             confirmed=True,
+            status="pending",
             summary=summary,
         )
         with self._lock:
             self._grants[action_hash] = auth
-        logger.info("Dual-Key authorization granted for tool '%s' (hash: %s, ttl: %.0fs)", tool_name, action_hash[:12], ttl_seconds)
+            self._grants_by_id[grant_id] = auth
+        # Track pending grant in calling thread-local state for direct synchronous execution
+        self._local.pending_grant = auth
+        logger.info("Dual-Key authorization granted for tool '%s' (id: %s, hash: %s, ttl: %.0fs)", tool_name, grant_id[:8], action_hash[:12], ttl_seconds)
         return auth
 
     def has_valid_grant(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
         """Checks if a valid, unexpired grant exists without consuming it."""
         clean_args = {
             k: v for k, v in (arguments or {}).items()
-            if k not in ("authorization", "user_approved", "dual_key_confirmed", "confirmed", "_dual_key_token")
+            if k not in IGNORED_MODEL_AUTH_FIELDS
         }
         action_hash = compute_action_hash(tool_name, clean_args)
         with self._lock:
             auth = self._grants.get(action_hash)
-            return bool(auth and auth.is_valid_for(tool_name, action_hash))
+            return bool(auth and auth.is_valid_for(tool_name, action_hash) and auth.status == "pending")
+
+    def consume_grant_object(self, tool_name: str, arguments: Dict[str, Any]) -> Optional[DualKeyAuthorization]:
+        """Validates and consumes an existing pre-grant for the given tool and arguments (single-use),
+        returning the DualKeyAuthorization if valid.
+        """
+        clean_args = {
+            k: v for k, v in (arguments or {}).items()
+            if k not in IGNORED_MODEL_AUTH_FIELDS
+        }
+        action_hash = compute_action_hash(tool_name, clean_args)
+        with self._lock:
+            auth = self._grants.get(action_hash)
+            if auth and auth.is_valid_for(tool_name, action_hash) and auth.status == "pending":
+                auth.status = "gate_consumed"
+                del self._grants[action_hash]
+                logger.info("Dual-Key authorization consumed at gate for tool '%s' (id: %s, hash: %s)", tool_name, auth.grant_id[:8], action_hash[:12])
+                return auth
+            # Clean up stale/expired grant if present
+            if auth and (time.time() > auth.expires_at or auth.status != "pending"):
+                del self._grants[action_hash]
+        return None
 
     def consume_grant(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
         """Validates and consumes an existing pre-grant for the given tool and arguments (single-use)."""
-        clean_args = {
-            k: v for k, v in (arguments or {}).items()
-            if k not in ("authorization", "user_approved", "dual_key_confirmed", "confirmed", "_dual_key_token")
-        }
-        action_hash = compute_action_hash(tool_name, clean_args)
-        with self._lock:
-            auth = self._grants.get(action_hash)
-            if auth and auth.is_valid_for(tool_name, action_hash):
-                del self._grants[action_hash]
-                logger.info("Dual-Key authorization consumed for tool '%s' (hash: %s)", tool_name, action_hash[:12])
-                return True
-            # Clean up stale/expired grant if present
-            if auth and time.time() > auth.expires_at:
-                del self._grants[action_hash]
-        return False
+        return self.consume_grant_object(tool_name, arguments) is not None
 
     def request_human_approval(
         self,
@@ -593,16 +722,18 @@ class DualKeyApprovalManager:
         arguments: Dict[str, Any],
         summary: str = "",
         risk_level: int = 2,
-    ) -> bool:
-        """Presents the proposed action and readable summary to the user via registered trusted local handler."""
+    ) -> Optional[DualKeyAuthorization]:
+        """Presents the proposed action and readable summary to the user via registered trusted local handler.
+        If approved, returns a validated DualKeyAuthorization grant.
+        """
         with self._lock:
             handler = self._approval_handler
         if not handler:
-            return False
+            return None
 
         clean_args = {
             k: v for k, v in (arguments or {}).items()
-            if k not in ("authorization", "user_approved", "dual_key_confirmed", "confirmed", "_dual_key_token")
+            if k not in IGNORED_MODEL_AUTH_FIELDS
         }
         action_hash = compute_action_hash(tool_name, clean_args)
         if not summary:
@@ -620,51 +751,188 @@ class DualKeyApprovalManager:
         try:
             approved = handler(request_details)
             if approved:
-                logger.info("Human operator approved action '%s' (hash: %s)", tool_name, action_hash[:12])
-                return True
+                grant_id = secrets.token_hex(16)
+                token = secrets.token_hex(16)
+                auth = DualKeyAuthorization(
+                    grant_id=grant_id,
+                    tool_name=tool_name,
+                    action_hash=action_hash,
+                    token=token,
+                    expires_at=time.time() + 60.0,
+                    confirmed=True,
+                    status="gate_consumed",
+                    summary=summary,
+                )
+                with self._lock:
+                    self._grants_by_id[grant_id] = auth
+                logger.info("Human operator approved action '%s' (id: %s, hash: %s, token: %s)", tool_name, grant_id[:8], action_hash[:12], token[:8])
+                return auth
             else:
                 logger.warning("Human operator denied action '%s' (hash: %s)", tool_name, action_hash[:12])
-                return False
+                return None
         except Exception as e:
             logger.error("Error during human approval request for '%s': %s", tool_name, e)
-            return False
+            return None
 
-    def set_thread_authorized(self, tool_name: str, arguments: Dict[str, Any]) -> None:
-        """Binds a verified single-use authorization to the current thread for tool execution."""
-        clean_args = {
-            k: v for k, v in (arguments or {}).items()
-            if k not in ("authorization", "user_approved", "dual_key_confirmed", "confirmed", "_dual_key_token")
-        }
-        action_hash = compute_action_hash(tool_name, clean_args)
-        self._local.authorized_action = (tool_name, action_hash)
+    def bind_active_grant(self, grant: DualKeyAuthorization) -> contextvars.Token:
+        """Binds a validated, manager-issued DualKeyAuthorization to the current context and thread.
+        Fails closed with PermissionError if grant is fabricated, replayed, expired, or invalid.
+        """
+        if not isinstance(grant, DualKeyAuthorization):
+            raise PermissionError("Provided grant must be a genuine DualKeyAuthorization instance.")
 
-    def clear_thread_authorized(self) -> None:
-        """Clears the active thread-local authorization context."""
-        self._local.authorized_action = None
+        with self._lock:
+            registered = self._grants_by_id.get(grant.grant_id)
+            if registered is None:
+                raise PermissionError(f"Rejected unverified or fabricated grant (grant_id={grant.grant_id}).")
+            if not hmac.compare_digest(registered.token, grant.token):
+                raise PermissionError("Rejected grant: cryptographic token mismatch.")
+            if registered.tool_name != grant.tool_name or not hmac.compare_digest(registered.action_hash, grant.action_hash):
+                raise PermissionError("Rejected grant: tool name or action hash mismatch.")
+            if time.time() > registered.expires_at:
+                registered.status = "expired"
+                raise PermissionError(f"Rejected grant (grant_id={grant.grant_id}): authorization has expired.")
+            if registered.status not in ("gate_consumed", "pending"):
+                raise PermissionError(
+                    f"Grant (grant_id={grant.grant_id}) cannot be bound: status is '{registered.status}' "
+                    "(must be 'gate_consumed' or 'pending'). Replay or re-binding of consumed/active grants is prohibited."
+                )
+            registered.status = "active"
+            self._grants.pop(registered.action_hash, None)
 
-    def verify_and_consume_active_context(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
-        """Verifies if the current thread or persistent grants hold a verified human authorization.
-        Consumes the context immediately (single-use).
+        token = _ActiveAuthToken(
+            grant_id=registered.grant_id,
+            tool_name=registered.tool_name,
+            action_hash=registered.action_hash,
+            grant_token=registered.token,
+            expires_at=registered.expires_at,
+            manager=self,
+        )
+        ctx_token = _active_auth_context.set(token)
+        self._local.authorized_token = token
+        return ctx_token
+
+    def bind_disarmed_context(self) -> contextvars.Token:
+        """Binds an explicit disarmed authorization scope to prevent nested context inheritance or scavenging."""
+        ctx_token = _active_auth_context.set(_DISARMED_TOKEN)
+        self._local.authorized_token = _DISARMED_TOKEN
+        return ctx_token
+
+    def set_active_authorized(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        grant: Optional[DualKeyAuthorization] = None,
+    ) -> contextvars.Token:
+        """Binds an active authorization derived ONLY from a genuine, registered DualKeyAuthorization grant.
+        If grant is not provided, consumes an existing matching pending grant from _grants.
+        Fails closed with PermissionError if no genuine grant exists or if grant is forged/replayed.
         """
         clean_args = {
             k: v for k, v in (arguments or {}).items()
-            if k not in ("authorization", "user_approved", "dual_key_confirmed", "confirmed", "_dual_key_token")
+            if k not in IGNORED_MODEL_AUTH_FIELDS
+        }
+        action_hash = compute_action_hash(tool_name, clean_args)
+        if grant is not None:
+            if not grant.is_valid_for(tool_name, action_hash):
+                raise PermissionError(f"Provided grant does not authorize tool '{tool_name}' with given arguments.")
+            valid_grant = grant
+        else:
+            valid_grant = self.consume_grant_object(tool_name, clean_args)
+            if valid_grant is None:
+                raise PermissionError(
+                    f"Cannot establish active authorization for tool '{tool_name}': "
+                    "no valid human authorization grant found."
+                )
+        return self.bind_active_grant(valid_grant)
+
+    def set_thread_authorized(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        grant: Optional[DualKeyAuthorization] = None,
+    ) -> contextvars.Token:
+        """Binds a verified single-use authorization to the current thread and async context for tool execution."""
+        return self.set_active_authorized(tool_name, arguments, grant=grant)
+
+    def clear_active_authorized(self, ctx_token: Optional[contextvars.Token] = None) -> None:
+        """Clears and permanently invalidates the active authorization context.
+        Restores previous ContextVar binding if ctx_token is provided.
+        """
+        token = _active_auth_context.get()
+        if token is not None and token is not _DISARMED_TOKEN:
+            token.invalidate()
+        self._local.pending_grant = None
+        if ctx_token is not None:
+            try:
+                _active_auth_context.reset(ctx_token)
+            except (ValueError, RuntimeError):
+                _active_auth_context.set(None)
+        else:
+            _active_auth_context.set(None)
+        restored = _active_auth_context.get()
+        self._local.authorized_token = restored
+
+    def clear_thread_authorized(self, ctx_token: Optional[contextvars.Token] = None) -> None:
+        """Clears the active authorization context (alias for clear_active_authorized)."""
+        self.clear_active_authorized(ctx_token)
+
+    def verify_and_consume_active_context(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
+        """Verifies if the current context holds an active, valid human authorization.
+        Consumes the context immediately (single-use).
+        Fails closed without searching or scavenging pending grants.
+        """
+        clean_args = {
+            k: v for k, v in (arguments or {}).items()
+            if k not in IGNORED_MODEL_AUTH_FIELDS
         }
         action_hash = compute_action_hash(tool_name, clean_args)
 
-        # 1. Check thread-local execution context established by ToolOrchestrator
-        active = getattr(self._local, "authorized_action", None)
-        if active and active == (tool_name, action_hash):
-            self._local.authorized_action = None
-            return True
+        # 1. Check ContextVar execution context (propagated across asyncio tasks and threads)
+        token = _active_auth_context.get()
+        if token is not None:
+            if token.consume(tool_name, action_hash):
+                self._local.authorized_token = None
+                return True
+            # Token exists in context (or is disarmed); if it did not match or was already consumed, fail closed
+            return False
 
-        # 2. Fallback to pre-existing stored grant (for direct API/test invocations)
-        return self.consume_grant(tool_name, clean_args)
+        # 2. Check thread-local execution context (for legacy threads without ContextVar propagation)
+        local_token = getattr(self._local, "authorized_token", None)
+        if local_token is not None:
+            if local_token.consume(tool_name, action_hash):
+                self._local.authorized_token = None
+                return True
+            return False
 
-    def check_and_consume(self, tool_name: str, arguments: Dict[str, Any], risk_level: int = 2) -> bool:
+        # 3. Direct synchronous execution check for thread that directly called grant_approval
+        pending = getattr(self._local, "pending_grant", None)
+        if pending is not None:
+            if pending.is_valid_for(tool_name, action_hash) and pending.status == "pending":
+                self._local.pending_grant = None
+                with self._lock:
+                    pending.status = "consumed"
+                    self._grants.pop(action_hash, None)
+                return True
+            self._local.pending_grant = None
+            return False
+
+        # 4. Fail closed. No fallback to _grants or arbitrary thread-local action tuples.
+        return False
+
+    @staticmethod
+    def run_with_context(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """Helper to run a callable in a copied contextvars Context for raw ThreadPoolExecutor/thread propagation."""
+        ctx = contextvars.copy_context()
+        return ctx.run(func, *args, **kwargs)
+
+    def check_and_consume(
+        self, tool_name: str, arguments: Dict[str, Any], risk_level: int = 2
+    ) -> Optional[DualKeyAuthorization]:
         """Single-entry check: consumes an existing grant if present, or requests human approval via handler."""
-        if self.consume_grant(tool_name, arguments):
-            return True
+        grant = self.consume_grant_object(tool_name, arguments)
+        if grant is not None:
+            return grant
         summary = format_action_summary(tool_name, arguments)
         return self.request_human_approval(tool_name, arguments, summary=summary, risk_level=risk_level)
 
@@ -672,6 +940,8 @@ class DualKeyApprovalManager:
         """Clears all pending and active authorization grants."""
         with self._lock:
             self._grants.clear()
+            self._grants_by_id.clear()
+        self.clear_active_authorized()
 
 
 class _TurnTaintState:
@@ -802,6 +1072,64 @@ class TurnTaintTracker:
         """Resets the taint tracking state for the current conversational turn context."""
         _turn_taint_context.set(_TurnTaintState())
 
+    def evaluate_tool_execution(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        risk_level: int = 0,
+        dual_key_confirmed: bool = False,
+    ) -> GateDecision:
+        """Evaluates whether tool execution is permitted and returns a GateDecision.
+        If a genuine human authorization grant was consumed (or pre-granted), the grant is returned.
+        Ordinary/untainted tool executions return GateDecision(allowed=True, grant=None).
+        """
+        # 1. Untrusted ingestion tools or dynamic MCP tools mark the turn tainted immediately
+        if tool_name in self.UNTRUSTED_INGESTION_TOOLS or tool_name.startswith("mcp_"):
+            self.mark_tainted(tool_name)
+            return GateDecision(allowed=True, grant=None)
+
+        is_critical = (risk_level >= 2) or (tool_name in self.CRITICAL_PRIVILEGE_TOOLS)
+        is_privileged_mutation = (risk_level >= 1) or (tool_name in self.HIGH_PRIVILEGE_MUTATION_TOOLS)
+
+        state = _turn_taint_context.get()
+        # SEC-H2-02: An uninitialized context has no provenance; treat as tainted for privileged mutations
+        is_tainted = (state.is_tainted) if state is not None else is_privileged_mutation
+        is_tainted_mutation = is_tainted and is_privileged_mutation
+
+        approval_mgr = DualKeyApprovalManager.get_instance()
+
+        if not (is_critical or is_tainted_mutation):
+            # Consume any pre-existing grant if one was explicitly granted for this action
+            consumed_grant = approval_mgr.consume_grant_object(tool_name, arguments)
+            return GateDecision(allowed=True, grant=consumed_grant)
+
+        # Validate and consume authorization at the execution boundary
+        human_grant = approval_mgr.check_and_consume(tool_name, arguments, risk_level=risk_level)
+
+        # 1. Unconditional authorization check for Critical Risk (Level 2) operations
+        if is_critical and not human_grant:
+            raise SecurityBoundaryViolation(
+                f"Critical Authorization Gate: Tool '{tool_name}' (risk_level={risk_level}) "
+                "modifies the host environment or live Python runtime and requires explicit, "
+                "out-of-band user confirmation regardless of turn taint state."
+            )
+
+        # 2. Tainted turn check for High Privilege (Level 1) operations
+        if is_tainted_mutation and not human_grant:
+            if state is None:
+                raise SecurityBoundaryViolation(
+                    f"Dual-Key Safety Gate: blocked high-privilege tool '{tool_name}' "
+                    "execution in an uninitialized security context without turn provenance."
+                )
+            sources_str = ", ".join(state.tainting_sources) or "untrusted input"
+            raise SecurityBoundaryViolation(
+                f"Dual-Key Safety Gate: blocked high-privilege tool '{tool_name}' "
+                f"execution in a turn tainted by untrusted external data "
+                f"(sources: {sources_str})."
+            )
+
+        return GateDecision(allowed=True, grant=human_grant)
+
     def check_tool_execution(
         self,
         tool_name: str,
@@ -815,46 +1143,6 @@ class TurnTaintTracker:
 
         Validates and consumes authorization at the execution boundary BEFORE tool execution.
         """
-        # 1. Untrusted ingestion tools or dynamic MCP tools mark the turn tainted immediately
-        if tool_name in self.UNTRUSTED_INGESTION_TOOLS or tool_name.startswith("mcp_"):
-            self.mark_tainted(tool_name)
-            return True
-
-        is_critical = (risk_level >= 2) or (tool_name in self.CRITICAL_PRIVILEGE_TOOLS)
-        is_privileged_mutation = (risk_level >= 1) or (tool_name in self.HIGH_PRIVILEGE_MUTATION_TOOLS)
-
-        state = _turn_taint_context.get()
-        # SEC-H2-02: An uninitialized context has no provenance; treat as tainted for privileged mutations
-        is_tainted = (state.is_tainted) if state is not None else is_privileged_mutation
-        is_tainted_mutation = is_tainted and is_privileged_mutation
-
-        if not (is_critical or is_tainted_mutation):
-            return True
-
-        # Validate and consume authorization at the execution boundary
-        approval_mgr = DualKeyApprovalManager.get_instance()
-        is_human_authorized = approval_mgr.check_and_consume(tool_name, arguments, risk_level=risk_level)
-
-        # 1. Unconditional authorization check for Critical Risk (Level 2) operations
-        if is_critical and not is_human_authorized:
-            raise SecurityBoundaryViolation(
-                f"Critical Authorization Gate: Tool '{tool_name}' (risk_level={risk_level}) "
-                "modifies the host environment or live Python runtime and requires explicit, "
-                "out-of-band user confirmation regardless of turn taint state."
-            )
-
-        # 2. Tainted turn check for High Privilege (Level 1) operations
-        if is_tainted_mutation and not is_human_authorized:
-            if state is None:
-                raise SecurityBoundaryViolation(
-                    f"Dual-Key Safety Gate: blocked high-privilege tool '{tool_name}' "
-                    "execution in an uninitialized security context without turn provenance."
-                )
-            sources_str = ", ".join(state.tainting_sources) or "untrusted input"
-            raise SecurityBoundaryViolation(
-                f"Dual-Key Safety Gate: blocked high-privilege tool '{tool_name}' "
-                f"execution in a turn tainted by untrusted external data "
-                f"(sources: {sources_str})."
-            )
-
-        return True
+        return self.evaluate_tool_execution(
+            tool_name, arguments, risk_level=risk_level, dual_key_confirmed=dual_key_confirmed
+        ).allowed

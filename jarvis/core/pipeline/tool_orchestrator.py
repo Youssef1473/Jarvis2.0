@@ -74,15 +74,22 @@ class ToolOrchestrator:
         # 2. Dual-Key Safety Gate & Taint Tracking
         risk_level = SkillRegistry.get_risk_level(tool_name)
         try:
-            self.taint_tracker.check_tool_execution(
+            decision = self.taint_tracker.evaluate_tool_execution(
                 tool_name, sanitized_args, risk_level=risk_level, dual_key_confirmed=dual_key_confirmed
             )
         except SecurityBoundaryViolation as sec_err:
             logger.error("SecurityBoundaryViolation in tool execution: %s", sec_err)
             return f"Error: {sec_err}"
 
+        if not decision.allowed:
+            return f"Error: Security gate denied execution of tool '{tool_name}'."
+
         from jarvis.core.security_boundaries import DualKeyApprovalManager
-        DualKeyApprovalManager.get_instance().set_thread_authorized(tool_name, sanitized_args)
+        approval_mgr = DualKeyApprovalManager.get_instance()
+        if decision.grant is not None:
+            ctx_token = approval_mgr.bind_active_grant(decision.grant)
+        else:
+            ctx_token = approval_mgr.bind_disarmed_context()
 
         # Check read-only fast cache if DualTrackCoordinator is present
         cache_key = f"{tool_name}:{arg_signature}"
@@ -90,6 +97,7 @@ class ToolOrchestrator:
             cached = self.dual_track_coordinator._get_cached_result(cache_key)
             if cached is not None:
                 logger.debug("RO Cache Hit in ToolOrchestrator for '%s'", tool_name)
+                approval_mgr.clear_active_authorized(ctx_token)
                 return cached
 
         # 3. Arm Acoustic Interim Bridge
@@ -99,6 +107,7 @@ class ToolOrchestrator:
         # Check cancellation before physical actuation
         if getattr(self, "cancel_token", None) and getattr(self.cancel_token, "is_cancelled", False):
             logger.warning("Tool execution '%s' aborted by cancellation token.", tool_name)
+            approval_mgr.clear_active_authorized(ctx_token)
             return "Action cancelled: Operation was aborted by user interrupt."
 
         # Broadcast tool start event
@@ -136,7 +145,7 @@ class ToolOrchestrator:
             return f"Error executing tool '{tool_name}': {err}"
         finally:
             from jarvis.core.security_boundaries import DualKeyApprovalManager
-            DualKeyApprovalManager.get_instance().clear_thread_authorized()
+            DualKeyApprovalManager.get_instance().clear_active_authorized(ctx_token)
             # 5. Disarm Interim Bridge on completion
             if self.interim_bridge:
                 self.interim_bridge.on_tool_end()
@@ -161,6 +170,15 @@ class ToolOrchestrator:
         milestone_phrase: Optional[str] = None,
     ) -> Any:
         """Asynchronously executes a tool step using DualTrackCoordinator for masking and gating."""
+        if self.dual_track_coordinator is None:
+            return self.execute_step(
+                tool_name,
+                arguments,
+                user_query=user_query,
+                step_index=step_index,
+                dual_key_confirmed=dual_key_confirmed,
+            )
+
         # Strip model-injected authorization fields from arguments to prevent prompt injection bypasses
         sanitized_args = {
             k: v for k, v in (arguments or {}).items()
@@ -187,57 +205,67 @@ class ToolOrchestrator:
         # 2. Dual-Key Safety Gate & Taint Tracking
         risk_level = SkillRegistry.get_risk_level(tool_name)
         try:
-            self.taint_tracker.check_tool_execution(
+            decision = self.taint_tracker.evaluate_tool_execution(
                 tool_name, sanitized_args, risk_level=risk_level, dual_key_confirmed=dual_key_confirmed
             )
         except SecurityBoundaryViolation as sec_err:
             logger.error("SecurityBoundaryViolation in tool execution: %s", sec_err)
             return f"Error: {sec_err}"
 
+        if not decision.allowed:
+            return f"Error: Security gate denied execution of tool '{tool_name}'."
+
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
+        approval_mgr = DualKeyApprovalManager.get_instance()
+        if decision.grant is not None:
+            ctx_token = approval_mgr.bind_active_grant(decision.grant)
+        else:
+            ctx_token = approval_mgr.bind_disarmed_context()
+
         # 3. Execution routing
-        if self.dual_track_coordinator is not None:
+        if getattr(self, "on_status_callback", None):
+            try:
+                self.on_status_callback({
+                    "type": "tool_status",
+                    "tool": tool_name,
+                    "status": "running",
+                    "step": step_index,
+                })
+            except Exception as e:
+                logger.debug("Tool status callback notice (start): %s", e)
+
+        try:
+            exec_kwargs = dict(sanitized_args)
+            tool_fn = SkillRegistry.get_tool(tool_name)
+            if tool_fn:
+                import inspect
+                try:
+                    sig = inspect.signature(tool_fn)
+                    if "user_approved" in sig.parameters:
+                        exec_kwargs["user_approved"] = True
+                except Exception:
+                    pass
+
+            res = await self.dual_track_coordinator.execute_with_masking(
+                user_query=user_query,
+                tool_name=tool_name,
+                tool_args=sanitized_args,
+                tool_coro=lambda: SkillRegistry.execute(tool_name, **exec_kwargs),
+                milestone_phrase=milestone_phrase,
+            )
+            return res
+        except Exception as err:
+            logger.error("Exception during async tool execution '%s': %s", tool_name, err)
+            return f"Error executing tool '{tool_name}': {err}"
+        finally:
+            approval_mgr.clear_active_authorized(ctx_token)
             if getattr(self, "on_status_callback", None):
                 try:
                     self.on_status_callback({
                         "type": "tool_status",
                         "tool": tool_name,
-                        "status": "running",
+                        "status": "completed",
                         "step": step_index,
                     })
                 except Exception as e:
-                    logger.debug("Tool status callback notice (start): %s", e)
-
-            try:
-                exec_kwargs = dict(sanitized_args)
-                tool_fn = SkillRegistry.get_tool(tool_name)
-                if tool_fn:
-                    import inspect
-                    try:
-                        sig = inspect.signature(tool_fn)
-                        if "user_approved" in sig.parameters:
-                            exec_kwargs["user_approved"] = True
-                    except Exception:
-                        pass
-
-                res = await self.dual_track_coordinator.execute_with_masking(
-                    user_query=user_query,
-                    tool_name=tool_name,
-                    tool_args=sanitized_args,
-                    tool_coro=lambda: SkillRegistry.execute(tool_name, **exec_kwargs),
-                    milestone_phrase=milestone_phrase,
-                )
-                return res
-            finally:
-                if getattr(self, "on_status_callback", None):
-                    try:
-                        self.on_status_callback({
-                            "type": "tool_status",
-                            "tool": tool_name,
-                            "status": "completed",
-                            "step": step_index,
-                        })
-                    except Exception as e:
-                        logger.debug("Tool status callback notice (end): %s", e)
-
-        # Fallback to sync execute_step
-        return self.execute_step(tool_name, arguments, step_index=step_index, dual_key_confirmed=dual_key_confirmed)
+                    logger.debug("Tool status callback notice (end): %s", e)

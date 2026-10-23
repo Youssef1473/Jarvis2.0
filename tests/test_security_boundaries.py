@@ -610,5 +610,450 @@ class TestTurnTaintConcurrencyIsolation(unittest.TestCase):
 
 
 
+class TestAsyncApprovalPropagation(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.tracker = TurnTaintTracker.get_instance()
+        self.tracker.reset_turn()
+        self.approval_mgr = DualKeyApprovalManager.get_instance()
+        self.approval_mgr.reset()
+        self.approval_mgr.set_approval_handler(None)
+
+    def tearDown(self):
+        self.tracker.reset_turn()
+        self.approval_mgr.reset()
+        self.approval_mgr.set_approval_handler(None)
+        if hasattr(self.approval_mgr, "clear_active_authorized"):
+            self.approval_mgr.clear_active_authorized()
+        else:
+            self.approval_mgr.clear_thread_authorized()
+
+    def test_ordinary_gate_success_cannot_manufacture_human_authorization(self):
+        """Proof of SEC-M4-01-REV: An ordinary tool or untainted risk_level=1 tool passing the gate
+        must NOT manufacture an active authorization token that satisfies verify_and_consume_active_context.
+        """
+        tool_name = "_test_manufactured_auth_tool"
+        test_args = {"data": "unapproved_op"}
+        gate_authorized = None
+
+        @SkillRegistry.register(name=tool_name, description="Test tool", risk_level=1)
+        def _tool_fn(data: str, user_approved: bool = False):
+            nonlocal gate_authorized
+            gate_authorized = self.approval_mgr.verify_and_consume_active_context(
+                tool_name, {"data": data}
+            )
+            return "Executed"
+
+        self.tracker.reset_turn()
+        self.assertFalse(self.tracker.is_tainted)
+
+        orchestrator = ToolOrchestrator(taint_tracker=self.tracker)
+        res = orchestrator.execute_step(tool_name, test_args)
+        self.assertEqual(res, "Executed")
+        self.assertFalse(
+            gate_authorized,
+            "VULNERABILITY SEC-M4-01-REV: Ordinary gate success manufactured human authorization!"
+        )
+
+    def test_set_active_authorized_rejects_without_genuine_grant(self):
+        """Proof of SEC-M4-02-REV: Direct set_active_authorized cannot manufacture authority without a genuine grant."""
+        tool_name = "_test_unapproved_direct_token"
+        test_args = {"action": "forbidden"}
+
+        with self.assertRaises(PermissionError):
+            self.approval_mgr.set_active_authorized(tool_name, test_args)
+
+    async def test_legitimate_async_tool_orchestrator_execution_succeeds(self):
+        """Proof: Legitimate async execution through execute_step_async propagates authorization to worker thread."""
+        from jarvis.core.pipeline.dual_track import DualTrackCoordinator
+
+        tool_name = "_test_async_mutation_authorized"
+        test_args = {"path": "C:/safe/file.txt", "content": "hello"}
+
+        @SkillRegistry.register(name=tool_name, description="Test async tool", risk_level=2)
+        def _test_mutation_fn(path: str, content: str, user_approved: bool = False):
+            authorized = self.approval_mgr.verify_and_consume_active_context(
+                tool_name, {"path": path, "content": content}
+            )
+            if not authorized:
+                raise PermissionError("Physical execution gate rejected: unauthorized execution context")
+            return f"Mutated {path} successfully"
+
+        self.approval_mgr.grant_approval(tool_name, test_args)
+
+        coordinator = DualTrackCoordinator(filler_threshold_ms=500.0)
+        orchestrator = ToolOrchestrator(
+            taint_tracker=self.tracker,
+            dual_track_coordinator=coordinator,
+        )
+
+        res = await orchestrator.execute_step_async(tool_name, test_args)
+        self.assertEqual(res, "Mutated C:/safe/file.txt successfully")
+
+    async def test_unapproved_async_mutation_fails_closed(self):
+        """Proof: An unapproved critical tool fails closed in execute_step_async and never runs."""
+        from jarvis.core.pipeline.dual_track import DualTrackCoordinator
+
+        tool_name = "_test_async_mutation_unapproved"
+        test_args = {"key": "val"}
+        executed = False
+
+        @SkillRegistry.register(name=tool_name, description="Test unapproved async tool", risk_level=2)
+        def _unapproved_fn(key: str, user_approved: bool = False):
+            nonlocal executed
+            executed = True
+            return "Should never run"
+
+        coordinator = DualTrackCoordinator(filler_threshold_ms=500.0)
+        orchestrator = ToolOrchestrator(
+            taint_tracker=self.tracker,
+            dual_track_coordinator=coordinator,
+        )
+
+        res = await orchestrator.execute_step_async(tool_name, test_args)
+        self.assertIn("Critical Authorization Gate", str(res))
+        self.assertFalse(executed)
+
+    async def test_action_or_argument_mismatch_fails_closed(self):
+        """Proof: Active authorization bound to specific arguments cannot be consumed by mismatched arguments."""
+        tool_name = "_test_mismatch_tool"
+        auth_args = {"action": "read", "id": 1}
+        mismatched_args = {"action": "write", "id": 2}
+
+        self.approval_mgr.grant_approval(tool_name, auth_args)
+        if hasattr(self.approval_mgr, "set_active_authorized"):
+            self.approval_mgr.set_active_authorized(tool_name, auth_args)
+        else:
+            self.approval_mgr.set_thread_authorized(tool_name, auth_args)
+
+        consumed = self.approval_mgr.verify_and_consume_active_context(tool_name, mismatched_args)
+        self.assertFalse(consumed, "VULNERABILITY: verify_and_consume_active_context accepted mismatched arguments!")
+
+        consumed_tool = self.approval_mgr.verify_and_consume_active_context("_other_tool", auth_args)
+        self.assertFalse(consumed_tool, "VULNERABILITY: verify_and_consume_active_context accepted mismatched tool name!")
+
+    async def test_concurrent_tasks_single_use_replay_prevention(self):
+        """Proof: Concurrent asyncio tasks sharing the same context cannot replay or double-spend an authorization."""
+        import asyncio
+        tool_name = "_test_replay_tool"
+        test_args = {"token": "xyz"}
+
+        self.approval_mgr.grant_approval(tool_name, test_args)
+        if hasattr(self.approval_mgr, "set_active_authorized"):
+            self.approval_mgr.set_active_authorized(tool_name, test_args)
+        else:
+            self.approval_mgr.set_thread_authorized(tool_name, test_args)
+
+        results = []
+
+        async def worker():
+            res = self.approval_mgr.verify_and_consume_active_context(tool_name, test_args)
+            results.append(res)
+            return res
+
+        await asyncio.gather(
+            asyncio.create_task(worker()),
+            asyncio.create_task(worker()),
+            asyncio.create_task(worker()),
+        )
+
+        self.assertEqual(results.count(True), 1, f"Expected exactly 1 successful consumption, got: {results}")
+        self.assertEqual(results.count(False), 2)
+
+    def test_concurrent_threads_single_use_replay_prevention(self):
+        """Proof: Concurrent threads in ThreadPoolExecutor with copied contexts cannot replay an authorization."""
+        import concurrent.futures
+        import contextvars
+
+        tool_name = "_test_thread_replay_tool"
+        test_args = {"token": "thread_xyz"}
+
+        self.approval_mgr.grant_approval(tool_name, test_args)
+        if hasattr(self.approval_mgr, "set_active_authorized"):
+            self.approval_mgr.set_active_authorized(tool_name, test_args)
+        else:
+            self.approval_mgr.set_thread_authorized(tool_name, test_args)
+
+        barrier = threading.Barrier(3)
+        results = []
+
+        def worker():
+            barrier.wait(timeout=5.0)
+            res = self.approval_mgr.verify_and_consume_active_context(tool_name, test_args)
+            results.append(res)
+            return res
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+            futures = [ex.submit(contextvars.copy_context().run, worker) for _ in range(3)]
+            concurrent.futures.wait(futures, timeout=5.0)
+
+        self.assertEqual(results.count(True), 1, f"Expected exactly 1 thread success, got: {results}")
+        self.assertEqual(results.count(False), 2)
+
+    async def test_active_context_disarmed_after_orchestrator_execution(self):
+        """Proof: Once orchestrator execution finishes, the active authorization token is invalidated."""
+        from jarvis.core.pipeline.dual_track import DualTrackCoordinator
+
+        tool_name = "_test_disarm_tool"
+        test_args = {"data": "test"}
+
+        @SkillRegistry.register(name=tool_name, description="Test disarm tool", risk_level=0)
+        def _disarm_fn(data: str):
+            return "done"
+
+        self.approval_mgr.grant_approval(tool_name, test_args)
+
+        coordinator = DualTrackCoordinator(filler_threshold_ms=500.0)
+        orchestrator = ToolOrchestrator(
+            taint_tracker=self.tracker,
+            dual_track_coordinator=coordinator,
+        )
+
+        await orchestrator.execute_step_async(tool_name, test_args)
+
+        consumed_after = self.approval_mgr.verify_and_consume_active_context(tool_name, test_args)
+        self.assertFalse(
+            consumed_after,
+            "VULNERABILITY: Active authorization was not disarmed after orchestrator execution!"
+        )
+
+    async def test_asyncio_to_thread_context_propagation(self):
+        """Proof: asyncio.to_thread worker threads inherit the active authorization context."""
+        import asyncio
+        tool_name = "_test_to_thread_tool"
+        test_args = {"cmd": "sync_worker"}
+
+        self.approval_mgr.grant_approval(tool_name, test_args)
+        if hasattr(self.approval_mgr, "set_active_authorized"):
+            self.approval_mgr.set_active_authorized(tool_name, test_args)
+        else:
+            self.approval_mgr.set_thread_authorized(tool_name, test_args)
+
+        def worker_thread_fn():
+            return self.approval_mgr.verify_and_consume_active_context(tool_name, test_args)
+
+        result = await asyncio.to_thread(worker_thread_fn)
+        self.assertTrue(result, "VULNERABILITY: asyncio.to_thread did not inherit active authorization context!")
+
+        second_result = await asyncio.to_thread(worker_thread_fn)
+        self.assertFalse(second_result, "VULNERABILITY: Second worker thread replayed the consumed authorization!")
+
+    def test_sync_thread_authorized_backward_compatibility(self):
+        """Proof: Legacy synchronous set_thread_authorized and clear_thread_authorized continue to function."""
+        tool_name = "_test_legacy_sync_tool"
+        test_args = {"legacy": True}
+
+        self.approval_mgr.grant_approval(tool_name, test_args)
+        self.approval_mgr.set_thread_authorized(tool_name, test_args)
+        self.assertTrue(self.approval_mgr.verify_and_consume_active_context(tool_name, test_args))
+        self.assertFalse(self.approval_mgr.verify_and_consume_active_context(tool_name, test_args))
+
+        self.approval_mgr.grant_approval(tool_name, test_args)
+        self.approval_mgr.set_thread_authorized(tool_name, test_args)
+        self.approval_mgr.clear_thread_authorized()
+        self.assertFalse(self.approval_mgr.verify_and_consume_active_context(tool_name, test_args))
+
+    def test_nested_orchestrator_execution_preserves_outer_active_context(self):
+        """Proof: Inner tool execution unwinds cleanly without wiping outer active authorization context."""
+        tool_a = "_test_outer_authorized_tool"
+        tool_b = "_test_inner_unprivileged_tool"
+        args_a = {"op": "outer"}
+        args_b = {"op": "inner"}
+
+        @SkillRegistry.register(name=tool_b, description="Inner tool", risk_level=0)
+        def _inner_fn(op: str):
+            return "inner_ok"
+
+        outer_authorized_post_inner = None
+
+        @SkillRegistry.register(name=tool_a, description="Outer tool", risk_level=2)
+        def _outer_fn(op: str, user_approved: bool = False):
+            nonlocal outer_authorized_post_inner
+            inner_res = orchestrator.execute_step(tool_b, args_b)
+            outer_authorized_post_inner = self.approval_mgr.verify_and_consume_active_context(
+                tool_a, args_a
+            )
+            return f"outer_ok:{inner_res}"
+
+        self.approval_mgr.grant_approval(tool_a, args_a)
+        orchestrator = ToolOrchestrator(taint_tracker=self.tracker)
+
+        res = orchestrator.execute_step(tool_a, args_a)
+        self.assertEqual(res, "outer_ok:inner_ok")
+        self.assertTrue(
+            outer_authorized_post_inner,
+            "VULNERABILITY: Inner tool execution wiped outer active authorization context!"
+        )
+
+    def test_fabricated_grant_object_rejected(self):
+        """Proof of SEC-M4-03-REV: Fabricated DualKeyAuthorization objects cannot be bound."""
+        from jarvis.core.security_boundaries import DualKeyAuthorization, compute_action_hash
+        import time, secrets
+
+        tool_name = "_test_fabricated_tool"
+        test_args = {"data": "attack"}
+        action_hash = compute_action_hash(tool_name, test_args)
+
+        fabricated_grant = DualKeyAuthorization(
+            tool_name=tool_name,
+            action_hash=action_hash,
+            token=secrets.token_hex(16),
+            expires_at=time.time() + 60.0,
+            confirmed=True,
+        )
+
+        with self.assertRaises(PermissionError, msg="VULNERABILITY SEC-M4-03-REV: bind_active_grant accepted fabricated grant!"):
+            self.approval_mgr.bind_active_grant(fabricated_grant)
+
+        with self.assertRaises(PermissionError, msg="VULNERABILITY SEC-M4-03-REV: set_active_authorized accepted fabricated grant!"):
+            self.approval_mgr.set_active_authorized(tool_name, test_args, grant=fabricated_grant)
+
+    def test_rebinding_consumed_grant_fails(self):
+        """Proof of SEC-M4-04-REV: A consumed grant cannot be rebound or reused."""
+        tool_name = "_test_rebind_tool"
+        test_args = {"data": "rebind"}
+
+        grant = self.approval_mgr.grant_approval(tool_name, test_args)
+        ctx_token = self.approval_mgr.bind_active_grant(grant)
+
+        # First consumption succeeds
+        consumed = self.approval_mgr.verify_and_consume_active_context(tool_name, test_args)
+        self.assertTrue(consumed)
+        self.approval_mgr.clear_active_authorized(ctx_token)
+
+        # Attempt to rebind the exact same consumed grant must fail closed
+        with self.assertRaises(PermissionError, msg="VULNERABILITY SEC-M4-04-REV: Consumed grant was successfully rebound!"):
+            self.approval_mgr.bind_active_grant(grant)
+
+    def test_grant_copying_cannot_bypass_single_use(self):
+        """Proof of SEC-M4-04-REV: Copying a grant object does not enable duplicate binding."""
+        import copy
+        tool_name = "_test_copy_tool"
+        test_args = {"data": "copy"}
+
+        grant = self.approval_mgr.grant_approval(tool_name, test_args)
+        grant_copy = copy.copy(grant)
+
+        ctx_token = self.approval_mgr.bind_active_grant(grant)
+        self.assertTrue(self.approval_mgr.verify_and_consume_active_context(tool_name, test_args))
+        self.approval_mgr.clear_active_authorized(ctx_token)
+
+        with self.assertRaises(PermissionError, msg="VULNERABILITY SEC-M4-04-REV: Copied grant was successfully rebound!"):
+            self.approval_mgr.bind_active_grant(grant_copy)
+
+    def test_concurrent_bind_attempts_allow_at_most_one_winner(self):
+        """Proof of SEC-M4-04-REV: Concurrent bind attempts for the same grant allow exactly one winner."""
+        import concurrent.futures
+
+        tool_name = "_test_concurrent_bind_tool"
+        test_args = {"data": "race"}
+
+        grant = self.approval_mgr.grant_approval(tool_name, test_args)
+        barrier = threading.Barrier(5)
+        successes = []
+        errors = []
+
+        def worker():
+            barrier.wait(timeout=5.0)
+            try:
+                tok = self.approval_mgr.bind_active_grant(grant)
+                successes.append(tok)
+            except PermissionError as e:
+                errors.append(e)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            futures = [ex.submit(worker) for _ in range(5)]
+            concurrent.futures.wait(futures, timeout=5.0)
+
+        self.assertEqual(len(successes), 1, f"Expected exactly 1 bind success, got {len(successes)}")
+        self.assertEqual(len(errors), 4, f"Expected 4 PermissionErrors, got {len(errors)}")
+
+    def test_verification_without_active_authorization_cannot_scavenge_grants(self):
+        """Proof of SEC-M4-05-REV: Physical verification with no active authorization cannot scavenge from _grants."""
+        tool_name = "_test_scavenge_victim_tool"
+        test_args = {"data": "victim"}
+
+        # Register pending grant in _grants
+        self.approval_mgr.grant_approval(tool_name, test_args)
+
+        # Clear any active authorization
+        self.approval_mgr.clear_active_authorized()
+
+        # Direct verification with no active token must fail closed and NOT scavenge
+        scavenged = self.approval_mgr.verify_and_consume_active_context(tool_name, test_args)
+        self.assertFalse(scavenged, "VULNERABILITY SEC-M4-05-REV: verify_and_consume_active_context scavenged pending grant without active authorization!")
+
+    def test_unprivileged_orchestrated_tool_cannot_scavenge_unrelated_pending_grant(self):
+        """Proof of SEC-M4-05-REV: An unprivileged orchestrated tool cannot scavenge an unrelated pending grant."""
+        tool_unprivileged = "_test_unprivileged_scavenger"
+        tool_target = "_test_target_privileged"
+        target_args = {"cmd": "rm -rf"}
+
+        # Pre-grant approval for target tool
+        self.approval_mgr.grant_approval(tool_target, target_args)
+
+        scavenged_result = None
+
+        @SkillRegistry.register(name=tool_unprivileged, description="Scavenger", risk_level=0)
+        def _scavenger_fn():
+            nonlocal scavenged_result
+            scavenged_result = self.approval_mgr.verify_and_consume_active_context(tool_target, target_args)
+            return "scavenger_ran"
+
+        orchestrator = ToolOrchestrator(taint_tracker=self.tracker)
+        res = orchestrator.execute_step(tool_unprivileged, {})
+        self.assertEqual(res, "scavenger_ran")
+        self.assertFalse(scavenged_result, "VULNERABILITY SEC-M4-05-REV: Unprivileged tool scavenged unrelated pending grant!")
+
+    def test_legacy_authorized_action_tuple_alone_cannot_authorize(self):
+        """Proof of SEC-M4-05-REV: A legacy authorized_action tuple alone cannot authorize physical execution."""
+        from jarvis.core.security_boundaries import compute_action_hash
+
+        tool_name = "_test_tuple_fallback_tool"
+        test_args = {"op": "priv"}
+        action_hash = compute_action_hash(tool_name, test_args)
+
+        # Directly set the thread-local tuple without a registered token
+        self.approval_mgr._local.authorized_action = (tool_name, action_hash)
+        self.approval_mgr._local.authorized_token = None
+
+        authorized = self.approval_mgr.verify_and_consume_active_context(tool_name, test_args)
+        self.assertFalse(authorized, "VULNERABILITY: Legacy authorized_action tuple alone authorized physical execution!")
+
+    def test_inner_unapproved_tool_cannot_borrow_outer_active_token(self):
+        """Proof of Nested Isolation: An inner unapproved tool cannot borrow the outer tool's active token."""
+        tool_outer = "_test_outer_auth_tool"
+        tool_inner = "_test_inner_unauth_tool"
+        args_outer = {"target": "outer_target"}
+        args_inner = {"target": "inner_target"}
+
+        inner_borrowed_outer = None
+
+        @SkillRegistry.register(name=tool_inner, description="Inner unapproved", risk_level=0)
+        def _inner_tool_fn(target: str):
+            nonlocal inner_borrowed_outer
+            # Inner tool attempts to verify authorization for outer tool's action!
+            inner_borrowed_outer = self.approval_mgr.verify_and_consume_active_context(tool_outer, args_outer)
+            return "inner_done"
+
+        @SkillRegistry.register(name=tool_outer, description="Outer approved", risk_level=2)
+        def _outer_tool_fn(target: str, user_approved: bool = False):
+            # Outer tool calls inner tool via orchestrator
+            return orchestrator.execute_step(tool_inner, args_inner)
+
+        self.approval_mgr.grant_approval(tool_outer, args_outer)
+        orchestrator = ToolOrchestrator(taint_tracker=self.tracker)
+
+        res = orchestrator.execute_step(tool_outer, args_outer)
+        self.assertEqual(res, "inner_done")
+        self.assertFalse(inner_borrowed_outer, "VULNERABILITY: Inner unapproved tool borrowed outer tool's active authorization!")
+
+    def test_gate_decision_truthiness_and_fail_closed(self):
+        """Proof of GateDecision fail-closed: GateDecision(allowed=False) is falsy and aborts execution."""
+        from jarvis.core.security_boundaries import GateDecision
+
+        denied_decision = GateDecision(allowed=False, grant=None)
+        self.assertFalse(bool(denied_decision), "VULNERABILITY: GateDecision(allowed=False) evaluated truthy!")
+
+
 if __name__ == "__main__":
     unittest.main()

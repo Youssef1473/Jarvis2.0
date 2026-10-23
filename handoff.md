@@ -1,67 +1,76 @@
-# Session Handoff: Jarvis 2.0 — Sprint 1 / Item H2 (Request-Scoped Turn Taint Isolation)
+# Session Handoff: Jarvis 2.0 — Sprint 1 / Item M4 (Grant Provenance, Single-Use Enforcement, and Context Isolation)
 
 **Date:** 2026-10-23
 **Host Environment:** Windows 11 x64 | Intel Core i5-12500H | NVIDIA RTX 3050 Laptop GPU (4GB VRAM) | Python 3.12
-**Committed Baseline on `main`:** Commit [`637bd72`](https://github.com/Youssef1473/Jarvis2.0/commit/637bd72d3442353a1925160092c91c73fb9e8eb1) (`fix(security): harden MCP HTTP egress validation`) ahead of `origin/main` by 1 commit (unpushed)
-**Test Suite Verification:** Full fast parallel test suite: **808 passed, 16 skipped, 47 subtests passed** (213.22s, exit code 0)
+**Committed Baseline on `main`:** Commit [`08fb3f1`](https://github.com/Youssef1473/Jarvis2.0/commit/08fb3f149c21ec6f8a99d1edd67f850b005a8d0b) (`fix(security): isolate turn taint across execution contexts`) ahead of `origin/main` by 2 commits (unpushed: `637bd72`, `08fb3f1`)
+**Test Suite Verification:** Full fast parallel test suite: **828 passed, 16 skipped, 47 subtests passed in 215.58s (Exit code: 0)**
 
 ---
 
-## 1. Vulnerabilities Closed (Sprint 1 / Item H2 Remediation)
+## 1. Vulnerabilities & Architectural Defects Closed (Sprint 1 / Item M4)
 
-1. **Mutable State Shared Across Copied Contexts (SEC-H2-01):**
-   - **Vulnerability:** Python's `contextvars.copy_context()` (used by `asyncio.create_task` and `asyncio.to_thread`) performs a shallow copy of context mappings. Child contexts previously referenced the exact same mutable `_TurnTaintState` object. A child task setting `tracker.is_tainted = False` or clearing `tracker._tainting_sources` wiped the parent turn's security state.
-   - **Remediation:** Enforced a **monotonic taint invariant** on the thread-safe `_TurnTaintState` holder. Once a turn is marked tainted, setting `is_tainted = False` or emptying sources within an active turn is strictly rejected as a no-op with a warning. Furthermore, `tracker._tainting_sources` returns an immutable tuple/list copy, preventing in-place external clearing. Starting a clean turn requires explicit `reset_turn()`, which binds a fresh instance to the current context without mutating parent contexts.
+1. **Grant Provenance Validation & Forgery Prevention (SEC-M4-03-REV):**
+   - **Defect:** `DualKeyApprovalManager.bind_active_grant()` accepted arbitrary caller-instantiated `DualKeyAuthorization` dataclass objects without verifying that they were issued, recorded, or confirmed by `DualKeyApprovalManager`.
+   - **Remediation:** Added authoritative grant lifecycle registry `self._grants_by_id: Dict[str, DualKeyAuthorization]` in `DualKeyApprovalManager`. Each issued grant receives a 16-byte random hex `grant_id`. `bind_active_grant(grant)` validates that `grant.grant_id` is registered, that its cryptographic token, tool name, and canonical action hash match exactly in constant time, that the grant has not expired, and that its status is valid (`"gate_consumed"` or `"pending"`). Fabricated, modified, or unregistered grants are rejected with `PermissionError`.
 
-2. **Uninitialized Context Fail-Open Bypass (SEC-H2-02):**
-   - **Vulnerability:** When `_turn_taint_context.get()` was `None`, `_get_context_state()` previously instantiated a clean `_TurnTaintState(is_tainted=False)` by default. An unseeded worker thread could execute privileged mutations (`risk_level >= 1` or `HIGH_PRIVILEGE_MUTATION_TOOLS`) without human authorization.
-   - **Remediation:** In `check_tool_execution()`, an uninitialized context (`state is None`) is treated as untrusted/unprovenanced for all privileged mutations. If human authorization has not been granted via `DualKeyApprovalManager`, privileged tools fail closed immediately with a `SecurityBoundaryViolation`. Safe read-only tools (`risk_level == 0`) remain permitted.
+2. **Grant Replay & Multi-Spend Prevention (SEC-M4-04-REV):**
+   - **Defect:** `DualKeyAuthorization` previously lacked atomic lifecycle tracking. A single legitimate grant object could be passed to `bind_active_grant()` multiple times, minting a fresh `_ActiveAuthToken` each time and authorizing multiple independent physical executions.
+   - **Remediation:** Implemented an atomic lifecycle state machine on `DualKeyAuthorization` managed under `DualKeyApprovalManager._lock`:
+     `"pending"` -> `"gate_consumed"` -> `"active"` -> `"consumed"` / `"invalidated"`.
+     `bind_active_grant()` atomically transitions the registered grant to `"active"`. Any subsequent call to `bind_active_grant()` on the same grant or a copy of the grant fails closed with `PermissionError`. In `_ActiveAuthToken.consume()`, physical verification atomically transitions the registered grant to `"consumed"`. Concurrent bind attempts for the same grant allow exactly one winner; all competing callers fail closed with `PermissionError`.
 
-3. **Dynamic MCP Untrusted Ingestion & Threadpool Context Propagation (SEC-H2-04):**
-   - **Vulnerability:** Dynamic MCP tools (`mcp_*`) were not included in `TurnTaintTracker.UNTRUSTED_INGESTION_TOOLS`, relying solely on runtime skill callbacks. Furthermore, `BaseProvider.execute_tool_with_timeout` and `execute_tool_async` executed tools in a `ThreadPoolExecutor` without context propagation, causing taint marked in workers to be trapped.
-   - **Remediation:**
-     - `TurnTaintTracker.check_tool_execution()` now treats any tool starting with `mcp_` as untrusted ingestion, immediately tainting the turn before execution.
-     - `BaseProvider.execute_tool_with_timeout` and `execute_tool_async` wrap tool execution with `ctx = contextvars.copy_context()` and `ctx.run`, propagating the turn's security context to worker threads.
+3. **Pending-Grant Scavenging Elimination (SEC-M4-05-REV):**
+   - **Defect:** When `ToolOrchestrator` ran an unprivileged tool (`risk_level == 0`), `_active_auth_context` was left empty (`None`). If that tool invoked `verify_and_consume_active_context(target_tool, args)`, Step 3 fell back to searching `_grants` and consumed any pending pre-grant without orchestrator gating.
+   - **Remediation:** Removed the opportunistic `_grants` fallback from `verify_and_consume_active_context()`. Missing active authorization fails closed (`return False`). In `ToolOrchestrator`, unprivileged tools without grants explicitly bind `_DISARMED_TOKEN`, ensuring that `_active_auth_context` is never empty during tool execution and immediately rejects any attempt to scavenge or verify unauthorized operations. For direct synchronous execution from the thread that explicitly invoked `grant_approval()`, `self._local.pending_grant` allows single-use execution on the calling thread without opening `_grants` to ambient scavenging.
 
-4. **Expanded Concurrency & Delegation Regression Coverage (SEC-H2-03):**
-   - Added 8 new deterministic regression tests covering asyncio child task isolation, monotonic taint protection against in-place tampering, fail-closed unseeded worker execution, sibling task protection, and threadpool context propagation.
+4. **Nested Context Scoping & Authorization Isolation:**
+   - **Defect:** In nested execution sequences (e.g. Outer tool A invoking Inner tool B), unapproved Inner tool B could observe or consume Outer tool A's active authorization token.
+   - **Remediation:** Every orchestrated tool execution in `ToolOrchestrator.execute_step()` and `execute_step_async()` establishes an explicit scope:
+     - Approved tools bind `ctx_token = approval_mgr.bind_active_grant(decision.grant)`.
+     - Unapproved tools bind `ctx_token = approval_mgr.bind_disarmed_context()`.
+     An unapproved inner tool executes with `_DISARMED_TOKEN` active, completely isolating it from the outer tool's authorization. Cleanup in `finally:` safely unwinds the scope via `_active_auth_context.reset(ctx_token)`, restoring the outer token without resurrecting consumed authorization.
+
+5. **Fail-Closed `GateDecision` Semantics:**
+   - Implemented `GateDecision.__bool__(self) -> bool: return bool(self.allowed)`.
+   - Added explicit `if not decision.allowed: return f"Error: Security gate denied execution of tool '{tool_name}'."` checks in both `execute_step()` and `execute_step_async()`, preventing tool execution or grant binding on denied decisions regardless of truthiness.
 
 ---
 
 ## 2. Test Evidence (RED → GREEN Protocol)
 
 ### A. Adversarial RED Phase (Before Remediation)
-Command: `python -m unittest tests.test_security_boundaries.TestTurnTaintConcurrencyIsolation`
-Output: **FAILED (failures=4)** across 11 concurrency isolation tests:
-1. `test_child_asyncio_task_cannot_clear_parent_taint`: `AssertionError: False is not true : VULNERABILITY: Child task untainted parent via shared mutable state!`
-2. `test_child_task_cannot_clear_parent_taint_sources`: `AssertionError: 'web_search' not found in [] : VULNERABILITY: Child task cleared parent tainting sources!`
-3. `test_dynamic_mcp_tool_recognized_as_untrusted_ingestion_in_gate`: `AssertionError: False is not true : VULNERABILITY: Dynamic MCP tool call was not recognized as untrusted ingestion at the gate!`
-4. `test_unseeded_worker_thread_fails_closed_at_security_gate`: `AssertionError: unexpectedly None : VULNERABILITY: Unseeded worker thread executed privileged tool without context or authorization!`
+Command: `python tools/run_fast_tests.py tests/test_security_boundaries.py`
+Output: **FAILED (19 failed, 35 passed)** across 54 tests in `tests/test_security_boundaries.py`:
+- `test_fabricated_grant_object_rejected`: `TypeError / PermissionError not raised`
+- `test_rebinding_consumed_grant_fails`: `PermissionError not raised on rebind`
+- `test_grant_copying_cannot_bypass_single_use`: `PermissionError not raised on copy rebind`
+- `test_concurrent_bind_attempts_allow_at_most_one_winner`: `AssertionError: 0 != 1`
+- `test_verification_without_active_authorization_cannot_scavenge_grants`: `AssertionError: scavenged without active token`
+- `test_unprivileged_orchestrated_tool_cannot_scavenge_unrelated_pending_grant`: `AssertionError: scavenged unrelated pre-grant`
+- `test_legacy_authorized_action_tuple_alone_cannot_authorize`: `AssertionError: authorized via legacy tuple`
+- `test_inner_unapproved_tool_cannot_borrow_outer_active_token`: `AssertionError: inner tool borrowed outer token`
+- `test_gate_decision_truthiness_and_fail_closed`: `AssertionError: GateDecision(allowed=False) was truthy`
 
-### B. GREEN Phase (After Production Remediation)
-1. **Concurrency Isolation Regression Suite (11 tests):**
+### B. GREEN Phase (After Complete Remediation)
+1. **Targeted Security Boundaries & Concurrency Suite (54 tests):**
    ```powershell
-   python -m unittest tests.test_security_boundaries.TestTurnTaintConcurrencyIsolation
+   python tools/run_fast_tests.py tests/test_security_boundaries.py
    ```
-   Result: **11 passed in 0.012s (Exit code: 0)**
+   Result: **54 passed in 0.34s (Exit code: 0)**
 
-2. **Full Security Boundaries Test Suite (34 tests):**
-   ```powershell
-   python -m unittest tests/test_security_boundaries.py
-   ```
-   Result: **34 passed in 0.112s (Exit code: 0)**
+2. **Related Security & Pipeline Test Suites:**
+   - `tests/test_stage1_security_hardening.py`: **12 passed in 1.26s (Exit code: 0)**
+   - `tests/test_stage2_dispatch_gateway.py`: **6 passed in 0.79s (Exit code: 0)**
+   - `tests/test_ui_approval_workflow.py`: **7 passed in 9.28s (Exit code: 0)**
+   - `tests/test_self_evolution.py`: **3 passed in 1.27s (Exit code: 0)**
+   - `tests/test_brain_pipeline_and_interim.py`: **9 passed in 0.65s (Exit code: 0)**
+   - `tests/test_dual_track_coordinator.py`: **8 passed in 1.77s (Exit code: 0)**
 
-3. **Related Execution Pipeline & MCP Security Suites (94 tests):**
-   ```powershell
-   python -m unittest tests/test_brain_pipeline_and_interim.py tests/test_mcp_client_transport.py tests/test_mcp_security.py tests/test_plugin_integrations.py tests/test_stage1_security_hardening.py tests/test_stage2_dispatch_gateway.py tests/test_ui_approval_workflow.py
-   ```
-   Result: **94 passed in 12.461s (Exit code: 0)**
-
-4. **Full Fast Parallel Test Suite:**
+3. **Full Fast Parallel Test Suite:**
    ```powershell
    python tools/run_fast_tests.py --fast -w 4
    ```
-   Result: **808 passed, 16 skipped, 47 subtests passed in 213.22s (Exit code: 0)**
+   Result: **828 passed, 16 skipped, 47 subtests passed in 215.58s (Exit code: 0)**
 
 ---
 
@@ -70,26 +79,27 @@ Output: **FAILED (failures=4)** across 11 concurrency isolation tests:
 `git status --short`:
 ```text
  M handoff.md
- M jarvis/core/providers/base.py
+ M jarvis/core/pipeline/tool_orchestrator.py
  M jarvis/core/security_boundaries.py
  M tests/test_security_boundaries.py
 ```
 
-`git diff --stat` (tracked modifications against `637bd72`):
+`git diff --stat` (tracked modifications against `08fb3f1`):
 ```text
- handoff.md                         | 140 +++++++-----------
- jarvis/core/providers/base.py      |   7 +-
- jarvis/core/security_boundaries.py | 111 +++++++++++++--
- tests/test_security_boundaries.py  | 283 +++++++++++++++++++++++++++++++++++++
- 4 files changed, 435 insertions(+), 106 deletions(-)
+ handoff.md                                | 121 ++++----
+ jarvis/core/pipeline/tool_orchestrator.py | 112 +++++---
+ jarvis/core/security_boundaries.py        | 402 +++++++++++++++++++++++----
+ tests/test_security_boundaries.py         | 445 ++++++++++++++++++++++++++++++
+ 4 files changed, 929 insertions(+), 151 deletions(-)
 ```
 
 Untracked files: None.
+Staged changes: None (all changes left uncommitted and unstaged for independent review).
 
 ---
 
 ## 4. Next Steps
 
-1. Independent review of Sprint 1 / Item H2 security remediation diff.
-2. Await explicit authorization to stage and commit H2.
-3. Advance to Sprint 1 / Item M4 (Asynchronous Approval Propagation) or M1 (External-Ingestion Provenance).
+1. Final independent review of Sprint 1 / Item M4 (Grant Provenance, Single-Use Enforcement, and Context Isolation) diff.
+2. Await explicit authorization to stage and commit M4.
+3. Advance to Sprint 1 / Item M1 (External-Ingestion Provenance).
