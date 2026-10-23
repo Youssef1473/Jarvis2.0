@@ -14,16 +14,16 @@ This workspace supports `ast-grep` (tree-sitter AST engine) and `ruff` (Rust sta
 ast-grep run -p '<pattern>' <path>
 
 # Instant syntax and undefined-name diagnostics
-ruff check <path>
+python tools/lint.py check <path>
 
 # Safe auto-fix for imports and lint issues
-ruff check --fix <path>
+python tools/lint.py check --fix <path>
 
 # Outline class and function signatures before reading large files
 python tools/agy_context_slicer.py <path>
 ```
 
-> **Executable Discovery:** If `ast-grep` or `ruff` are not directly on `PATH`, invoke them via the workspace virtualenv (e.g. `& "..\.venv\Scripts\ruff.exe"` or `& ".venv\Scripts\ruff.exe"`).
+> **Executable Discovery:** `python tools/lint.py` automatically resolves Ruff across all local/parent virtualenvs and PATH without hardcoded paths. For `ast-grep`, if not directly on `PATH`, invoke via `& "..\.venv\Scripts\ast-grep.exe"` or `& ".venv\Scripts\ast-grep.exe"`.
 
 ---
 
@@ -36,11 +36,11 @@ python tools/agy_context_slicer.py <path>
   - `class $NAME($$$PARENTS): $$$BODY`
 - Always use single quotes in PowerShell (`'...'`) around patterns containing `$` to prevent shell variable expansion.
 
-### 2. Fast Static Diagnostics (`ruff`)
-- Run `ruff check <path>` before and after editing files to catch syntax errors, missing imports, and undefined names in <20ms.
+### 2. Fast Static Diagnostics (`tools/lint.py`)
+- Run `python tools/lint.py check <path>` before and after editing files to catch syntax errors, missing imports, and undefined names in <20ms.
 - To focus strictly on fatal syntax and undefined names:
   ```powershell
-  ruff check --select E9,F821 <path>
+  python tools/lint.py check --select E9,F821 <path>
   ```
 
 ### 3. Context Slicing (`tools/agy_context_slicer.py`)
@@ -51,4 +51,4 @@ python tools/agy_context_slicer.py <path>
 1. **Macro Level (Inter-module dependencies):** Consult `docs/architecture/PROJECT_MAP.md` or Graphify (`graphify query "<concept>"`).
 2. **Structural Skeleton:** Use `python tools/agy_context_slicer.py <file>` for outlines.
 3. **Micro Level (Syntax patterns):** Use `ast-grep` for structural matching.
-4. **Diagnostic Gate:** Run `ruff check <path>` before running test suites.
+4. **Diagnostic Gate:** Run `python tools/lint.py check <path>` before running test suites.

@@ -1,6 +1,9 @@
 ---
 name: graphify
-description: "Use for high-level codebase architecture, cross-module dependency mapping, subsystem relationship queries, or inspecting graphify-out/ knowledge graphs. Do NOT use for targeted symbol searches, line-level inspections, or routine edits."
+description: >-
+  Turn any codebase or document folder into a navigable knowledge graph with community detection,
+  or query existing graphs in graphify-out/ for high-level architecture and cross-module dependencies.
+  Do NOT use for targeted symbol searches, line-level inspections, or routine edits.
 ---
 
 # /graphify

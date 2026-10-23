@@ -27,7 +27,7 @@ Follow this cycle for every modification:
    - Maintain backward compatibility with public interfaces and re-export shims imported by `tests/`.
    - Avoid speculative or unrelated refactorings.
 3. **Static Checks & Targeted Tests:**
-   - Run syntax and lint diagnostics via `ruff check <path>`.
+   - Run syntax and lint diagnostics via `python tools/lint.py check <path>`.
    - Run targeted test suites using `python tools/run_fast_tests.py <test_path>`.
    - Escalate to `python tools/run_fast_tests.py --fast` when changes affect shared modules.
 4. **Empirical Verification & Reporting:**
@@ -108,8 +108,8 @@ python tools/run_fast_tests.py --fast
 # Run a specific targeted test file
 python tools/run_fast_tests.py tests/test_security_boundaries.py
 
-# Static analysis and lint diagnostics
-ruff check <path>
+# Static analysis and lint diagnostics (via reliable cross-platform wrapper)
+python tools/lint.py check <path>
 
 # Structural AST search
 ast-grep run -p '<pattern>' <path>
@@ -117,4 +117,4 @@ ast-grep run -p '<pattern>' <path>
 
 For complete subsystem maps, see [docs/architecture/PROJECT_MAP.md](file:///C:/Users/Youssef/Projects/Jarvis_2.0/docs/architecture/PROJECT_MAP.md).
 For deep architectural specifications, see [JARVIS_2.0_MASTER_ARCHITECTURAL_BLUEPRINT.txt](file:///C:/Users/Youssef/Projects/Jarvis_2.0/JARVIS_2.0_MASTER_ARCHITECTURAL_BLUEPRINT.txt).
-For specialized debugging or testing protocols, activate `.agents/skills/` (`test-driven-development`, `systematic-debugging`, `python-testing-patterns`, `python-profiling`).
+For canonical engineering workflow skills, activate `.agents/skills/` (`codebase-investigation`, `writing-plans`, `test-driven-development`, `adversarial-review`, `verification-runner`, `systematic-debugging`, `python-testing-patterns`, `python-profiling`).
