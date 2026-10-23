@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800;900&family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <style>
+  <style nonce="{{ csp_nonce }}">
     :root {
       --bg-dark: #050811;
       --panel-bg: rgba(8, 14, 26, 0.78);
@@ -2086,7 +2086,7 @@
   </div>
 
   <!-- Interactive HUD Script -->
-  <script>
+  <script nonce="{{ csp_nonce }}">
     // System & Animation State
     let currentState = "idle";
     let pulseAngle = 0;

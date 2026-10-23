@@ -50,7 +50,7 @@ class TestHudZeroClsInvariants(unittest.TestCase):
     def test_no_meter_style_width_mutation_in_js(self):
         """JavaScript must not mutate meter.style.width directly (banned for CLS prevention)."""
         # Find script block
-        script_matches = re.findall(r"<script>(.*?)</script>", self.hud_content, re.DOTALL)
+        script_matches = re.findall(r"<script[^>]*>(.*?)</script>", self.hud_content, re.DOTALL)
         self.assertTrue(len(script_matches) > 0, "Script block must be present in hud.html")
         script_body = script_matches[-1]
 

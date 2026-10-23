@@ -22,6 +22,8 @@ from jarvis.ui.server import (
     create_bootstrap_token,
     consume_bootstrap_token,
     resolve_safe_photo_path,
+    generate_csp_nonce,
+    render_template_with_nonce,
 )
 from jarvis.ui.win32_overlay import configure_stark_overlay_hwnd, update_dynamic_click_through
 
@@ -1170,13 +1172,14 @@ class TestHudSecurityAndDsp(unittest.TestCase):
         # 4. Syntactic validity of embedded script via Node.js (when available)
         import shutil
 
-        start_tag = "<script>"
+        s_open = template_text.find("<script")
+        self.assertGreater(s_open, 0)
+        s_idx = template_text.find(">", s_open)
         end_tag = "</script>"
-        s_idx = template_text.find(start_tag)
         e_idx = template_text.rfind(end_tag)
-        self.assertGreater(s_idx, 0)
+        self.assertGreater(s_idx, s_open)
         self.assertGreater(e_idx, s_idx)
-        js_code = template_text[s_idx + len(start_tag):e_idx]
+        js_code = template_text[s_idx + 1:e_idx]
 
         node_bin = shutil.which("node")
         if node_bin:
@@ -1189,6 +1192,300 @@ class TestHudSecurityAndDsp(unittest.TestCase):
                 shell=False,
             )
             self.assertEqual(node_proc.returncode, 0, f"Node syntax check failed: {node_proc.stderr}")
+
+    def test_csp_nonce_generation_uniqueness_and_format(self):
+        """Verifies cryptographically secure 32-byte Base64 nonce generation, entropy, and templating."""
+        import math
+        import re
+        from collections import Counter
+
+        # 1. Format check: 32 bytes Base64-encoded is exactly 44 characters ending with '='
+        nonce_re = re.compile(r"^[A-Za-z0-9+/]{43}=$")
+        nonces = [generate_csp_nonce() for _ in range(100)]
+
+        for n in nonces:
+            self.assertEqual(len(n), 44)
+            self.assertTrue(nonce_re.match(n), f"Nonce {n} does not match Base64 format")
+
+        # 2. Uniqueness: 100 independently generated nonces must be completely unique
+        self.assertEqual(len(set(nonces)), 100, "Collision detected in generated CSP nonces")
+
+        # 3. Entropy: verify character distribution over generated nonces has high entropy
+        all_chars = "".join(nonces)
+        counts = Counter(all_chars)
+        total = len(all_chars)
+        entropy = -sum((c / total) * math.log2(c / total) for c in counts.values())
+        self.assertGreater(entropy, 5.0, f"Shannon entropy {entropy:.2f} is suspiciously low for Base64 randomness")
+
+        # 4. Template substitution helper verification
+        mock_template = (
+            '<!DOCTYPE html><html><head>'
+            '<style nonce="{{ csp_nonce }}">body { margin: 0; }</style>'
+            '<link rel="stylesheet" href="style.css">'
+            '</head><body>'
+            '<div style="color: blue;">Text</div>'
+            '<script nonce="{{ csp_nonce }}">console.log("hello");</script>'
+            '</body></html>'
+        )
+        sample_nonce = nonces[0]
+        rendered = render_template_with_nonce(mock_template, sample_nonce)
+        self.assertIn(f'<style nonce="{sample_nonce}">', rendered)
+        self.assertIn(f'<script nonce="{sample_nonce}">', rendered)
+        self.assertIn('<div style="color: blue;">', rendered, "Inline style attributes must be preserved untouched")
+        self.assertNotIn("{{ csp_nonce }}", rendered)
+
+        # Empty nonce must cleanly remove placeholder without leaving stray attributes
+        unnonced = render_template_with_nonce(mock_template, "")
+        self.assertIn("<style>body", unnonced)
+        self.assertIn("<script>console", unnonced)
+        self.assertNotIn("nonce=", unnonced)
+
+    def test_csp_nonce_authenticated_hud_body_and_headers_matching(self):
+        """Verifies authenticated GET / injects matching nonces into HTML body tags and CSP headers."""
+        import re
+
+        service = JarvisUIService(enforce_auth=True)
+        app = service._create_app()
+        client = TestClient(app)
+
+        client.cookies.set("jarvis_session", get_hud_session_token())
+        response = client.get("/")
+        self.assertEqual(response.status_code, 200)
+
+        # Verify anti-caching headers on HTML responses with nonces
+        self.assertEqual(response.headers.get("Cache-Control"), "no-cache, no-store, must-revalidate")
+        self.assertEqual(response.headers.get("Pragma"), "no-cache")
+        self.assertEqual(response.headers.get("Expires"), "0")
+
+        csp_enforced = response.headers.get("Content-Security-Policy", "")
+        csp_report_only = response.headers.get("Content-Security-Policy-Report-Only", "")
+
+        # Extract nonces from headers
+        m_enforced = re.search(r"script-src-elem [^;]*'nonce-([A-Za-z0-9+/=]+)'", csp_enforced)
+        m_ro = re.search(r"script-src-elem [^;]*'nonce-([A-Za-z0-9+/=]+)'", csp_report_only)
+
+        self.assertIsNotNone(m_enforced, "Enforced CSP missing nonce in script-src-elem")
+        self.assertIsNotNone(m_ro, "Report-only CSP missing nonce in script-src-elem")
+
+        nonce_header = m_enforced.group(1)
+        self.assertEqual(nonce_header, m_ro.group(1), "Enforced and report-only nonces must match for the same response")
+
+        # Verify HTML body script and style tags have the exact same nonce
+        body = response.text
+        self.assertIn(f'<style nonce="{nonce_header}">', body, "Top-level <style> must contain matching nonce")
+        self.assertIn(f'<script nonce="{nonce_header}">', body, "Top-level <script> must contain matching nonce")
+        self.assertNotIn("{{ csp_nonce }}", body, "Unreplaced template placeholder in HUD body")
+        self.assertNotIn("csp_nonce", body, "Unreplaced csp_nonce keyword in HUD body")
+
+    def test_csp_nonce_unauthenticated_unlock_page_and_headers_matching(self):
+        """Verifies unauthenticated GET / injects matching nonces and renders lock form without inline handlers."""
+        import re
+
+        service = JarvisUIService(enforce_auth=True)
+        app = service._create_app()
+        client = TestClient(app)
+
+        response = client.get("/")
+        self.assertEqual(response.status_code, 200)
+
+        # Verify anti-caching headers
+        self.assertEqual(response.headers.get("Cache-Control"), "no-cache, no-store, must-revalidate")
+        self.assertEqual(response.headers.get("Pragma"), "no-cache")
+        self.assertEqual(response.headers.get("Expires"), "0")
+
+        csp_enforced = response.headers.get("Content-Security-Policy", "")
+        m_enforced = re.search(r"script-src-elem [^;]*'nonce-([A-Za-z0-9+/=]+)'", csp_enforced)
+        self.assertIsNotNone(m_enforced, "Enforced CSP missing nonce on unlock page")
+        nonce = m_enforced.group(1)
+
+        body = response.text
+        self.assertIn(f'<style nonce="{nonce}">', body, "Unlock page <style> must contain matching nonce")
+        self.assertIn(f'<script nonce="{nonce}">', body, "Unlock page <script> must contain matching nonce")
+        self.assertNotIn("{{ csp_nonce }}", body)
+
+        # Confirm form has no inline onsubmit and uses JavaScript event listener
+        self.assertNotIn("onsubmit", body.lower(), "Unlock page form must not contain inline onsubmit")
+        self.assertIn("unlockForm.addEventListener('submit', unlock)", body)
+
+    def test_unlock_flow_and_session_cookie_exchange(self):
+        """Verifies bootstrap and session credentials exchange via /api/auth/unlock without errors."""
+        service = JarvisUIService(enforce_auth=True)
+        app = service._create_app()
+        client = TestClient(app)
+
+        # 1. Invalid credential exchange fails
+        res_fail = client.post("/api/auth/unlock", json={"token": "invalid_bogus_token"})
+        self.assertEqual(res_fail.status_code, 401)
+        self.assertNotIn("jarvis_session", client.cookies)
+
+        # 2. Single-use bootstrap token exchange succeeds and sets session cookie
+        boot_token = create_bootstrap_token(ttl_seconds=30.0)
+        res_ok = client.post("/api/auth/unlock", json={"token": boot_token})
+        self.assertEqual(res_ok.status_code, 200)
+        self.assertEqual(res_ok.json().get("status"), "authenticated")
+        self.assertIn("jarvis_session", client.cookies)
+
+        # 3. Bootstrap token is single-use; subsequent replay attempt fails
+        res_replay = client.post("/api/auth/unlock", json={"token": boot_token})
+        self.assertEqual(res_replay.status_code, 401)
+
+        # 4. Authenticated client now loads full HUD on GET /
+        res_hud = client.get("/")
+        self.assertEqual(res_hud.status_code, 200)
+        self.assertIn("Sovereign Command Bridge", res_hud.text)
+
+    def test_csp_nonce_present_across_error_and_api_responses(self):
+        """Verifies well-formed CSP headers with valid nonces on 401, 403, and 200 API responses."""
+        import re
+
+        service = JarvisUIService(enforce_auth=True)
+        app = service._create_app()
+        client = TestClient(app)
+
+        nonce_pat = re.compile(r"'nonce-([A-Za-z0-9+/]{43}=)'")
+
+        # 1. 401 Unauthorized API error
+        res_401 = client.post("/api/command", json={"command": "ping"})
+        self.assertEqual(res_401.status_code, 401)
+        self.assertIn("Content-Security-Policy", res_401.headers)
+        self.assertTrue(nonce_pat.search(res_401.headers["Content-Security-Policy"]))
+
+        # 2. 403 Forbidden Origin validation error
+        res_403 = client.post(
+            "/api/command",
+            headers={"X-Jarvis-Token": get_hud_session_token(), "Origin": "http://evil-attacker.com"},
+            json={"command": "ping"},
+        )
+        self.assertEqual(res_403.status_code, 403)
+        self.assertIn("Content-Security-Policy", res_403.headers)
+        self.assertTrue(nonce_pat.search(res_403.headers["Content-Security-Policy"]))
+
+        # 3. 200 OK JSON status endpoint
+        res_200 = client.get("/api/status", headers={"X-Jarvis-Token": get_hud_session_token()})
+        self.assertEqual(res_200.status_code, 200)
+        self.assertIn("Content-Security-Policy", res_200.headers)
+        self.assertTrue(nonce_pat.search(res_200.headers["Content-Security-Policy"]))
+
+    def test_csp_enforced_vs_report_only_policy_directives(self):
+        """Verifies policy directive distinctions: unsafe-eval, Level 3 script/style-src-*, and reporting."""
+        service = JarvisUIService(enforce_auth=True)
+        app = service._create_app()
+        client = TestClient(app)
+
+        res = client.get("/api/status", headers={"X-Jarvis-Token": get_hud_session_token()})
+        self.assertEqual(res.status_code, 200)
+
+        csp = res.headers["Content-Security-Policy"]
+        csp_ro = res.headers["Content-Security-Policy-Report-Only"]
+
+        # Enforced retains unsafe-eval; Report-Only strictly excludes it
+        self.assertIn("'unsafe-eval'", csp, "Enforced policy must retain unsafe-eval during transitional phase")
+        self.assertNotIn("'unsafe-eval'", csp_ro, "Report-only policy must not contain unsafe-eval")
+
+        # Intentional difference in inline event handler allowances:
+        # Enforced policy permits script-src-attr 'unsafe-inline' during transition
+        # Report-Only policy strictly enforces script-src-attr 'none' to report regressions
+        self.assertIn("script-src-attr 'unsafe-inline'", csp)
+        self.assertIn("script-src-attr 'none'", csp_ro)
+        self.assertNotIn("script-src-attr 'unsafe-inline'", csp_ro)
+
+        # Both policies must feature explicit Level 3 element directives and style attribute allowances
+        for policy in (csp, csp_ro):
+            self.assertIn("script-src-elem", policy)
+            self.assertIn("style-src-elem", policy)
+            self.assertIn("style-src-attr 'unsafe-inline'", policy)
+            # Level 2 fallback: style-src must include 'unsafe-inline' and NOT include 'nonce-'
+            # to prevent Level 2 browsers from blocking HUD inline style="..." attributes
+            style_src_part = [part.strip() for part in policy.split(";") if part.strip().startswith("style-src ")][0]
+            self.assertIn("'unsafe-inline'", style_src_part)
+            self.assertNotIn("'nonce-", style_src_part, "style-src fallback must not have nonce to protect style attributes")
+
+            # Reporting directives present
+            self.assertIn("report-uri /api/csp-report", policy)
+            self.assertIn("report-to csp-endpoint", policy)
+
+        # Reporting-Endpoints header present and absolute
+        rep_ep = res.headers.get("Reporting-Endpoints", "")
+        self.assertIn('csp-endpoint="http://testserver/api/csp-report"', rep_ep)
+
+    def test_csp_missing_template_404_has_anti_cache_headers(self):
+        """Verifies missing template 404 HTML response also carries strict anti-caching headers."""
+        service = JarvisUIService(enforce_auth=False)
+        service.template_path = Path("nonexistent_hud_template.html")
+        app = service._create_app()
+        client = TestClient(app)
+
+        res = client.get("/")
+        self.assertEqual(res.status_code, 404)
+        self.assertIn("HUD template not found", res.text)
+        self.assertEqual(res.headers.get("Cache-Control"), "no-cache, no-store, must-revalidate")
+        self.assertEqual(res.headers.get("Pragma"), "no-cache")
+        self.assertEqual(res.headers.get("Expires"), "0")
+        self.assertIn("Content-Security-Policy", res.headers)
+
+    def test_csp_nonce_concurrency_isolation(self):
+        """Verifies concurrent requests receive independent, isolated nonces without cross-contamination."""
+        import concurrent.futures
+        import re
+
+        service = JarvisUIService(enforce_auth=True)
+        app = service._create_app()
+        client = TestClient(app)
+
+        def make_request(idx: int):
+            # Mix authenticated and unauthenticated calls
+            is_auth = (idx % 2 == 0)
+            headers = {"X-Jarvis-Token": get_hud_session_token()} if is_auth else {}
+            resp = client.get("/", headers=headers)
+            csp = resp.headers.get("Content-Security-Policy", "")
+            m = re.search(r"script-src-elem [^;]*'nonce-([A-Za-z0-9+/=]+)'", csp)
+            h_nonce = m.group(1) if m else None
+
+            # Extract body nonce from <style nonce="...">
+            m_body = re.search(r'<style nonce="([A-Za-z0-9+/=]+)">', resp.text)
+            b_nonce = m_body.group(1) if m_body else None
+            return (idx, h_nonce, b_nonce)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+            futures = [executor.submit(make_request, i) for i in range(24)]
+            results = [f.result() for f in futures]
+
+        header_nonces = [r[1] for r in results]
+        body_nonces = [r[2] for r in results]
+
+        # All 24 requests must receive non-None nonces
+        self.assertTrue(all(n is not None for n in header_nonces))
+        self.assertTrue(all(n is not None for n in body_nonces))
+
+        # In every request, the body tag nonce must match the header nonce
+        for idx, h_n, b_n in results:
+            self.assertEqual(h_n, b_n, f"Request {idx} had mismatched header and body nonces")
+
+        # Every concurrent request must receive a distinct nonce (no reuse or cross-contamination)
+        self.assertEqual(len(set(header_nonces)), len(header_nonces), "Nonce collision detected across concurrent requests")
+
+    def test_zero_inline_event_handlers_in_hud_and_unlock_templates(self):
+        """Verifies zero inline on* event handler attributes exist in hud.html and the unlock page."""
+        import re
+        from pathlib import Path
+
+        hud_path = Path(__file__).resolve().parent.parent / "jarvis" / "ui" / "templates" / "hud.html"
+        hud_text = hud_path.read_text(encoding="utf-8")
+
+        service = JarvisUIService()
+        unlock_text = service._get_unlock_html(nonce="test_nonce")
+
+        # Match inline event handlers in HTML markup: whitespace + on<event> =
+        # Excludes JS occurrences like .on("click") or onmessage = in script blocks
+        html_only_hud = hud_text[:hud_text.find("<script")]
+        handler_re = re.compile(r"""\son[a-zA-Z]+\s*=""", re.IGNORECASE)
+
+        hud_matches = handler_re.findall(html_only_hud)
+        self.assertEqual(len(hud_matches), 0, f"Found inline event handlers in HUD template HTML: {hud_matches}")
+
+        unlock_html_only = unlock_text[:unlock_text.find("<script")]
+        unlock_matches = handler_re.findall(unlock_html_only)
+        self.assertEqual(len(unlock_matches), 0, f"Found inline event handlers in unlock page HTML: {unlock_matches}")
 
 if __name__ == "__main__":
     unittest.main()

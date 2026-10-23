@@ -18,6 +18,7 @@ import psutil
 import os
 import re
 import secrets
+import base64
 from urllib.parse import urlparse, urlsplit, unquote, unquote_to_bytes
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -56,6 +57,22 @@ def consume_bootstrap_token(token: str) -> bool:
         if expires_at is not None and expires_at >= now:
             return True
     return False
+
+
+def generate_csp_nonce() -> str:
+    """Generates a cryptographically secure, unpredictable 32-byte Base64-encoded CSP nonce."""
+    return base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+
+
+def render_template_with_nonce(template_text: str, nonce: str) -> str:
+    """Injects a cryptographically verified CSP nonce into designated template blocks.
+
+    Replaces explicit, known placeholders only (e.g. nonce="{{ csp_nonce }}")
+    without altering other script or style elements.
+    """
+    if nonce:
+        return re.sub(r'nonce="{{\s*csp_nonce\s*}}"', f'nonce="{nonce}"', template_text)
+    return re.sub(r'\s*nonce="{{\s*csp_nonce\s*}}"', '', template_text)
 
 
 def get_hud_session_token() -> str:
@@ -491,7 +508,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         "/api/timers",
     )
 
-    def _add_security_headers(self, response, request: Any = None):
+    def _add_security_headers(self, response, request: Any = None, nonce: Optional[str] = None):
+        if nonce is None and request is not None:
+            nonce = getattr(getattr(request, "state", None), "csp_nonce", None)
+        if not nonce:
+            nonce = generate_csp_nonce()
+
         has_tunnel = os.environ.get("JARVIS_SECURE_TUNNEL") == "1"
         tunnel_host = os.environ.get("JARVIS_TUNNEL_HOST", "").strip().lower()
         tunnel_connect = f" https://{tunnel_host} wss://{tunnel_host}" if (has_tunnel and tunnel_host) else ""
@@ -505,18 +527,27 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: ws: http:; "
             "img-src 'self' data: blob:; "
             f"connect-src {connect_src_enforced}; "
+            f"script-src 'self' 'unsafe-inline' 'unsafe-eval' 'nonce-{nonce}'; "
+            f"script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' 'nonce-{nonce}'; "
+            "script-src-attr 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            f"style-src-elem 'self' https://fonts.googleapis.com 'nonce-{nonce}'; "
+            "style-src-attr 'unsafe-inline'; "
             "font-src 'self' data: https://fonts.gstatic.com; "
             "report-uri /api/csp-report; "
             "report-to csp-endpoint;"
         )
         response.headers["Content-Security-Policy-Report-Only"] = (
             "default-src 'self' 'unsafe-inline' data:; "
-            "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "font-src 'self' data: https://fonts.gstatic.com; "
             "img-src 'self' data:; "
             f"connect-src {connect_src_report}; "
+            f"script-src 'self' 'unsafe-inline' 'nonce-{nonce}'; "
+            f"script-src-elem 'self' 'nonce-{nonce}'; "
+            "script-src-attr 'none'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            f"style-src-elem 'self' https://fonts.googleapis.com 'nonce-{nonce}'; "
+            "style-src-attr 'unsafe-inline'; "
+            "font-src 'self' data: https://fonts.gstatic.com; "
             "report-uri /api/csp-report; "
             "report-to csp-endpoint;"
         )
@@ -525,6 +556,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
     async def dispatch(self, request, call_next):
+        nonce = getattr(getattr(request, "state", None), "csp_nonce", None)
+        if not nonce:
+            nonce = generate_csp_nonce()
+            if hasattr(request, "state"):
+                request.state.csp_nonce = nonce
+
         # 1. Validate Host and Origin headers with exact scheme, host, and port matching
         is_valid, err_msg, status_code = validate_request_host_and_origin(
             headers=request.headers,
@@ -532,7 +569,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             request_scheme=request.url.scheme,
         )
         if not is_valid:
-            return self._add_security_headers(JSONResponse({"error": err_msg}, status_code=status_code), request=request)
+            return self._add_security_headers(
+                JSONResponse({"error": err_msg}, status_code=status_code),
+                request=request,
+                nonce=nonce,
+            )
 
         # 2. Check token authentication on state-mutating and sensitive read routes
         path = request.url.path
@@ -542,7 +583,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Allow unauthenticated access to the authentication exchange endpoint and CSP telemetry reporting
         if path in ("/api/auth/unlock", "/api/csp-report"):
             response = await call_next(request)
-            return self._add_security_headers(response, request=request)
+            return self._add_security_headers(response, request=request, nonce=nonce)
 
         enforce_auth = (
             getattr(self.service, "enforce_auth", True)
@@ -566,10 +607,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                         status_code=401,
                     ),
                     request=request,
+                    nonce=nonce,
                 )
 
         response = await call_next(request)
-        return self._add_security_headers(response, request=request)
+        return self._add_security_headers(response, request=request, nonce=nonce)
 
 
 class WorkstationMetricsCollector:
@@ -1354,14 +1396,14 @@ class JarvisUIService:
             "summary": auth.summary,
         })
 
-    def _get_unlock_html(self) -> str:
+    def _get_unlock_html(self, nonce: str = "") -> str:
         """Minimal unauthenticated interface lock page with zero token disclosure."""
-        return """<!DOCTYPE html>
+        html = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <title>JARVIS 2.0 &mdash; Interface Locked</title>
-  <style>
+  <style nonce="{{ csp_nonce }}">
     body { background: #070b12; color: #00d2ff; font-family: 'Segoe UI', system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
     .card { background: rgba(13, 22, 38, 0.95); border: 1px solid rgba(0, 210, 255, 0.3); border-radius: 8px; padding: 32px; width: 380px; text-align: center; box-shadow: 0 0 30px rgba(0, 210, 255, 0.15); }
     h2 { margin: 0 0 8px; letter-spacing: 2px; font-weight: 600; text-shadow: 0 0 10px #00d2ff; }
@@ -1377,14 +1419,19 @@ class JarvisUIService:
   <div class="card">
     <h2>J.A.R.V.I.S.</h2>
     <p>Sovereign Interface Locked. Provide session credentials or unlock token to authenticate.</p>
-    <form id="unlockForm" onsubmit="unlock(event)">
+    <form id="unlockForm">
       <input type="password" id="tokenInput" placeholder="Session or Bootstrap Token" autocomplete="off" required autofocus>
       <button type="submit">AUTHENTICATE</button>
       <div id="errMsg" class="error">Invalid credentials</div>
     </form>
   </div>
-  <script>
+  <script nonce="{{ csp_nonce }}">
     window.addEventListener('DOMContentLoaded', async () => {
+      const unlockForm = document.getElementById('unlockForm');
+      if (unlockForm) {
+        unlockForm.addEventListener('submit', unlock);
+      }
+
       let token = '';
       if (window.location.hash.startsWith('#bootstrap=')) {
         token = window.location.hash.substring('#bootstrap='.length).trim();
@@ -1406,15 +1453,17 @@ class JarvisUIService:
             return;
           }
         } catch (ex) {}
-        document.getElementById('errMsg').style.display = 'block';
+        const errEl = document.getElementById('errMsg');
+        if (errEl) errEl.style.display = 'block';
       }
     });
 
     async function unlock(e) {
       e.preventDefault();
-      const token = document.getElementById('tokenInput').value.trim();
+      const tokenInput = document.getElementById('tokenInput');
+      const token = tokenInput ? tokenInput.value.trim() : '';
       const err = document.getElementById('errMsg');
-      err.style.display = 'none';
+      if (err) err.style.display = 'none';
       try {
         const res = await fetch('/api/auth/unlock', {
           method: 'POST',
@@ -1424,15 +1473,16 @@ class JarvisUIService:
         if (res.ok) {
           window.location.reload();
         } else {
-          err.style.display = 'block';
+          if (err) err.style.display = 'block';
         }
       } catch (ex) {
-        err.style.display = 'block';
+        if (err) err.style.display = 'block';
       }
     }
   </script>
 </body>
 </html>"""
+        return render_template_with_nonce(html, nonce)
 
     async def _handle_unlock(self, request):
         """Exchanges a single-use bootstrap token or session token for a session cookie."""
@@ -1586,7 +1636,11 @@ class JarvisUIService:
 
     async def _handle_index(self, request):
         if not self.template_path.exists():
-            return HTMLResponse("<h3>HUD template not found.</h3>", status_code=404)
+            resp = HTMLResponse("<h3>HUD template not found.</h3>", status_code=404)
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
+            return resp
 
         cookie_token = request.cookies.get("jarvis_session")
         header_token = request.headers.get("x-jarvis-token")
@@ -1598,11 +1652,25 @@ class JarvisUIService:
             or bool(header_token and secrets.compare_digest(header_token, _HUD_SESSION_TOKEN))
         )
 
+        nonce = getattr(getattr(request, "state", None), "csp_nonce", None)
+        if not nonce:
+            nonce = generate_csp_nonce()
+            if hasattr(request, "state"):
+                request.state.csp_nonce = nonce
+
         if not is_auth and self.enforce_auth:
-            return HTMLResponse(self._get_unlock_html(), status_code=200)
+            resp = HTMLResponse(self._get_unlock_html(nonce=nonce), status_code=200)
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
+            return resp
 
         html_content = self.template_path.read_text(encoding="utf-8")
-        response = HTMLResponse(html_content)
+        rendered_html = render_template_with_nonce(html_content, nonce)
+        response = HTMLResponse(rendered_html)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
         is_secure = is_browser_facing_https(request, self)
         response.set_cookie(
             key="jarvis_session",
