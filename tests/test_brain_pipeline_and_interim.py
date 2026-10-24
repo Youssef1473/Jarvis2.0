@@ -191,6 +191,51 @@ class TestToolOrchestrator(unittest.TestCase):
         self.assertEqual(res2, "computed_val_1")
         self.assertEqual(call_counter, 1)
 
+    def test_execute_step_async_uncoordinated_fallback(self):
+        """Verifies execute_step_async executes cleanly without TypeError when
+        dual_track_coordinator is None, passes arguments, and dispatches exactly once.
+        """
+        import asyncio
+
+        call_count = 0
+        received_args = []
+
+        @SkillRegistry.register(name="_test_async_fallback_tool", description="Fallback test", risk_level=0)
+        def _test_async_fallback(query_arg: str = ""):
+            nonlocal call_count
+            call_count += 1
+            received_args.append(query_arg)
+            return f"Processed: {query_arg}"
+
+        self.addCleanup(lambda: SkillRegistry.unregister("_test_async_fallback_tool"))
+
+        orchestrator = ToolOrchestrator(
+            taint_tracker=self.tracker,
+            dual_track_coordinator=None,
+        )
+
+        # 1. Execute uncoordinated async tool call with user_query
+        result = asyncio.run(
+            orchestrator.execute_step_async(
+                "_test_async_fallback_tool",
+                {"query_arg": "sample_query"},
+                user_query="what is battery vitals",
+                step_index=1,
+            )
+        )
+
+        # 2. Verify successful return value
+        self.assertEqual(result, "Processed: sample_query")
+
+        # 3. Verify exactly one execution (absence of duplicate dispatch)
+        self.assertEqual(call_count, 1)
+        self.assertEqual(received_args, ["sample_query"])
+
+        # 4. Verify trajectory history is recorded accurately
+        self.assertEqual(len(orchestrator._history), 1)
+        self.assertEqual(orchestrator._history[0][0], "_test_async_fallback_tool")
+
+
 
 if __name__ == "__main__":
     unittest.main()

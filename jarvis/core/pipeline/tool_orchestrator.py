@@ -174,7 +174,6 @@ class ToolOrchestrator:
             return self.execute_step(
                 tool_name,
                 arguments,
-                user_query=user_query,
                 step_index=step_index,
                 dual_key_confirmed=dual_key_confirmed,
             )
