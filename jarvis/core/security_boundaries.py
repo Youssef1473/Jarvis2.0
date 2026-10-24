@@ -1322,6 +1322,7 @@ class TurnTaintTracker:
     HIGH_PRIVILEGE_MUTATION_TOOLS: Set[str] = {
         "execute_powershell",
         "execute_sandboxed_powershell",
+        "execute_browser_javascript",
         "run_job_sandboxed_process",
         "run_background_task",
         "release_file_lock",
@@ -1340,6 +1341,7 @@ class TurnTaintTracker:
         "create_or_update_custom_skill",
         "delete_custom_skill",
         "execute_powershell",
+        "execute_browser_javascript",
         "run_background_task",
     }
 
@@ -1516,35 +1518,57 @@ class TurnTaintTracker:
         If a genuine human authorization grant was consumed (or pre-granted), the grant is returned.
         Ordinary/untainted tool executions return GateDecision(allowed=True, grant=None).
         """
-        # 1. Untrusted ingestion tools or dynamic MCP tools mark the turn tainted immediately
-        if self.is_untrusted_ingestion(tool_name):
-            self.record_ingestion(tool_name, arguments)
-            return GateDecision(allowed=True, grant=None)
-
-        is_critical = (risk_level >= 2) or (tool_name in self.CRITICAL_PRIVILEGE_TOOLS)
-        is_privileged_mutation = (risk_level >= 1) or (tool_name in self.HIGH_PRIVILEGE_MUTATION_TOOLS)
+        clean_name = (tool_name or "").strip()
+        args_dict = arguments if isinstance(arguments, dict) else {}
 
         state = _turn_taint_context.get()
+        prior_tainted = (state.is_tainted) if state is not None else False
+
+        # 1. Untrusted ingestion tools or dynamic MCP tools mark the turn tainted immediately with provenance
+        if self.is_untrusted_ingestion(clean_name):
+            self.record_ingestion(clean_name, args_dict)
+            # CRITICAL CORE-SEC-04D: Do NOT return early. Ingestion classification marks turn taint,
+            # but must never exempt execution-capable or mutating tools from authorization.
+
+        # 2. Determine effective risk level for dynamic MCP tools and argument-sensitive mutations
+        effective_risk = risk_level
+        is_mcp = clean_name.startswith("mcp_") or clean_name == "mcp_call_tool"
+        if is_mcp:
+            from jarvis.skills.base import SkillRegistry
+            meta = SkillRegistry.get_metadata(clean_name)
+            is_verified_ro = bool(meta and meta.read_only)
+            # If not explicitly verified as read-only, dynamic MCP tools fail closed to at least risk_level=1
+            if not is_verified_ro and effective_risk == 0:
+                effective_risk = max(effective_risk, SkillRegistry.get_risk_level(clean_name) or 1)
+
+        is_critical = (effective_risk >= 2) or (clean_name in self.CRITICAL_PRIVILEGE_TOOLS)
+        is_privileged_mutation = (
+            (effective_risk >= 1)
+            or (clean_name in self.HIGH_PRIVILEGE_MUTATION_TOOLS)
+            or (clean_name == "check_code_diagnostics" and bool(args_dict.get("fix")))
+        )
+
         # SEC-H2-02: An uninitialized context has no provenance; treat as tainted for privileged mutations
-        is_tainted = (state.is_tainted) if state is not None else is_privileged_mutation
+        # CORE-SEC-04D: Check if the turn was already tainted prior to this tool, or if context is missing
+        is_tainted = (prior_tainted) if state is not None else True
         is_tainted_mutation = is_tainted and is_privileged_mutation
 
         approval_mgr = DualKeyApprovalManager.get_instance()
 
         if not (is_critical or is_tainted_mutation):
-            # Consume any pre-existing grant if one was explicitly granted for this action
-            consumed_grant = approval_mgr.consume_grant_object(tool_name, arguments)
+            # Safe read-only tool (including verified read-only ingestion tools)
+            consumed_grant = approval_mgr.consume_grant_object(clean_name, args_dict)
             return GateDecision(allowed=True, grant=consumed_grant)
 
         # Validate and consume authorization at the execution boundary
         human_grant = approval_mgr.check_and_consume(
-            tool_name, arguments, risk_level=risk_level, cancel_event=cancel_event
+            clean_name, args_dict, risk_level=effective_risk, cancel_event=cancel_event
         )
 
         # 1. Unconditional authorization check for Critical Risk (Level 2) operations
         if is_critical and not human_grant:
             raise SecurityBoundaryViolation(
-                f"Critical Authorization Gate: Tool '{tool_name}' (risk_level={risk_level}) "
+                f"Critical Authorization Gate: Tool '{clean_name}' (risk_level={effective_risk}) "
                 "modifies the host environment or live Python runtime and requires explicit, "
                 "out-of-band user confirmation regardless of turn taint state."
             )
@@ -1553,19 +1577,19 @@ class TurnTaintTracker:
         if is_tainted_mutation and not human_grant:
             if state is None:
                 raise SecurityBoundaryViolation(
-                    f"Dual-Key Safety Gate: blocked high-privilege tool '{tool_name}' "
+                    f"Dual-Key Safety Gate: blocked high-privilege tool '{clean_name}' "
                     "execution in an uninitialized security context without turn provenance."
                 )
             sources_str = ", ".join(state.tainting_sources) or "untrusted input"
             raise SecurityBoundaryViolation(
-                f"Dual-Key Safety Gate: blocked high-privilege tool '{tool_name}' "
+                f"Dual-Key Safety Gate: blocked high-privilege tool '{clean_name}' "
                 f"execution in a turn tainted by untrusted external data "
                 f"(sources: {sources_str})."
             )
 
         if human_grant is not None and getattr(human_grant, "status", None) != "gate_consumed":
             raise SecurityBoundaryViolation(
-                f"Dual-Key Safety Gate: authorization grant for tool '{tool_name}' was invalidated."
+                f"Dual-Key Safety Gate: authorization grant for tool '{clean_name}' was invalidated."
             )
 
         return GateDecision(allowed=True, grant=human_grant)

@@ -609,10 +609,19 @@ def read_webpage_content(tab_name_or_url: str = "") -> str:
 @SkillRegistry.register(
     name="execute_browser_javascript",
     description="Executes a JavaScript expression in the active or target browser tab via DevTools Protocol and returns the evaluated result.",
-    external_ingestion=True,
+    risk_level=2,
+    read_only=False,
+    external_ingestion=False,
 )
 def execute_browser_javascript(script: str, tab_name: str = "") -> str:
     """Executes JavaScript in the browser tab via CDP."""
+    # Record untrusted external web provenance for executed script results
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().record_ingestion(
+        "execute_browser_javascript",
+        {"script": str(script or "")[:100], "tab_name": str(tab_name or "")}
+    )
+
     if not is_cdp_available():
         return "Browser DevTools Protocol is not currently attached (port 9222 is closed), Sir."
 

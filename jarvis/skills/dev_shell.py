@@ -6,7 +6,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Skills.DevShell")
@@ -685,10 +685,19 @@ def ast_search_codebase(pattern: str, path: str = ".", lang: Optional[str] = Non
 
 @SkillRegistry.register(
     name="check_code_diagnostics",
-    description="Runs ultra-fast static analysis, compiler syntax checks, and linting across the codebase via Ruff in <20ms."
+    description="Runs ultra-fast static analysis, compiler syntax checks, and linting across the codebase via Ruff in <20ms.",
+    risk_level=0,
+    read_only=True,
 )
-def check_code_diagnostics(target_path: str = ".", select: Optional[str] = None, fix: bool = False, max_lines: int = 50) -> str:
+def check_code_diagnostics(target_path: str = ".", select: Optional[str] = None, max_lines: int = 50, **kwargs: Any) -> str:
     """Runs Ruff static analysis and diagnostics on target files or directories."""
+    # Reject model-supplied mutation flags outright
+    if kwargs.get("fix") or kwargs.get("_fix"):
+        return (
+            "Execution rejected: Automated code mutation via 'fix=True' is prohibited in "
+            "check_code_diagnostics. Use patch_file or write_file for authorized workspace modifications, Sir."
+        )
+
     try:
         resolved_path = _resolve_workspace_path(target_path) if target_path and target_path != "." else WORKSPACE_DIR
     except ValueError as e:
@@ -699,8 +708,6 @@ def check_code_diagnostics(target_path: str = ".", select: Optional[str] = None,
         return "Ruff binary is not installed in the environment. Run 'pip install ruff', Sir."
 
     cmd = [str(ruff_bin), "check", "--color", "never", "--output-format", "concise"]
-    if fix:
-        cmd.append("--fix")
     if select:
         cmd.extend(["--select", select])
 

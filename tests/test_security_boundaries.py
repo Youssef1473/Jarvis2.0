@@ -1345,7 +1345,7 @@ class TestExternalIngestionProvenance(unittest.TestCase):
         )
 
     def test_all_canonical_web_and_external_tools_classified_and_recorded(self):
-        """M1 Req 2: Canonical web, email, and external data ingestion tools are classified and recorded."""
+        """M1 Req 2: Canonical web, email, and external passive data ingestion tools are classified and recorded."""
         external_tools = [
             "web_search",
             "get_wikipedia_summary",
@@ -1357,7 +1357,6 @@ class TestExternalIngestionProvenance(unittest.TestCase):
             "search_emails",
             "read_email_details",
             "deep_research",
-            "execute_browser_javascript",
             "audit_webpage_accessibility",
             "audit_webpage_performance",
             "capture_devtools_snapshot",
