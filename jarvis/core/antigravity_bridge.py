@@ -1039,8 +1039,10 @@ class AntigravityBridge:
 
         self.max_warm_daemons: int = 2
         self._pool_lock = threading.Lock()
+        self._cancellation_generation: int = 0
         self._daemon_pool: OrderedDict[Tuple[str, str], AntigravityDaemon] = OrderedDict()
         self._active_daemon: Optional[AntigravityDaemon] = None
+        self._active_oneshot_sandboxes: set[Any] = set()
         self._claude_exhausted_until: float = 0.0
         self._claude_exhaustion_reason: str = ""
         self._gemini_flash_exhausted_until: float = 0.0
@@ -1237,32 +1239,60 @@ class AntigravityBridge:
     def stop(self):
         """Cleanly terminates all persistent warm daemons in the pool and any child processes."""
         with self._pool_lock:
-            for d in list(self._daemon_pool.values()):
-                try:
-                    d.stop()
-                except Exception:
-                    pass
+            self._cancellation_generation += 1
+            sandboxes_to_stop = list(self._active_oneshot_sandboxes)
+            self._active_oneshot_sandboxes.clear()
+            daemons_to_stop = list(self._daemon_pool.values())
             self._daemon_pool.clear()
-            if self._active_daemon:
-                try:
-                    self._active_daemon.stop()
-                except Exception:
-                    pass
-                self._active_daemon = None
+            active_d = self._active_daemon
+            self._active_daemon = None
+
+        # Terminate processes outside the lock to prevent blocking and contention
+        for s in sandboxes_to_stop:
+            try:
+                s.terminate_tree()
+            except Exception:
+                pass
+
+        for d in daemons_to_stop:
+            try:
+                d.stop()
+            except Exception:
+                pass
+
+        if active_d:
+            try:
+                active_d.stop()
+            except Exception:
+                pass
 
     def abort_active_turn(self) -> None:
-        """Interrupts any in-flight persistent daemon turn across all daemons in the pool."""
+        """Interrupts any in-flight persistent daemon turn or one-shot process across all daemons in the pool."""
         with self._pool_lock:
-            if self._active_daemon:
-                try:
-                    self._active_daemon.abort_active_turn()
-                except Exception:
-                    pass
-            for d in list(self._daemon_pool.values()):
-                try:
-                    d.abort_active_turn()
-                except Exception:
-                    pass
+            self._cancellation_generation += 1
+            sandboxes_to_abort = list(self._active_oneshot_sandboxes)
+            self._active_oneshot_sandboxes.clear()
+            active_d = self._active_daemon
+            pool_daemons = list(self._daemon_pool.values())
+
+        # Terminate processes outside the lock to prevent blocking
+        for s in sandboxes_to_abort:
+            try:
+                s.terminate_tree()
+            except Exception:
+                pass
+
+        if active_d:
+            try:
+                active_d.abort_active_turn()
+            except Exception:
+                pass
+
+        for d in pool_daemons:
+            try:
+                d.abort_active_turn()
+            except Exception:
+                pass
 
     def __del__(self):
         self.stop()
@@ -1727,18 +1757,15 @@ class AntigravityBridge:
 
         t_start = time.perf_counter()
         try:
-            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-                creation_flags |= subprocess.CREATE_NEW_PROCESS_GROUP
+            from jarvis.skills.job_object_sandbox import run_sandboxed_batch
 
-            proc = subprocess.run(
+            proc = run_sandboxed_batch(
                 cmd,
                 input=prompt,
                 text=True,
                 capture_output=True,
                 encoding="utf-8",
                 timeout=timeout,
-                creationflags=creation_flags,
             )
             elapsed = time.perf_counter() - t_start
             self.last_latency_ms = elapsed * 1000.0
@@ -1829,25 +1856,51 @@ class AntigravityBridge:
         accumulated_text = []
         speech_buffer = ""
         final_result_data: Dict[str, Any] = {}
+        sandboxed = None
+        proc = None
 
         try:
-            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-                creation_flags |= subprocess.CREATE_NEW_PROCESS_GROUP
+            from jarvis.skills.job_object_sandbox import SandboxedProcess
 
-            proc = subprocess.Popen(
+            sandboxed = SandboxedProcess(
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
                 encoding="utf-8",
-                creationflags=creation_flags,
+                close_fds=True,
             )
 
+            with self._pool_lock:
+                start_gen = self._cancellation_generation
+
+            proc = sandboxed.start()
+
+            cancelled_during_startup = False
+            with self._pool_lock:
+                if self._cancellation_generation != start_gen:
+                    cancelled_during_startup = True
+                else:
+                    self._active_oneshot_sandboxes.add(sandboxed)
+
+            if cancelled_during_startup:
+                logger.info("Antigravity streaming cancelled during startup (generation mismatch)")
+                try:
+                    sandboxed.terminate_tree()
+                except Exception:
+                    pass
+                return {
+                    "status": "ABORTED",
+                    "response": "Request cancelled during process initialization.",
+                    "duration_seconds": time.perf_counter() - t_start,
+                    "usage": {},
+                }
+
             # Send prompt and close stdin to signal EOF
-            proc.stdin.write(prompt)
-            proc.stdin.close()
+            if proc.stdin and not getattr(proc.stdin, "closed", True):
+                proc.stdin.write(prompt)
+                proc.stdin.close()
 
             chunker = TwoGearProsodicChunker() if sentence_callback else None
 
@@ -1888,9 +1941,10 @@ class AntigravityBridge:
             except (ValueError, OSError) as pipe_err:
                 logger.warning("Antigravity stream pipe error: %s", pipe_err)
 
-            proc.stdout.close()
+            if proc.stdout and not getattr(proc.stdout, "closed", True):
+                proc.stdout.close()
             stderr_out = ""
-            if proc.stderr:
+            if proc.stderr and not getattr(proc.stderr, "closed", True):
                 try:
                     stderr_out = proc.stderr.read().strip()
                 except Exception:
@@ -1937,18 +1991,11 @@ class AntigravityBridge:
                 "usage": {},
             }
         finally:
-            if proc:
+            with self._pool_lock:
+                self._active_oneshot_sandboxes.discard(sandboxed)
+            if sandboxed:
                 try:
-                    for pipe in (proc.stdin, proc.stdout, proc.stderr):
-                        if pipe and not getattr(pipe, "closed", True):
-                            pipe.close()
-                    if proc.poll() is None:
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=2.0)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                            proc.wait(timeout=1.0)
+                    sandboxed.terminate_tree()
                 except Exception:
                     pass
 

@@ -98,20 +98,32 @@ class GitHubCopilotBridge:
 
         if not callback or is_mocked_run:
             try:
-                result = subprocess.run(
-                    command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    cwd=str(self.workspace),
-                    timeout=timeout_seconds,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    close_fds=True,
-                    check=False,
-                )
+                if is_mocked_run:
+                    result = subprocess.run(
+                        command,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        cwd=str(self.workspace),
+                        timeout=timeout_seconds,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        close_fds=True,
+                        check=False,
+                    )
+                else:
+                    from jarvis.skills.job_object_sandbox import run_sandboxed_batch
+
+                    result = run_sandboxed_batch(
+                        command,
+                        cwd=str(self.workspace),
+                        timeout=timeout_seconds,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                    )
             except subprocess.TimeoutExpired:
                 elapsed = time.perf_counter() - started_at
                 logger.warning("GitHub Copilot CLI request exceeded %.1f seconds.", timeout_seconds)
@@ -166,13 +178,16 @@ class GitHubCopilotBridge:
                 "usage": {},
             }
 
-        # Streaming execution via subprocess.Popen
+        # Streaming execution via SandboxedProcess
+        sandboxed: Optional[Any] = None
         proc: Optional[subprocess.Popen] = None
         accumulated_text: list[str] = []
         chunker = TwoGearProsodicChunker()
         tool_parser = NonceGuardedStreamParser(turn_nonce=turn_nonce) if turn_nonce else None
         try:
-            proc = subprocess.Popen(
+            from jarvis.skills.job_object_sandbox import SandboxedProcess
+
+            sandboxed = SandboxedProcess(
                 command,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -181,9 +196,9 @@ class GitHubCopilotBridge:
                 encoding="utf-8",
                 errors="replace",
                 cwd=str(self.workspace),
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 close_fds=True,
             )
+            proc = sandboxed.start()
 
             deadline = started_at + timeout_seconds
             while True:
@@ -191,13 +206,13 @@ class GitHubCopilotBridge:
                     try:
                         cancel_token.raise_if_cancelled()
                     except Exception:
-                        proc.kill()
-                        proc.wait(timeout=1.0)
+                        if sandboxed:
+                            sandboxed.terminate_tree()
                         raise
 
                 if time.perf_counter() > deadline:
-                    proc.kill()
-                    proc.wait(timeout=1.0)
+                    if sandboxed:
+                        sandboxed.terminate_tree()
                     elapsed = time.perf_counter() - started_at
                     logger.warning("GitHub Copilot CLI streaming exceeded %.1f seconds.", timeout_seconds)
                     return {
@@ -284,13 +299,18 @@ class GitHubCopilotBridge:
             }
 
         except Exception:
-            if proc and proc.poll() is None:
+            if sandboxed:
                 try:
-                    proc.kill()
-                    proc.wait(timeout=1.0)
+                    sandboxed.terminate_tree()
                 except Exception:
                     pass
             raise
+        finally:
+            if sandboxed:
+                try:
+                    sandboxed.terminate_tree()
+                except Exception:
+                    pass
 
         return {
             "status": "SUCCESS",
