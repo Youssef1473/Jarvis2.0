@@ -486,7 +486,8 @@ def git_status() -> str:
 
 @SkillRegistry.register(
     name="run_background_task",
-    description="Executes a long-running terminal command asynchronously in the background (builds, tests, compiles, downloads) and proactively notifies Sir when it completes."
+    description="Executes a long-running terminal command asynchronously in the background (builds, tests, compiles, downloads) and proactively notifies Sir when it completes.",
+    risk_level=2,
 )
 def run_background_task(command: str, task_name: str = "", notify_voice: bool = True) -> str:
     """Spawns an asynchronous background task with HUD and completion notifications."""

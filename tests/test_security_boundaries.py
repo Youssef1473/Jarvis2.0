@@ -288,6 +288,115 @@ class TestSecurityBoundaries(unittest.TestCase):
             mock_sandbox.assert_not_called()
 
 
+    def test_run_background_task_registered_at_risk_level_2(self):
+        """Proof of SEC-01: run_background_task is registered at risk_level=2 in SkillRegistry and critical tools."""
+        from jarvis.skills import dev_shell  # Ensure skill registered
+        risk = SkillRegistry.get_risk_level("run_background_task")
+        self.assertEqual(risk, 2, "run_background_task must be registered at risk_level=2")
+        self.assertIn("run_background_task", TurnTaintTracker.CRITICAL_PRIVILEGE_TOOLS)
+        self.assertIn("run_background_task", TurnTaintTracker.HIGH_PRIVILEGE_MUTATION_TOOLS)
+
+    def test_run_background_task_unapproved_rejected_on_untainted_turn(self):
+        """Proof of SEC-01: Unapproved run_background_task is rejected on an untainted turn."""
+        self.assertFalse(self.tracker.is_tainted)
+        with self.assertRaises(SecurityBoundaryViolation) as ctx:
+            self.tracker.check_tool_execution(
+                "run_background_task", {"command": "npm install"}, risk_level=2
+            )
+        self.assertIn("Critical Authorization Gate", str(ctx.exception))
+
+    def test_run_background_task_unapproved_rejected_on_tainted_turn(self):
+        """Proof of SEC-01: Unapproved run_background_task is rejected on a tainted turn."""
+        self.tracker.mark_tainted("web_search")
+        self.assertTrue(self.tracker.is_tainted)
+        with self.assertRaises(SecurityBoundaryViolation) as ctx:
+            self.tracker.check_tool_execution(
+                "run_background_task", {"command": "npm install"}, risk_level=2
+            )
+        self.assertIn("Critical Authorization Gate", str(ctx.exception))
+
+    def test_run_background_task_valid_human_approval_permits_exact_command(self):
+        """Proof of SEC-01: A valid human approval permits the exact approved run_background_task command."""
+        cmd_args = {"command": "python build.py"}
+        self.approval_mgr.grant_approval("run_background_task", cmd_args)
+        result = self.tracker.check_tool_execution(
+            "run_background_task", cmd_args, risk_level=2
+        )
+        self.assertTrue(result)
+
+    def test_orchestrator_run_background_task_unapproved_never_spawns_process(self):
+        """Proof of SEC-01: ToolOrchestrator blocks unapproved run_background_task and never invokes task manager."""
+        orchestrator = ToolOrchestrator()
+        with mock.patch("jarvis.core.task_manager.BackgroundTaskManager.run_task") as mock_run_task:
+            res = orchestrator.execute_step("run_background_task", {"command": "cargo build"})
+            self.assertIn("Critical Authorization Gate", str(res))
+            mock_run_task.assert_not_called()
+
+    def test_orchestrator_run_background_task_approved_dispatches_mocked_task(self):
+        """Proof of SEC-01: Approved run_background_task executes through ToolOrchestrator without real shell spawn."""
+        orchestrator = ToolOrchestrator()
+        cmd_args = {"command": "cargo build"}
+        self.approval_mgr.grant_approval("run_background_task", cmd_args)
+        with mock.patch("jarvis.core.task_manager.BackgroundTaskManager.run_task", return_value=(True, "Task started: task_1", "task_1")) as mock_run_task:
+            res = orchestrator.execute_step("run_background_task", cmd_args)
+            self.assertEqual(res, "Task started: task_1")
+            mock_run_task.assert_called_once_with(command="cargo build", task_name="", notify_voice=True)
+
+    def test_application_control_tools_registered_at_risk_level_1(self):
+        """Proof of SEC-01: launch_application, close_application, launch_or_focus_application are at risk_level=1."""
+        from jarvis.skills import os_control  # Ensure skills registered
+        for tool in ("launch_application", "close_application", "launch_or_focus_application"):
+            risk = SkillRegistry.get_risk_level(tool)
+            self.assertEqual(risk, 1, f"{tool} must be registered at risk_level=1")
+            self.assertIn(tool, TurnTaintTracker.HIGH_PRIVILEGE_MUTATION_TOOLS)
+
+    def test_application_control_tools_permitted_on_untainted_turn(self):
+        """Proof of SEC-01: Application control tools are permitted on untainted turns without human approval."""
+        self.assertFalse(self.tracker.is_tainted)
+        for tool, args in [
+            ("launch_application", {"app_name": "notepad"}),
+            ("close_application", {"app_name": "notepad"}),
+            ("launch_or_focus_application", {"app_name": "notepad"}),
+        ]:
+            allowed = self.tracker.check_tool_execution(tool, args, risk_level=1)
+            self.assertTrue(allowed, f"{tool} should be allowed on untainted turn")
+
+    def test_application_control_tools_rejected_on_tainted_turn_without_approval(self):
+        """Proof of SEC-01: Application control tools are rejected on tainted turns without human approval."""
+        self.tracker.mark_tainted("web_search")
+        self.assertTrue(self.tracker.is_tainted)
+        for tool, args in [
+            ("launch_application", {"app_name": "notepad"}),
+            ("close_application", {"app_name": "notepad"}),
+            ("launch_or_focus_application", {"app_name": "notepad"}),
+        ]:
+            with self.assertRaises(SecurityBoundaryViolation) as ctx:
+                self.tracker.check_tool_execution(tool, args, risk_level=1)
+            self.assertIn("Dual-Key Safety Gate", str(ctx.exception))
+
+    def test_application_control_tools_permitted_on_tainted_turn_with_grant(self):
+        """Proof of SEC-01: Application control tools are permitted on tainted turns when granted."""
+        self.tracker.mark_tainted("web_search")
+        self.assertTrue(self.tracker.is_tainted)
+        for tool, args in [
+            ("launch_application", {"app_name": "calc"}),
+            ("close_application", {"app_name": "calc"}),
+            ("launch_or_focus_application", {"app_name": "calc"}),
+        ]:
+            self.approval_mgr.grant_approval(tool, args)
+            allowed = self.tracker.check_tool_execution(tool, args, risk_level=1)
+            self.assertTrue(allowed, f"{tool} should be allowed on tainted turn with grant")
+
+    def test_launch_or_focus_application_nested_dispatch_gated_at_orchestrator(self):
+        """Proof of SEC-01: launch_or_focus_application cannot bypass gate on tainted turn to reach launch_application."""
+        self.tracker.mark_tainted("web_search")
+        self.assertTrue(self.tracker.is_tainted)
+        orchestrator = ToolOrchestrator()
+        with mock.patch("jarvis.skills.os_control.launch_application") as mock_launch:
+            res = orchestrator.execute_step("launch_or_focus_application", {"app_name": "calc"})
+            self.assertIn("Dual-Key Safety Gate", str(res))
+            mock_launch.assert_not_called()
+
     def test_grant_approval_ttl_rejection(self):
         """Verifies DualKeyApprovalManager rejects non-finite, negative, and invalid TTLs."""
         bad_ttls = [float("nan"), float("inf"), float("-inf"), -1.0, 0, "invalid_str", None]

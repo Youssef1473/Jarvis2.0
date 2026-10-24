@@ -642,6 +642,11 @@ class DualKeyApprovalManager:
         self._grants: Dict[str, DualKeyAuthorization] = {}
         self._grants_by_id: Dict[str, DualKeyAuthorization] = {}
         self._approval_handler: Optional[Callable[[Dict[str, Any]], bool]] = None
+        self._pending_requests: Set[threading.Event] = set()
+        self._grants_by_event: Dict[threading.Event, DualKeyAuthorization] = {}
+        self._cancelled_events: Set[threading.Event] = set()
+        self._pre_grant_creation_hook: Optional[Callable[[], None]] = None
+        self._post_grant_creation_hook: Optional[Callable[[DualKeyAuthorization], None]] = None
 
     @classmethod
     def get_instance(cls) -> "DualKeyApprovalManager":
@@ -755,19 +760,87 @@ class DualKeyApprovalManager:
         """Validates and consumes an existing pre-grant for the given tool and arguments (single-use)."""
         return self.consume_grant_object(tool_name, arguments) is not None
 
+    def revoke_grant(self, grant: Optional[DualKeyAuthorization]) -> None:
+        """Immediately revokes and permanently invalidates a grant so it cannot be bound or consumed."""
+        if not grant or not isinstance(grant, DualKeyAuthorization):
+            return
+        with self._lock:
+            auth = self._grants_by_id.get(grant.grant_id)
+            if auth:
+                auth.status = "invalidated"
+                self._grants.pop(auth.action_hash, None)
+                self._grants_by_id.pop(auth.grant_id, None)
+
+    def cancel_approval_request(self, cancel_event: Optional[threading.Event]) -> None:
+        """Atomically cancels an approval request and revokes any associated grant."""
+        if cancel_event is None:
+            return
+        cancel_event.set()
+        with self._lock:
+            self._cancelled_events.add(cancel_event)
+            auth = self._grants_by_event.pop(cancel_event, None)
+            if auth:
+                auth.status = "invalidated"
+                self._grants_by_id.pop(auth.grant_id, None)
+                self._grants.pop(auth.action_hash, None)
+                logger.warning(
+                    "Revoked grant '%s' for action '%s' due to request cancellation.",
+                    auth.grant_id[:8],
+                    auth.tool_name,
+                )
+
+    def cleanup_approval_request(self, cancel_event: Optional[threading.Event]) -> None:
+        """Cleans up internal tracking references for a completed or cancelled approval request."""
+        if cancel_event is None:
+            return
+        with self._lock:
+            self._grants_by_event.pop(cancel_event, None)
+            self._cancelled_events.discard(cancel_event)
+            self._pending_requests.discard(cancel_event)
+
+    def set_pre_grant_creation_hook(self, hook: Optional[Callable[[], None]]) -> None:
+        """Sets a synchronization hook executed immediately before registering an approved grant."""
+        with self._lock:
+            self._pre_grant_creation_hook = hook
+
+    def set_post_grant_creation_hook(self, hook: Optional[Callable[[DualKeyAuthorization], None]]) -> None:
+        """Sets a synchronization hook executed immediately after registering an approved grant."""
+        with self._lock:
+            self._post_grant_creation_hook = hook
+
+    def get_pending_request_count(self) -> int:
+        """Returns the number of currently pending human approval requests."""
+        with self._lock:
+            return len(self._pending_requests)
+
+    def is_request_pending(self, cancel_event: threading.Event) -> bool:
+        """Returns True if the specified cancel_event is currently tracking a pending approval request."""
+        with self._lock:
+            return cancel_event in self._pending_requests
+
     def request_human_approval(
         self,
         tool_name: str,
         arguments: Dict[str, Any],
         summary: str = "",
         risk_level: int = 2,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Optional[DualKeyAuthorization]:
         """Presents the proposed action and readable summary to the user via registered trusted local handler.
         If approved, returns a validated DualKeyAuthorization grant.
         """
         with self._lock:
             handler = self._approval_handler
+            if cancel_event is not None:
+                if cancel_event.is_set() or cancel_event in self._cancelled_events:
+                    logger.warning("Human approval request for '%s' aborted before prompt (cancelled).", tool_name)
+                    return None
+                self._pending_requests.add(cancel_event)
+
         if not handler:
+            if cancel_event is not None:
+                with self._lock:
+                    self._pending_requests.discard(cancel_event)
             return None
 
         clean_args = {
@@ -785,25 +858,55 @@ class DualKeyApprovalManager:
             "summary": summary,
             "risk_level": risk_level,
             "timestamp": time.time(),
+            "cancel_event": cancel_event,
         }
 
         try:
             approved = handler(request_details)
+
+            with self._lock:
+                if cancel_event is not None and (cancel_event.is_set() or cancel_event in self._cancelled_events):
+                    logger.warning("Approval request for action '%s' was cancelled; discarding approval result.", tool_name)
+                    return None
+                pre_hook = self._pre_grant_creation_hook
+
+            if pre_hook is not None:
+                try:
+                    pre_hook()
+                except Exception as hook_err:
+                    logger.debug("Pre-grant hook error: %s", hook_err)
+
             if approved:
-                grant_id = secrets.token_hex(16)
-                token = secrets.token_hex(16)
-                auth = DualKeyAuthorization(
-                    grant_id=grant_id,
-                    tool_name=tool_name,
-                    action_hash=action_hash,
-                    token=token,
-                    expires_at=time.time() + 60.0,
-                    confirmed=True,
-                    status="gate_consumed",
-                    summary=summary,
-                )
                 with self._lock:
+                    if cancel_event is not None and (cancel_event.is_set() or cancel_event in self._cancelled_events):
+                        logger.warning(
+                            "Approval request for action '%s' was cancelled at grant registration boundary; discarding.",
+                            tool_name,
+                        )
+                        return None
+                    grant_id = secrets.token_hex(16)
+                    token = secrets.token_hex(16)
+                    auth = DualKeyAuthorization(
+                        grant_id=grant_id,
+                        tool_name=tool_name,
+                        action_hash=action_hash,
+                        token=token,
+                        expires_at=time.time() + 60.0,
+                        confirmed=True,
+                        status="gate_consumed",
+                        summary=summary,
+                    )
                     self._grants_by_id[grant_id] = auth
+                    if cancel_event is not None:
+                        self._grants_by_event[cancel_event] = auth
+                    post_hook = self._post_grant_creation_hook
+
+                if post_hook is not None:
+                    try:
+                        post_hook(auth)
+                    except Exception as hook_err:
+                        logger.debug("Post-grant hook error: %s", hook_err)
+
                 logger.info("Human operator approved action '%s' (id: %s, hash: %s, token: %s)", tool_name, grant_id[:8], action_hash[:12], token[:8])
                 return auth
             else:
@@ -812,6 +915,10 @@ class DualKeyApprovalManager:
         except Exception as e:
             logger.error("Error during human approval request for '%s': %s", tool_name, e)
             return None
+        finally:
+            if cancel_event is not None:
+                with self._lock:
+                    self._pending_requests.discard(cancel_event)
 
     def bind_active_grant(self, grant: DualKeyAuthorization) -> contextvars.Token:
         """Binds a validated, manager-issued DualKeyAuthorization to the current context and thread.
@@ -966,20 +1073,38 @@ class DualKeyApprovalManager:
         return ctx.run(func, *args, **kwargs)
 
     def check_and_consume(
-        self, tool_name: str, arguments: Dict[str, Any], risk_level: int = 2
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        risk_level: int = 2,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Optional[DualKeyAuthorization]:
         """Single-entry check: consumes an existing grant if present, or requests human approval via handler."""
         grant = self.consume_grant_object(tool_name, arguments)
         if grant is not None:
+            if cancel_event is not None:
+                with self._lock:
+                    if cancel_event.is_set() or cancel_event in self._cancelled_events:
+                        grant.status = "invalidated"
+                        self._grants_by_id.pop(grant.grant_id, None)
+                        return None
+                    self._grants_by_event[cancel_event] = grant
             return grant
         summary = format_action_summary(tool_name, arguments)
-        return self.request_human_approval(tool_name, arguments, summary=summary, risk_level=risk_level)
+        return self.request_human_approval(
+            tool_name, arguments, summary=summary, risk_level=risk_level, cancel_event=cancel_event
+        )
 
     def reset(self) -> None:
         """Clears all pending and active authorization grants."""
         with self._lock:
             self._grants.clear()
             self._grants_by_id.clear()
+            self._pending_requests.clear()
+            self._grants_by_event.clear()
+            self._cancelled_events.clear()
+            self._pre_grant_creation_hook = None
+            self._post_grant_creation_hook = None
         self.clear_active_authorized()
 
 
@@ -1139,9 +1264,13 @@ class TurnTaintTracker:
         "execute_powershell",
         "execute_sandboxed_powershell",
         "run_job_sandboxed_process",
+        "run_background_task",
         "release_file_lock",
         "delete_file",
         "kill_process",
+        "close_application",
+        "launch_application",
+        "launch_or_focus_application",
         "write_file",
         "patch_file",
         "create_or_update_custom_skill",
@@ -1152,6 +1281,7 @@ class TurnTaintTracker:
         "create_or_update_custom_skill",
         "delete_custom_skill",
         "execute_powershell",
+        "run_background_task",
     }
 
     def __init__(self) -> None:
@@ -1285,6 +1415,7 @@ class TurnTaintTracker:
         arguments: Dict[str, Any],
         risk_level: int = 0,
         dual_key_confirmed: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> GateDecision:
         """Evaluates whether tool execution is permitted and returns a GateDecision.
         If a genuine human authorization grant was consumed (or pre-granted), the grant is returned.
@@ -1311,7 +1442,9 @@ class TurnTaintTracker:
             return GateDecision(allowed=True, grant=consumed_grant)
 
         # Validate and consume authorization at the execution boundary
-        human_grant = approval_mgr.check_and_consume(tool_name, arguments, risk_level=risk_level)
+        human_grant = approval_mgr.check_and_consume(
+            tool_name, arguments, risk_level=risk_level, cancel_event=cancel_event
+        )
 
         # 1. Unconditional authorization check for Critical Risk (Level 2) operations
         if is_critical and not human_grant:
@@ -1335,6 +1468,11 @@ class TurnTaintTracker:
                 f"(sources: {sources_str})."
             )
 
+        if human_grant is not None and getattr(human_grant, "status", None) != "gate_consumed":
+            raise SecurityBoundaryViolation(
+                f"Dual-Key Safety Gate: authorization grant for tool '{tool_name}' was invalidated."
+            )
+
         return GateDecision(allowed=True, grant=human_grant)
 
     def check_tool_execution(
@@ -1343,6 +1481,7 @@ class TurnTaintTracker:
         arguments: Dict[str, Any],
         risk_level: int = 0,
         dual_key_confirmed: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> bool:
         """Enforces mandatory out-of-band authorization on critical risk level 2 operations
         regardless of taint state, and enforces Dual-Key safety on high-privilege mutations
@@ -1351,5 +1490,9 @@ class TurnTaintTracker:
         Validates and consumes authorization at the execution boundary BEFORE tool execution.
         """
         return self.evaluate_tool_execution(
-            tool_name, arguments, risk_level=risk_level, dual_key_confirmed=dual_key_confirmed
+            tool_name,
+            arguments,
+            risk_level=risk_level,
+            dual_key_confirmed=dual_key_confirmed,
+            cancel_event=cancel_event,
         ).allowed

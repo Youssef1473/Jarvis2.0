@@ -2,8 +2,10 @@
 
 Governs multi-step tool-use cycles, loop detection, taint tracking, and acoustic interim bridges.
 """
+import asyncio
 import json
 import logging
+import threading
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -61,6 +63,11 @@ class ToolOrchestrator:
             )
         }
         arg_signature = json.dumps(sanitized_args, sort_keys=True)
+        # Check cancellation before dispatch or approval evaluation
+        if getattr(self, "cancel_token", None) and getattr(self.cancel_token, "is_cancelled", False):
+            logger.warning("Tool execution '%s' aborted by cancellation token.", tool_name)
+            return "Action cancelled: Operation was aborted by user interrupt."
+
         call_key = (tool_name, arg_signature)
 
         # 1. Cycle detection: Prevent recursive tool spin-loops
@@ -86,6 +93,7 @@ class ToolOrchestrator:
 
         from jarvis.core.security_boundaries import DualKeyApprovalManager
         approval_mgr = DualKeyApprovalManager.get_instance()
+        ctx_token = None
         if decision.grant is not None:
             ctx_token = approval_mgr.bind_active_grant(decision.grant)
         else:
@@ -171,7 +179,8 @@ class ToolOrchestrator:
     ) -> Any:
         """Asynchronously executes a tool step using DualTrackCoordinator for masking and gating."""
         if self.dual_track_coordinator is None:
-            return self.execute_step(
+            return await asyncio.to_thread(
+                self.execute_step,
                 tool_name,
                 arguments,
                 step_index=step_index,
@@ -191,6 +200,11 @@ class ToolOrchestrator:
             )
         }
         arg_signature = json.dumps(sanitized_args, sort_keys=True)
+        # Check cancellation before dispatch or approval evaluation
+        if getattr(self, "cancel_token", None) and getattr(self.cancel_token, "is_cancelled", False):
+            logger.warning("Tool execution '%s' aborted by cancellation token.", tool_name)
+            return "Action cancelled: Operation was aborted by user interrupt."
+
         call_key = (tool_name, arg_signature)
 
         # 1. Cycle detection
@@ -203,10 +217,27 @@ class ToolOrchestrator:
 
         # 2. Dual-Key Safety Gate & Taint Tracking
         risk_level = SkillRegistry.get_risk_level(tool_name)
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
+        approval_mgr = DualKeyApprovalManager.get_instance()
+        cancel_event = threading.Event()
+        if getattr(self, "cancel_token", None) and getattr(self.cancel_token, "is_cancelled", False):
+            cancel_event.set()
+
+        decision = None
         try:
-            decision = self.taint_tracker.evaluate_tool_execution(
-                tool_name, sanitized_args, risk_level=risk_level, dual_key_confirmed=dual_key_confirmed
+            decision = await asyncio.to_thread(
+                self.taint_tracker.evaluate_tool_execution,
+                tool_name,
+                sanitized_args,
+                risk_level=risk_level,
+                dual_key_confirmed=dual_key_confirmed,
+                cancel_event=cancel_event,
             )
+        except asyncio.CancelledError:
+            approval_mgr.cancel_approval_request(cancel_event)
+            if decision is not None and getattr(decision, "grant", None) is not None:
+                approval_mgr.revoke_grant(decision.grant)
+            raise
         except SecurityBoundaryViolation as sec_err:
             logger.error("SecurityBoundaryViolation in tool execution: %s", sec_err)
             return f"Error: {sec_err}"
@@ -214,26 +245,25 @@ class ToolOrchestrator:
         if not decision.allowed:
             return f"Error: Security gate denied execution of tool '{tool_name}'."
 
-        from jarvis.core.security_boundaries import DualKeyApprovalManager
-        approval_mgr = DualKeyApprovalManager.get_instance()
+        ctx_token = None
         if decision.grant is not None:
             ctx_token = approval_mgr.bind_active_grant(decision.grant)
         else:
             ctx_token = approval_mgr.bind_disarmed_context()
 
-        # 3. Execution routing
-        if getattr(self, "on_status_callback", None):
-            try:
-                self.on_status_callback({
-                    "type": "tool_status",
-                    "tool": tool_name,
-                    "status": "running",
-                    "step": step_index,
-                })
-            except Exception as e:
-                logger.debug("Tool status callback notice (start): %s", e)
-
         try:
+            # 3. Execution routing
+            if getattr(self, "on_status_callback", None):
+                try:
+                    self.on_status_callback({
+                        "type": "tool_status",
+                        "tool": tool_name,
+                        "status": "running",
+                        "step": step_index,
+                    })
+                except Exception as e:
+                    logger.debug("Tool status callback notice (start): %s", e)
+
             exec_kwargs = dict(sanitized_args)
             tool_fn = SkillRegistry.get_tool(tool_name)
             if tool_fn:
@@ -257,7 +287,8 @@ class ToolOrchestrator:
             logger.error("Exception during async tool execution '%s': %s", tool_name, err)
             return f"Error executing tool '{tool_name}': {err}"
         finally:
-            approval_mgr.clear_active_authorized(ctx_token)
+            if ctx_token is not None:
+                approval_mgr.clear_active_authorized(ctx_token)
             if getattr(self, "on_status_callback", None):
                 try:
                     self.on_status_callback({

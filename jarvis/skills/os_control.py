@@ -204,7 +204,8 @@ COMMON_APP_ALIASES = {
 
 @SkillRegistry.register(
     name="launch_application",
-    description="Launches a desktop application by name (e.g., 'browser', 'chrome', 'discord', 'spotify', 'code', 'calculator', 'settings', 'notepad', 'terminal')."
+    description="Launches a desktop application by name (e.g., 'browser', 'chrome', 'discord', 'spotify', 'code', 'calculator', 'settings', 'notepad', 'terminal').",
+    risk_level=1,
 )
 def launch_application(app_name: str) -> str:
     """Launches an application by name, shortcut, or protocol scheme with detached process execution."""
@@ -282,7 +283,8 @@ def launch_application(app_name: str) -> str:
 
 @SkillRegistry.register(
     name="launch_or_focus_application",
-    description="Idempotent application activator: if the application or window is already running, brings it to focus via UIA; if closed, launches it."
+    description="Idempotent application activator: if the application or window is already running, brings it to focus via UIA; if closed, launches it.",
+    risk_level=1,
 )
 def launch_or_focus_application(app_name: str) -> str:
     """Focuses open application or launches it if not currently running."""
@@ -619,7 +621,8 @@ CRITICAL_PROCESS_DENYLIST = {
 
 @SkillRegistry.register(
     name="close_application",
-    description="Safely closes a running desktop application or window by name (e.g., 'notepad', 'calc', 'chrome', 'spotify', 'brave')."
+    description="Safely closes a running desktop application or window by name (e.g., 'notepad', 'calc', 'chrome', 'spotify', 'brave').",
+    risk_level=1,
 )
 def close_application(app_name: str) -> str:
     """Closes matching running desktop processes, enforcing critical system process protection."""
