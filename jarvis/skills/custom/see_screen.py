@@ -9,7 +9,8 @@ from jarvis.skills.screen_vision import inspect_screen
 
 @SkillRegistry.register(
     name="see_screen",
-    description="Visually perceives Sir's active workstation screen and accurately describes what is displayed in real-time."
+    description="Visually perceives Sir's active workstation screen and accurately describes what is displayed in real-time.",
+    external_ingestion=True,
 )
 def see_screen(focus: str = "Describe what is currently visible on the screen") -> str:
     """Visually inspects Sir's desktop display in real-time."""

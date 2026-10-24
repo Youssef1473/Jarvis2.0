@@ -334,7 +334,8 @@ def get_tech_news_headlines(count: int = 5) -> str:
 
 @SkillRegistry.register(
     name="capture_webpage_screenshot",
-    description="Navigates to a webpage using Playwright and saves a screenshot image file."
+    description="Navigates to a webpage using Playwright and saves a screenshot image file.",
+    external_ingestion=True,
 )
 def capture_webpage_screenshot(url: str, filename: str = "web_snapshot.png") -> str:
     """Captures screenshot of a webpage with SSRF and path confinement safety gates."""

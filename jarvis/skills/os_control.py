@@ -835,7 +835,8 @@ def get_system_vitals() -> str:
 
 @SkillRegistry.register(
     name="read_clipboard",
-    description="Reads and returns the current text stored in the Windows clipboard."
+    description="Reads and returns the current text stored in the Windows clipboard.",
+    external_ingestion=True,
 )
 def read_clipboard() -> str:
     """Reads text from Windows clipboard."""
@@ -879,7 +880,8 @@ def lock_workstation() -> str:
 
 @SkillRegistry.register(
     name="take_desktop_screenshot",
-    description="Captures a high-resolution screenshot of the desktop display and saves it to data/screenshots."
+    description="Captures a high-resolution screenshot of the desktop display and saves it to data/screenshots.",
+    external_ingestion=True,
 )
 def take_desktop_screenshot(filename: str = "") -> str:
     """Captures and saves a full-resolution desktop screenshot."""

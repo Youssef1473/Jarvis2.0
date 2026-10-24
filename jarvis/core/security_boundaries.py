@@ -1258,6 +1258,14 @@ class TurnTaintTracker:
         "scrape_and_archive_webpage",
         "mcp_call_tool",
         "fetch_url",
+        "inspect_screen",
+        "see_screen",
+        "inspect_screen_with_marks",
+        "take_desktop_screenshot",
+        "read_clipboard",
+        "save_clipboard_photo",
+        "process_staged_document",
+        "capture_webpage_screenshot",
     }
 
     HIGH_PRIVILEGE_MUTATION_TOOLS: Set[str] = {
@@ -1403,6 +1411,12 @@ class TurnTaintTracker:
                 meta["topic_length"] = len(arguments["topic"])
             if "city" in arguments and isinstance(arguments["city"], str):
                 meta["city"] = arguments["city"][:64]
+            if "identifier" in arguments and isinstance(arguments["identifier"], str):
+                meta["identifier"] = arguments["identifier"][:64]
+            if "focus" in arguments and isinstance(arguments["focus"], str):
+                meta["focus_length"] = len(arguments["focus"])
+            if "filename" in arguments and isinstance(arguments["filename"], str):
+                meta["filename"] = arguments["filename"][:64]
         self.mark_tainted(tool_name, metadata=meta)
 
     def reset_turn(self) -> None:

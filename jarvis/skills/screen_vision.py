@@ -175,7 +175,8 @@ def _analyze_screen_with_gemini(image_bytes: bytes, query: str) -> Optional[str]
 
 @SkillRegistry.register(
     name="inspect_screen",
-    description="Captures and visually analyzes Sir's active workstation screen to inspect open apps, errors, documents, or content."
+    description="Captures and visually analyzes Sir's active workstation screen to inspect open apps, errors, documents, or content.",
+    external_ingestion=True,
 )
 def inspect_screen(query: str = "Describe what is currently visible on the screen") -> str:
     """Captures and inspects Sir's desktop display with multimodal vision."""
@@ -232,7 +233,8 @@ def inspect_screen(query: str = "Describe what is currently visible on the scree
 
 @SkillRegistry.register(
     name="see_screen",
-    description="Visually perceives Sir's desktop screen in real-time, describing open applications, code, browser tabs, or text."
+    description="Visually perceives Sir's desktop screen in real-time, describing open applications, code, browser tabs, or text.",
+    external_ingestion=True,
 )
 def see_screen(focus: str = "Describe what is visible on the screen") -> str:
     """Convenience alias for screen perception."""
@@ -241,7 +243,8 @@ def see_screen(focus: str = "Describe what is visible on the screen") -> str:
 
 @SkillRegistry.register(
     name="inspect_screen_with_marks",
-    description="Captures the active window and visually annotates interactive UI elements with Set-of-Mark numbered badges ([1], [2], etc.) for deterministic visual grounding and clicking."
+    description="Captures the active window and visually annotates interactive UI elements with Set-of-Mark numbered badges ([1], [2], etc.) for deterministic visual grounding and clicking.",
+    external_ingestion=True,
 )
 def inspect_screen_with_marks(query: str = "Identify interactive elements on the screen") -> str:
     """Captures and annotates the active window with Set-of-Mark badges."""

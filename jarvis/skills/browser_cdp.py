@@ -634,7 +634,13 @@ def scrape_and_archive_webpage(tab_name_or_url: str = "", category: str = "web_i
 
         doc_header = f"[Source URL: {url} | Extracted via Browser CDP]\n\n"
         full_doc = doc_header + text
-        doc_id = mem.archive_document(title=title, content=full_doc, category=category)
+        doc_id = mem.save_document_knowledge(
+            title=title,
+            category=category,
+            summary=text[:500],
+            raw_content=full_doc,
+            file_path=url,
+        )
         return (
             f"Archived webpage '{title}' ({len(text)} characters) into your local document vault "
             f"(ID: #{doc_id}, Category: {category}), Sir. It is now indexed for semantic and keyword retrieval."

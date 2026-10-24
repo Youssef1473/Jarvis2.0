@@ -1414,6 +1414,15 @@ class TestExternalIngestionProvenance(unittest.TestCase):
             "retrieve_modern_web_guide",
             "search_gemini_api_documentation",
             "get_gemini_documentation_chunk",
+            # CORE-SEC-03A Direct Ingestion Tools
+            "inspect_screen",
+            "see_screen",
+            "inspect_screen_with_marks",
+            "take_desktop_screenshot",
+            "read_clipboard",
+            "save_clipboard_photo",
+            "process_staged_document",
+            "capture_webpage_screenshot",
         }
         for tool_name in expected_ingestion:
             self.assertTrue(
@@ -1560,6 +1569,145 @@ class TestExternalIngestionProvenance(unittest.TestCase):
             if "host" in records[0].metadata:
                 self.assertTrue(isinstance(records[0].metadata["host"], str))
                 self.assertNotIn("@", records[0].metadata["host"])
+
+    def test_direct_ingestion_tools_registered_with_external_ingestion(self):
+        """CORE-SEC-03A: Verify direct ingestion tools are registered with external_ingestion=True."""
+        from jarvis.skills import (
+            browser_agent,
+            document_ingest,
+            os_control,
+            photo_manager,
+            screen_vision,
+        )
+        _ = (browser_agent, document_ingest, os_control, photo_manager, screen_vision)
+
+        direct_ingestion_tools = [
+            "inspect_screen",
+            "see_screen",
+            "inspect_screen_with_marks",
+            "take_desktop_screenshot",
+            "read_clipboard",
+            "save_clipboard_photo",
+            "process_staged_document",
+            "capture_webpage_screenshot",
+        ]
+        for tool_name in direct_ingestion_tools:
+            self.assertTrue(
+                SkillRegistry.is_ingestion_tool(tool_name),
+                f"FAIL CORE-SEC-03A: Tool '{tool_name}' missing external_ingestion=True in SkillRegistry!",
+            )
+            self.assertTrue(
+                self.tracker.is_untrusted_ingestion(tool_name),
+                f"FAIL CORE-SEC-03A: Tool '{tool_name}' missing from TurnTaintTracker.UNTRUSTED_INGESTION_TOOLS!",
+            )
+
+    def test_direct_ingestion_tools_taint_turn_and_block_level1_mutations(self):
+        """CORE-SEC-03A: Each direct ingestion source taints turn and blocks unapproved Level 1 mutations."""
+        direct_ingestion_tools = [
+            ("inspect_screen", {}),
+            ("see_screen", {"identifier": "window_title"}),
+            ("inspect_screen_with_marks", {}),
+            ("take_desktop_screenshot", {}),
+            ("read_clipboard", {}),
+            ("save_clipboard_photo", {}),
+            ("process_staged_document", {"filename": "memo.txt"}),
+            ("capture_webpage_screenshot", {"url": "https://example.com"}),
+        ]
+        for tool_name, args in direct_ingestion_tools:
+            self.tracker.reset_turn()
+            self.approval_mgr.reset()
+            self.assertFalse(self.tracker.is_tainted)
+
+            # Ingestion evaluation taints turn
+            decision = self.tracker.evaluate_tool_execution(tool_name, args)
+            self.assertTrue(decision.allowed)
+            self.assertTrue(
+                self.tracker.is_tainted,
+                f"FAIL CORE-SEC-03A: Direct ingestion tool '{tool_name}' did not taint the turn!",
+            )
+            self.assertIn(
+                tool_name,
+                self.tracker.tainting_sources,
+                f"FAIL CORE-SEC-03A: Tool '{tool_name}' not in tainting_sources!",
+            )
+
+            # Level 1 mutation must be blocked without human approval
+            with self.assertRaises(SecurityBoundaryViolation) as ctx:
+                self.tracker.evaluate_tool_execution(
+                    "execute_sandboxed_powershell", {"command": "dir"}, risk_level=1
+                )
+            self.assertIn(tool_name, str(ctx.exception))
+
+            # Once approved, Level 1 mutation is allowed
+            self.approval_mgr.grant_approval("execute_sandboxed_powershell", {"command": "dir"})
+            allowed_decision = self.tracker.evaluate_tool_execution(
+                "execute_sandboxed_powershell", {"command": "dir"}, risk_level=1
+            )
+            self.assertTrue(allowed_decision.allowed)
+            self.assertIsNotNone(allowed_decision.grant)
+
+    def test_direct_ingestion_metadata_provenance_recording(self):
+        """CORE-SEC-03A: Direct ingestion tools record appropriate metadata (filename, focus, identifier)."""
+        # 1. Staged document records identifier or filename
+        self.tracker.reset_turn()
+        self.tracker.record_ingestion("process_staged_document", {"identifier": "doc_12345", "filename": "contract.pdf"})
+        records = self.tracker.provenance_records
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].source, "process_staged_document")
+        self.assertEqual(records[0].metadata.get("identifier"), "doc_12345")
+        self.assertEqual(records[0].metadata.get("filename"), "contract.pdf")
+
+        # 2. see_screen records focus_length
+        self.tracker.reset_turn()
+        self.tracker.record_ingestion("see_screen", {"focus": "editor content"})
+        records = self.tracker.provenance_records
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].source, "see_screen")
+        self.assertEqual(records[0].metadata.get("focus_length"), len("editor content"))
+
+        # 3. take_desktop_screenshot records filename
+        self.tracker.reset_turn()
+        self.tracker.record_ingestion("take_desktop_screenshot", {"filename": "shot.png"})
+        records = self.tracker.provenance_records
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].source, "take_desktop_screenshot")
+        self.assertEqual(records[0].metadata.get("filename"), "shot.png")
+
+    def test_direct_ingestion_failsafe_pre_execution_taint_on_exception(self):
+        """CORE-SEC-03A: Taint is applied pre-execution so failing ingestion tools leave turn tainted."""
+        from jarvis.skills.base import SkillRegistry
+
+        @SkillRegistry.register(
+            name="_failing_ingestion_tool",
+            description="Simulated failing ingestion tool",
+            risk_level=0,
+            external_ingestion=True,
+        )
+        def _failing_ingestion():
+            raise RuntimeError("Underlying OS screen capture driver failed")
+
+        self.tracker.register_ingestion_tool("_failing_ingestion_tool")
+        self.tracker.reset_turn()
+        self.approval_mgr.reset()
+        self.assertFalse(self.tracker.is_tainted)
+
+        orchestrator = ToolOrchestrator(taint_tracker=self.tracker)
+        res = orchestrator.execute_step("_failing_ingestion_tool", {})
+        self.assertIn("Error executing tool", str(res))
+        self.assertIn("Underlying OS screen capture driver failed", str(res))
+
+        # Turn MUST remain tainted despite the tool exception (failsafe pre-execution taint)
+        self.assertTrue(
+            self.tracker.is_tainted,
+            "FAIL CORE-SEC-03A: Ingestion exception cleared or prevented turn taint!",
+        )
+        self.assertIn("_failing_ingestion_tool", self.tracker.tainting_sources)
+
+        # Subsequent Level 1 mutation must remain blocked
+        with self.assertRaises(SecurityBoundaryViolation):
+            self.tracker.evaluate_tool_execution(
+                "execute_sandboxed_powershell", {"command": "dir"}, risk_level=1
+            )
 
 
 if __name__ == "__main__":

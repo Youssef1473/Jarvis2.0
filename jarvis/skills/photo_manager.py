@@ -205,6 +205,7 @@ def save_photo(file_path: str) -> str:
 @SkillRegistry.register(
     name="save_clipboard_photo",
     description="Extracts the current image from the Windows/WSL clipboard, scrubs EXIF metadata, and saves it.",
+    external_ingestion=True,
 )
 def save_clipboard_photo() -> str:
     """Event-driven clipboard extraction. Executes strictly on demand without background polling."""

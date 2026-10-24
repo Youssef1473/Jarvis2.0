@@ -198,7 +198,8 @@ def list_staged_documents() -> str:
 
 @SkillRegistry.register(
     name="process_staged_document",
-    description="Processes a staged PDF/document using Sir's conversational briefing and instructions. Extracts and registers calendar events, tasks, or knowledge documents into the database."
+    description="Processes a staged PDF/document using Sir's conversational briefing and instructions. Extracts and registers calendar events, tasks, or knowledge documents into the database.",
+    external_ingestion=True,
 )
 def process_staged_document(identifier: str = "", user_context: str = "") -> str:
     """Processes a staged document guided by Sir's spoken context."""

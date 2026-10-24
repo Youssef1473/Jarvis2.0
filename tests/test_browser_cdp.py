@@ -218,7 +218,7 @@ class TestBrowserCDPSuite(unittest.TestCase):
             "text": "Detailed quantum supremacy benchmarks and QPU circuit depth specifications."
         }
         mock_mem = MagicMock()
-        mock_mem.archive_document.return_value = 101
+        mock_mem.save_document_knowledge.return_value = 101
 
         with patch.object(b_cdp, "read_webpage_content_cdp", return_value=fake_content), \
              patch("jarvis.skills.calendar_manager._get_memory", return_value=mock_mem):
@@ -227,12 +227,13 @@ class TestBrowserCDPSuite(unittest.TestCase):
             self.assertIn("Archived webpage 'Quantum Computing Documentation'", res)
             self.assertIn("ID: #101", res)
             self.assertIn("quantum_intel", res)
-            mock_mem.archive_document.assert_called_once()
-            call_kw = mock_mem.archive_document.call_args[1]
+            mock_mem.save_document_knowledge.assert_called_once()
+            call_kw = mock_mem.save_document_knowledge.call_args[1]
             self.assertEqual(call_kw["title"], "Quantum Computing Documentation")
             self.assertEqual(call_kw["category"], "quantum_intel")
-            self.assertIn("https://quantum.org/docs", call_kw["content"])
-            self.assertIn("Detailed quantum supremacy benchmarks", call_kw["content"])
+            self.assertIn("https://quantum.org/docs", call_kw["raw_content"])
+            self.assertIn("Detailed quantum supremacy benchmarks", call_kw["raw_content"])
+            self.assertEqual(call_kw["file_path"], "https://quantum.org/docs")
 
     def test_bootstrap_cdp_browser(self):
         """Verifies bootstrap_cdp_browser spawns detached browser process with dedicated profile."""
