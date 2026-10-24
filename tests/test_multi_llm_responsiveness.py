@@ -114,30 +114,32 @@ class TestHotStandbyDaemonPool(unittest.TestCase):
                 self.assertNotIn(("claude-sonnet-4-6", ""), bridge._daemon_pool)
 
     def test_workspace_hygiene_guard(self):
-        daemon = AntigravityDaemon(agy_path="dummy.exe", default_model="flash")
-        ws = daemon.runtime_workspace
-        ws.mkdir(parents=True, exist_ok=True)
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            daemon = AntigravityDaemon(agy_path="dummy.exe", default_model="flash")
+            ws = Path(tmp_dir)
+            daemon.runtime_workspace = ws
 
-        # Create allowed and stray files
-        gitkeep = ws / ".gitkeep"
-        agylock = ws / ".agy_lock"
-        stray_tmp = ws / "test_scratch.tmp"
-        stray_json = ws / "unwanted.json"
+            # Create allowed and stray files
+            gitkeep = ws / ".gitkeep"
+            agylock = ws / ".agy_lock"
+            stray_tmp = ws / "test_scratch.tmp"
+            stray_json = ws / "unwanted.json"
 
-        gitkeep.write_text("keep", encoding="utf-8")
-        agylock.write_text("lock", encoding="utf-8")
-        stray_tmp.write_text("junk", encoding="utf-8")
-        stray_json.write_text("{}", encoding="utf-8")
+            gitkeep.write_text("keep", encoding="utf-8")
+            agylock.write_text("lock", encoding="utf-8")
+            stray_tmp.write_text("junk", encoding="utf-8")
+            stray_json.write_text("{}", encoding="utf-8")
 
-        self.assertTrue(stray_tmp.exists())
-        self.assertTrue(stray_json.exists())
+            self.assertTrue(stray_tmp.exists())
+            self.assertTrue(stray_json.exists())
 
-        daemon._clean_workspace()
+            daemon._clean_workspace()
 
-        self.assertTrue(gitkeep.exists())
-        self.assertTrue(agylock.exists())
-        self.assertFalse(stray_tmp.exists())
-        self.assertFalse(stray_json.exists())
+            self.assertTrue(gitkeep.exists())
+            self.assertTrue(agylock.exists())
+            self.assertFalse(stray_tmp.exists())
+            self.assertFalse(stray_json.exists())
 
 
 class TestStreamingCopilotBridge(unittest.TestCase):

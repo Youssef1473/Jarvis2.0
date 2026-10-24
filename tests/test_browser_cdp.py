@@ -297,6 +297,83 @@ class TestBrowserCDPSuite(unittest.TestCase):
         self.assertEqual(sanitize_browser_url("http://192.168.1.1/admin"), "about:blank")
         self.assertEqual(sanitize_browser_url("http://10.0.0.1:8080/intranet"), "about:blank")
 
+        # URLs with embedded user-info credentials must be rejected outright.
+        self.assertEqual(sanitize_browser_url("http://admin:secret123@example.com"), "about:blank")
+        self.assertEqual(sanitize_browser_url("https://user@example.com/api"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://:pass@example.com"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://admin%40corp.com:secret@example.com"), "about:blank")
+
+        # Shield sensitive background services on localhost (Ollama, Docker, PostgreSQL, Redis, K8s).
+        self.assertEqual(sanitize_browser_url("http://localhost:11434"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://127.0.0.1:11434/api/tags"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://localhost:2375"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://localhost:5432"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://localhost:6379"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://localhost:6443"), "about:blank")
+
+        # IPv6 loopback and link-local destinations
+        self.assertEqual(sanitize_browser_url("http://[::1]:9222"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://[::1]:11434"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://[fe80::1]/"), "about:blank")
+
+    def test_url_sanitizer_credential_privacy_in_logs(self):
+        """Verifies embedded credentials are never recorded in logger warnings during sanitization."""
+        super_secret = "UltraConfidentialToken99!"
+        with self.assertLogs("Jarvis.BrowserCDP", level="WARNING") as captured_logs:
+            res = b_cdp.sanitize_browser_url(f"https://admin:{super_secret}@sensitive-corp.internal/v1")
+            self.assertEqual(res, "about:blank")
+        all_logs = " ".join(captured_logs.output)
+        self.assertNotIn(super_secret, all_logs)
+        self.assertIn("embedded user-info credentials", all_logs)
+
+    def test_open_or_navigate_tab_cdp_explicit_rejection(self):
+        """Verifies open_or_navigate_tab_cdp returns explicit blocked status instead of navigating to about:blank."""
+        with patch("jarvis.skills.browser_cdp.is_cdp_available", return_value=True):
+            res = b_cdp.open_or_navigate_tab_cdp("http://admin:secret@example.com")
+            self.assertIn("Navigation blocked", res)
+            self.assertNotIn("secret", res)
+
+            res_priv = b_cdp.open_or_navigate_tab_cdp("http://192.168.1.1/admin")
+            self.assertIn("Navigation blocked", res_priv)
+
+    def test_open_browser_tab_validates_before_cdp_and_subprocess(self):
+        """Verifies open_browser_tab validates target_url before invoking either CDP or subprocess."""
+        # Scenario A: Dangerous scheme with CDP available
+        with patch("jarvis.skills.browser_cdp.is_cdp_available", return_value=True):
+            res = os_ctrl.open_browser_tab("file:///C:/Windows/System32/cmd.exe")
+            self.assertIn("Navigation blocked", res)
+
+        # Scenario B: Dangerous scheme with CDP unavailable (must never reach subprocess.Popen)
+        with patch("jarvis.skills.browser_cdp.is_cdp_available", return_value=False), \
+             patch("subprocess.Popen") as mock_popen:
+            res = os_ctrl.open_browser_tab("file:///C:/Windows/System32/cmd.exe")
+            self.assertIn("Navigation blocked", res)
+            mock_popen.assert_not_called()
+
+        # Scenario C: Embedded credentials with CDP unavailable
+        with patch("jarvis.skills.browser_cdp.is_cdp_available", return_value=False), \
+             patch("subprocess.Popen") as mock_popen:
+            res = os_ctrl.open_browser_tab("http://admin:secret123@example.com")
+            self.assertIn("Navigation blocked", res)
+            mock_popen.assert_not_called()
+
+        # Scenario D: Private RFC 1918 destination with CDP unavailable
+        with patch("jarvis.skills.browser_cdp.is_cdp_available", return_value=False), \
+             patch("subprocess.Popen") as mock_popen:
+            res = os_ctrl.open_browser_tab("http://192.168.1.1/router")
+            self.assertIn("Navigation blocked", res)
+            mock_popen.assert_not_called()
+
+        # Scenario E: Safe public HTTPS URL with CDP unavailable reaches subprocess with validated URL
+        with patch("jarvis.skills.browser_cdp.is_cdp_available", return_value=False), \
+             patch("jarvis.skills.os_control._build_app_index", return_value={"brave.exe": "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"}), \
+             patch("subprocess.Popen") as mock_popen:
+            res = os_ctrl.open_browser_tab("https://github.com/microsoft")
+            self.assertIn("Opened", res)
+            self.assertTrue(mock_popen.called)
+            called_args = mock_popen.call_args[0][0]
+            self.assertIn("https://github.com/microsoft", called_args)
+
 
 if __name__ == "__main__":
     unittest.main()

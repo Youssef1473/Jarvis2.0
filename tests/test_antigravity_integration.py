@@ -359,7 +359,11 @@ class TestAntigravityIntegration(unittest.TestCase):
         ]
 
         with patch("subprocess.Popen", return_value=mock_proc), \
-             patch("os.path.exists", return_value=True):
+             patch("os.path.exists", return_value=True), \
+             patch("jarvis.skills.job_object_sandbox.create_process_job_object", return_value=4242), \
+             patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=True), \
+             patch("jarvis.skills.job_object_sandbox.resume_process", return_value=True), \
+             patch("jarvis.skills.job_object_sandbox.terminate_and_close_job", return_value=True):
             
             ok = daemon.start("gemini-3.8-flash-low", "low")
             self.assertTrue(ok)
@@ -427,7 +431,11 @@ class TestAntigravityIntegration(unittest.TestCase):
         ]
 
         with patch("subprocess.Popen", return_value=mock_proc), \
-             patch("os.path.exists", return_value=True):
+             patch("os.path.exists", return_value=True), \
+             patch("jarvis.skills.job_object_sandbox.create_process_job_object", return_value=4242), \
+             patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=True), \
+             patch("jarvis.skills.job_object_sandbox.resume_process", return_value=True), \
+             patch("jarvis.skills.job_object_sandbox.terminate_and_close_job", return_value=True):
             daemon.start("gemini-3.8-flash-low", "low")
             res = daemon.execute_turn(
                 prompt="test watchdog timeout",

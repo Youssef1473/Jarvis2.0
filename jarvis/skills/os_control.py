@@ -941,8 +941,14 @@ def open_browser_tab(url: str = "", browser: str = "brave", new_tab: bool = True
     """
     browser_clean = (browser or "brave").lower().strip()
     target_url = url.strip()
-    if target_url and not target_url.startswith(("http://", "https://", "about:", "chrome:", "brave:")):
-        target_url = "https://" + target_url
+
+    # Pre-navigation validation across both CDP and non-CDP subprocess launch paths
+    if target_url:
+        from jarvis.skills.browser_cdp import sanitize_browser_url
+        validated_url = sanitize_browser_url(target_url)
+        if validated_url == "about:blank" and target_url.lower() not in ("about:blank", "about:blank/"):
+            return "Navigation blocked: Destination URL was rejected by browser security policy, Sir."
+        target_url = validated_url
 
     # 0. Sub-5ms Silent CDP Fast Path: If Chrome DevTools Protocol is available on port 9222
     if browser_clean in ("brave", "chrome", "edge", "browser"):

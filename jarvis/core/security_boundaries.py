@@ -84,6 +84,10 @@ def resolve_and_validate_destination(
     except Exception as err:
         raise SecurityBoundaryViolation(f"Malformed URL: {err}") from err
 
+    # Reject URLs with embedded user-info credentials (RFC 3986 section 3.2.1)
+    if parsed.username is not None or parsed.password is not None or "@" in (parsed.netloc or ""):
+        raise SecurityBoundaryViolation("URLs with embedded user-info credentials are prohibited.")
+
     scheme = (parsed.scheme or "").lower()
     if scheme not in allowed_schemes:
         raise SecurityBoundaryViolation(
@@ -92,8 +96,8 @@ def resolve_and_validate_destination(
 
     try:
         hostname = parsed.hostname
-    except Exception as err:
-        raise SecurityBoundaryViolation(f"Malformed hostname in URL: {err}") from err
+    except Exception:
+        raise SecurityBoundaryViolation("Malformed hostname in URL.")
 
     if not hostname:
         raise SecurityBoundaryViolation("Egress URL must contain a valid hostname.")
@@ -127,8 +131,8 @@ def resolve_and_validate_destination(
 
     try:
         port = parsed.port or (443 if scheme in ("https", "wss") else 80)
-    except Exception as err:
-        raise SecurityBoundaryViolation(f"Malformed port in URL: {err}") from err
+    except Exception:
+        raise SecurityBoundaryViolation("Malformed port in URL.")
 
     if disallowed_ports and port in disallowed_ports:
         raise SecurityBoundaryViolation(
@@ -447,30 +451,77 @@ def build_safe_url_opener(
     return opener
 
 
+def is_prohibited_network_or_device_path(path_str: str) -> bool:
+    """Detects UNC network shares, device namespaces, and NT object paths before filesystem access.
+
+    Guarantees zero outbound SMB or network activity by rejecting paths before calling
+    os.path.realpath, Path.resolve, os.path.abspath, or os.stat.
+    """
+    if not path_str or not isinstance(path_str, str):
+        return True
+    s = path_str.strip().strip("\"'")
+    if not s:
+        return True
+    # Two leading slashes (any mix of \ and /) indicate UNC network share or NT device namespace
+    if len(s) >= 2 and s[0] in ("\\", "/") and s[1] in ("\\", "/"):
+        return True
+    # Check drive specification (e.g. \\server\share or //server/share)
+    drive, _ = os.path.splitdrive(s)
+    if drive.startswith(("\\\\", "//", "\\/", "/\\")):
+        return True
+    # Windows NT object manager namespace (e.g. \??\..., /??/...)
+    if len(s) >= 3 and s[0] in ("\\", "/") and s[1:3] == "??" and (len(s) == 3 or s[3] in ("\\", "/")):
+        return True
+    # Explicit Windows NT namespaces / DOS devices / extended UNC prefixes
+    s_upper = s.upper()
+    if any(s_upper.startswith(prefix) for prefix in ("\\\\?\\", "//?/", "\\\\.\\", "//./", "\\??\\", "/??/")):
+        return True
+    # Prohibit URL schemes masquerading as paths (e.g. smb://, file://, cifs://)
+    if any(s_upper.startswith(prefix) for prefix in ("SMB:", "FILE:", "HTTP:", "HTTPS:", "FTP:", "CIFS:", "NFS:", "DAV:")):
+        return True
+    if re.match(r"^[A-Z][A-Z0-9+.-]*://", s_upper):
+        return True
+    return False
+
+
 def validate_confined_path(target_path: str, allowed_root_dir: str) -> str:
     """Resolves symlinks, NTFS junctions, and path traversals, ensuring target stays inside root.
 
-    Blocks Windows reserved device filenames (CON, PRN, AUX, NUL, COM1..9, LPT1..9).
+    Blocks UNC network paths, Windows device namespaces, and Windows reserved device filenames (CON, PRN, AUX, NUL, COM1..9, LPT1..9).
+    Fails closed before any filesystem call on network paths to prevent outbound SMB negotiation.
     """
     if not target_path or not allowed_root_dir:
         raise SecurityBoundaryViolation("Target path and allowed root directory must be specified.")
 
-    # 1. Check for Windows reserved device names
-    target_p = Path(target_path)
-    stem_upper = target_p.stem.upper()
-    name_upper = target_p.name.upper()
+    clean_target = str(target_path).strip()
+    clean_root = str(allowed_root_dir).strip()
 
-    # Match exact stem or device prefix (e.g., NUL.txt, COM1.png)
+    # 1. Reject UNC network shares, NT device namespaces, and URI schemes before any filesystem operations
+    if is_prohibited_network_or_device_path(clean_target):
+        raise SecurityBoundaryViolation(
+            f"Access to UNC network paths or Windows device namespaces is prohibited: '{clean_target}'"
+        )
+    if is_prohibited_network_or_device_path(clean_root):
+        raise SecurityBoundaryViolation(
+            f"Root directory cannot be a UNC network path or device namespace: '{clean_root}'"
+        )
+
+    # 2. Check for Windows reserved device names (including DOS devices with trailing colons)
+    target_p = Path(clean_target)
+    stem_upper = target_p.stem.upper().rstrip(":")
+    name_upper = target_p.name.upper().rstrip(":")
+
+    # Match exact stem or device prefix (e.g., NUL.txt, COM1.png, CON:)
     if stem_upper in WINDOWS_RESERVED_DEVICE_NAMES or name_upper in WINDOWS_RESERVED_DEVICE_NAMES:
         raise SecurityBoundaryViolation(
             f"Access to Windows reserved device filename '{target_p.name}' is prohibited."
         )
 
-    # 2. Canonicalize real absolute paths resolving symlinks and junctions
-    real_root = os.path.realpath(os.path.abspath(allowed_root_dir))
-    real_target = os.path.realpath(os.path.abspath(target_path))
+    # 3. Canonicalize real absolute paths resolving symlinks and junctions
+    real_root = os.path.realpath(os.path.abspath(clean_root))
+    real_target = os.path.realpath(os.path.abspath(clean_target))
 
-    # 3. Check commonpath confinement
+    # 4. Check commonpath confinement
     try:
         common = os.path.commonpath([real_root, real_target])
     except ValueError as err:

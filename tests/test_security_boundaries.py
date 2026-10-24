@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 import threading
 """Unit tests for Closed-Loop Security Boundaries, SSRF Protection, Taint Tracking, and Shell Approval."""
 import socket
@@ -118,6 +120,139 @@ class TestSecurityBoundaries(unittest.TestCase):
             safe_target = f"{tmp_root}/sub/screenshot.png"
             res = validate_confined_path(safe_target, tmp_root)
             self.assertIn("screenshot.png", res)
+
+    def test_path_confinement_blocks_unc_and_device_namespaces_before_filesystem(self):
+        """Verifies UNC and Windows device namespace paths are rejected before any filesystem or realpath calls."""
+        unc_variants = (
+            r"\\server\share\file.txt",
+            r"//server/share/file.txt",
+            r"\/server/share/file.txt",
+            r"/\server/share/file.txt",
+            r"\\?\UNC\server\share\file.txt",
+            r"//?/UNC/server/share/file.txt",
+            r"\\.\PhysicalDrive0",
+            r"//./COM1",
+            r"\\?\C:\Windows\System32",
+            r"\??\C:\Windows\System32",
+            r"/??/C:\Windows\System32",
+            r"\??\UNC\server\share",
+            r"/??/UNC/server/share",
+            r"smb://server/share",
+            r"file:///C:/Users",
+            r"cifs://server/share",
+            r"nfs://server/share",
+            r"CON:",
+            r"NUL:",
+            r"COM1:",
+            r"PRN:",
+            r"AUX:",
+        )
+        with tempfile.TemporaryDirectory() as tmp_root:
+            with patch("os.path.realpath") as mock_realpath, \
+                 patch("os.path.abspath") as mock_abspath, \
+                 patch("os.stat") as mock_stat:
+                for unc in unc_variants:
+                    with self.assertRaises(SecurityBoundaryViolation) as ctx:
+                        validate_confined_path(unc, tmp_root)
+                    err_msg = str(ctx.exception).lower()
+                    self.assertTrue(
+                        "prohibited" in err_msg or "reserved" in err_msg,
+                        f"Expected prohibited/reserved in exception for '{unc}', got '{err_msg}'"
+                    )
+                # Must never invoke os.path.realpath, abspath, or stat on prohibited network/device paths
+                mock_realpath.assert_not_called()
+                mock_abspath.assert_not_called()
+                mock_stat.assert_not_called()
+
+    def test_path_confinement_permits_legitimate_workspace_and_relative_paths(self):
+        """Verifies legitimate workspace, relative, and nested directory paths are permitted."""
+        with tempfile.TemporaryDirectory() as tmp_root:
+            safe_file = Path(tmp_root) / "data" / "sub" / "valid.txt"
+            safe_file.parent.mkdir(parents=True, exist_ok=True)
+            safe_file.write_text("safe content", encoding="utf-8")
+
+            # Absolute path inside root
+            res = validate_confined_path(str(safe_file), tmp_root)
+            self.assertTrue(Path(res).exists())
+
+            # Relative path inside root (resolved relative to cwd)
+            cwd = os.getcwd()
+            try:
+                os.chdir(tmp_root)
+                rel_res = validate_confined_path("data/sub/valid.txt", tmp_root)
+                self.assertTrue(Path(rel_res).exists())
+            finally:
+                os.chdir(cwd)
+
+            # Traversal outside root must fail closed
+            with self.assertRaises(SecurityBoundaryViolation) as ctx:
+                validate_confined_path(str(Path(tmp_root) / ".." / "outside.txt"), tmp_root)
+            self.assertIn("traversal", str(ctx.exception).lower())
+
+    def test_document_ingest_staging_roots_confinement_and_rejections(self):
+        """Verifies extract_text_from_pdf enforces allowed staging roots (data, workspace, temp) and blocks escapes."""
+        from jarvis.skills.document_ingest import extract_text_from_pdf
+
+        # 1. Prohibited UNC path fails before filesystem
+        with patch("os.path.realpath") as mock_realpath:
+            with self.assertRaises(SecurityBoundaryViolation):
+                extract_text_from_pdf(r"\\evil-server\share\doc.pdf")
+            mock_realpath.assert_not_called()
+
+        # 2. Arbitrary outside path fails closed
+        outside_path = r"C:\Windows\System32\drivers\etc\hosts"
+        with self.assertRaises(SecurityBoundaryViolation) as ctx:
+            extract_text_from_pdf(outside_path)
+        self.assertIn("allowed document staging roots", str(ctx.exception))
+
+    def test_consumers_reject_unc_paths_without_outbound_network(self):
+        """Verifies photo_manager, document_ingest, and dev_shell reject UNC paths."""
+        from jarvis.skills.photo_manager import save_photo
+        from jarvis.skills.document_ingest import extract_text_from_pdf
+        from jarvis.skills.dev_shell import _resolve_workspace_path
+
+        # 1. dev_shell._resolve_workspace_path
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_workspace_path(r"\\attacker-host\share\exploit.py")
+        self.assertIn("Path must stay inside the Jarvis workspace", str(ctx.exception))
+
+        # 2. photo_manager.save_photo
+        res = save_photo(r"\\attacker-host\share\leak.png")
+        self.assertIn("Security boundary violation", res)
+
+        # 3. document_ingest.extract_text_from_pdf
+        with self.assertRaises(SecurityBoundaryViolation):
+            extract_text_from_pdf(r"\\attacker-host\share\malicious.pdf")
+
+    def test_url_validation_rejects_embedded_userinfo_credentials(self):
+        """Verifies validate_egress_url rejects embedded user-info credentials without leaking them in errors."""
+        secret_passwords = ["SecretPass123", "P%40ssw0rd!%23", "tok_live_998877"]
+        test_urls = [
+            f"http://admin:{secret_passwords[0]}@example.com/api",
+            f"https://user:{secret_passwords[1]}@example.com",
+            f"https://{secret_passwords[2]}@example.com/v1",
+            "http://:password123@example.com/api",
+            "http://@example.com/api",
+            "http://user%3Apass@example.com",
+            "https://admin%40corp.com:supersecret@example.com",
+        ]
+        for u in test_urls:
+            with self.assertRaises(SecurityBoundaryViolation) as ctx:
+                validate_egress_url(u)
+            err_msg = str(ctx.exception)
+            self.assertIn("credentials are prohibited", err_msg)
+            # Ensure none of the secrets appear in exception messages
+            for secret in secret_passwords:
+                self.assertNotIn(secret, err_msg)
+            self.assertNotIn("password123", err_msg)
+            self.assertNotIn("supersecret", err_msg)
+
+        # Confirm valid URLs without credentials pass
+        self.assertEqual(validate_egress_url("https://example.com/api"), "https://example.com/api")
+        self.assertEqual(
+            validate_egress_url("https://example.com:8443/search?email=user@example.com"),
+            "https://example.com:8443/search?email=user@example.com",
+        )
 
     # -------------------------------------------------------------------------
     # Phase 2 — PowerShell Approval (SEC-02) Regression Tests

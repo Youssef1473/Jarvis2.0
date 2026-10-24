@@ -40,8 +40,17 @@ _DESTRUCTIVE_CDP_URLS: tuple = (
 
 
 def get_blocked_localhost_ports() -> Set[int]:
-    """Retrieves ports reserved for Jarvis internal services that must be shielded from browser navigation."""
-    ports: Set[int] = {20129, 9222}  # Canonical defaults for HUD and CDP
+    """Retrieves ports reserved for Jarvis internal services and sensitive daemons that must be shielded from browser navigation."""
+    ports: Set[int] = {
+        20129,  # Jarvis HUD / UI default port
+        9222,   # Chrome DevTools Protocol port
+        11434,  # Local Ollama daemon
+        2375,   # Docker daemon HTTP
+        2376,   # Docker daemon HTTPS
+        5432,   # PostgreSQL
+        6379,   # Redis
+        6443,   # Kubernetes API server
+    }
     try:
         from jarvis.core.config_loader import load_config
         cfg = load_config()
@@ -88,6 +97,16 @@ def sanitize_browser_url(url: str) -> str:
     # Permit a curated set of safe internal new-tab pages.
     if cleaned_lower in _SAFE_INTERNAL_PAGES:
         return cleaned
+
+    # Reject URLs with embedded user-info credentials (e.g. user:pass@host)
+    try:
+        parsed_candidate = urllib.parse.urlsplit(cleaned)
+        if parsed_candidate.username is not None or parsed_candidate.password is not None or "@" in (parsed_candidate.netloc or ""):
+            logger.warning("Blocked URL containing embedded user-info credentials from CDP navigation.")
+            return "about:blank"
+    except Exception as parse_err:
+        logger.warning(f"Malformed URL in browser sanitization: {parse_err}")
+        return "about:blank"
 
     # Block destructive internal browser management URLs.
     if any(cleaned_lower.startswith(d) for d in _DESTRUCTIVE_CDP_URLS):
@@ -187,6 +206,8 @@ def open_or_navigate_tab_cdp(
         return None
 
     clean_url = sanitize_browser_url(url)
+    if clean_url == "about:blank" and (url or "").strip().lower() not in ("about:blank", "about:blank/"):
+        return "Navigation blocked: Destination URL was rejected by browser security policy, Sir."
 
     try:
         tabs = list_cdp_tabs(host, port)

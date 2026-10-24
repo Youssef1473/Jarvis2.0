@@ -180,7 +180,19 @@ def _process_and_save_image_stream(stream: io.BytesIO) -> Dict[str, Any]:
 )
 def save_photo(file_path: str) -> str:
     """Ingests an image file, validates format, strips metadata, and preserves in data/photos/."""
-    p = Path(file_path).expanduser().resolve()
+    from jarvis.core.security_boundaries import validate_confined_path, SecurityBoundaryViolation
+    clean = str(file_path).strip()
+    try:
+        allowed_root = str(PHOTOS_DIR.parent)
+        try:
+            safe_path = validate_confined_path(clean, allowed_root)
+        except SecurityBoundaryViolation:
+            safe_path = validate_confined_path(clean, str(WORKSPACE_DIR))
+        p = Path(safe_path)
+    except SecurityBoundaryViolation as sbv:
+        logger.warning(f"Blocked unconfined photo access: {sbv}")
+        return f"Security boundary violation: {sbv}"
+
     if not p.exists() or not p.is_file():
         return f"Error: Image file does not exist at '{file_path}', Sir."
 

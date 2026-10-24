@@ -15,15 +15,15 @@ WORKSPACE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 def _resolve_workspace_path(file_path: str) -> Path:
-    p = Path(file_path)
-    if not p.is_absolute():
-        p = WORKSPACE_DIR / p
-    resolved = p.resolve()
+    from jarvis.core.security_boundaries import validate_confined_path, SecurityBoundaryViolation
+    clean = str(file_path).strip()
+    p = Path(clean)
+    target = str(WORKSPACE_DIR / p) if not p.is_absolute() else clean
     try:
-        resolved.relative_to(WORKSPACE_DIR.resolve())
-    except ValueError:
-        raise ValueError("Path must stay inside the Jarvis workspace.")
-    return resolved
+        safe_path = validate_confined_path(target, str(WORKSPACE_DIR))
+    except SecurityBoundaryViolation as err:
+        raise ValueError(f"Path must stay inside the Jarvis workspace: {err}") from err
+    return Path(safe_path)
 
 
 # execute_powershell uses the Job Object for *lifecycle* containment (the whole

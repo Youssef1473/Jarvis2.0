@@ -133,7 +133,34 @@ def _extract_page_content(page) -> str:
 
 def extract_text_from_pdf(file_path: str, max_pages: int = 50) -> str:
     """Extracts text from a PDF file using pypdf with fallback to Gemini Multimodal."""
-    p = Path(file_path)
+    import tempfile
+
+    from jarvis.core.security_boundaries import (
+        SecurityBoundaryViolation,
+        is_prohibited_network_or_device_path,
+        validate_confined_path,
+    )
+    clean = str(file_path).strip()
+    if is_prohibited_network_or_device_path(clean):
+        raise SecurityBoundaryViolation(
+            f"Access to UNC network paths or Windows device namespaces is prohibited: '{clean}'"
+        )
+
+    base_dir = Path(__file__).resolve().parent.parent.parent
+    data_dir = base_dir / "data"
+
+    safe_path = None
+    for candidate_root in (str(data_dir), str(base_dir), tempfile.gettempdir()):
+        try:
+            safe_path = validate_confined_path(clean, candidate_root)
+            break
+        except SecurityBoundaryViolation:
+            continue
+
+    if not safe_path:
+        raise SecurityBoundaryViolation(f"Path escapes allowed document staging roots: '{clean}'")
+
+    p = Path(safe_path)
     if not p.is_file():
         raise FileNotFoundError(f"Document file not found: {file_path}")
 
