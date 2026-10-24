@@ -12,7 +12,7 @@ import subprocess
 import time
 import urllib.parse
 import urllib.request
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Set
 
 from jarvis.skills.base import SkillRegistry
 
@@ -37,6 +37,27 @@ _DESTRUCTIVE_CDP_URLS: tuple = (
     "brave://restart", "brave://quit", "brave://kill", "brave://crash",
     "edge://restart", "edge://quit",
 )
+
+
+def get_blocked_localhost_ports() -> Set[int]:
+    """Retrieves ports reserved for Jarvis internal services that must be shielded from browser navigation."""
+    ports: Set[int] = {20129, 9222}  # Canonical defaults for HUD and CDP
+    try:
+        from jarvis.core.config_loader import load_config
+        cfg = load_config()
+        p = cfg.get("ui", {}).get("port")
+        if p and isinstance(p, int):
+            ports.add(p)
+    except Exception:
+        pass
+    try:
+        from jarvis.ui.server import JarvisUIService
+        srv = JarvisUIService.get_instance()
+        if srv and hasattr(srv, "port"):
+            ports.add(int(srv.port))
+    except Exception:
+        pass
+    return ports
 
 
 def sanitize_browser_url(url: str) -> str:
@@ -88,7 +109,12 @@ def sanitize_browser_url(url: str) -> str:
     if cleaned_lower.startswith(("http://", "https://")):
         try:
             from jarvis.core.security_boundaries import validate_egress_url, SecurityBoundaryViolation
-            cleaned = validate_egress_url(cleaned, allow_localhost=True)
+            blocked_ports = get_blocked_localhost_ports()
+            cleaned = validate_egress_url(
+                cleaned,
+                allow_localhost=True,
+                disallowed_ports=blocked_ports,
+            )
         except SecurityBoundaryViolation as ssrf_err:
             logger.warning(f"Blocked SSRF egress from CDP navigation: {ssrf_err}")
             return "about:blank"

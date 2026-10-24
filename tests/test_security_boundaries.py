@@ -88,6 +88,20 @@ class TestSecurityBoundaries(unittest.TestCase):
             res = validate_egress_url("https://example.com/news")
             self.assertEqual(res, "https://example.com/news")
 
+    def test_validate_egress_url_blocks_disallowed_ports(self):
+        """Verifies validate_egress_url blocks specified sensitive ports on localhost."""
+        with self.assertRaises(SecurityBoundaryViolation) as ctx:
+            validate_egress_url("http://localhost:20129", allow_localhost=True, disallowed_ports={20129, 9222})
+        self.assertIn("prohibited", str(ctx.exception))
+
+        with self.assertRaises(SecurityBoundaryViolation) as ctx2:
+            validate_egress_url("http://127.0.0.1:9222", allow_localhost=True, disallowed_ports={20129, 9222})
+        self.assertIn("prohibited", str(ctx2.exception))
+
+        # Allowed port on localhost
+        res = validate_egress_url("http://localhost:3000", allow_localhost=True, disallowed_ports={20129, 9222})
+        self.assertEqual(res, "http://localhost:3000")
+
     def test_path_confinement_blocks_traversal(self):
         with tempfile.TemporaryDirectory() as tmp_root:
             with self.assertRaises(SecurityBoundaryViolation):

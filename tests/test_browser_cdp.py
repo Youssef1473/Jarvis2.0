@@ -280,6 +280,21 @@ class TestBrowserCDPSuite(unittest.TestCase):
         # CRLF injection must be stripped.
         self.assertEqual(sanitize_browser_url("https://safe.com\r\nX-Injected: header"), "https://safe.com")
 
+        # Shield internal Jarvis services (HUD and CDP debugging ports) on loopback.
+        self.assertEqual(sanitize_browser_url("http://localhost:20129"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://127.0.0.1:20129/api/status"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://localhost:9222"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://127.0.0.1:9222/json"), "about:blank")
+
+        # Legitimate local developer workflows remain allowed on non-Jarvis ports.
+        self.assertEqual(sanitize_browser_url("http://localhost:3000"), "http://localhost:3000")
+        self.assertEqual(sanitize_browser_url("http://127.0.0.1:5173/dev"), "http://127.0.0.1:5173/dev")
+
+        # Non-global destinations (RFC 1918 private and link-local cloud metadata) are blocked.
+        self.assertEqual(sanitize_browser_url("http://169.254.169.254/latest/meta-data/"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://192.168.1.1/admin"), "about:blank")
+        self.assertEqual(sanitize_browser_url("http://10.0.0.1:8080/intranet"), "about:blank")
+
 
 if __name__ == "__main__":
     unittest.main()

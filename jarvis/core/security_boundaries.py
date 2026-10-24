@@ -17,7 +17,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Collection, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("Jarvis.SecurityBoundaries")
 
@@ -58,6 +58,7 @@ def resolve_and_validate_destination(
     allowed_schemes: Tuple[str, ...] = ("http", "https"),
     allow_local_mcp: bool = False,
     allow_localhost: bool = False,
+    disallowed_ports: Optional[Collection[int]] = None,
 ) -> Tuple[str, urllib.parse.SplitResult, str]:
     """Parses, resolves, and validates destination URL against SSRF, non-global IPs, and DNS rebinding.
 
@@ -125,9 +126,14 @@ def resolve_and_validate_destination(
             raise SecurityBoundaryViolation(f"Egress to localhost '{hostname}' is blocked.")
 
     try:
-        port = parsed.port or (443 if scheme == "https" else 80)
+        port = parsed.port or (443 if scheme in ("https", "wss") else 80)
     except Exception as err:
         raise SecurityBoundaryViolation(f"Malformed port in URL: {err}") from err
+
+    if disallowed_ports and port in disallowed_ports:
+        raise SecurityBoundaryViolation(
+            f"Egress to port {port} on host '{hostname}' is prohibited."
+        )
 
     # DNS Resolution (Fail Closed)
     try:
@@ -194,6 +200,7 @@ def validate_egress_url(
     allowed_schemes: Tuple[str, ...] = ("http", "https"),
     allow_local_mcp: bool = False,
     allow_localhost: bool = False,
+    disallowed_ports: Optional[Collection[int]] = None,
 ) -> str:
     """Validates an egress URL against SSRF, DNS rebinding, and private network access.
 
@@ -205,6 +212,7 @@ def validate_egress_url(
         allowed_schemes=allowed_schemes,
         allow_local_mcp=allow_local_mcp,
         allow_localhost=allow_localhost,
+        disallowed_ports=disallowed_ports,
     )
     return clean_url
 
@@ -216,10 +224,16 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     hop limit exhaustion across concurrent requests, and DNS rebinding on redirect hops.
     """
 
-    def __init__(self, max_hops: int = 4, allowed_schemes: Tuple[str, ...] = ("http", "https")):
+    def __init__(
+        self,
+        max_hops: int = 4,
+        allowed_schemes: Tuple[str, ...] = ("http", "https"),
+        disallowed_ports: Optional[Collection[int]] = None,
+    ):
         super().__init__()
         self.max_hops = max_hops
         self.allowed_schemes = allowed_schemes
+        self.disallowed_ports = disallowed_ports
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         hops = getattr(req, "_jarvis_hops", 0) + 1
@@ -243,6 +257,7 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
             allowed_schemes=self.allowed_schemes,
             allow_local_mcp=False,
             allow_localhost=False,
+            disallowed_ports=self.disallowed_ports,
         )
 
         new_req = super().redirect_request(req, fp, code, msg, headers, clean_url)
@@ -331,10 +346,16 @@ class PinnedIPHTTPSConnection(http.client.HTTPSConnection):
 class PinnedHTTPHandler(urllib.request.HTTPHandler):
     """HTTPHandler that resolves/validates destination and pins the socket to the pre-validated IP."""
 
-    def __init__(self, allow_local_mcp: bool = False, allow_localhost: bool = False):
+    def __init__(
+        self,
+        allow_local_mcp: bool = False,
+        allow_localhost: bool = False,
+        disallowed_ports: Optional[Collection[int]] = None,
+    ):
         super().__init__()
         self.allow_local_mcp = allow_local_mcp
         self.allow_localhost = allow_localhost
+        self.disallowed_ports = disallowed_ports
 
     def http_open(self, req):
         pinned_ip = getattr(req, "_pinned_ip", None)
@@ -344,6 +365,7 @@ class PinnedHTTPHandler(urllib.request.HTTPHandler):
                 allowed_schemes=("http", "https"),
                 allow_local_mcp=self.allow_local_mcp,
                 allow_localhost=self.allow_localhost,
+                disallowed_ports=self.disallowed_ports,
             )
             req._pinned_ip = pinned_ip
 
@@ -356,10 +378,17 @@ class PinnedHTTPHandler(urllib.request.HTTPHandler):
 class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
     """HTTPSHandler that resolves/validates destination and pins the socket to the pre-validated IP."""
 
-    def __init__(self, allow_local_mcp: bool = False, allow_localhost: bool = False, context=None):
+    def __init__(
+        self,
+        allow_local_mcp: bool = False,
+        allow_localhost: bool = False,
+        context=None,
+        disallowed_ports: Optional[Collection[int]] = None,
+    ):
         super().__init__(context=context)
         self.allow_local_mcp = allow_local_mcp
         self.allow_localhost = allow_localhost
+        self.disallowed_ports = disallowed_ports
 
     def https_open(self, req):
         pinned_ip = getattr(req, "_pinned_ip", None)
@@ -369,6 +398,7 @@ class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
                 allowed_schemes=("http", "https"),
                 allow_local_mcp=self.allow_local_mcp,
                 allow_localhost=self.allow_localhost,
+                disallowed_ports=self.disallowed_ports,
             )
             req._pinned_ip = pinned_ip
 
@@ -387,6 +417,7 @@ def build_safe_url_opener(
     max_hops: int = 4,
     allow_local_mcp: bool = False,
     allow_localhost: bool = False,
+    disallowed_ports: Optional[Collection[int]] = None,
 ) -> urllib.request.OpenerDirector:
     """Builds a hardened urllib opener director equipped with SafeRedirectHandler,
     NoProxyHandler, and destination-pinned HTTP/HTTPS handlers to eliminate SSRF and DNS rebinding.
@@ -397,9 +428,17 @@ def build_safe_url_opener(
     opener = urllib.request.OpenerDirector()
     for handler in (
         NoProxyHandler(),
-        SafeRedirectHandler(max_hops=max_hops),
-        PinnedHTTPHandler(allow_local_mcp=allow_local_mcp, allow_localhost=allow_localhost),
-        PinnedHTTPSHandler(allow_local_mcp=allow_local_mcp, allow_localhost=allow_localhost),
+        SafeRedirectHandler(max_hops=max_hops, disallowed_ports=disallowed_ports),
+        PinnedHTTPHandler(
+            allow_local_mcp=allow_local_mcp,
+            allow_localhost=allow_localhost,
+            disallowed_ports=disallowed_ports,
+        ),
+        PinnedHTTPSHandler(
+            allow_local_mcp=allow_local_mcp,
+            allow_localhost=allow_localhost,
+            disallowed_ports=disallowed_ports,
+        ),
         urllib.request.HTTPErrorProcessor(),
         urllib.request.HTTPDefaultErrorHandler(),
         urllib.request.UnknownHandler(),
