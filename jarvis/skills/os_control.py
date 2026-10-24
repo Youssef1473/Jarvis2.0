@@ -944,11 +944,22 @@ def open_browser_tab(url: str = "", browser: str = "brave", new_tab: bool = True
 
     # Pre-navigation validation across both CDP and non-CDP subprocess launch paths
     if target_url:
-        from jarvis.skills.browser_cdp import sanitize_browser_url
+        from jarvis.skills.browser_cdp import (
+            sanitize_browser_url,
+            validate_browser_navigation_chain,
+        )
         validated_url = sanitize_browser_url(target_url)
         if validated_url == "about:blank" and target_url.lower() not in ("about:blank", "about:blank/"):
             return "Navigation blocked: Destination URL was rejected by browser security policy, Sir."
-        target_url = validated_url
+
+        # Bounded pre-flight redirect-chain validation for HTTP/HTTPS web targets
+        if validated_url.lower().startswith(("http://", "https://")):
+            is_valid, final_url, err_msg = validate_browser_navigation_chain(validated_url)
+            if not is_valid:
+                return f"Navigation blocked: Destination URL redirected to disallowed address: {err_msg}, Sir."
+            target_url = final_url
+        else:
+            target_url = validated_url
 
     # 0. Sub-5ms Silent CDP Fast Path: If Chrome DevTools Protocol is available on port 9222
     if browser_clean in ("brave", "chrome", "edge", "browser"):

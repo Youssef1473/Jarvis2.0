@@ -70,10 +70,13 @@ class TestBrowserCDPSuite(unittest.TestCase):
                 self.assertIsNotNone(res)
                 self.assertIn("Navigated existing tab", res)
                 self.assertIn("https://github.com", res)
-                mock_ws.send.assert_called_once()
-                sent_data = json.loads(mock_ws.send.call_args[0][0])
-                self.assertEqual(sent_data["method"], "Page.navigate")
-                self.assertEqual(sent_data["params"]["url"], "https://github.com")
+                sent_messages = [json.loads(call[0][0]) for call in mock_ws.send.call_args_list]
+                methods = [m.get("method") for m in sent_messages]
+                self.assertIn("Page.navigate", methods)
+                self.assertIn("Network.enable", methods)
+                self.assertIn("Network.setBlockedURLs", methods)
+                nav_msg = next(m for m in sent_messages if m.get("method") == "Page.navigate")
+                self.assertEqual(nav_msg["params"]["url"], "https://github.com")
 
     def test_os_control_open_browser_tab_cdp_fallback_to_win32(self):
         """Verifies open_browser_tab falls back gracefully to Win32 when CDP is closed."""
