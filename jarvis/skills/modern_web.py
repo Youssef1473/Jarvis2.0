@@ -11,15 +11,16 @@ import logging
 import os
 import shutil
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
+from jarvis.skills.job_object_sandbox import run_sandboxed_batch
 
 logger = logging.getLogger("Jarvis.Skills.ModernWeb")
 
 # In-memory caches to guarantee sub-10ms response on repeated queries
-_SEARCH_CACHE: Dict[str, List[Dict[str, Any]]] = {}
-_GUIDE_CACHE: Dict[str, str] = {}
+_SEARCH_CACHE: dict[str, list[dict[str, Any]]] = {}
+_GUIDE_CACHE: dict[str, str] = {}
 
 
 def _get_npx_executable() -> str:
@@ -56,14 +57,13 @@ def search_modern_web_guidance(query: str, limit: int = 5) -> str:
     else:
         npx_cmd = _get_npx_executable()
         try:
-            proc = subprocess.run(
+            proc = run_sandboxed_batch(
                 [npx_cmd, "-y", "modern-web-guidance@latest", "search", clean_query],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 timeout=15,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             if proc.returncode != 0:
                 logger.warning("modern-web-guidance search failed (code %d): %s", proc.returncode, proc.stderr)
@@ -120,14 +120,13 @@ def retrieve_modern_web_guide(guide_id: str, max_chars: int = 4000) -> str:
     else:
         npx_cmd = _get_npx_executable()
         try:
-            proc = subprocess.run(
+            proc = run_sandboxed_batch(
                 [npx_cmd, "-y", "modern-web-guidance@latest", "retrieve", clean_id],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 timeout=20,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             if proc.returncode != 0:
                 logger.warning("modern-web-guidance retrieve failed (code %d): %s", proc.returncode, proc.stderr)

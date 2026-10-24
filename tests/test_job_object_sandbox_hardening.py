@@ -496,10 +496,10 @@ class TestJobSandboxRealWindows(unittest.TestCase):
             self.assertIn("Error: Job Object containment failed on Windows", test_out)
             self.assertIn("Process-tree containment is required by default", test_out)
 
-            # With explicit opt-in, it falls back with an unmistakable warning
+            # Even with explicit opt-in, if containment cannot be established on Windows, it fails closed
             opt_in_out = dev_shell.run_project_tests(test_file="nonexistent_test_probe_xyz.py", _allow_uncontained=True)
-            self.assertIn("[WARNING: UNCONTAINED EXECUTION", opt_in_out)
-            self.assertIn("Test Run", opt_in_out)
+            self.assertIn("Error: Contained fallback execution failed on Windows", opt_in_out)
+            self.assertIn("Uncontained execution is strictly prohibited", opt_in_out)
 
     def test_background_task_cancellation_kills_grandchild(self):
         from jarvis.core.task_manager import BackgroundTaskManager

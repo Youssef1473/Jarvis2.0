@@ -1,13 +1,15 @@
 """Developer, codebase stewardship, and shell execution tools for Windows."""
 import logging
 import os
-import sys
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Optional
+
 from jarvis.skills.base import SkillRegistry
+from jarvis.skills.job_object_sandbox import run_sandboxed_batch
 
 logger = logging.getLogger("Jarvis.Skills.DevShell")
 
@@ -15,7 +17,10 @@ WORKSPACE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 def _resolve_workspace_path(file_path: str) -> Path:
-    from jarvis.core.security_boundaries import validate_confined_path, SecurityBoundaryViolation
+    from jarvis.core.security_boundaries import (
+        SecurityBoundaryViolation,
+        validate_confined_path,
+    )
     clean = str(file_path).strip()
     p = Path(clean)
     target = str(WORKSPACE_DIR / p) if not p.is_absolute() else clean
@@ -333,7 +338,7 @@ def search_codebase(query: str, folder_path: str = ".", file_pattern: str = "*",
 def git_diff(max_chars: int = 12000) -> str:
     """Returns a bounded tracked-file diff for reviewing recent edits."""
     try:
-        proc = subprocess.run(
+        proc = run_sandboxed_batch(
             ["git", "diff", "--no-ext-diff", "--unified=3", "HEAD", "--"],
             cwd=str(WORKSPACE_DIR),
             capture_output=True,
@@ -349,6 +354,8 @@ def git_diff(max_chars: int = 12000) -> str:
         if len(output) > limit:
             return output[:limit] + "\n\n[Diff truncated; request a narrower review.]"
         return output
+    except subprocess.TimeoutExpired:
+        return "Git diff error: command timed out after 15 seconds."
     except Exception as e:
         return f"Git diff error: {e}"
 
@@ -433,14 +440,31 @@ def run_project_tests(
         else:
             return f"Error executing tests: unexpected sandbox status '{status}' ({res.get('reason', '')})"
 
-        # Fallback if Job Object is unavailable (non-Windows hosts, or explicitly opted-in on Windows)
-        proc = subprocess.run(
-            cmd,
-            cwd=str(WORKSPACE_DIR),
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
+        # Fallback if primary Job Object execution is unavailable (non-Windows hosts, or explicitly opted-in on Windows).
+        # When authorized, we attempt process-tree containment via run_sandboxed_batch().
+        # On Windows, if run_sandboxed_batch() fails to establish containment, we fail closed and return an error;
+        # under no circumstances do we fall back to bare subprocess.run() on Windows.
+        try:
+            proc = run_sandboxed_batch(
+                cmd,
+                cwd=str(WORKSPACE_DIR),
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except RuntimeError as sand_err:
+            if sys.platform == "win32":
+                return (
+                    f"Error: Contained fallback execution failed on Windows ({sand_err}). "
+                    "Uncontained execution is strictly prohibited."
+                )
+            proc = subprocess.run(
+                cmd,
+                cwd=str(WORKSPACE_DIR),
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
         out = (proc.stdout + "\n" + proc.stderr).strip()
         run_status = "PASSED" if proc.returncode == 0 else f"FAILED (Exit Code {proc.returncode})"
         warning_banner = ""
@@ -463,14 +487,14 @@ def run_project_tests(
 def git_status() -> str:
     """Returns git status and branch."""
     try:
-        proc = subprocess.run(
+        proc = run_sandboxed_batch(
             ["git", "status", "-s"],
             cwd=str(WORKSPACE_DIR),
             capture_output=True,
             text=True,
             timeout=10,
         )
-        branch_proc = subprocess.run(
+        branch_proc = run_sandboxed_batch(
             ["git", "branch", "--show-current"],
             cwd=str(WORKSPACE_DIR),
             capture_output=True,
@@ -480,6 +504,8 @@ def git_status() -> str:
         branch = branch_proc.stdout.strip() or "unknown"
         changes = proc.stdout.strip() or "Working tree clean (no uncommitted changes)."
         return f"Branch: {branch}\n\nWorking Tree Status:\n{changes}"
+    except subprocess.TimeoutExpired:
+        return "Git error: git command timed out."
     except Exception as e:
         return f"Git error: {e}"
 
@@ -576,7 +602,7 @@ def query_codebase_graph(query: str, mode: str = "query") -> str:
         cmd.extend(["query", query])
 
     try:
-        proc = subprocess.run(
+        proc = run_sandboxed_batch(
             cmd,
             cwd=str(WORKSPACE_DIR),
             capture_output=True,
@@ -651,7 +677,7 @@ def ast_search_codebase(pattern: str, path: str = ".", lang: Optional[str] = Non
         cmd.append(str(resolved_path))
 
     try:
-        proc = subprocess.run(
+        proc = run_sandboxed_batch(
             cmd,
             cwd=str(WORKSPACE_DIR),
             capture_output=True,
@@ -718,7 +744,7 @@ def check_code_diagnostics(target_path: str = ".", select: Optional[str] = None,
         cmd.append(str(resolved_path))
 
     try:
-        proc = subprocess.run(
+        proc = run_sandboxed_batch(
             cmd,
             cwd=str(WORKSPACE_DIR),
             capture_output=True,
