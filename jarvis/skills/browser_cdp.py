@@ -640,6 +640,7 @@ def scrape_and_archive_webpage(tab_name_or_url: str = "", category: str = "web_i
             summary=text[:500],
             raw_content=full_doc,
             file_path=url,
+            source_provenance="web_scrape",
         )
         return (
             f"Archived webpage '{title}' ({len(text)} characters) into your local document vault "

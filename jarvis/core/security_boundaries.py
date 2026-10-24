@@ -1292,8 +1292,38 @@ class TurnTaintTracker:
         "run_background_task",
     }
 
+    TRUSTED_DOCUMENT_PROVENANCES: Set[str] = {"trusted_internal", "system"}
+    KNOWN_DOCUMENT_PROVENANCES: Set[str] = {
+        "trusted_internal",
+        "system",
+        "web_scrape",
+        "staged_upload",
+        "external",
+        "unknown",
+    }
+
     def __init__(self) -> None:
         self._dynamic_ingestion_tools: Set[str] = set()
+
+    @classmethod
+    def normalize_document_provenance(cls, provenance: Any) -> str:
+        """Validates and normalizes document provenance labels according to policy.
+        Missing, empty, non-string, or unrecognized values fail closed to 'unknown'."""
+        if not provenance or not isinstance(provenance, str):
+            return "unknown"
+        clean = provenance.strip().lower()
+        if clean in cls.KNOWN_DOCUMENT_PROVENANCES:
+            return clean
+        return "unknown"
+
+    @classmethod
+    def is_untrusted_document_provenance(cls, provenance: Any) -> bool:
+        """Determines if a document provenance classification is untrusted.
+        Fails closed: Any provenance other than explicitly trusted internal/system labels is untrusted."""
+        if not provenance or not isinstance(provenance, str):
+            return True
+        clean = provenance.strip().lower()
+        return clean not in cls.TRUSTED_DOCUMENT_PROVENANCES
 
     @staticmethod
     def _get_context_state(create_if_missing: bool = True) -> Optional[_TurnTaintState]:

@@ -77,15 +77,26 @@ class DocumentVaultMixin:
         category: str = "general",
         summary: str = "",
         raw_content: str = "",
-        file_path: str = ""
+        file_path: str = "",
+        source_provenance: str = "unknown",
     ) -> int:
         """Archives document content and structured summary into the persistent knowledge archive."""
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        norm_prov = TurnTaintTracker.normalize_document_provenance(source_provenance)
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO documents (title, category, summary, raw_content, file_path)
-                VALUES (?, ?, ?, ?, ?)
-            """, (title.strip(), category.lower().strip(), summary.strip(), raw_content.strip(), file_path.strip()))
+                INSERT INTO documents (title, category, summary, raw_content, file_path, source_provenance)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                title.strip(),
+                category.lower().strip(),
+                summary.strip(),
+                raw_content.strip(),
+                file_path.strip(),
+                norm_prov,
+            ))
             doc_id = cursor.lastrowid
 
             # Index into documents_vec
@@ -110,7 +121,7 @@ class DocumentVaultMixin:
                 with self._get_ro_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
-                        SELECT d.id, d.title, d.category, d.summary, d.file_path, d.created_at
+                        SELECT d.id, d.title, d.category, d.summary, d.file_path, d.source_provenance, d.created_at
                         FROM documents_fts df
                         JOIN documents d ON df.rowid = d.id
                         WHERE documents_fts MATCH ?
@@ -128,7 +139,7 @@ class DocumentVaultMixin:
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, title, category, summary, file_path, created_at
+                SELECT id, title, category, summary, file_path, source_provenance, created_at
                 FROM documents
                 WHERE LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(category) LIKE ?
                 ORDER BY id DESC LIMIT ?
@@ -144,7 +155,7 @@ class DocumentVaultMixin:
             with self._get_ro_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT d.id, d.title, d.category, d.summary, d.file_path, d.created_at, dv.distance
+                    SELECT d.id, d.title, d.category, d.summary, d.file_path, d.source_provenance, d.created_at, dv.distance
                     FROM documents_vec dv
                     JOIN documents d ON dv.doc_id = d.id
                     WHERE dv.embedding MATCH ? AND k = ?
@@ -163,6 +174,7 @@ class DocumentVaultMixin:
                                 "category": row["category"],
                                 "summary": row["summary"],
                                 "file_path": row["file_path"],
+                                "source_provenance": row["source_provenance"] if "source_provenance" in row.keys() else "unknown",
                                 "created_at": row["created_at"],
                                 "relevance_score": round(sim, 3),
                                 "distance": round(dist, 4),
@@ -176,7 +188,7 @@ class DocumentVaultMixin:
         # In-Memory TF-IDF Fallback
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, title, category, summary, file_path, created_at, raw_content FROM documents ORDER BY id DESC LIMIT 100")
+            cursor.execute("SELECT id, title, category, summary, file_path, source_provenance, created_at, raw_content FROM documents ORDER BY id DESC LIMIT 100")
             docs = [dict(r) for r in cursor.fetchall()]
 
         if not docs:
@@ -226,7 +238,7 @@ class DocumentVaultMixin:
                 def _fts_query(conn: sqlite3.Connection):
                     cursor = conn.cursor()
                     cursor.execute("""
-                        SELECT d.id, d.title, d.category, d.summary, d.file_path, d.created_at
+                        SELECT d.id, d.title, d.category, d.summary, d.file_path, d.source_provenance, d.created_at
                         FROM documents_fts ft
                         JOIN documents d ON ft.rowid = d.id
                         WHERE documents_fts MATCH ?
@@ -245,7 +257,7 @@ class DocumentVaultMixin:
         def _like_query(conn: sqlite3.Connection):
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, title, category, summary, file_path, created_at
+                SELECT id, title, category, summary, file_path, source_provenance, created_at
                 FROM documents
                 WHERE title LIKE ? OR summary LIKE ? OR category LIKE ?
                 ORDER BY created_at DESC LIMIT ?
@@ -267,7 +279,7 @@ class DocumentVaultMixin:
             def _knn_query(conn: sqlite3.Connection):
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT d.id, d.title, d.category, d.summary, d.file_path, d.created_at, dv.distance
+                    SELECT d.id, d.title, d.category, d.summary, d.file_path, d.source_provenance, d.created_at, dv.distance
                     FROM documents_vec dv
                     JOIN documents d ON dv.doc_id = d.id
                     WHERE dv.embedding MATCH ? AND k = ?
@@ -288,6 +300,7 @@ class DocumentVaultMixin:
                             "category": row["category"],
                             "summary": row["summary"],
                             "file_path": row["file_path"],
+                            "source_provenance": row["source_provenance"] if "source_provenance" in row.keys() else "unknown",
                             "created_at": row["created_at"],
                             "relevance_score": round(sim, 3),
                             "distance": round(dist, 4),
@@ -315,7 +328,7 @@ class DocumentVaultMixin:
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, title, category, summary, raw_content, file_path, created_at
+                SELECT id, title, category, summary, raw_content, file_path, source_provenance, created_at
                 FROM documents WHERE id = ?
             """, (doc_id,))
             row = cursor.fetchone()
@@ -326,7 +339,7 @@ class DocumentVaultMixin:
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, title, category, summary, raw_content, file_path, created_at
+                SELECT id, title, category, summary, raw_content, file_path, source_provenance, created_at
                 FROM documents ORDER BY id DESC LIMIT ?
             """, (limit,))
             return [dict(row) for row in cursor.fetchall()]

@@ -451,7 +451,8 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
         category=doc_cat,
         summary=doc_summary,
         raw_content=truncated_text[:2000],
-        file_path=file_path
+        file_path=file_path,
+        source_provenance="staged_upload",
     )
 
     # 5. Mark Document as Processed
@@ -493,6 +494,24 @@ def search_archived_documents(query: str, limit: int = 3) -> str:
     if not results:
         return f"No archived documents found matching '{clean_q}', Sir."
 
+    # CORE-SEC-03B: Restore turn taint if any retrieved document has untrusted provenance
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    tracker = TurnTaintTracker.get_instance()
+    for doc in results:
+        prov = doc.get("source_provenance", "unknown")
+        if tracker.is_untrusted_document_provenance(prov):
+            doc_id = doc.get("id", "?")
+            doc_title = (doc.get("title") or "")[:64]
+            tracker.mark_tainted(
+                source=f"archived_document:{doc_id}",
+                metadata={
+                    "doc_id": doc_id,
+                    "title": doc_title,
+                    "source_provenance": str(prov)[:32],
+                    "file_path": (doc.get("file_path") or "")[:64],
+                }
+            )
+
     return mem.format_document_reference_block(results)
 
 
@@ -517,5 +536,22 @@ def read_archived_document(identifier: str) -> str:
 
     if not doc:
         return f"Could not locate archived document '{clean_id}', Sir."
+
+    # CORE-SEC-03B: Restore turn taint if retrieved document has untrusted provenance
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    tracker = TurnTaintTracker.get_instance()
+    prov = doc.get("source_provenance", "unknown")
+    if tracker.is_untrusted_document_provenance(prov):
+        doc_id = doc.get("id", "?")
+        doc_title = (doc.get("title") or "")[:64]
+        tracker.mark_tainted(
+            source=f"archived_document:{doc_id}",
+            metadata={
+                "doc_id": doc_id,
+                "title": doc_title,
+                "source_provenance": str(prov)[:32],
+                "file_path": (doc.get("file_path") or "")[:64],
+            }
+        )
 
     return mem.format_document_reference_block([doc])

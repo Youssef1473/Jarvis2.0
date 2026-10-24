@@ -234,6 +234,7 @@ class TestBrowserCDPSuite(unittest.TestCase):
             self.assertIn("https://quantum.org/docs", call_kw["raw_content"])
             self.assertIn("Detailed quantum supremacy benchmarks", call_kw["raw_content"])
             self.assertEqual(call_kw["file_path"], "https://quantum.org/docs")
+            self.assertEqual(call_kw["source_provenance"], "web_scrape")
 
     def test_bootstrap_cdp_browser(self):
         """Verifies bootstrap_cdp_browser spawns detached browser process with dedicated profile."""

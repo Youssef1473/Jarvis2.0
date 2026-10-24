@@ -50,6 +50,9 @@ class ToolOrchestrator:
         dual_key_confirmed: bool = False,
     ) -> Any:
         """Executes a single tool step with security checks and interim acoustic bridge."""
+        # Ensure active turn taint state exists in current execution context
+        self.taint_tracker._get_context_state(create_if_missing=True)
+
         # Strip model-injected authorization fields from arguments to prevent prompt injection bypasses
         sanitized_args = {
             k: v for k, v in (arguments or {}).items()
@@ -178,6 +181,9 @@ class ToolOrchestrator:
         milestone_phrase: Optional[str] = None,
     ) -> Any:
         """Asynchronously executes a tool step using DualTrackCoordinator for masking and gating."""
+        # Ensure active turn taint state exists in caller context before spawning worker threads
+        self.taint_tracker._get_context_state(create_if_missing=True)
+
         if self.dual_track_coordinator is None:
             return await asyncio.to_thread(
                 self.execute_step,

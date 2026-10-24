@@ -260,9 +260,19 @@ class SqliteBaseMixin:
                     summary TEXT,
                     raw_content TEXT,
                     file_path TEXT,
+                    source_provenance TEXT NOT NULL DEFAULT 'unknown',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # Idempotent Migration: Ensure source_provenance column exists for pre-existing databases
+            cursor.execute("PRAGMA table_info(documents)")
+            doc_cols = {
+                row["name"] if hasattr(row, "__getitem__") and "name" in row.keys() else row[1]
+                for row in cursor.fetchall()
+            }
+            if "source_provenance" not in doc_cols:
+                cursor.execute("ALTER TABLE documents ADD COLUMN source_provenance TEXT NOT NULL DEFAULT 'unknown'")
+                logger.info("Migrated SQLite schema: added source_provenance column to documents table.")
             # Episodic Lessons & Self-Correction Buffer (Tier 3 Reflexion)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS episodic_lessons (
