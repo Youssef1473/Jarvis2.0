@@ -42,6 +42,7 @@ audio:
   channels: 1
   wake_word: "hey jarvis"
   wake_word_threshold: 0.55
+  wake_word_barge_in_threshold: 0.70 # Elevated threshold during TTS playback to prevent speaker echo false-triggers
   wake_word_energy_threshold: 0.0035 # Sub-microsecond RMS energy gate to skip idle ONNX inferences (0% idle CPU)
   ptt_trigger: "fin"              # Hold Fin (End) key to speak, release to send
   ptt_key: "fin"                  # Backward compatibility alias

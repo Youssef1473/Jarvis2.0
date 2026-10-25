@@ -1,5 +1,6 @@
 """Central orchestrator coordinating audio, hotkeys, STT, LLM, tools, TTS, and HUD overlay."""
 import asyncio
+import queue
 import logging
 import os
 import random
@@ -126,6 +127,8 @@ class JarvisOrchestrator:
 
         # Recording state for Push-to-Talk (ALT)
         self._is_recording = False
+        self._is_ptt_recording = False
+        self.last_recording_had_overflow = False
         self._recorded_frames: List[np.ndarray] = []
         self._record_stream: sd.InputStream | None = None
         self._lock = threading.Lock()
@@ -140,7 +143,7 @@ class JarvisOrchestrator:
         self.wake_detector = WakeWordDetector(
             config,
             on_wake_callback=self._on_wake_word,
-            is_speaking_callback=lambda: self.tts.is_speaking or self._is_recording,
+            is_speaking_callback=lambda: self.tts.is_speaking,
         )
 
         self._running = False
@@ -177,6 +180,12 @@ class JarvisOrchestrator:
         if self.tts.is_speaking:
             self.tts.stop()
             was_busy = True
+
+        if hasattr(self, "wake_detector"):
+            try:
+                self.wake_detector.stop_vad_session()
+            except Exception:  # noqa: BLE001, S110
+                pass
 
         if hasattr(self, "brain") and hasattr(self.brain, "cancel_active_turn"):
             try:
@@ -312,23 +321,18 @@ class JarvisOrchestrator:
             time.sleep(0.025)
 
         ptt_mode = str(self.config.get("audio", {}).get("ptt_mode", "hold")).lower().strip()
-        if ptt_mode == "toggle" and self._is_recording:
+        if ptt_mode == "toggle" and getattr(self, "_is_ptt_recording", False):
             # Second press in toggle mode concludes recording session
             self._finalize_ptt_recording()
             return
 
         with self._lock:
-            if getattr(self, "_record_stream", None) is not None:
-                try:
-                    self._record_stream.stop()
-                    self._record_stream.close()
-                except Exception:
-                    pass
-                self._record_stream = None
-
             self._recorded_frames = []
             self._is_recording = True
+            self._is_ptt_recording = True
             self._ptt_press_time = time.time()
+            if hasattr(self, "wake_detector"):
+                self.wake_detector.start_ptt_session()
 
         is_mouse = getattr(self.hotkey_listener, "mouse_target_btn", None) is not None
         if is_mouse:
@@ -347,33 +351,24 @@ class JarvisOrchestrator:
             self.set_state("listening")
             self.sfx.play_wake()
 
-        try:
-            with self._lock:
-                self._record_stream = sd.InputStream(
-                    samplerate=self.sample_rate,
-                    channels=1,
-                    dtype="float32",
-                    callback=self._audio_record_callback,
-                )
-                self._record_stream.start()
-        except Exception as e:
-            logger.error(f"Failed to start audio recording stream: {e}")
-            with self._lock:
-                self._is_recording = False
-            self.set_state("idle")
+        # Single persistent stream router captures PTT audio directly
 
     def _finalize_ptt_recording(self):
         """Concludes PTT recording session and initiates audio processing."""
         press_duration = time.time() - getattr(self, "_ptt_press_time", 0.0)
         self._is_recording = False
+        self._is_ptt_recording = False
 
-        if getattr(self, "_record_stream", None) is not None:
-            try:
-                self._record_stream.stop()
-                self._record_stream.close()
-            except Exception:
-                pass
-            self._record_stream = None
+        chunks = []
+        if hasattr(self, "wake_detector"):
+            detector_chunks = self.wake_detector.stop_ptt_session()
+            if isinstance(detector_chunks, list):
+                chunks.extend(detector_chunks)
+            if getattr(self.wake_detector, "recording_overflow_detected", False) is True:
+                self.last_recording_had_overflow = True
+                logger.warning(
+                    "PTT recording encountered queue overflow; some audio frames may have been dropped."
+                )
 
         # Filter out accidental mouse taps (< 220ms) if using mouse button in hold mode
         is_mouse = getattr(self.hotkey_listener, "mouse_target_btn", None) is not None
@@ -386,17 +381,21 @@ class JarvisOrchestrator:
         self.set_state("thinking")
 
         with self._lock:
-            if not self._recorded_frames:
+            if self._recorded_frames:
+                chunks.extend(self._recorded_frames)
+                self._recorded_frames = []
+
+            if not chunks:
                 logger.info("No audio captured.")
                 self.set_state("idle")
                 return
-            audio_array = np.concatenate(self._recorded_frames, axis=0).flatten()
+            audio_array = np.concatenate(chunks, axis=0).flatten()
 
         threading.Thread(target=self._process_audio, args=(audio_array,), daemon=True).start()
 
     def _on_ptt_release(self):
         """Called immediately when user releases PTT trigger."""
-        if not self._is_recording:
+        if not getattr(self, "_is_ptt_recording", False):
             return
 
         ptt_mode = str(self.config.get("audio", {}).get("ptt_mode", "hold")).lower().strip()
@@ -448,12 +447,21 @@ class JarvisOrchestrator:
                 active_speech_chunks = 0
                 silence_chunk_count = 0
 
-                with sd.InputStream(samplerate=sample_rate, channels=1, dtype="float32", blocksize=block_size) as stream:
+                self._is_recording = True
+                vad_session = self.wake_detector.start_vad_session()
+                try:
                     for chunk_idx in range(max_chunks):
-                        if self._is_recording or getattr(self, "_stopped", False):
+                        if getattr(self, "_is_ptt_recording", False) or getattr(self, "_stopped", False):
                             break
 
-                        data, _ = stream.read(block_size)
+                        try:
+                            chunk_data = vad_session.get_chunk(timeout=0.35)
+                        except queue.Empty:
+                            if getattr(self, "_stopped", False) or getattr(self, "_is_ptt_recording", False):
+                                break
+                            continue
+
+                        data = chunk_data.reshape(-1, 1)
                         captured_chunks.append(data.copy())
 
                         # Compute RMS energy for micro-hesitation and breathing detection
@@ -492,8 +500,20 @@ class JarvisOrchestrator:
                             if chunk_idx >= initial_timeout_chunks:
                                 logger.info("VAD: no speech detected after wake word.")
                                 break
+                finally:
+                    if vad_session.overflow_detected:
+                        self.last_recording_had_overflow = True
+                        logger.warning(
+                            "VAD recording encountered queue overflow; some audio frames may have been dropped."
+                        )
+                    self.wake_detector.stop_vad_session()
+                    self._is_recording = False
 
-                if captured_chunks:
+                if getattr(self, "_is_ptt_recording", False):
+                    # PTT preempted VAD recording, do not process partial VAD audio
+                    return
+
+                if captured_chunks and speech_started:
                     audio_array = np.concatenate(captured_chunks, axis=0).flatten()
                     self._process_audio(audio_array)
                 else:
