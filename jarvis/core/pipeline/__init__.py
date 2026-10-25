@@ -6,7 +6,10 @@ from jarvis.core.pipeline.dual_track import (
 )
 from jarvis.core.pipeline.interim_bridge import InterimSpeechBridge
 from jarvis.core.pipeline.latency_profiler import PipelineLatencyProfiler, TurnTrace
-from jarvis.core.pipeline.tool_orchestrator import ToolOrchestrator
+from jarvis.core.pipeline.tool_orchestrator import (
+    OrchestratorStepResult,
+    ToolOrchestrator,
+)
 from jarvis.core.security_boundaries import TurnTaintTracker
 
 __all__ = [
@@ -14,6 +17,7 @@ __all__ = [
     "DualTrackCoordinator",
     "InterimSpeechBridge",
     "MonotonicCancellationToken",
+    "OrchestratorStepResult",
     "PipelineLatencyProfiler",
     "ToolOrchestrator",
     "TurnTaintTracker",

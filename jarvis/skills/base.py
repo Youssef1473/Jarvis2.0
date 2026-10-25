@@ -26,6 +26,15 @@ class SkillMetadata:
     default_timeout_ms: int = 1500
 
 
+@dataclass
+class SkillExecutionResult:
+    """Structured execution result from SkillRegistry."""
+    result: Any
+    success: bool
+    error_type: Optional[str] = None  # "not_found", "exception"
+    error_message: Optional[str] = None
+
+
 class SkillRegistry:
     """Central registry holding all callable tools for Jarvis."""
 
@@ -193,7 +202,8 @@ class SkillRegistry:
         return openai_tools
 
     @classmethod
-    def execute(cls, name: str, **kwargs) -> Any:
+    def execute_with_status(cls, name: str, **kwargs) -> SkillExecutionResult:
+        """Executes a registered skill and returns a structured SkillExecutionResult."""
         aliases = {
             "store_fact": "remember_fact",
             "save_fact": "remember_fact",
@@ -205,7 +215,13 @@ class SkillRegistry:
         resolved = aliases.get(name, name)
         tool = cls.get_tool(resolved)
         if not tool:
-            return f"Error: Tool '{name}' not found."
+            err_msg = f"Error: Tool '{name}' not found."
+            return SkillExecutionResult(
+                result=err_msg,
+                success=False,
+                error_type="not_found",
+                error_message=f"Tool '{name}' not found.",
+            )
 
         # Ingestion boundary: reliably record untrusted external data intake
         try:
@@ -223,6 +239,20 @@ class SkillRegistry:
             )
 
         try:
-            return tool(**kwargs)
+            output = tool(**kwargs)
+            return SkillExecutionResult(
+                result=output,
+                success=True,
+            )
         except Exception as e:
-            return f"Error executing tool '{name}': {e}"
+            err_msg = f"Error executing tool '{name}': {e}"
+            return SkillExecutionResult(
+                result=err_msg,
+                success=False,
+                error_type="exception",
+                error_message=str(e),
+            )
+
+    @classmethod
+    def execute(cls, name: str, **kwargs) -> Any:
+        return cls.execute_with_status(name, **kwargs).result

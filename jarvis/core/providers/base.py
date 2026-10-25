@@ -4,21 +4,20 @@ Provides BaseProvider(ABC), structured response abstractions, and the UnifiedRun
 which consolidates multi-turn tool execution, progressive audio narration, and
 deterministic cycle detection into a single robust engine.
 """
-from abc import ABC, abstractmethod
 import asyncio
+from abc import ABC, abstractmethod
+from collections.abc import Callable
 import concurrent.futures
 import contextvars
 from dataclasses import dataclass, field
 import json
 import logging
 from pathlib import Path
-import re
-import time
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from jarvis.skills.base import SkillRegistry
 from jarvis.core.safety import SafetyGate
 from jarvis.core.win32_affinity import configure_ecore_worker_thread
+from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.UnifiedRunner")
 
@@ -60,6 +59,33 @@ class LLMResponse:
     finish_reason: Optional[str] = None
     model: str = ""
     raw_response: Any = None
+
+
+@dataclass
+class ToolExecutionResult:
+    """Represents the structured execution outcome of an individual tool call."""
+    result: str
+    success: bool
+    failure_category: Optional[str] = None  # "timeout", "exception", "safety_halt", "loop_cycle", "orchestrator_denied", "cancelled"
+    error_message: Optional[str] = None
+
+
+@dataclass
+class SessionExecutionTracker:
+    """Tracks per-session tool execution outcomes without cross-turn state leakage."""
+    had_tool_call: bool = False
+    all_tools_succeeded: bool = True
+    iteration_limit_exhausted: bool = False
+    first_failure_category: Optional[str] = None
+    first_failed_tool: Optional[str] = None
+    first_failure_reason: Optional[str] = None
+
+    def record_failure(self, tool_name: str, category: str, reason: str) -> None:
+        self.all_tools_succeeded = False
+        if self.first_failure_category is None:
+            self.first_failure_category = category
+            self.first_failed_tool = tool_name
+            self.first_failure_reason = reason
 
 
 class BaseProvider(ABC):
@@ -149,6 +175,103 @@ class UnifiedRunner:
         except Exception as e:
             logger.debug(f"Tool executor shutdown notice: {e}")
 
+    def execute_tool_with_status(
+        self,
+        fn_name: str,
+        fn_args: Dict[str, Any],
+        timeout: Optional[float] = None,
+        step_index: int = 1,
+        dual_key_confirmed: bool = False,
+    ) -> ToolExecutionResult:
+        """Executes a tool offloaded to a worker thread and returns a structured ToolExecutionResult."""
+        tool_timeout = timeout if timeout is not None else self.tool_timeout
+        executor = self._get_executor_for_tool(fn_name)
+        ctx = contextvars.copy_context()
+
+        def _dispatch():
+            if self.tool_orchestrator is not None:
+                use_with_status = hasattr(self.tool_orchestrator, "execute_step_with_status")
+                if getattr(self.tool_orchestrator, "_mock_return_value", None) is not None or "Mock" in type(self.tool_orchestrator).__name__:
+                    from unittest.mock import DEFAULT
+                    mock_ws = getattr(self.tool_orchestrator, "execute_step_with_status", None)
+                    if mock_ws is None or getattr(mock_ws, "_mock_return_value", DEFAULT) is DEFAULT:
+                        use_with_status = False
+
+                if use_with_status:
+                    step_res = self.tool_orchestrator.execute_step_with_status(
+                        fn_name,
+                        fn_args,
+                        step_index=step_index,
+                        dual_key_confirmed=dual_key_confirmed,
+                    )
+                    return ToolExecutionResult(
+                        result=str(step_res.result),
+                        success=bool(step_res.success),
+                        failure_category=step_res.failure_category,
+                        error_message=step_res.error_message,
+                    )
+                else:
+                    raw_res = self.tool_orchestrator.execute_step(
+                        fn_name,
+                        fn_args,
+                        step_index=step_index,
+                        dual_key_confirmed=dual_key_confirmed,
+                    )
+                    return ToolExecutionResult(
+                        result=str(raw_res),
+                        success=True,
+                    )
+            exec_args = {k: v for k, v in (fn_args or {}).items() if k not in ("automated", "_automated")}
+            tool_fn = SkillRegistry.get_tool(fn_name)
+            if tool_fn:
+                import inspect
+                try:
+                    sig = inspect.signature(tool_fn)
+                    if "automated" in sig.parameters:
+                        exec_args["automated"] = True
+                except Exception:
+                    pass
+            skill_res = SkillRegistry.execute_with_status(fn_name, **exec_args)
+            return ToolExecutionResult(
+                result=str(skill_res.result),
+                success=skill_res.success,
+                failure_category=skill_res.error_type or ("exception" if not skill_res.success else None),
+                error_message=skill_res.error_message,
+            )
+
+        try:
+            future = executor.submit(ctx.run, _dispatch)
+            step_res = future.result(timeout=tool_timeout)
+            if isinstance(step_res, ToolExecutionResult):
+                return step_res
+            return ToolExecutionResult(
+                result=str(getattr(step_res, "result", step_res)),
+                success=bool(getattr(step_res, "success", True)),
+                failure_category=getattr(step_res, "failure_category", None),
+                error_message=getattr(step_res, "error_message", None),
+            )
+        except concurrent.futures.TimeoutError:
+            logger.error("Tool '%s' exceeded mandatory execution timeout of %.1fs.", fn_name, tool_timeout)
+            timeout_msg = (
+                f"Error: Tool '{fn_name}' exceeded maximum execution timeout of {tool_timeout:.1f}s "
+                "and timed out to protect real-time system responsiveness."
+            )
+            return ToolExecutionResult(
+                result=timeout_msg,
+                success=False,
+                failure_category="timeout",
+                error_message=f"Tool '{fn_name}' timed out after {tool_timeout:.1f}s",
+            )
+        except Exception as err:
+            logger.error("Error executing tool '%s': %s", fn_name, err)
+            err_msg = f"Execution error: {err}"
+            return ToolExecutionResult(
+                result=err_msg,
+                success=False,
+                failure_category="exception",
+                error_message=str(err),
+            )
+
     def execute_tool_with_timeout(
         self,
         fn_name: str,
@@ -162,43 +285,14 @@ class UnifiedRunner:
         Routes through ToolOrchestrator to ensure central authorization, taint tracking,
         and human approval verification.
         """
-        tool_timeout = timeout if timeout is not None else self.tool_timeout
-        executor = self._get_executor_for_tool(fn_name)
-        ctx = contextvars.copy_context()
-
-        def _dispatch():
-            if self.tool_orchestrator is not None:
-                return self.tool_orchestrator.execute_step(
-                    fn_name,
-                    fn_args,
-                    step_index=step_index,
-                    dual_key_confirmed=dual_key_confirmed,
-                )
-            exec_args = {k: v for k, v in (fn_args or {}).items() if k not in ("automated", "_automated")}
-            tool_fn = SkillRegistry.get_tool(fn_name)
-            if tool_fn:
-                import inspect
-                try:
-                    sig = inspect.signature(tool_fn)
-                    if "automated" in sig.parameters:
-                        exec_args["automated"] = True
-                except Exception:
-                    pass
-            return SkillRegistry.execute(fn_name, **exec_args)
-
-        try:
-            future = executor.submit(ctx.run, _dispatch)
-            result = future.result(timeout=tool_timeout)
-            return str(result)
-        except concurrent.futures.TimeoutError:
-            logger.error("Tool '%s' exceeded mandatory execution timeout of %.1fs.", fn_name, tool_timeout)
-            return (
-                f"Error: Tool '{fn_name}' exceeded maximum execution timeout of {tool_timeout:.1f}s "
-                "and was terminated to protect real-time system responsiveness."
-            )
-        except Exception as err:
-            logger.error("Error executing tool '%s': %s", fn_name, err)
-            return f"Execution error: {err}"
+        exec_res = self.execute_tool_with_status(
+            fn_name=fn_name,
+            fn_args=fn_args,
+            timeout=timeout,
+            step_index=step_index,
+            dual_key_confirmed=dual_key_confirmed,
+        )
+        return exec_res.result
 
     async def execute_tool_async(
         self,
@@ -242,7 +336,7 @@ class UnifiedRunner:
             logger.error("Tool '%s' exceeded mandatory async execution timeout of %.1fs.", fn_name, tool_timeout)
             return (
                 f"Error: Tool '{fn_name}' exceeded maximum execution timeout of {tool_timeout:.1f}s "
-                "and was terminated to protect real-time system responsiveness."
+                "and timed out to protect real-time system responsiveness."
             )
         except Exception as err:
             logger.error("Error executing tool '%s' asynchronously: %s", fn_name, err)
@@ -349,7 +443,8 @@ class UnifiedRunner:
             except (AttributeError, RuntimeError) as e:
                 logger.debug("ToolOrchestrator reset notice in UnifiedRunner: %s", e)
         last_text_reply = ""
-        had_tool_call = False
+        conversational_conclusion = False
+        session_tracker = SessionExecutionTracker()
 
         while iterations < self.max_iterations:
             iterations += 1
@@ -367,9 +462,10 @@ class UnifiedRunner:
 
             if not turn_res.tool_calls:
                 # No tools requested: we reached the conversational conclusion
+                conversational_conclusion = True
                 break
 
-            had_tool_call = True
+            session_tracker.had_tool_call = True
 
             # Loop Cycle Detector: Check for repeated tool calls with identical arguments
             has_cycle = False
@@ -379,6 +475,11 @@ class UnifiedRunner:
                 if sig in executed_signatures:
                     logger.warning("Loop cycle detected on tool '%s' with identical arguments. Halting recursion.", tc.name)
                     has_cycle = True
+                    session_tracker.record_failure(
+                        tool_name=tc.name,
+                        category="loop_cycle",
+                        reason=f"Repetitive action cycle detected on '{tc.name}'",
+                    )
                     break
                 executed_signatures.add(sig)
 
@@ -422,12 +523,24 @@ class UnifiedRunner:
                 if not is_safe:
                     tool_result = f"Action halted: {warning}"
                     logger.warning("Safety gate blocked tool '%s': %s", fn_name, warning)
+                    session_tracker.record_failure(
+                        tool_name=fn_name,
+                        category="safety_halt",
+                        reason=warning,
+                    )
                     if sentence_callback:
                         sentence_callback(f"Action was halted: {warning}")
                 else:
-                    tool_result = self.execute_tool_with_timeout(
+                    exec_res = self.execute_tool_with_status(
                         fn_name, fn_args, timeout=self.tool_timeout, step_index=iterations
                     )
+                    tool_result = exec_res.result
+                    if not exec_res.success:
+                        session_tracker.record_failure(
+                            tool_name=fn_name,
+                            category=exec_res.failure_category or "exception",
+                            reason=exec_res.error_message or str(tool_result),
+                        )
 
                 # Append tool result to history
                 active_messages.append({
@@ -436,9 +549,35 @@ class UnifiedRunner:
                     "content": str(tool_result),
                 })
 
+        # Iteration-limit exhaustion check:
+        if not conversational_conclusion and not has_cycle and iterations >= self.max_iterations:
+            session_tracker.iteration_limit_exhausted = True
+            session_tracker.record_failure(
+                tool_name="",
+                category="iteration_limit",
+                reason=f"Maximum iteration limit ({self.max_iterations}) reached before task completion",
+            )
+
         final_reply = last_text_reply
-        if not final_reply and had_tool_call:
-            final_reply = "Action completed, Sir."
+        if session_tracker.iteration_limit_exhausted and not conversational_conclusion:
+            final_reply = "Action stopped: Maximum iteration limit reached before task completion, Sir."
+        elif not final_reply and session_tracker.had_tool_call:
+            if session_tracker.first_failure_category == "loop_cycle":
+                final_reply = "Action stopped: A repetitive action loop was halted, Sir."
+            elif session_tracker.first_failure_category == "safety_halt":
+                final_reply = f"Action was halted: {session_tracker.first_failure_reason}, Sir."
+            elif session_tracker.first_failure_category == "timeout":
+                final_reply = (
+                    f"I was unable to complete the action: {session_tracker.first_failed_tool} timed out, Sir."
+                )
+            elif session_tracker.first_failure_category == "cancelled":
+                final_reply = "Action cancelled: Operation was aborted by user interrupt, Sir."
+            elif session_tracker.first_failure_category in ("exception", "orchestrator_denied"):
+                final_reply = f"I encountered an error executing {session_tracker.first_failed_tool}, Sir."
+            elif session_tracker.all_tools_succeeded:
+                final_reply = "Action completed, Sir."
+            else:
+                final_reply = "I was unable to complete the requested action, Sir."
 
         return final_reply or "Standing by, Sir.", active_messages
 

@@ -3,6 +3,7 @@
 Governs multi-step tool-use cycles, loop detection, taint tracking, and acoustic interim bridges.
 """
 import asyncio
+from dataclasses import dataclass
 import json
 import logging
 import threading
@@ -11,11 +12,20 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKIN
 if TYPE_CHECKING:
     from jarvis.core.pipeline.dual_track import DualTrackCoordinator
 
-from jarvis.skills.base import SkillRegistry
+from jarvis.skills.base import SkillRegistry, SkillExecutionResult
 from jarvis.core.security_boundaries import TurnTaintTracker, SecurityBoundaryViolation
 from jarvis.core.pipeline.interim_bridge import InterimSpeechBridge
 
 logger = logging.getLogger("Jarvis.Pipeline.ToolOrchestrator")
+
+
+@dataclass
+class OrchestratorStepResult:
+    """Structured step execution result from ToolOrchestrator."""
+    result: Any
+    success: bool
+    failure_category: Optional[str] = None  # "cancelled", "loop_cycle", "orchestrator_denied", "exception"
+    error_message: Optional[str] = None
 
 
 class ToolOrchestrator:
@@ -42,14 +52,18 @@ class ToolOrchestrator:
         if self.interim_bridge:
             self.interim_bridge.cancel_pending()
 
-    def execute_step(
+    def reset_turn(self) -> None:
+        """Alias for reset() to align with UnifiedRunner call conventions."""
+        self.reset()
+
+    def execute_step_with_status(
         self,
         tool_name: str,
         arguments: Dict[str, Any],
         step_index: int = 1,
         dual_key_confirmed: bool = False,
-    ) -> Any:
-        """Executes a single tool step with security checks and interim acoustic bridge."""
+    ) -> OrchestratorStepResult:
+        """Executes a single tool step with security checks, returning a structured OrchestratorStepResult."""
         # Ensure active turn taint state exists in current execution context
         self.taint_tracker._get_context_state(create_if_missing=True)
 
@@ -71,7 +85,12 @@ class ToolOrchestrator:
         # Check cancellation before dispatch or approval evaluation
         if getattr(self, "cancel_token", None) and getattr(self.cancel_token, "is_cancelled", False):
             logger.warning("Tool execution '%s' aborted by cancellation token.", tool_name)
-            return "Action cancelled: Operation was aborted by user interrupt."
+            return OrchestratorStepResult(
+                result="Action cancelled: Operation was aborted by user interrupt.",
+                success=False,
+                failure_category="cancelled",
+                error_message="Operation was aborted by user interrupt.",
+            )
 
         call_key = (tool_name, arg_signature)
 
@@ -79,7 +98,13 @@ class ToolOrchestrator:
         prior_matches = [k for k in self._history if k == call_key]
         if len(prior_matches) >= self.max_identical_cycles:
             logger.warning("Recursive spin-loop detected on tool '%s' with identical arguments.", tool_name)
-            return f"Loop cycle detected on tool '{tool_name}' with identical arguments. Halting recursion."
+            msg = f"Loop cycle detected on tool '{tool_name}' with identical arguments. Halting recursion."
+            return OrchestratorStepResult(
+                result=msg,
+                success=False,
+                failure_category="loop_cycle",
+                error_message=f"Loop cycle detected on tool '{tool_name}' with identical arguments.",
+            )
 
         self._history.append(call_key)
 
@@ -91,10 +116,20 @@ class ToolOrchestrator:
             )
         except SecurityBoundaryViolation as sec_err:
             logger.error("SecurityBoundaryViolation in tool execution: %s", sec_err)
-            return f"Error: {sec_err}"
+            return OrchestratorStepResult(
+                result=f"Error: {sec_err}",
+                success=False,
+                failure_category="orchestrator_denied",
+                error_message=str(sec_err),
+            )
 
         if not decision.allowed:
-            return f"Error: Security gate denied execution of tool '{tool_name}'."
+            return OrchestratorStepResult(
+                result=f"Error: Security gate denied execution of tool '{tool_name}'.",
+                success=False,
+                failure_category="orchestrator_denied",
+                error_message=f"Security gate denied execution of tool '{tool_name}'.",
+            )
 
         from jarvis.core.security_boundaries import DualKeyApprovalManager
         approval_mgr = DualKeyApprovalManager.get_instance()
@@ -111,7 +146,10 @@ class ToolOrchestrator:
             if cached is not None:
                 logger.debug("RO Cache Hit in ToolOrchestrator for '%s'", tool_name)
                 approval_mgr.clear_active_authorized(ctx_token)
-                return cached
+                return OrchestratorStepResult(
+                    result=cached,
+                    success=True,
+                )
 
         # 3. Arm Acoustic Interim Bridge
         if self.interim_bridge:
@@ -121,7 +159,12 @@ class ToolOrchestrator:
         if getattr(self, "cancel_token", None) and getattr(self.cancel_token, "is_cancelled", False):
             logger.warning("Tool execution '%s' aborted by cancellation token.", tool_name)
             approval_mgr.clear_active_authorized(ctx_token)
-            return "Action cancelled: Operation was aborted by user interrupt."
+            return OrchestratorStepResult(
+                result="Action cancelled: Operation was aborted by user interrupt.",
+                success=False,
+                failure_category="cancelled",
+                error_message="Operation was aborted by user interrupt.",
+            )
 
         # Broadcast tool start event
         if getattr(self, "on_status_callback", None):
@@ -150,14 +193,24 @@ class ToolOrchestrator:
                 except Exception:
                     pass
 
-            result = SkillRegistry.execute(tool_name, **exec_kwargs)
+            skill_res = SkillRegistry.execute_with_status(tool_name, **exec_kwargs)
             if self.dual_track_coordinator is not None and getattr(self.dual_track_coordinator, "is_read_only_tool", lambda t: False)(tool_name):
-                if result is not None and not str(result).startswith("Error"):
-                    self.dual_track_coordinator._set_cached_result(cache_key, result)
-            return result
+                if skill_res.success and skill_res.result is not None:
+                    self.dual_track_coordinator._set_cached_result(cache_key, skill_res.result)
+            return OrchestratorStepResult(
+                result=skill_res.result,
+                success=skill_res.success,
+                failure_category="exception" if not skill_res.success else None,
+                error_message=skill_res.error_message,
+            )
         except Exception as err:
             logger.error("Exception during tool execution '%s': %s", tool_name, err)
-            return f"Error executing tool '{tool_name}': {err}"
+            return OrchestratorStepResult(
+                result=f"Error executing tool '{tool_name}': {err}",
+                success=False,
+                failure_category="exception",
+                error_message=str(err),
+            )
         finally:
             from jarvis.core.security_boundaries import DualKeyApprovalManager
             DualKeyApprovalManager.get_instance().clear_active_authorized(ctx_token)
@@ -174,6 +227,21 @@ class ToolOrchestrator:
                     })
                 except Exception as e:
                     logger.debug("Tool status callback notice (end): %s", e)
+
+    def execute_step(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        step_index: int = 1,
+        dual_key_confirmed: bool = False,
+    ) -> Any:
+        """Executes a single tool step with security checks and interim acoustic bridge."""
+        return self.execute_step_with_status(
+            tool_name=tool_name,
+            arguments=arguments,
+            step_index=step_index,
+            dual_key_confirmed=dual_key_confirmed,
+        ).result
 
     async def execute_step_async(
         self,
