@@ -1,10 +1,7 @@
 """Unit tests for ultra-low latency cloud reasoning and streaming speech pipelines."""
-import os
 import shutil
 import tempfile
-import time
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from google.genai import types
@@ -13,7 +10,7 @@ from jarvis.core.antigravity_bridge import AntigravityBridge
 from jarvis.core.brain import JarvisBrain
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
-from jarvis.skills.base import SkillRegistry
+from jarvis.skills.base import SkillExecutionResult, SkillRegistry
 
 
 class TestCloudStreamingLatency(unittest.TestCase):
@@ -78,7 +75,7 @@ class TestCloudStreamingLatency(unittest.TestCase):
 
         # 1. Voice / Routine Turn -> thinking_budget clamped to 0
         self.brain._process_gemini_query("what is the weather today")
-        args, kwargs = mock_chat.send_message_stream.call_args
+        _args, kwargs = mock_chat.send_message_stream.call_args
         call_cfg = kwargs.get("config")
         self.assertIsNotNone(call_cfg)
         self.assertEqual(call_cfg.thinking_config.thinking_budget, 0)
@@ -87,7 +84,7 @@ class TestCloudStreamingLatency(unittest.TestCase):
         mock_chat.send_message_stream.reset_mock()
         mock_chat.send_message_stream.return_value = [dummy_chunk]
         self.brain._process_gemini_query("explain in detail why quantum entanglement does not violate relativity")
-        args_deep, kwargs_deep = mock_chat.send_message_stream.call_args
+        _args_deep, kwargs_deep = mock_chat.send_message_stream.call_args
         call_cfg_deep = kwargs_deep.get("config")
         self.assertIsNone(call_cfg_deep)
 
@@ -115,13 +112,19 @@ class TestCloudStreamingLatency(unittest.TestCase):
         ]
 
         spoken_clauses = []
-        with patch.object(self.brain.safety, "check_tool_call", return_value=(True, "")) as mock_safety:
-            with patch.object(SkillRegistry, "execute", return_value="Battery: 92%") as mock_exec:
-                reply = self.brain._process_gemini_query("check battery status", sentence_callback=lambda x: spoken_clauses.append(x))
+        with (
+            patch.object(self.brain.safety, "check_tool_call", return_value=(True, "")) as mock_safety,
+            patch.object(
+                SkillRegistry,
+                "execute_with_status",
+                return_value=SkillExecutionResult(result="Battery: 92%", success=True),
+            ) as mock_exec_status,
+        ):
+            reply = self.brain._process_gemini_query("check battery status", sentence_callback=lambda x: spoken_clauses.append(x))
 
-                mock_safety.assert_called_with("get_battery_status", {})
-                mock_exec.assert_called_with("get_battery_status")
-                self.assertIn("92%", reply)
+            mock_safety.assert_called_with("get_battery_status", {})
+            mock_exec_status.assert_called_with("get_battery_status")
+            self.assertIn("92%", reply)
 
     def test_antigravity_bridge_early_clause_extraction(self):
         """Tests that natural clause breaks emit early speech chunks."""

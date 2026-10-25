@@ -1,5 +1,4 @@
 """Verification suite for Groq 429 Rate Limit Resilience and Idempotent Post-Tool Synthesis."""
-import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -7,10 +6,10 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from jarvis.core.brain import JarvisBrain
+from jarvis.core.config_loader import load_config
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
-from jarvis.core.config_loader import load_config
-from jarvis.skills.base import SkillRegistry
+from jarvis.skills.base import SkillExecutionResult, SkillRegistry
 
 
 def test_groq_candidate_models():
@@ -89,9 +88,14 @@ def test_post_tool_synthesis_429_resilience():
     def voice_cb(text):
         spoken_clauses.append(text)
 
-    with patch.object(SkillRegistry, "execute", return_value=sample_tool_result):
+    with patch.object(
+        SkillRegistry,
+        "execute_with_status",
+        return_value=SkillExecutionResult(result=sample_tool_result, success=True),
+    ) as mock_exec_status:
         reply = brain._process_openai_compatible_query("Jarvis, check my schedule", sentence_callback=voice_cb)
 
+    mock_exec_status.assert_called_with("list_calendar_events")
     print("Synthesized reply after Groq 429:", reply)
     assert "classes have been successfully scheduled" in reply or "Action completed" in reply
     assert "My hybrid model could not complete that request" not in reply
@@ -136,9 +140,14 @@ def test_deterministic_fallback_when_all_llms_fail():
     brain.provider = "hybrid"
 
     sample_res = "Processed college timetable and registered 6 classes."
-    with patch.object(SkillRegistry, "execute", return_value=sample_res):
+    with patch.object(
+        SkillRegistry,
+        "execute_with_status",
+        return_value=SkillExecutionResult(result=sample_res, success=True),
+    ) as mock_exec_status:
         reply = brain._process_openai_compatible_query("Jarvis, process my timetable", sentence_callback=None)
 
+    mock_exec_status.assert_called_with("list_calendar_events")
     print("Deterministic reply:", reply)
     assert "Action completed, Sir" in reply
     assert sample_res in reply
