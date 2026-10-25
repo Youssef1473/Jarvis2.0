@@ -174,7 +174,17 @@ class UnifiedRunner:
                     step_index=step_index,
                     dual_key_confirmed=dual_key_confirmed,
                 )
-            return SkillRegistry.execute(fn_name, **fn_args)
+            exec_args = {k: v for k, v in (fn_args or {}).items() if k not in ("automated", "_automated")}
+            tool_fn = SkillRegistry.get_tool(fn_name)
+            if tool_fn:
+                import inspect
+                try:
+                    sig = inspect.signature(tool_fn)
+                    if "automated" in sig.parameters:
+                        exec_args["automated"] = True
+                except Exception:
+                    pass
+            return SkillRegistry.execute(fn_name, **exec_args)
 
         try:
             future = executor.submit(ctx.run, _dispatch)
@@ -212,7 +222,17 @@ class UnifiedRunner:
                     step_index=step_index,
                     dual_key_confirmed=dual_key_confirmed,
                 )
-            return SkillRegistry.execute(fn_name, **fn_args)
+            exec_args = {k: v for k, v in (fn_args or {}).items() if k not in ("automated", "_automated")}
+            tool_fn = SkillRegistry.get_tool(fn_name)
+            if tool_fn:
+                import inspect
+                try:
+                    sig = inspect.signature(tool_fn)
+                    if "automated" in sig.parameters:
+                        exec_args["automated"] = True
+                except Exception:
+                    pass
+            return SkillRegistry.execute(fn_name, **exec_args)
 
         try:
             future = loop.run_in_executor(executor, ctx.run, _dispatch)

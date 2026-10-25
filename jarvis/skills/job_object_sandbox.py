@@ -150,6 +150,18 @@ def _declare_prototypes() -> None:
     ntdll.NtResumeProcess.restype = ctypes.c_long  # NTSTATUS, 0 == STATUS_SUCCESS
     ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
 
+    kernel32.ResumeThread.restype = wintypes.DWORD
+    kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+
+    kernel32.TerminateProcess.restype = wintypes.BOOL
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+
 
 _declare_prototypes()
 
@@ -363,7 +375,7 @@ class SandboxedProcess:
 
     def __init__(
         self,
-        command: List[str],
+        command: list[str],
         cwd: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
         stdin: Any = subprocess.DEVNULL,
@@ -853,3 +865,211 @@ def run_job_sandboxed_process(
                 proc.wait(timeout=0.5)
             except Exception:
                 pass
+
+
+class ContainedProcess:
+    """Manages a Win32 process spawned suspended, assigned to a Job Object, and resumed via ResumeThread."""
+
+    def __init__(
+        self,
+        h_process: int,
+        h_job: int,
+        pid: int,
+        command: list[str],
+    ) -> None:
+        self.h_process = h_process
+        self.h_job = h_job
+        self.pid = pid
+        self.command = command
+        self._closed = False
+
+    def is_alive(self) -> bool:
+        """Returns True if the process is currently active."""
+        if self._closed or kernel32 is None or not self.h_process:
+            return False
+        exit_code = wintypes.DWORD()
+        if kernel32.GetExitCodeProcess(wintypes.HANDLE(self.h_process), ctypes.byref(exit_code)):
+            return exit_code.value == 259
+        return False
+
+    def poll(self) -> int | None:
+        """Returns exit code if exited, or None if still active."""
+        if self._closed or kernel32 is None or not self.h_process:
+            return -1
+        exit_code = wintypes.DWORD()
+        if kernel32.GetExitCodeProcess(wintypes.HANDLE(self.h_process), ctypes.byref(exit_code)):
+            if exit_code.value == 259:
+                return None
+            return int(exit_code.value)
+        return -1
+
+    def wait(self, timeout_sec: float = 5.0) -> int | None:
+        """Waits up to timeout_sec for process exit."""
+        if self._closed or kernel32 is None or not self.h_process:
+            return -1
+        timeout_ms = int(max(0.0, timeout_sec) * 1000)
+        kernel32.WaitForSingleObject(wintypes.HANDLE(self.h_process), wintypes.DWORD(timeout_ms))
+        return self.poll()
+
+    def terminate(self, timeout_sec: float = 3.0) -> bool:
+        """Terminates all processes in the Job Object, waits for exit, and releases handles."""
+        if self._closed:
+            return True
+        self._closed = True
+        success = True
+        if kernel32 is not None:
+            if self.h_job:
+                try:
+                    kernel32.TerminateJobObject(wintypes.HANDLE(self.h_job), 1)
+                except (OSError, RuntimeError) as exc:
+                    logger.warning("Error terminating Job Object: %s", exc)
+                    success = False
+            if self.h_process:
+                try:
+                    timeout_ms = int(max(0.1, timeout_sec) * 1000)
+                    kernel32.WaitForSingleObject(wintypes.HANDLE(self.h_process), wintypes.DWORD(timeout_ms))
+                except (OSError, RuntimeError) as exc:
+                    logger.debug("WaitForSingleObject error: %s", exc)
+                try:
+                    kernel32.CloseHandle(wintypes.HANDLE(self.h_process))
+                except (OSError, RuntimeError) as exc:
+                    logger.warning("Error closing process handle: %s", exc)
+                    success = False
+                self.h_process = 0
+            if self.h_job:
+                try:
+                    kernel32.CloseHandle(wintypes.HANDLE(self.h_job))
+                except (OSError, RuntimeError) as exc:
+                    logger.warning("Error closing job handle: %s", exc)
+                    success = False
+                self.h_job = 0
+        return success
+
+    def __del__(self) -> None:
+        try:
+            self.terminate()
+        except (OSError, RuntimeError):
+            pass
+
+
+def spawn_contained_process(
+    command: list[str],
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    creation_flags: int = 0,
+) -> ContainedProcess:
+    """Spawns a child process suspended, assigns it to a Win32 Job Object with
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, and resumes execution via ResumeThread.
+
+    Fails closed on any creation, limit configuration, or assignment failure by
+    immediately terminating the suspended process and releasing all acquired handles.
+    """
+    if sys.platform != "win32" or kernel32 is None:
+        raise NotImplementedError("spawn_contained_process is only supported on Windows hosts.")
+
+    import _winapi
+
+    # 1. Create and configure Win32 Job Object
+    h_job = kernel32.CreateJobObjectW(None, None)
+    if not h_job:
+        err = _last_error()
+        raise RuntimeError(f"Failed to create Win32 Job Object (Win32 error: {err}).")
+
+    limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not kernel32.SetInformationJobObject(
+        h_job,
+        JobObjectExtendedLimitInformation,
+        ctypes.byref(limits),
+        ctypes.sizeof(limits),
+    ):
+        err = _last_error()
+        kernel32.CloseHandle(h_job)
+        raise RuntimeError(f"Failed to set Job Object limits (Win32 error: {err}).")
+
+    # 2. Build command line string
+    cmd_str = subprocess.list2cmdline(command)
+
+    # 3. Spawn process in suspended state
+    flags = creation_flags | CREATE_SUSPENDED
+    try:
+        hp, ht, pid, _tid = _winapi.CreateProcess(
+            None,
+            cmd_str,
+            None,
+            None,
+            False,
+            flags,
+            env,
+            cwd,
+            None,
+        )
+    except (OSError, ValueError) as exc:
+        kernel32.CloseHandle(h_job)
+        raise RuntimeError(f"Failed to spawn suspended process: {exc}") from exc
+
+    # 4. Assign suspended process to Job Object before primary thread executes
+    assigned = False
+    try:
+        assigned = bool(kernel32.AssignProcessToJobObject(h_job, wintypes.HANDLE(hp)))
+    except (OSError, ValueError) as exc:
+        logger.error("Exception during AssignProcessToJobObject: %s", exc)
+        assigned = False
+
+    if not assigned:
+        err = _last_error()
+        logger.error("AssignProcessToJobObject failed (error %d); terminating unstarted process %d", err, pid)
+        try:
+            kernel32.TerminateProcess(wintypes.HANDLE(hp), 1)
+        except (OSError, RuntimeError) as exc:
+            logger.debug("Cleanup TerminateProcess notice: %s", exc)
+        try:
+            kernel32.CloseHandle(wintypes.HANDLE(ht))
+        except (OSError, RuntimeError) as exc:
+            logger.debug("Cleanup CloseHandle thread notice: %s", exc)
+        try:
+            kernel32.CloseHandle(wintypes.HANDLE(hp))
+        except (OSError, RuntimeError) as exc:
+            logger.debug("Cleanup CloseHandle process notice: %s", exc)
+        try:
+            kernel32.CloseHandle(h_job)
+        except (OSError, RuntimeError) as exc:
+            logger.debug("Cleanup CloseHandle job notice: %s", exc)
+        raise RuntimeError(
+            f"Failed to assign process to Win32 Job Object (Win32 error: {err}); process terminated fail-closed."
+        )
+
+    # 5. Resume primary thread only after successful Job Object assignment
+    resumed = False
+    try:
+        resume_count = kernel32.ResumeThread(wintypes.HANDLE(ht))
+        resumed = (resume_count != 0xFFFFFFFF)
+    except (OSError, ValueError) as exc:
+        logger.error("Exception during ResumeThread: %s", exc)
+        resumed = False
+    finally:
+        try:
+            kernel32.CloseHandle(wintypes.HANDLE(ht))
+        except (OSError, RuntimeError) as exc:
+            logger.debug("Post-resume CloseHandle thread notice: %s", exc)
+
+    if not resumed:
+        err = _last_error()
+        logger.error("ResumeThread failed (error %d); terminating process %d", err, pid)
+        try:
+            kernel32.TerminateProcess(wintypes.HANDLE(hp), 1)
+        except (OSError, RuntimeError) as exc:
+            logger.debug("Cleanup TerminateProcess notice: %s", exc)
+        try:
+            kernel32.CloseHandle(wintypes.HANDLE(hp))
+        except (OSError, RuntimeError) as exc:
+            logger.debug("Cleanup CloseHandle process notice: %s", exc)
+        try:
+            kernel32.CloseHandle(h_job)
+        except (OSError, RuntimeError) as exc:
+            logger.debug("Cleanup CloseHandle job notice: %s", exc)
+        raise RuntimeError(
+            f"Failed to resume thread of contained process (Win32 error: {err}); process terminated fail-closed."
+        )
+
+    return ContainedProcess(h_process=int(hp), h_job=int(h_job), pid=int(pid), command=command)

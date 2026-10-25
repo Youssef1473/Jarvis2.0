@@ -63,6 +63,8 @@ class ToolOrchestrator:
                 "_dual_key_token",
                 "allow_uncontained",
                 "_allow_uncontained",
+                "automated",
+                "_automated",
             )
         }
         arg_signature = json.dumps(sanitized_args, sort_keys=True)
@@ -143,6 +145,8 @@ class ToolOrchestrator:
                     sig = inspect.signature(tool_fn)
                     if "user_approved" in sig.parameters:
                         exec_kwargs["user_approved"] = True
+                    if "automated" in sig.parameters:
+                        exec_kwargs["automated"] = True
                 except Exception:
                     pass
 
@@ -203,6 +207,8 @@ class ToolOrchestrator:
                 "_dual_key_token",
                 "allow_uncontained",
                 "_allow_uncontained",
+                "automated",
+                "_automated",
             )
         }
         arg_signature = json.dumps(sanitized_args, sort_keys=True)
@@ -278,6 +284,8 @@ class ToolOrchestrator:
                     sig = inspect.signature(tool_fn)
                     if "user_approved" in sig.parameters:
                         exec_kwargs["user_approved"] = True
+                    if "automated" in sig.parameters:
+                        exec_kwargs["automated"] = True
                 except Exception:
                     pass
 

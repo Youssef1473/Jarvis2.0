@@ -934,7 +934,7 @@ def take_desktop_screenshot(filename: str = "") -> str:
     name="open_browser_tab",
     description="Opens a new tab or navigates to a specific URL in Brave, Chrome, Edge, or the desktop browser. Reuses active empty tabs automatically without duplicate tabs."
 )
-def open_browser_tab(url: str = "", browser: str = "brave", new_tab: bool = True) -> str:
+def open_browser_tab(url: str = "", browser: str = "brave", new_tab: bool = True, automated: bool = False) -> str:
     """Opens a new tab or URL in the requested desktop browser.
     If the browser is already running on the desktop, focuses the active window and navigates.
     Reuses existing empty New Tab pages without redundant duplicate tabs.
@@ -970,6 +970,13 @@ def open_browser_tab(url: str = "", browser: str = "brave", new_tab: bool = True
                 return cdp_res
         except Exception as e:
             logger.debug(f"CDP fast path bypass: {e}")
+
+    # Automated operations must fail closed: never fall back to ambient personal browser
+    if automated:
+        return (
+            "Navigation failed: Contained managed browser automation is unavailable, "
+            "and automated fallback to personal browser is disabled for security, Sir."
+        )
 
     # 1. UIA-first browser window probe: iterate candidates, no keystrokes.
     #    If the browser is already open, dispatch URL via Chromium single-instance IPC

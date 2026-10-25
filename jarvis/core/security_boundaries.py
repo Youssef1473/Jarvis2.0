@@ -42,6 +42,18 @@ SENSITIVE_AUTH_HEADERS: Set[str] = {
     "x-auth-token",
 }
 
+DISALLOWED_EGRESS_PORTS: frozenset[int] = frozenset({
+    20128,  # Jarvis UI Dashboard
+    20129,  # Jarvis HUD / UI internal control port
+    9222,   # Chrome DevTools Protocol port
+    11434,  # Local Ollama daemon
+    2375,   # Docker daemon HTTP
+    2376,   # Docker daemon HTTPS
+    5432,   # PostgreSQL
+    6379,   # Redis
+    6443,   # Kubernetes API server
+})
+
 IGNORED_MODEL_AUTH_FIELDS: Set[str] = {
     "authorization",
     "user_approved",
@@ -102,13 +114,65 @@ def resolve_and_validate_destination(
     if not hostname:
         raise SecurityBoundaryViolation("Egress URL must contain a valid hostname.")
 
-    hostname_lower = hostname.lower()
+    try:
+        port = parsed.port or (443 if scheme in ("https", "wss") else 80)
+    except Exception:
+        raise SecurityBoundaryViolation("Malformed port in URL.")
+
+    pinned_ip, _family, _port = resolve_and_validate_host_port(
+        hostname=hostname,
+        port=port,
+        allow_local_mcp=allow_local_mcp,
+        allow_localhost=allow_localhost,
+        disallowed_ports=disallowed_ports,
+    )
+
+    return clean_url, parsed, pinned_ip
+
+
+def resolve_and_validate_host_port(
+    hostname: str,
+    port: int,
+    allow_local_mcp: bool = False,
+    allow_localhost: bool = False,
+    disallowed_ports: Optional[Collection[int]] = None,
+    allowed_ports: Optional[Collection[int]] = None,
+) -> Tuple[str, int, int]:
+    """Resolves and validates destination host and port against SSRF, non-global IPs,
+    prohibited ports, and DNS rebinding.
+
+    Validates all candidate IP addresses from DNS against loopback, link-local,
+    private RFC 1918, CGNAT, multicast, reserved, and non-global ranges.
+    Returns (pinned_ip, address_family, port).
+    Raises SecurityBoundaryViolation on any failure.
+    """
+    if not hostname or not isinstance(hostname, str):
+        raise SecurityBoundaryViolation("Empty or invalid hostname provided.")
+
+    clean_host = hostname.strip()
+    if any(c in clean_host for c in ("\r", "\n", "\x00")):
+        raise SecurityBoundaryViolation("Hostname contains illegal control characters.")
+
+    if not isinstance(port, int) or not (1 <= port <= 65535):
+        raise SecurityBoundaryViolation(f"Invalid port: {port}")
+
+    if allowed_ports is not None and port not in allowed_ports:
+        raise SecurityBoundaryViolation(
+            f"Egress to port {port} on host '{clean_host}' is prohibited by web port policy."
+        )
+
+    if disallowed_ports and port in disallowed_ports:
+        raise SecurityBoundaryViolation(
+            f"Egress to port {port} on host '{clean_host}' is prohibited."
+        )
+
+    hostname_lower = clean_host.lower()
 
     # Determine whether destination hostname is an explicitly configured local destination
     # (exact 'localhost' or IPv4/IPv6 loopback literal)
     is_explicit_local = False
     try:
-        ip_parsed = ipaddress.ip_address(hostname)
+        ip_parsed = ipaddress.ip_address(clean_host)
         if isinstance(ip_parsed, ipaddress.IPv6Address) and getattr(ip_parsed, "ipv4_mapped", None):
             ip_parsed = ip_parsed.ipv4_mapped
         if ip_parsed.is_loopback:
@@ -127,30 +191,21 @@ def resolve_and_validate_destination(
             or hostname_lower in ("127.0.0.1", "::1", "0.0.0.0")
             or is_explicit_local
         ):
-            raise SecurityBoundaryViolation(f"Egress to localhost '{hostname}' is blocked.")
-
-    try:
-        port = parsed.port or (443 if scheme in ("https", "wss") else 80)
-    except Exception:
-        raise SecurityBoundaryViolation("Malformed port in URL.")
-
-    if disallowed_ports and port in disallowed_ports:
-        raise SecurityBoundaryViolation(
-            f"Egress to port {port} on host '{hostname}' is prohibited."
-        )
+            raise SecurityBoundaryViolation(f"Egress to localhost '{clean_host}' is blocked.")
 
     # DNS Resolution (Fail Closed)
     try:
-        addr_info = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
+        addr_info = socket.getaddrinfo(clean_host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as err:
-        raise SecurityBoundaryViolation(f"DNS resolution failed for host '{hostname}': {err}")
+        raise SecurityBoundaryViolation(f"DNS resolution failed for host '{clean_host}': {err}")
     except Exception as err:
-        raise SecurityBoundaryViolation(f"Unexpected error resolving host '{hostname}': {err}")
+        raise SecurityBoundaryViolation(f"Unexpected error resolving host '{clean_host}': {err}")
 
     if not addr_info:
-        raise SecurityBoundaryViolation(f"No IP addresses resolved for host '{hostname}'.")
+        raise SecurityBoundaryViolation(f"No IP addresses resolved for host '{clean_host}'.")
 
     validated_ips: List[str] = []
+    selected_family: int = addr_info[0][0]
 
     # Inspect all resolved IPs - every address answer must be valid and global (or permitted loopback)
     for entry in addr_info:
@@ -170,7 +225,7 @@ def resolve_and_validate_destination(
         if permit_loopback:
             if not ip_obj.is_loopback:
                 raise SecurityBoundaryViolation(
-                    f"Local destination '{hostname}' resolved to non-loopback address '{ip_obj}'."
+                    f"Local destination '{clean_host}' resolved to non-loopback address '{ip_obj}'."
                 )
             validated_ips.append(str(ip_obj))
             continue
@@ -185,18 +240,25 @@ def resolve_and_validate_destination(
             or ip_obj.is_unspecified
         ):
             raise SecurityBoundaryViolation(
-                f"SSRF Protection: Host '{hostname}' resolved to non-global address '{ip_obj}'."
+                f"SSRF Protection: Host '{clean_host}' resolved to non-global address '{ip_obj}'."
             )
 
         validated_ips.append(str(ip_obj))
 
     if not validated_ips:
-        raise SecurityBoundaryViolation(f"No valid IP addresses available for host '{hostname}'.")
+        raise SecurityBoundaryViolation(f"No valid IP addresses available for host '{clean_host}'.")
 
     # Select the first validated IP for socket-level connection pinning
     pinned_ip = validated_ips[0]
+    try:
+        if ":" in pinned_ip:
+            selected_family = socket.AF_INET6
+        else:
+            selected_family = socket.AF_INET
+    except Exception:
+        pass
 
-    return clean_url, parsed, pinned_ip
+    return pinned_ip, selected_family, port
 
 
 def validate_egress_url(

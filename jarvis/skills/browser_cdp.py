@@ -9,12 +9,14 @@ import logging
 import os
 from pathlib import Path
 import queue
+import shutil
 import socket
 import subprocess
 import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Dict, Any, List, Optional, Tuple, Set
 
 from jarvis.skills.base import SkillRegistry
@@ -457,6 +459,7 @@ def register_cdp_atexit_cleanup() -> None:
         if not _CDP_ATEXIT_REGISTERED:
             import atexit
             atexit.register(clear_all_tab_sessions)
+            atexit.register(stop_managed_browser)
             _CDP_ATEXIT_REGISTERED = True
 
 
@@ -665,10 +668,11 @@ def sanitize_browser_url(url: str) -> str:
     return cleaned
 
 
-def is_cdp_available(host: str = "127.0.0.1", port: int = 9222, timeout_sec: float = 0.05, force_refresh: bool = False) -> bool:
+def is_cdp_available(host: str = "127.0.0.1", port: Optional[int] = None, timeout_sec: float = 0.05, force_refresh: bool = False) -> bool:
     """Non-blocking probe checking if Chrome DevTools Protocol port is listening on localhost."""
     now = time.time()
-    cache_key = (host, port)
+    effective_port = port or get_managed_cdp_port() or 9222
+    cache_key = (host, effective_port)
     if not force_refresh and cache_key in _CDP_PROBE_CACHE:
         val, ts = _CDP_PROBE_CACHE[cache_key]
         if now - ts < _CDP_CACHE_TTL_SEC:
@@ -680,7 +684,7 @@ def is_cdp_available(host: str = "127.0.0.1", port: int = 9222, timeout_sec: flo
 
     is_open = False
     try:
-        with socket.create_connection((host, port), timeout=timeout_sec):
+        with socket.create_connection((host, effective_port), timeout=timeout_sec):
             is_open = True
     except (OSError, socket.timeout):
         is_open = False
@@ -689,13 +693,14 @@ def is_cdp_available(host: str = "127.0.0.1", port: int = 9222, timeout_sec: flo
     return is_open
 
 
-def list_cdp_tabs(host: str = "127.0.0.1", port: int = 9222) -> List[Dict[str, Any]]:
+def list_cdp_tabs(host: str = "127.0.0.1", port: Optional[int] = None) -> List[Dict[str, Any]]:
     """Retrieves all open page targets via CDP HTTP JSON interface."""
-    if not is_cdp_available(host, port):
+    target_port = port or get_managed_cdp_port() or 9222
+    if not is_cdp_available(host, target_port):
         prune_stale_tab_sessions(set())
         return []
 
-    url = f"http://{host}:{port}/json/list"
+    url = f"http://{host}:{target_port}/json/list"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Jarvis-CDP-Client"})
         with urllib.request.urlopen(req, timeout=0.15) as resp:
@@ -724,14 +729,15 @@ def open_or_navigate_tab_cdp(
     url: str,
     new_tab: bool = True,
     host: str = "127.0.0.1",
-    port: int = 9222
+    port: Optional[int] = None
 ) -> Optional[str]:
     """Navigates to URL via CDP. Reuses empty tabs or navigates an existing tab when new_tab is False.
     
     Returns:
         Status message if navigation succeeded via CDP, or None if CDP is unavailable / failed.
     """
-    if not is_cdp_available(host, port):
+    target_port = port or get_managed_cdp_port() or 9222
+    if not is_cdp_available(host, target_port):
         return None
 
     clean_url = sanitize_browser_url(url)
@@ -746,7 +752,7 @@ def open_or_navigate_tab_cdp(
         clean_url = final_url
 
     try:
-        tabs = list_cdp_tabs(host, port)
+        tabs = list_cdp_tabs(host, target_port)
         
         # 1. Look for existing blank / new tab page
         blank_tab = None
@@ -789,7 +795,7 @@ def open_or_navigate_tab_cdp(
                     register_tab_session(t_id, session)
 
                     # Also activate tab so user sees it
-                    activate_url = f"http://{host}:{port}/json/activate/{t_id}"
+                    activate_url = f"http://{host}:{target_port}/json/activate/{t_id}"
                     urllib.request.urlopen(activate_url, timeout=0.1)
 
                     return f"Navigated existing tab '{target_to_reuse.get('title') or 'New Tab'}' in browser to '{clean_url}' via silent DevTools channel, Sir."
@@ -797,7 +803,7 @@ def open_or_navigate_tab_cdp(
                     logger.debug(f"CDP WebSocket navigate failed, trying HTTP fallback: {ws_err}")
 
         # 2. Otherwise create a new tab: create empty tab first, install guard, then navigate
-        new_url = f"http://{host}:{port}/json/new"
+        new_url = f"http://{host}:{target_port}/json/new"
         req = urllib.request.Request(new_url, method="PUT")
         with urllib.request.urlopen(req, timeout=0.3) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -814,25 +820,25 @@ def open_or_navigate_tab_cdp(
                     if not guarded:
                         # Fail closed on guard initialization failure
                         session.close()
-                        close_cdp_tab(tab_id, host=host, port=port)
+                        close_cdp_tab(tab_id, host=host, port=target_port)
                         return "Navigation blocked: Failed to initialize browser network security guard, Sir."
 
                     resp = session.send_command("Page.navigate", {"url": clean_url}, timeout_sec=1.0)
                     if "error" in resp:
                         session.close()
-                        close_cdp_tab(tab_id, host=host, port=port)
+                        close_cdp_tab(tab_id, host=host, port=target_port)
                         return f"Navigation blocked: Failed to navigate newly opened tab: {resp['error']}, Sir."
 
                     # Maintain active session to preserve CDP network guard in Chromium
                     register_tab_session(tab_id, session)
                 except Exception as guard_err:
                     logger.warning(f"Failed to guard newly opened CDP tab: {guard_err}")
-                    close_cdp_tab(tab_id, host=host, port=port)
+                    close_cdp_tab(tab_id, host=host, port=target_port)
                     return f"Navigation blocked: Failed to initialize browser network security guard: {guard_err}, Sir."
 
             if tab_id:
                 # Activate new tab
-                urllib.request.urlopen(f"http://{host}:{port}/json/activate/{tab_id}", timeout=0.1)
+                urllib.request.urlopen(f"http://{host}:{target_port}/json/activate/{tab_id}", timeout=0.1)
             return f"Opened browser tab '{clean_url or 'about:blank'}' via silent DevTools channel, Sir."
 
     except Exception as e:
@@ -840,12 +846,13 @@ def open_or_navigate_tab_cdp(
         return None
 
 
-def activate_cdp_tab(target_id: str, host: str = "127.0.0.1", port: int = 9222) -> bool:
+def activate_cdp_tab(target_id: str, host: str = "127.0.0.1", port: Optional[int] = None) -> bool:
     """Activates/focuses a specific browser tab via CDP HTTP PUT /json/activate/{target_id}."""
-    if not is_cdp_available(host, port) or not target_id:
+    target_port = port or get_managed_cdp_port() or 9222
+    if not is_cdp_available(host, target_port) or not target_id:
         return False
     try:
-        activate_url = f"http://{host}:{port}/json/activate/{target_id}"
+        activate_url = f"http://{host}:{target_port}/json/activate/{target_id}"
         req = urllib.request.Request(activate_url, method="PUT")
         with urllib.request.urlopen(req, timeout=0.25) as resp:
             return resp.status == 200 or resp.read() == b"Target activated"
@@ -858,14 +865,15 @@ def read_webpage_content_cdp(
     target_id_or_title: Optional[str] = None,
     max_chars: int = 15000,
     host: str = "127.0.0.1",
-    port: int = 9222
+    port: Optional[int] = None
 ) -> Optional[Dict[str, Any]]:
     """Extracts title, URL, and readable body/article text from an open tab in <5ms using Runtime.evaluate."""
-    if not is_cdp_available(host, port):
+    target_port = port or get_managed_cdp_port() or 9222
+    if not is_cdp_available(host, target_port):
         return None
 
     try:
-        tabs = list_cdp_tabs(host, port)
+        tabs = list_cdp_tabs(host, target_port)
         if not tabs:
             return None
 
@@ -942,14 +950,15 @@ def execute_cdp_javascript(
     expression: str,
     target_id_or_title: Optional[str] = None,
     host: str = "127.0.0.1",
-    port: int = 9222
+    port: Optional[int] = None
 ) -> Optional[Any]:
     """Evaluates JavaScript expression on the target tab via CDP Runtime.evaluate."""
-    if not is_cdp_available(host, port) or not expression:
+    target_port = port or get_managed_cdp_port() or 9222
+    if not is_cdp_available(host, target_port) or not expression:
         return None
 
     try:
-        tabs = list_cdp_tabs(host, port)
+        tabs = list_cdp_tabs(host, target_port)
         if not tabs:
             return None
 
@@ -1006,9 +1015,317 @@ def execute_cdp_javascript(
         return None
 
 
+def resolve_browser_executable(browser_name: str = "brave") -> Optional[str]:
+    """Resolves the executable path for the requested browser without launching it."""
+    b_clean = (browser_name or "brave").lower().strip()
+    try:
+        from jarvis.skills.os_control import _build_app_index
+        apps = _build_app_index()
+        for name, path in apps.items():
+            if b_clean in name and path.lower().endswith(".exe"):
+                return path
+    except (ImportError, OSError, KeyError, TypeError):
+        pass
+
+    known_direct = [
+        os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+    ]
+    for p in known_direct:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+class ManagedBrowserSession:
+    """Manages the lifecycle of a dedicated, Win32 Job Object-contained Chromium process for automated browsing.
+
+    Invariants:
+    - Dedicated, per-run isolated profile directory under data/agy_runtime_workspace/browser_profile/
+    - Process tree containment under a Win32 Job Object with KILL_ON_JOB_CLOSE
+    - Process spawned CREATE_SUSPENDED, assigned to Job Object, and resumed via ResumeThread
+    - Dynamic CDP port discovery via DevToolsActivePort (bound to 127.0.0.1)
+    - Zero fallback to ambient or personal browser instances
+    - Profile directory and process tree cleaned up on shutdown / atexit
+    """
+
+    def __init__(
+        self,
+        browser_name: str = "brave",
+        headless: bool = False,
+        base_dir: Path | None = None,
+    ) -> None:
+        self.browser_name = browser_name
+        self.headless = headless
+        self.base_dir = base_dir or Path("data/agy_runtime_workspace/browser_profile").resolve()
+        self.process: Any | None = None
+        self.proxy: Any | None = None
+        self.profile_dir: Path | None = None
+        self.cdp_port: int | None = None
+        self.ws_url_path: str | None = None
+        self._lock = threading.RLock()
+        self._stopped = False
+
+    def is_alive(self) -> bool:
+        """Returns True if the managed browser process is running, proxy is active, and CDP port is listening."""
+        with self._lock:
+            if self._stopped or self.process is None or self.cdp_port is None:
+                return False
+            if self.proxy is None or not self.proxy.is_alive():
+                return False
+            if hasattr(self.process, "is_alive") and not self.process.is_alive():
+                return False
+            return is_cdp_available("127.0.0.1", self.cdp_port, timeout_sec=0.05)
+
+    def start(self, timeout_sec: float = 10.0) -> tuple[bool, str]:
+        """Spawns the managed browser process suspended, assigns to Job Object, resumes, and discovers dynamic CDP port."""
+        with self._lock:
+            if self.is_alive():
+                return True, f"Managed browser already active on dynamic CDP port {self.cdp_port}."
+
+            browser_path = resolve_browser_executable(self.browser_name)
+            if not browser_path:
+                return False, f"Could not locate an executable for browser '{self.browser_name}'."
+
+            # Prune stale orphaned session directories from prior crashed runs
+            clean_stale_managed_profiles(self.base_dir)
+
+            run_id = uuid.uuid4().hex[:12]
+            run_dir = self.base_dir / f"session_{run_id}"
+            try:
+                run_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                return False, f"Failed to create isolated browser profile directory: {exc}"
+            self.profile_dir = run_dir
+
+            ui_ports = get_blocked_localhost_ports()
+            trusted_origins = [f"http://127.0.0.1:{p}" for p in sorted(ui_ports)] + [f"http://localhost:{p}" for p in sorted(ui_ports)]
+            trusted_origins.extend(["chrome-devtools://devtools", "devtools://devtools"])
+
+            # 1. Start local Egress Proxy server on loopback
+            from jarvis.skills.egress_proxy import EgressProxyServer
+            self.proxy = EgressProxyServer(host="127.0.0.1", port=0)
+            try:
+                proxy_port = self.proxy.start()
+            except (OSError, RuntimeError) as exc:
+                logger.error("Failed to start local egress proxy: %s", exc)
+                self.stop()
+                return False, f"Failed to start local egress proxy: {exc}"
+
+            cmd = [
+                browser_path,
+                "--remote-debugging-port=0",
+                "--remote-debugging-address=127.0.0.1",
+                f"--user-data-dir={run_dir}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                f"--remote-allow-origins={','.join(trusted_origins)}",
+                f"--proxy-server=http://127.0.0.1:{proxy_port}",
+                "--proxy-bypass-list=<-loopback>",
+                "--disable-quic",
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                "--dns-prefetch-disable",
+                "--disable-features=AsyncDns",
+            ]
+            if self.headless:
+                cmd.append("--headless=new")
+
+            from jarvis.skills.job_object_sandbox import spawn_contained_process
+            try:
+                self.process = spawn_contained_process(cmd)
+            except (OSError, RuntimeError) as exc:
+                logger.error("Failed to spawn contained browser process: %s", exc)
+                self._cleanup_profile()
+                return False, f"Failed to spawn contained browser process: {exc}"
+
+            discovered_port, ws_path, err = self._poll_devtools_active_port(run_dir, timeout_sec=timeout_sec)
+            if not discovered_port:
+                logger.error("DevToolsActivePort discovery failed: %s; terminating contained browser fail-closed", err)
+                self.stop()
+                return False, f"DevToolsActivePort discovery failed: {err}"
+
+            self.cdp_port = discovered_port
+            self.ws_url_path = ws_path
+
+            deadline = time.monotonic() + 3.0
+            ready = False
+            while time.monotonic() < deadline:
+                if is_cdp_available("127.0.0.1", self.cdp_port, timeout_sec=0.1, force_refresh=True):
+                    ready = True
+                    break
+                time.sleep(0.05)
+
+            if not ready:
+                logger.error("CDP endpoint on 127.0.0.1:%d did not respond; terminating fail-closed", self.cdp_port)
+                self.stop()
+                return False, f"Managed browser launched, but CDP port {self.cdp_port} did not respond within timeout."
+
+            self._stopped = False
+            register_cdp_atexit_cleanup()
+            return True, f"Managed browser '{self.browser_name}' active on dynamic CDP port {self.cdp_port}."
+
+    def _poll_devtools_active_port(self, run_dir: Path, timeout_sec: float) -> tuple[int | None, str | None, str | None]:
+        """Polls for DevToolsActivePort and strictly parses the dynamic port number and WebSocket path."""
+        port_file = run_dir / "DevToolsActivePort"
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if port_file.exists():
+                try:
+                    content = port_file.read_text(encoding="utf-8").strip()
+                    lines = content.splitlines()
+                    if lines:
+                        raw_port = lines[0].strip()
+                        if raw_port.isdigit():
+                            port = int(raw_port)
+                            if 1 <= port <= 65535:
+                                ws_path = lines[1].strip() if len(lines) > 1 else ""
+                                return port, ws_path, None
+                        return None, None, f"Malformed DevToolsActivePort content: {content[:100]}"
+                except (OSError, UnicodeDecodeError):
+                    pass
+            time.sleep(0.05)
+        return None, None, "Timed out waiting for DevToolsActivePort to be created"
+
+    def stop(self) -> None:
+        """Terminates the process tree and purges the isolated per-run profile directory."""
+        with self._lock:
+            self._stopped = True
+            if self.process:
+                try:
+                    self.process.terminate()
+                except (OSError, RuntimeError) as exc:
+                    logger.warning("Error terminating managed browser process: %s", exc)
+                self.process = None
+            if self.proxy:
+                try:
+                    self.proxy.stop()
+                except (OSError, RuntimeError) as exc:
+                    logger.warning("Error stopping egress proxy: %s", exc)
+                self.proxy = None
+            self._cleanup_profile()
+            self.cdp_port = None
+            self.ws_url_path = None
+
+    def _cleanup_profile(self) -> None:
+        """Removes the per-run isolated profile directory."""
+        if self.profile_dir and self.profile_dir.exists():
+            for _ in range(5):
+                try:
+                    shutil.rmtree(self.profile_dir, ignore_errors=False)
+                    break
+                except (OSError, PermissionError):
+                    time.sleep(0.1)
+            if self.profile_dir.exists():
+                try:
+                    shutil.rmtree(self.profile_dir, ignore_errors=True)
+                except (OSError, RuntimeError) as exc:
+                    logger.debug("Cleanup profile notice: %s", exc)
+            self.profile_dir = None
+
+
+_MANAGED_BROWSER_SESSION: ManagedBrowserSession | None = None
+_MANAGED_BROWSER_LOCK = threading.RLock()
+
+
+def clean_stale_managed_profiles(base_dir: Path | None = None, max_age_sec: float = 300.0) -> int:
+    """Removes orphaned session directories from previous browser runs.
+
+    Skips the active session's profile directory. Silently ignores directories
+    with active Windows file locks. Returns the count of pruned directories.
+    """
+    target_base = base_dir or Path("data/agy_runtime_workspace/browser_profile").resolve()
+    if not target_base.exists() or not target_base.is_dir():
+        return 0
+
+    active_dir: Path | None = None
+    with _MANAGED_BROWSER_LOCK:
+        if _MANAGED_BROWSER_SESSION and _MANAGED_BROWSER_SESSION.profile_dir:
+            active_dir = _MANAGED_BROWSER_SESSION.profile_dir.resolve()
+
+    pruned_count = 0
+    now = time.time()
+    try:
+        for entry in target_base.iterdir():
+            if not entry.is_dir() or not entry.name.startswith("session_"):
+                continue
+            try:
+                resolved_entry = entry.resolve()
+                if active_dir and resolved_entry == active_dir:
+                    continue
+                stat_res = entry.stat()
+                age = now - stat_res.st_mtime
+                if age >= max_age_sec:
+                    shutil.rmtree(entry, ignore_errors=True)
+                    if not entry.exists():
+                        pruned_count += 1
+            except (OSError, PermissionError) as exc:
+                logger.debug("clean_stale_managed_profiles notice on %s: %s", entry.name, exc)
+    except OSError as exc:
+        logger.debug("Failed to iterate browser profile directory: %s", exc)
+
+    return pruned_count
+
+
+def get_managed_browser_session() -> ManagedBrowserSession | None:
+    """Returns the active ManagedBrowserSession if running and responsive."""
+    with _MANAGED_BROWSER_LOCK:
+        if _MANAGED_BROWSER_SESSION and _MANAGED_BROWSER_SESSION.is_alive():
+            return _MANAGED_BROWSER_SESSION
+        return None
+
+
+def get_managed_cdp_port() -> int | None:
+    """Returns the dynamic CDP port of the active managed browser, or None."""
+    session = get_managed_browser_session()
+    return session.cdp_port if session else None
+
+
+def ensure_managed_browser(
+    browser_name: str = "brave",
+    headless: bool = False,
+    timeout_sec: float = 10.0,
+) -> tuple[bool, int | None, str]:
+    """Ensures a Job-Object contained managed browser is active, launching one if needed.
+    Returns (success, port, message).
+    """
+    global _MANAGED_BROWSER_SESSION
+    with _MANAGED_BROWSER_LOCK:
+        if _MANAGED_BROWSER_SESSION and _MANAGED_BROWSER_SESSION.is_alive():
+            return True, _MANAGED_BROWSER_SESSION.cdp_port, f"Managed browser active on port {_MANAGED_BROWSER_SESSION.cdp_port}."
+
+        if _MANAGED_BROWSER_SESSION:
+            try:
+                _MANAGED_BROWSER_SESSION.stop()
+            except (OSError, RuntimeError) as exc:
+                logger.debug("Stop managed browser notice: %s", exc)
+            _MANAGED_BROWSER_SESSION = None
+
+        session = ManagedBrowserSession(browser_name=browser_name, headless=headless)
+        ok, msg = session.start(timeout_sec=timeout_sec)
+        if ok and session.cdp_port:
+            _MANAGED_BROWSER_SESSION = session
+            return True, session.cdp_port, msg
+        else:
+            session.stop()
+            return False, None, msg
+
+
+def stop_managed_browser() -> None:
+    """Stops the active managed browser and cleans up its isolated profile directory."""
+    global _MANAGED_BROWSER_SESSION
+    with _MANAGED_BROWSER_LOCK:
+        if _MANAGED_BROWSER_SESSION:
+            try:
+                _MANAGED_BROWSER_SESSION.stop()
+            except (OSError, RuntimeError) as exc:
+                logger.warning("Error stopping managed browser: %s", exc)
+            _MANAGED_BROWSER_SESSION = None
+
+
 def bootstrap_cdp_browser(
     browser_name: str = "brave",
-    port: int = 9222,
+    port: Optional[int] = None,
     dedicated_profile: bool = True
 ) -> Tuple[bool, str]:
     """Ensures a browser instance is running with remote debugging port enabled."""
@@ -1089,17 +1406,18 @@ def bootstrap_cdp_browser(
 def close_cdp_tab(
     title_or_url: Optional[str] = None,
     host: str = "127.0.0.1",
-    port: int = 9222
+    port: Optional[int] = None
 ) -> Optional[str]:
     """Closes an open browser tab via Chrome DevTools Protocol (CDP) HTTP API.
     
     Returns status message if successfully closed via CDP, or None if CDP unavailable/failed.
     """
-    if not is_cdp_available(host, port):
+    target_port = port or get_managed_cdp_port() or 9222
+    if not is_cdp_available(host, target_port):
         return None
 
     try:
-        tabs = list_cdp_tabs(host, port)
+        tabs = list_cdp_tabs(host, target_port)
         if not tabs:
             return "No open browser tabs detected via DevTools channel, Sir."
 
@@ -1125,7 +1443,7 @@ def close_cdp_tab(
         # Clean up active persistent guarded session if present
         remove_tab_session(tab_id)
 
-        close_url = f"http://{host}:{port}/json/close/{tab_id}"
+        close_url = f"http://{host}:{target_port}/json/close/{tab_id}"
         req = urllib.request.Request(close_url)
         with urllib.request.urlopen(req, timeout=0.25) as resp:
             resp.read()
