@@ -58,14 +58,15 @@ class TestBrowserCDPSuite(unittest.TestCase):
         ]
 
         with patch.object(b_cdp, "is_cdp_available", return_value=True), \
-             patch.object(b_cdp, "list_cdp_tabs", return_value=fake_tabs):
+             patch.object(b_cdp, "list_cdp_tabs", return_value=fake_tabs), \
+             patch.object(b_cdp, "validate_browser_navigation_chain", return_value=(True, "https://github.com", None)):
             
             mock_ws = MagicMock()
             mock_ws_enter = MagicMock()
             mock_ws_enter.__enter__.return_value = mock_ws
 
             with patch("websockets.sync.client.connect", return_value=mock_ws_enter), \
-                 patch("urllib.request.urlopen") as mock_url:
+                 patch("urllib.request.urlopen"):
                 res = b_cdp.open_or_navigate_tab_cdp("https://github.com", new_tab=True)
                 self.assertIsNotNone(res)
                 self.assertIn("Navigated existing tab", res)
