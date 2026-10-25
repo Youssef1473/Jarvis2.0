@@ -442,8 +442,8 @@ def run_project_tests(
 
         # Fallback if primary Job Object execution is unavailable (non-Windows hosts, or explicitly opted-in on Windows).
         # When authorized, we attempt process-tree containment via run_sandboxed_batch().
-        # On Windows, if run_sandboxed_batch() fails to establish containment, we fail closed and return an error;
-        # under no circumstances do we fall back to bare subprocess.run() on Windows.
+        # If run_sandboxed_batch() fails to establish containment, we fail closed and return an error;
+        # under no circumstances do we fall back to bare subprocess.run().
         try:
             proc = run_sandboxed_batch(
                 cmd,
@@ -453,17 +453,10 @@ def run_project_tests(
                 timeout=timeout_seconds,
             )
         except RuntimeError as sand_err:
-            if sys.platform == "win32":
-                return (
-                    f"Error: Contained fallback execution failed on Windows ({sand_err}). "
-                    "Uncontained execution is strictly prohibited."
-                )
-            proc = subprocess.run(
-                cmd,
-                cwd=str(WORKSPACE_DIR),
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
+            platform_str = "Windows" if sys.platform == "win32" else "POSIX"
+            return (
+                f"Error: Contained fallback execution failed on {platform_str} ({sand_err}). "
+                "Uncontained execution is strictly prohibited."
             )
         out = (proc.stdout + "\n" + proc.stderr).strip()
         run_status = "PASSED" if proc.returncode == 0 else f"FAILED (Exit Code {proc.returncode})"

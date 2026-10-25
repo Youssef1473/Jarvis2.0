@@ -104,11 +104,21 @@ class UnifiedRunner:
         max_iterations: int = 4,
         per_turn_timeout: float = 35.0,
         tool_timeout: float = 5.0,
+        tool_orchestrator: Any | None = None,
     ):
         self.safety = safety_gate or SafetyGate({})
         self.max_iterations = max_iterations
         self.per_turn_timeout = per_turn_timeout
         self.tool_timeout = tool_timeout
+        if tool_orchestrator is not None:
+            self.tool_orchestrator = tool_orchestrator
+        else:
+            try:
+                from jarvis.core.pipeline.tool_orchestrator import ToolOrchestrator
+                self.tool_orchestrator = ToolOrchestrator()
+            except (ImportError, AttributeError, RuntimeError, TypeError) as e:
+                logger.debug("ToolOrchestrator initialization fallback in UnifiedRunner: %s", e)
+                self.tool_orchestrator = None
         # Dedicated 2-thread STA executor for Windows UIA / COM automation (COINIT_APARTMENTTHREADED)
         self._uia_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=2,
@@ -144,13 +154,30 @@ class UnifiedRunner:
         fn_name: str,
         fn_args: Dict[str, Any],
         timeout: Optional[float] = None,
+        step_index: int = 1,
+        dual_key_confirmed: bool = False,
     ) -> str:
-        """Executes a tool offloaded asynchronously to a dedicated worker thread with strict timeout guard."""
+        """Executes a tool offloaded asynchronously to a dedicated worker thread with strict timeout guard.
+
+        Routes through ToolOrchestrator to ensure central authorization, taint tracking,
+        and human approval verification.
+        """
         tool_timeout = timeout if timeout is not None else self.tool_timeout
         executor = self._get_executor_for_tool(fn_name)
         ctx = contextvars.copy_context()
+
+        def _dispatch():
+            if self.tool_orchestrator is not None:
+                return self.tool_orchestrator.execute_step(
+                    fn_name,
+                    fn_args,
+                    step_index=step_index,
+                    dual_key_confirmed=dual_key_confirmed,
+                )
+            return SkillRegistry.execute(fn_name, **fn_args)
+
         try:
-            future = executor.submit(ctx.run, SkillRegistry.execute, fn_name, **fn_args)
+            future = executor.submit(ctx.run, _dispatch)
             result = future.result(timeout=tool_timeout)
             return str(result)
         except concurrent.futures.TimeoutError:
@@ -168,14 +195,27 @@ class UnifiedRunner:
         fn_name: str,
         fn_args: Dict[str, Any],
         timeout: Optional[float] = None,
+        step_index: int = 1,
+        dual_key_confirmed: bool = False,
     ) -> str:
         """Asynchronous coroutine executing a tool off-loop via asyncio.wait_for and the worker pool."""
         tool_timeout = timeout if timeout is not None else self.tool_timeout
         executor = self._get_executor_for_tool(fn_name)
         loop = asyncio.get_running_loop()
         ctx = contextvars.copy_context()
+
+        def _dispatch():
+            if self.tool_orchestrator is not None:
+                return self.tool_orchestrator.execute_step(
+                    fn_name,
+                    fn_args,
+                    step_index=step_index,
+                    dual_key_confirmed=dual_key_confirmed,
+                )
+            return SkillRegistry.execute(fn_name, **fn_args)
+
         try:
-            future = loop.run_in_executor(executor, ctx.run, lambda: SkillRegistry.execute(fn_name, **fn_args))
+            future = loop.run_in_executor(executor, ctx.run, _dispatch)
             result = await asyncio.wait_for(future, timeout=tool_timeout)
             return str(result)
         except asyncio.TimeoutError:
@@ -283,6 +323,11 @@ class UnifiedRunner:
         active_messages = list(messages)
         executed_signatures: Set[Tuple[str, str]] = set()
         iterations = 0
+        if self.tool_orchestrator is not None and hasattr(self.tool_orchestrator, "reset"):
+            try:
+                self.tool_orchestrator.reset()
+            except (AttributeError, RuntimeError) as e:
+                logger.debug("ToolOrchestrator reset notice in UnifiedRunner: %s", e)
         last_text_reply = ""
         had_tool_call = False
 
@@ -360,7 +405,9 @@ class UnifiedRunner:
                     if sentence_callback:
                         sentence_callback(f"Action was halted: {warning}")
                 else:
-                    tool_result = self.execute_tool_with_timeout(fn_name, fn_args, timeout=self.tool_timeout)
+                    tool_result = self.execute_tool_with_timeout(
+                        fn_name, fn_args, timeout=self.tool_timeout, step_index=iterations
+                    )
 
                 # Append tool result to history
                 active_messages.append({

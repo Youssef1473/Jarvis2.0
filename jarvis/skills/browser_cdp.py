@@ -446,10 +446,23 @@ class CDPTabSession:
 
 _ACTIVE_TAB_SESSIONS: dict[str, Any] = {}
 _SESSION_REGISTRY_LOCK = threading.Lock()
+_CDP_ATEXIT_REGISTERED = False
+_CDP_ATEXIT_LOCK = threading.Lock()
+
+
+def register_cdp_atexit_cleanup() -> None:
+    """Registers clear_all_tab_sessions with atexit idempotently to ensure clean disconnection frames."""
+    global _CDP_ATEXIT_REGISTERED
+    with _CDP_ATEXIT_LOCK:
+        if not _CDP_ATEXIT_REGISTERED:
+            import atexit
+            atexit.register(clear_all_tab_sessions)
+            _CDP_ATEXIT_REGISTERED = True
 
 
 def register_tab_session(tab_id: str, session: Any) -> None:
     """Registers an active CDPTabSession, closing any replaced session outside the registry lock."""
+    register_cdp_atexit_cleanup()
     old_session = None
     with _SESSION_REGISTRY_LOCK:
         old_session = _ACTIVE_TAB_SESSIONS.get(tab_id)

@@ -778,18 +778,37 @@ except Exception as e:
 
         with Win32JobObject(max_processes=4, max_memory_bytes=1024 * 1024 * 1024) as job:
             try:
+                is_win = sys.platform == "win32"
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                if is_win:
+                    from jarvis.skills.job_object_sandbox import CREATE_SUSPENDED, resume_process
+                    creationflags |= CREATE_SUSPENDED
+
                 proc = subprocess.Popen(
                     [sys.executable, "-c", runner_script],
                     cwd=str(WORKSPACE_DIR),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    creationflags=creationflags,
+                    close_fds=True,
+                    start_new_session=(not is_win),
                 )
-                if sys.platform == "win32":
-                    if not job.assign_process(proc):
+
+                if is_win:
+                    assigned = False
+                    try:
+                        assigned = job.assign_process(proc)
+                    except (OSError, RuntimeError) as assign_err:
+                        logger.error("Job Object containment assignment error for canary '%s': %s", clean_name, assign_err)
+                        assigned = False
+
+                    if not assigned:
                         proc.kill()
-                        proc.communicate()
+                        try:
+                            proc.communicate(timeout=1.0)
+                        except (subprocess.TimeoutExpired, OSError) as comm_err:
+                            logger.debug("Canary termination communicate notice: %s", comm_err)
                         cls._cleanup_scratch(scratch_file)
                         cls.rollback_snapshot(clean_name, snapshot_path)
                         logger.error("Job Object containment assignment failed for canary '%s'; aborting execution.", clean_name)
@@ -801,13 +820,43 @@ except Exception as e:
                             message=msg,
                         )
 
+                    resumed = False
+                    try:
+                        resumed = resume_process(proc)
+                    except (OSError, RuntimeError) as resume_err:
+                        logger.error("Failed to resume suspended canary '%s': %s", clean_name, resume_err)
+                        resumed = False
+
+                    if not resumed:
+                        proc.kill()
+                        try:
+                            proc.communicate(timeout=1.0)
+                        except (subprocess.TimeoutExpired, OSError) as comm_err:
+                            logger.debug("Canary termination communicate notice: %s", comm_err)
+                        cls._cleanup_scratch(scratch_file)
+                        cls.rollback_snapshot(clean_name, snapshot_path)
+                        logger.error("Failed to resume suspended canary '%s'; aborting execution.", clean_name)
+                        msg = "Security failure: Failed to resume suspended canary process. Execution aborted to fail closed."
+                        cls._record_failure_lesson(clean_name, code, msg, memory_manager)
+                        return SandboxResult(
+                            success=False,
+                            skill_name=clean_name,
+                            message=msg,
+                        )
+
                 try:
                     stdout, stderr = proc.communicate(timeout=timeout_seconds)
                     try:
                         proc.wait(timeout=5.0)
-                    except Exception:
-                        pass
+                    except (subprocess.TimeoutExpired, OSError) as wait_err:
+                        logger.debug("Canary wait notice: %s", wait_err)
                 except subprocess.TimeoutExpired:
+                    if not is_win and getattr(proc, "pid", None):
+                        try:
+                            import signal
+                            os.killpg(os.getpgid(proc.pid), getattr(signal, "SIGKILL", 9))
+                        except (ProcessLookupError, PermissionError, OSError) as kill_err:
+                            logger.debug("POSIX process-group kill notice: %s", kill_err)
                     proc.kill()
                     stdout, stderr = proc.communicate()
                     cls._cleanup_scratch(scratch_file)

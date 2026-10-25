@@ -161,15 +161,14 @@ def search_everything(
     cmd.extend(search_terms)
 
     try:
-        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        proc = subprocess.run(
+        from jarvis.skills.job_object_sandbox import run_sandboxed_batch
+        proc = run_sandboxed_batch(
             cmd,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=5.0,
-            creationflags=creation_flags,
         )
 
         output = proc.stdout.strip()
@@ -179,14 +178,13 @@ def search_everything(
             if "Error 8" in err or "IPC not found" in err:
                 ensure_everything_service()
                 time.sleep(0.4)
-                retry_proc = subprocess.run(
+                retry_proc = run_sandboxed_batch(
                     cmd,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
                     timeout=5.0,
-                    creationflags=creation_flags,
                 )
                 if retry_proc.returncode == 0 and retry_proc.stdout.strip():
                     output = retry_proc.stdout.strip()

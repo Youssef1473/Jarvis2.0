@@ -295,14 +295,15 @@ class TestSkillsSubprocessContainment(unittest.TestCase):
 
     @patch("sys.platform", "linux")
     def test_run_project_tests_contained_fallback_on_non_windows(self):
-        """On non-Windows hosts, if run_sandboxed_batch fails, falls back cleanly to subprocess.run."""
+        """On non-Windows hosts, if run_sandboxed_batch fails, fails closed without bare subprocess.run."""
         mock_proc = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="linux 5 passed", stderr="")
         with patch("jarvis.skills.job_object_sandbox.run_job_sandboxed_process", return_value={"status": "error", "reason": "Non-windows host"}), \
              patch("jarvis.skills.dev_shell.run_sandboxed_batch", side_effect=RuntimeError("Non-windows sandbox error")), \
              patch("subprocess.run", return_value=mock_proc) as mock_subproc:
             out = dev_shell.run_project_tests("test_dummy.py")
-            self.assertTrue(mock_subproc.called)
-            self.assertIn("Test Run [PASSED]:\nlinux 5 passed", out)
+            self.assertFalse(mock_subproc.called)
+            self.assertIn("Error: Contained fallback execution failed on POSIX", out)
+            self.assertIn("Uncontained execution is strictly prohibited", out)
 
     # -------------------------------------------------------------------------
     # 6. Harmless Real Windows Parent/Grandchild Process Tree Termination

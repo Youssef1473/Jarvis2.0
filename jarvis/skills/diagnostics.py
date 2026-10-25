@@ -55,12 +55,13 @@ def profile_runtime(mode: str = "dump", target_pid: Optional[int] = None) -> str
         cmd = [pyspy_exe, "top", "--pid", str(pid), "--duration", "2"]
 
     try:
-        res = subprocess.run(
+        from jarvis.skills.job_object_sandbox import run_sandboxed_batch
+        res = run_sandboxed_batch(
             cmd,
             capture_output=True,
             text=True,
             timeout=8.0,
-            check=False
+            check=False,
         )
         if res.returncode != 0:
             err = res.stderr.strip() or "Process inspection returned non-zero exit code"

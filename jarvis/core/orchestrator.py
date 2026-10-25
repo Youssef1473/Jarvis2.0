@@ -888,6 +888,12 @@ class JarvisOrchestrator:
         except Exception:
             pass
 
+        try:
+            from jarvis.skills.browser_cdp import clear_all_tab_sessions
+            clear_all_tab_sessions()
+        except (OSError, RuntimeError, ImportError, AttributeError) as cdp_err:
+            logger.debug("CDP tab session cleanup notice during shutdown: %s", cdp_err)
+
         # 2. Stop core subsystem components
         cleanup_steps = [
             ("Web HUD", getattr(self, "ui_service", None)),
