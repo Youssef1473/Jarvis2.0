@@ -46,22 +46,38 @@ POWERSHELL_OUTPUT_TAIL_CHARS = 16000
 )
 def execute_powershell(command: str, timeout_seconds: int = 25) -> str:
     """Executes a PowerShell command inside a Job Object so every child it spawns dies with it."""
+    from jarvis.core.cancellation import get_current_tool_cancellation_token
     from jarvis.skills.job_object_sandbox import run_job_sandboxed_process
+
+    token = get_current_tool_cancellation_token()
+    if token is not None:
+        if token.is_cancelled:
+            return "Error: Command cancelled before launch: execution deadline expired or interrupt signaled."
+        if token.deadline is not None:
+            remaining = token.remaining_time()
+            if remaining <= 0.0:
+                return "Error: Command cancelled before launch: execution deadline expired."
+            effective_timeout = min(float(timeout_seconds), remaining)
+        else:
+            effective_timeout = float(timeout_seconds)
+    else:
+        effective_timeout = float(timeout_seconds)
 
     res = run_job_sandboxed_process(
         command=["powershell", "-NoProfile", "-Command", command],
         cwd=str(WORKSPACE_DIR),
         max_memory_mb=POWERSHELL_JOB_MAX_MEMORY_MB,
         max_processes=POWERSHELL_JOB_MAX_PROCESSES,
-        timeout_sec=float(timeout_seconds),
+        timeout_sec=effective_timeout,
         requested_affinity=0,  # no core pinning for general shell work
+        cancel_token=token,
         tail_chars=POWERSHELL_OUTPUT_TAIL_CHARS,
     )
     status = res.get("status")
     if status == "timeout":
-        return f"Error: Command timed out after {timeout_seconds} seconds."
+        return f"Error: Command timed out after {effective_timeout:.1f} seconds."
     if status == "cancelled":
-        return "Error: Command cancelled by voice interrupt."
+        return "Error: Command cancelled by interrupt."
     if status not in ("ok", "failed"):
         return f"Failed to execute command: {res.get('reason') or res.get('stderr_tail') or status}"
 
@@ -94,12 +110,29 @@ def execute_powershell(command: str, timeout_seconds: int = 25) -> str:
 )
 def execute_sandboxed_powershell(command: str, max_memory_mb: int = 1536, timeout_seconds: int = 25) -> str:
     """Runs PowerShell inside an isolated Win32 Job Object shielding P-cores."""
+    from jarvis.core.cancellation import get_current_tool_cancellation_token
     from jarvis.skills.job_object_sandbox import run_job_sandboxed_process
+
+    token = get_current_tool_cancellation_token()
+    if token is not None:
+        if token.is_cancelled:
+            return "Error: Command cancelled before launch: execution deadline expired or interrupt signaled."
+        if token.deadline is not None:
+            remaining = token.remaining_time()
+            if remaining <= 0.0:
+                return "Error: Command cancelled before launch: execution deadline expired."
+            effective_timeout = min(float(timeout_seconds), remaining)
+        else:
+            effective_timeout = float(timeout_seconds)
+    else:
+        effective_timeout = float(timeout_seconds)
+
     res = run_job_sandboxed_process(
         command=["powershell", "-NoProfile", "-Command", command],
         cwd=str(WORKSPACE_DIR),
         max_memory_mb=max_memory_mb,
-        timeout_sec=float(timeout_seconds),
+        timeout_sec=effective_timeout,
+        cancel_token=token,
     )
     if res.get("status") == "ok":
         out = []
@@ -398,19 +431,36 @@ def run_project_tests(
             cmd = [py_exec, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
 
     try:
+        from jarvis.core.cancellation import get_current_tool_cancellation_token
         from jarvis.skills.job_object_sandbox import run_job_sandboxed_process
+
+        token = get_current_tool_cancellation_token()
+        if token is not None:
+            if token.is_cancelled:
+                return "Error: Test run cancelled before launch: execution deadline expired or interrupt signaled."
+            if token.deadline is not None:
+                remaining = token.remaining_time()
+                if remaining <= 0.0:
+                    return "Error: Test run cancelled before launch: execution deadline expired."
+                effective_timeout = min(float(timeout_seconds), remaining)
+            else:
+                effective_timeout = float(timeout_seconds)
+        else:
+            effective_timeout = float(timeout_seconds)
+
         res = run_job_sandboxed_process(
             command=cmd,
             cwd=str(WORKSPACE_DIR),
             max_memory_mb=POWERSHELL_JOB_MAX_MEMORY_MB,
             max_processes=POWERSHELL_JOB_MAX_PROCESSES,
-            timeout_sec=float(timeout_seconds),
+            timeout_sec=effective_timeout,
             requested_affinity=0,
+            cancel_token=token,
             tail_chars=POWERSHELL_OUTPUT_TAIL_CHARS,
         )
         status = res.get("status")
         if status == "timeout":
-            return f"Error: Test run timed out after {timeout_seconds} seconds, Sir."
+            return f"Error: Test run timed out after {effective_timeout:.1f} seconds, Sir."
         if status == "cancelled":
             return "Error: Test run cancelled by user."
         if status in ("ok", "failed"):

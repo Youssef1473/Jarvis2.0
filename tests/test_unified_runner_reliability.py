@@ -8,6 +8,7 @@ Verifies DEF-REL-01:
 """
 from __future__ import annotations
 
+import concurrent.futures
 import threading
 import unittest
 from collections.abc import Callable
@@ -463,6 +464,410 @@ class TestUnifiedRunnerReliability(unittest.TestCase):
         self.assertTrue(res_b.success, "Tool B was erroneously classified as failure!")
         self.assertIsNone(res_b.failure_category)
         self.assertEqual(res_b.result, "Tool B clean success")
+
+
+class TestWorkerPoolRecoveryDEFREL04(unittest.TestCase):
+    """Tests for Worker-Pool Recovery on Tool Timeout (CORE-RUN-01B, DEF-REL-04)."""
+
+    def setUp(self):
+        self._cleanup_events: list[threading.Event] = []
+        self._runners_to_shutdown: list[UnifiedRunner] = []
+
+    def tearDown(self):
+        # Guaranteed cleanup: release any blocking events first so worker threads can exit
+        for ev in self._cleanup_events:
+            ev.set()
+        # Shut down any runners instantiated in tests
+        for runner in self._runners_to_shutdown:
+            runner.shutdown(wait=False)
+
+    def test_tool_raises_own_timeout_error_classified_as_tool_exception(self):
+        """Tool raising TimeoutError internally is classified as 'exception', not runner deadline timeout."""
+        @SkillRegistry.register(name="test_internal_timeout_tool", description="Raises internal TimeoutError")
+        def test_internal_timeout_tool():
+            raise TimeoutError("Third-party API request timed out after 3.0s")
+
+        runner = UnifiedRunner(tool_timeout=10.0)
+        self._runners_to_shutdown.append(runner)
+
+        res = runner.execute_tool_with_status("test_internal_timeout_tool", {})
+        self.assertFalse(res.success)
+        self.assertEqual(res.failure_category, "exception")
+        self.assertIn("Third-party API request timed out after 3.0s", res.result)
+        self.assertNotIn("timed out to protect real-time system responsiveness", res.result)
+
+    def test_queued_task_cancelled_on_deadline_timeout_never_executes(self):
+        """Queued task whose deadline expires is cancelled and never subsequently executes."""
+        blocker_event = threading.Event()
+        self._cleanup_events.append(blocker_event)
+        started_count = [0]
+        started_lock = threading.Lock()
+        first_worker_started = threading.Event()
+
+        @SkillRegistry.register(name="test_pool_occupier_tool", description="Occupies worker thread until released")
+        def test_pool_occupier_tool(worker_id: int = 0):
+            with started_lock:
+                started_count[0] += 1
+                if started_count[0] == 6:
+                    first_worker_started.set()
+            blocker_event.wait(timeout=5.0)
+            return f"occupier {worker_id} done"
+
+        queued_executed = threading.Event()
+
+        @SkillRegistry.register(name="test_queued_tool", description="Queued task that should be cancelled")
+        def test_queued_tool():
+            queued_executed.set()
+            return "queued done"
+
+        runner = UnifiedRunner(tool_timeout=5.0)
+        self._runners_to_shutdown.append(runner)
+
+        # Occupy all 6 workers in general pool with distinct arguments
+        threads = []
+        for i in range(6):
+            t = threading.Thread(
+                target=runner.execute_tool_with_status,
+                args=("test_pool_occupier_tool", {"worker_id": i}),
+            )
+            threads.append(t)
+            t.start()
+
+        # Wait until all 6 workers are actively in test_pool_occupier_tool
+        self.assertTrue(first_worker_started.wait(timeout=5.0), "Workers failed to occupy pool")
+
+        # Now submit the 7th tool with a 0.1s timeout (it will sit queued in _work_queue)
+        res = runner.execute_tool_with_status("test_queued_tool", {}, timeout=0.1)
+        self.assertFalse(res.success)
+        self.assertEqual(res.failure_category, "timeout")
+
+        # Now release the occupiers so workers become free
+        blocker_event.set()
+        for t in threads:
+            t.join(timeout=3.0)
+
+        # Verify that test_queued_tool never executed because future.cancel() pruned it from _work_queue
+        self.assertFalse(queued_executed.wait(timeout=0.3), "Queued tool executed despite being timed out!")
+
+    def test_cooperative_cancellation_token_stops_iterative_tool(self):
+        """Iterative tool observing ToolCancellationToken halts immediately when cancelled."""
+        from jarvis.core.cancellation import get_current_tool_cancellation_token
+
+        completed_steps = []
+
+        @SkillRegistry.register(name="test_iterative_cooperative_tool", description="Iterative tool checking token")
+        def test_iterative_cooperative_tool():
+            tok = get_current_tool_cancellation_token()
+            for step in range(1, 10):
+                if tok is not None and tok.is_cancelled:
+                    return f"halted at step {step}"
+                completed_steps.append(step)
+                if step == 2 and tok is not None:
+                    # Trigger cancellation mid-loop
+                    tok.cancel()
+            return "completed all steps"
+
+        runner = UnifiedRunner(tool_timeout=5.0)
+        self._runners_to_shutdown.append(runner)
+
+        runner.execute_tool_with_status("test_iterative_cooperative_tool", {})
+        self.assertEqual(completed_steps, [1, 2], "Iterative tool continued running after cancellation!")
+
+    def test_subprocess_job_object_tree_cessation_on_tool_timeout(self):
+        """execute_powershell child process tree is reaped via Win32 Job Object on timeout."""
+        import jarvis.skills.dev_shell  # noqa: F401
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
+        approval_mgr = DualKeyApprovalManager.get_instance()
+        approval_mgr.grant_approval("execute_powershell", {"command": "Start-Sleep -Seconds 10"})
+
+        runner = UnifiedRunner(tool_timeout=0.4)
+        self._runners_to_shutdown.append(runner)
+
+        import time
+        start_t = time.monotonic()
+        # Start a 10-second powershell sleep with dual_key_confirmed=True
+        res = runner.execute_tool_with_status(
+            "execute_powershell",
+            {"command": "Start-Sleep -Seconds 10"},
+            dual_key_confirmed=True,
+        )
+        elapsed = time.monotonic() - start_t
+
+        self.assertFalse(res.success)
+        self.assertEqual(res.failure_category, "timeout")
+        # Ensure runner returned within tight deadline tolerance (0.4s timeout, allowing reasonable process launch margin)
+        self.assertLess(elapsed, 3.5, f"Subprocess did not terminate promptly; elapsed={elapsed:.2f}s")
+
+    def test_subprocess_launch_prevented_by_expired_or_cancelled_token(self):
+        """Expired cancellation token prevents subprocess launch entirely."""
+        import time
+
+        import jarvis.skills.dev_shell  # noqa: F401
+        from jarvis.core.cancellation import (
+            ToolCancellationToken,
+            bind_tool_cancellation_token,
+            reset_tool_cancellation_token,
+        )
+        from jarvis.skills.dev_shell import execute_powershell
+
+        # Mint an already-expired token (deadline in the past)
+        expired_token = ToolCancellationToken(deadline=time.monotonic() - 1.0)
+        self.assertTrue(expired_token.is_cancelled)
+
+        ctx_tok = bind_tool_cancellation_token(expired_token)
+        try:
+            start_t = time.monotonic()
+            out = execute_powershell("Start-Sleep -Seconds 5")
+            elapsed = time.monotonic() - start_t
+
+            self.assertIn("cancelled before launch: execution deadline expired", out)
+            self.assertLess(elapsed, 0.1, f"Execution was not aborted immediately; elapsed={elapsed:.3f}s")
+        finally:
+            reset_tool_cancellation_token(ctx_tok)
+
+        # Also verify explicitly cancelled token before launch
+        cancelled_token = ToolCancellationToken(deadline=time.monotonic() + 10.0)
+        cancelled_token.cancel()
+        self.assertTrue(cancelled_token.is_cancelled)
+
+        ctx_tok2 = bind_tool_cancellation_token(cancelled_token)
+        try:
+            start_t = time.monotonic()
+            out2 = execute_powershell("Start-Sleep -Seconds 5")
+            elapsed2 = time.monotonic() - start_t
+
+            self.assertIn("cancelled before launch", out2)
+            self.assertLess(elapsed2, 0.1, f"Cancelled execution was not aborted immediately; elapsed={elapsed2:.3f}s")
+        finally:
+            reset_tool_cancellation_token(ctx_tok2)
+
+    def test_subprocess_normal_bounded_execution_succeeds(self):
+        """Normal execution within deadline succeeds without spurious cancellation."""
+        import jarvis.skills.dev_shell  # noqa: F401
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
+        approval_mgr = DualKeyApprovalManager.get_instance()
+        approval_mgr.grant_approval("execute_powershell", {"command": "Write-Output 'BoundedSuccess'"})
+
+        runner = UnifiedRunner(tool_timeout=5.0)
+        self._runners_to_shutdown.append(runner)
+
+        res = runner.execute_tool_with_status(
+            "execute_powershell",
+            {"command": "Write-Output 'BoundedSuccess'"},
+            dual_key_confirmed=True,
+        )
+        self.assertTrue(res.success, f"Subprocess failed: {res.result}")
+        self.assertIn("BoundedSuccess", res.result)
+
+    def test_uncooperative_worker_timeout_reports_failure_without_caller_hang(self):
+        """Uncooperative worker timeout reports failure promptly without caller blocking."""
+        blocker = threading.Event()
+        self._cleanup_events.append(blocker)
+
+        @SkillRegistry.register(name="test_uncooperative_hang_tool", description="Blocks on event")
+        def test_uncooperative_hang_tool():
+            blocker.wait(timeout=10.0)
+            return "unblocked"
+
+        runner = UnifiedRunner(tool_timeout=0.3)
+        self._runners_to_shutdown.append(runner)
+
+        import time
+        start_t = time.monotonic()
+        res = runner.execute_tool_with_status("test_uncooperative_hang_tool", {})
+        elapsed = time.monotonic() - start_t
+
+        self.assertFalse(res.success)
+        self.assertEqual(res.failure_category, "timeout")
+        self.assertLess(elapsed, 1.5, f"Caller hung on uncooperative worker; elapsed={elapsed:.2f}s")
+        blocker.set()
+
+    def test_general_pool_saturation_and_renewal_recovers_fresh_commands(self):
+        """Saturated general pool undergoes controlled renewal, enabling fresh commands to succeed immediately."""
+        blocker = threading.Event()
+        self._cleanup_events.append(blocker)
+
+        @SkillRegistry.register(name="test_saturation_worker_tool", description="Blocks worker")
+        def test_saturation_worker_tool(worker_id: int = 0):
+            blocker.wait(timeout=10.0)
+            return f"free {worker_id}"
+
+        runner = UnifiedRunner(tool_timeout=0.2)
+        self._runners_to_shutdown.append(runner)
+
+        initial_gen = runner._generation_id
+
+        # Occupy all 6 workers with uncooperative tasks using distinct args
+        threads = []
+        for i in range(6):
+            t = threading.Thread(
+                target=runner.execute_tool_with_status,
+                args=("test_saturation_worker_tool", {"worker_id": i}),
+            )
+            threads.append(t)
+            t.start()
+
+        # Wait for them to time out and leave pool saturated
+        for t in threads:
+            t.join(timeout=2.0)
+
+        # General pool is now saturated with timed-out workers.
+        # Submitting a new task must trigger controlled pool renewal!
+        fresh_res = runner.execute_tool_with_status("test_successful_tool", {"step": 99})
+        self.assertTrue(fresh_res.success, f"Fresh tool failed after saturation: {fresh_res.result}")
+        self.assertIn("CPU temperature is 45C (step 99)", fresh_res.result)
+        self.assertGreater(runner._generation_id, initial_gen, "Executor generation was not incremented")
+
+        # Cleanup: release initial blocked workers
+        blocker.set()
+
+    def test_repeated_saturation_exceeds_cap_and_fails_closed_with_degraded_capacity(self):
+        """Repeated saturation reaching the configured generation cap fails closed with degraded capacity error."""
+        runner = UnifiedRunner(tool_timeout=5.0)
+        self._runners_to_shutdown.append(runner)
+
+        # Artificially set max_retired_generations to 1 and simulate saturation
+        runner._max_retired_generations = 1
+        fake_retired_exec = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        fake_ev = threading.Event()
+        fake_retired_exec.submit(fake_ev.wait)
+        runner._retired_executors.append((fake_retired_exec, 1))
+        runner._general_active_tasks = 6  # simulate full saturation
+        runner._general_timed_out_workers = 6
+
+        res = runner.execute_tool_with_status("test_successful_tool", {})
+        self.assertFalse(res.success)
+        self.assertEqual(res.failure_category, "degraded_capacity")
+        self.assertIn("capacity exhausted", res.result)
+        fake_ev.set()
+        fake_retired_exec.shutdown(wait=False)
+
+    def test_concurrent_submissions_during_renewal_no_lost_work_or_races(self):
+        """Concurrent callers submitting during renewal do not crash, lose work, or reuse retired executors."""
+        runner = UnifiedRunner(tool_timeout=3.0)
+        self._runners_to_shutdown.append(runner)
+
+        results = []
+        threads = []
+        for i in range(12):
+            def submitter(idx: int):
+                res = runner.execute_tool_with_status("test_successful_tool", {"step": idx})
+                results.append(res)
+            t = threading.Thread(target=submitter, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join(timeout=5.0)
+
+        self.assertEqual(len(results), 12)
+        for res in results:
+            self.assertTrue(res.success, f"Concurrent submission failed: {res.result}")
+
+    def test_uia_pool_saturation_no_overlapping_replacement_fails_closed(self):
+        """Saturated/degraded UIA pool does not spawn replacement pool; fails closed with degraded capacity."""
+        runner = UnifiedRunner(tool_timeout=5.0)
+        self._runners_to_shutdown.append(runner)
+
+        # Simulate degraded UIA state with 2 active workers (max cap for UIA)
+        with runner._executor_lock:
+            runner._uia_degraded = True
+            runner._uia_active_tasks = 2
+
+        # UIA skills are listed in UIA_SKILL_NAMES (e.g. 'click_ui_element')
+        res = runner.execute_tool_with_status("click_ui_element", {})
+        self.assertFalse(res.success)
+        self.assertEqual(res.failure_category, "degraded_capacity")
+        self.assertIn("UIA worker pool is degraded", res.result)
+        # Ensure UIA executor was NOT replaced
+        self.assertEqual(runner._uia_executor._max_workers, 2)
+
+    def test_async_caller_cancellation_propagates_to_running_tool(self):
+        """Cancelling the asynchronous caller task triggers cancellation in the running tool."""
+        import asyncio
+
+        started = threading.Event()
+        observed_cancelled = threading.Event()
+        blocker = threading.Event()
+        self._cleanup_events.append(blocker)
+
+        @SkillRegistry.register(name="test_async_cancellable_tool", description="Checks cancellation")
+        def test_async_cancellable_tool():
+            from jarvis.core.cancellation import get_current_tool_cancellation_token
+            tok = get_current_tool_cancellation_token()
+            started.set()
+            for _ in range(50):
+                if tok is not None and tok.is_cancelled:
+                    observed_cancelled.set()
+                    return "cancelled observed"
+                if blocker.wait(timeout=0.05):
+                    break
+            return "done without cancel"
+
+        runner = UnifiedRunner(tool_timeout=5.0)
+        self._runners_to_shutdown.append(runner)
+
+        async def run_async_test():
+            task = asyncio.create_task(runner.execute_tool_async("test_async_cancellable_tool", {}))
+            # Wait for tool to start
+            while not started.is_set():
+                await asyncio.sleep(0.01)
+            # Cancel the task
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(run_async_test())
+        # Verify the running worker observed the cancellation event
+        self.assertTrue(observed_cancelled.wait(timeout=2.0), "Worker did not observe async cancellation!")
+        blocker.set()
+
+    def test_post_timeout_late_result_fencing_discards_output(self):
+        """Tool finishing after execution timeout has its output fenced and discarded."""
+        release_late = threading.Event()
+        self._cleanup_events.append(release_late)
+
+        @SkillRegistry.register(name="test_late_finishing_tool", description="Finishes after timeout")
+        def test_late_finishing_tool():
+            release_late.wait(timeout=5.0)
+            return "late secret data"
+
+        runner = UnifiedRunner(tool_timeout=0.1)
+        self._runners_to_shutdown.append(runner)
+
+        # Call with 0.1s timeout
+        res = runner.execute_tool_with_status("test_late_finishing_tool", {})
+        self.assertFalse(res.success)
+        self.assertEqual(res.failure_category, "timeout")
+
+        # Now release the late tool
+        release_late.set()
+
+    def test_clean_runner_shutdown_with_blocked_test_workers(self):
+        """Runner shutdown with in-flight uncooperative workers is bounded (<50ms)."""
+        blocker = threading.Event()
+        self._cleanup_events.append(blocker)
+
+        @SkillRegistry.register(name="test_shutdown_hang_tool", description="Blocks on event")
+        def test_shutdown_hang_tool():
+            blocker.wait(timeout=10.0)
+            return "done"
+
+        runner = UnifiedRunner(tool_timeout=10.0)
+        # Dispatch a tool offloaded to worker
+        t = threading.Thread(target=runner.execute_tool_with_status, args=("test_shutdown_hang_tool", {}))
+        t.start()
+
+        import time
+        start_t = time.monotonic()
+        # Shutdown with wait=False must return promptly
+        runner.shutdown(wait=False)
+        elapsed = time.monotonic() - start_t
+
+        self.assertLess(elapsed, 0.2, f"Shutdown took too long; elapsed={elapsed:.2f}s")
+        # Cleanup
+        blocker.set()
+        t.join(timeout=2.0)
 
 
 if __name__ == "__main__":

@@ -6,9 +6,13 @@ desktop and browser mutations when speech interruption is triggered.
 """
 from __future__ import annotations
 
+import contextvars
 import ctypes
 import logging
-from typing import Callable, Optional
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
 
 logger = logging.getLogger("Jarvis.Core.Cancellation")
 
@@ -32,7 +36,7 @@ class BargeInCancellationToken:
     before dispatching non-idempotent physical actions (clicks, keystrokes, DOM mutations).
     """
 
-    def __init__(self, shared_state: Optional[SharedEpochState] = None, snapshot_epoch: Optional[int] = None):
+    def __init__(self, shared_state: SharedEpochState | None = None, snapshot_epoch: int | None = None):
         self._state = shared_state if shared_state is not None else GLOBAL_EPOCH_STATE
         self._snapshot_epoch = int(self._state.barge_in_epoch if snapshot_epoch is None else snapshot_epoch)
 
@@ -95,10 +99,10 @@ def _run_flush_callbacks() -> None:
         return
     _IS_RUNNING_FLUSH = True
     try:
-        for cb in list(_FLUSH_CALLBACKS):
+        for cb in _FLUSH_CALLBACKS:
             try:
                 cb()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("Error in flush callback: %s", e)
     finally:
         _IS_RUNNING_FLUSH = False
@@ -137,16 +141,96 @@ def advance_active_tool_epoch() -> int:
     return int(GLOBAL_EPOCH_STATE.active_tool_epoch)
 
 
+@dataclass
+class FencingToken:
+    """Monotonic fencing token to detect post-timeout late execution completions."""
+    fencing_id: int
+    is_invalidated: bool = False
+
+
+class ToolCancellationToken:
+    """Per-invocation cancellation token with monotonic deadline and thread-safe event.
+
+    Propagated via contextvars across worker threads to enable cooperative cancellation,
+    subprocess Job Object tree termination, and post-timeout fencing.
+    """
+
+    def __init__(
+        self,
+        deadline: float | None = None,
+        parent_token: BargeInCancellationToken | None = None,
+        fencing_id: int | None = None,
+    ):
+        self.deadline = deadline
+        self.cancel_event = threading.Event()
+        self.parent_token = parent_token
+        self.fencing_token = FencingToken(fencing_id=fencing_id or 0)
+
+    @property
+    def is_cancelled(self) -> bool:
+        """Returns True if cancelled explicitly, deadline elapsed, or voice barge-in occurred."""
+        if self.cancel_event.is_set():
+            return True
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            return True
+        return bool(self.parent_token is not None and self.parent_token.is_cancelled)
+
+    def cancel(self) -> None:
+        """Triggers cooperative cancellation and invalidates the fencing token."""
+        self.cancel_event.set()
+        self.fencing_token.is_invalidated = True
+
+    def remaining_time(self) -> float:
+        """Returns seconds remaining before deadline, or float('inf') if no deadline."""
+        if self.deadline is None:
+            return float("inf")
+        return max(0.0, self.deadline - time.monotonic())
+
+    def raise_if_cancelled(self) -> None:
+        """Raises RuntimeError if cancelled explicitly, deadline exceeded, or voice barge-in."""
+        if self.cancel_event.is_set():
+            raise RuntimeError("Tool execution cancelled explicitly.")
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            raise RuntimeError(f"Tool execution deadline exceeded ({self.deadline:.2f}).")
+        if self.parent_token is not None and self.parent_token.is_cancelled:
+            self.parent_token.raise_if_cancelled()
+
+
+_active_tool_token: contextvars.ContextVar[ToolCancellationToken | None] = contextvars.ContextVar(
+    "_active_tool_token", default=None
+)
+
+
+def get_current_tool_cancellation_token() -> ToolCancellationToken | None:
+    """Returns the active ToolCancellationToken from the current context, if bound."""
+    return _active_tool_token.get()
+
+
+def bind_tool_cancellation_token(token: ToolCancellationToken) -> contextvars.Token:
+    """Binds a ToolCancellationToken to the current context."""
+    return _active_tool_token.set(token)
+
+
+def reset_tool_cancellation_token(token: contextvars.Token) -> None:
+    """Resets the active ToolCancellationToken context variable."""
+    _active_tool_token.reset(token)
+
+
 __all__ = [
-    "SharedEpochState",
     "GLOBAL_EPOCH_STATE",
     "BargeInCancellationToken",
-    "get_global_cancellation_token",
-    "signal_global_barge_in",
-    "signal_execution_abort",
-    "trigger_speech_barge_in",
-    "register_audio_flush_callback",
-    "unregister_audio_flush_callback",
+    "FencingToken",
+    "SharedEpochState",
+    "ToolCancellationToken",
     "advance_active_tool_epoch",
+    "bind_tool_cancellation_token",
+    "get_current_tool_cancellation_token",
+    "get_global_cancellation_token",
+    "register_audio_flush_callback",
+    "reset_tool_cancellation_token",
+    "signal_execution_abort",
+    "signal_global_barge_in",
+    "trigger_speech_barge_in",
+    "unregister_audio_flush_callback",
 ]
 
