@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any, Optional
+from typing import Any
 
 from google import genai
 from google.genai import types
@@ -46,13 +46,15 @@ class GeminiProviderMixin:
                 history.append(types.Content(role="user", parts=[types.Part.from_text(text=u_text)]))
                 history.append(types.Content(role="model", parts=[types.Part.from_text(text=j_text)]))
 
+        self.gemini_tools = all_tools
         self.gemini_chat = self.gemini_client.chats.create(
             model=self.gemini_model,
             history=history if history else None,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
                 temperature=self.temperature,
-                tools=all_tools,
+                tools=all_tools if all_tools else None,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             )
         )
         self.gemini_task_mode = self.active_task_mode
@@ -85,7 +87,10 @@ class GeminiProviderMixin:
                 contents = [user_text]
 
                 if self.should_capture_screen(user_text):
-                    from jarvis.skills.screen_vision import _get_active_window_details, check_visual_privacy
+                    from jarvis.skills.screen_vision import (
+                        _get_active_window_details,
+                        check_visual_privacy,
+                    )
                     w_title, w_proc = _get_active_window_details()
                     privacy_alert = check_visual_privacy(w_title, w_proc)
                     if privacy_alert:
@@ -97,7 +102,24 @@ class GeminiProviderMixin:
                             contents.append(screenshot)
 
                 is_deep = (self.classify_query_tier(user_text) == "deep" or self.active_task_mode == "code")
-                call_config = None if is_deep else types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_budget=0))
+                active_tools = getattr(self, "gemini_tools", None)
+                if active_tools is None and hasattr(self, "active_tool_names"):
+                    active_tools = [
+                        tool for name, tool in SkillRegistry.get_all_tools().items()
+                        if name in self.active_tool_names
+                    ]
+                afc_config = types.AutomaticFunctionCallingConfig(disable=True)
+                call_config = (
+                    None
+                    if is_deep
+                    else types.GenerateContentConfig(
+                        system_instruction=self._get_system_instruction(),
+                        temperature=self.temperature,
+                        tools=active_tools if active_tools else None,
+                        automatic_function_calling=afc_config,
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    )
+                )
 
                 text_buffer = ""
                 full_content_chunks = []
@@ -115,7 +137,7 @@ class GeminiProviderMixin:
                             if hasattr(cand, "content") and cand.content and cand.content.parts:
                                 text_parts = [p.text for p in cand.content.parts if getattr(p, "text", None)]
                                 chunk_text = "".join(text_parts)
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         chunk_text = getattr(chunk, "text", "") or ""
 
                     if chunk_text:
@@ -142,10 +164,20 @@ class GeminiProviderMixin:
                             tool_name, tool_args, step_index=gemini_tool_iterations, sentence_callback=sentence_callback
                         )
                         logger.info(f"Tool result: {tool_result}")
-                        tool_responses.append(types.Part.from_function_response(
-                            name=tool_name,
-                            response={"result": str(tool_result)}
-                        ))
+                        call_id = getattr(call, "id", None)
+                        if call_id:
+                            tool_responses.append(types.Part(
+                                function_response=types.FunctionResponse(
+                                    name=tool_name,
+                                    response={"result": str(tool_result)},
+                                    id=str(call_id),
+                                )
+                            ))
+                        else:
+                            tool_responses.append(types.Part.from_function_response(
+                                name=tool_name,
+                                response={"result": str(tool_result)},
+                            ))
 
                     function_calls_accumulated = []
                     followup_stream = self.gemini_chat.send_message_stream(tool_responses, config=call_config)
@@ -159,7 +191,7 @@ class GeminiProviderMixin:
                                 if hasattr(cand, "content") and cand.content and cand.content.parts:
                                     text_parts = [p.text for p in cand.content.parts if getattr(p, "text", None)]
                                     chunk_text = "".join(text_parts)
-                        except Exception:
+                        except Exception:  # noqa: BLE001
                             chunk_text = getattr(chunk, "text", "") or ""
 
                         if chunk_text:
@@ -184,10 +216,19 @@ class GeminiProviderMixin:
                         "I reached the limit for tool steps on this request, "
                         "so I stopped before completing the remaining actions."
                     )
+                    # Unresolved function calls leave the SDK chat history ending in a model function_call.
+                    # Invalidate session so the next request reconstructs a clean chat from memory.
+                    self.gemini_chat = None
                 else:
                     reply_text = "".join(full_content_chunks).strip() if full_content_chunks else "At your service, Sir."
-                self.memory.log_interaction(user_text, reply_text)
-                self.memory.auto_learn_from_interaction(user_text, reply_text, provider=self.provider, extractor_fn=self._extract_memory_insights)
+
+                try:
+                    self.memory.log_interaction(user_text, reply_text)
+                    self.memory.auto_learn_from_interaction(
+                        user_text, reply_text, provider=self.provider, extractor_fn=self._extract_memory_insights
+                    )
+                except Exception as log_err:  # noqa: BLE001
+                    logger.debug("Gemini interaction logging notice: %s", log_err)
 
                 elapsed_ms = round((time.perf_counter() - t_start) * 1000, 1)
                 self.last_latencies["gemini"] = elapsed_ms
@@ -195,7 +236,11 @@ class GeminiProviderMixin:
 
                 return reply_text
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
+                # Streaming or tool execution failed mid-flight: chat history is uncertain/corrupted.
+                # Invalidate chat session to avoid reusing an inconsistent turn sequence.
+                self.gemini_chat = None
+
                 err_str = str(e)
                 is_quota_or_congestion = any(
                     k in err_str.lower() for k in ("503", "unavailable", "high demand", "429", "resource_exhausted", "quota", "limit", "rate")

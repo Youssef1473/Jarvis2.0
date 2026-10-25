@@ -846,6 +846,11 @@ class UnifiedRunner:
         final_reply = last_text_reply
         if session_tracker.iteration_limit_exhausted and not conversational_conclusion:
             final_reply = "Action stopped: Maximum iteration limit reached before task completion, Sir."
+            if active_messages and active_messages[-1].get("role") == "tool":
+                active_messages.append({
+                    "role": "assistant",
+                    "content": final_reply,
+                })
         elif not final_reply and session_tracker.had_tool_call:
             if session_tracker.first_failure_category == "loop_cycle":
                 final_reply = "Action stopped: A repetitive action loop was halted, Sir."
