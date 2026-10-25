@@ -452,14 +452,19 @@ _CDP_ATEXIT_REGISTERED = False
 _CDP_ATEXIT_LOCK = threading.Lock()
 
 
+def _cdp_atexit_handler() -> None:
+    """Invoked on interpreter exit to close open CDP tab sessions and managed browsers."""
+    clear_all_tab_sessions()
+    stop_managed_browser()
+
+
 def register_cdp_atexit_cleanup() -> None:
     """Registers clear_all_tab_sessions with atexit idempotently to ensure clean disconnection frames."""
     global _CDP_ATEXIT_REGISTERED
     with _CDP_ATEXIT_LOCK:
         if not _CDP_ATEXIT_REGISTERED:
             import atexit
-            atexit.register(clear_all_tab_sessions)
-            atexit.register(stop_managed_browser)
+            atexit.register(_cdp_atexit_handler)
             _CDP_ATEXIT_REGISTERED = True
 
 
