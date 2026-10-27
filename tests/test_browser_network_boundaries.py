@@ -360,6 +360,7 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
         try:
             with patch.object(b_cdp, "is_cdp_available", return_value=True), \
                  patch.object(b_cdp, "list_cdp_tabs", return_value=fake_tabs), \
+                 patch.object(b_cdp, "validate_browser_navigation_chain", return_value=(True, "https://example.com", None)), \
                  patch.object(b_cdp, "configure_cdp_tab_network_guards", return_value=False):
                 mock_ws = MagicMock()
                 mock_ws_enter = MagicMock()

@@ -248,6 +248,7 @@ class TestAutomatedBrowserFallbackRemoval(unittest.TestCase):
         """Verifies automated=True never falls back to UIA, named pipes, personal subprocess launch, or default shell."""
         with patch.object(b_cdp, "is_cdp_available", return_value=False), \
              patch.object(b_cdp, "get_managed_browser_session", return_value=None), \
+             patch.object(b_cdp, "validate_browser_navigation_chain", return_value=(True, "https://example.com", None)), \
              patch("subprocess.Popen") as mock_popen, \
              patch("webbrowser.open_new_tab") as mock_webbrowser, \
              patch("jarvis.skills.windows_uia.focus_window_uia") as mock_uia:
@@ -266,6 +267,7 @@ class TestAutomatedBrowserFallbackRemoval(unittest.TestCase):
     def test_open_browser_tab_interactive_retains_fallback(self):
         """Verifies automated=False (interactive user voice/UI request) retains backward-compatible desktop launch."""
         with patch.object(b_cdp, "is_cdp_available", return_value=False), \
+             patch.object(b_cdp, "validate_browser_navigation_chain", return_value=(True, "https://example.com", None)), \
              patch("subprocess.Popen"), \
              patch("webbrowser.open_new_tab"):
 
@@ -291,6 +293,7 @@ class TestToolOrchestratorAutomatedEnforcement(unittest.TestCase):
         """Verifies synchronous execute_step strips automated=False from LLM arguments and forces automated=True."""
         with patch.object(b_cdp, "is_cdp_available", return_value=False), \
              patch.object(b_cdp, "get_managed_browser_session", return_value=None), \
+             patch.object(b_cdp, "validate_browser_navigation_chain", return_value=(True, "https://example.com", None)), \
              patch("subprocess.Popen") as mock_popen, \
              patch("webbrowser.open_new_tab") as mock_webbrowser:
 
@@ -311,6 +314,7 @@ class TestToolOrchestratorAutomatedEnforcement(unittest.TestCase):
         """Verifies asynchronous execute_step_async strips automated=False and forces automated=True."""
         with patch.object(b_cdp, "is_cdp_available", return_value=False), \
              patch.object(b_cdp, "get_managed_browser_session", return_value=None), \
+             patch.object(b_cdp, "validate_browser_navigation_chain", return_value=(True, "https://example.com", None)), \
              patch("subprocess.Popen") as mock_popen, \
              patch("webbrowser.open_new_tab") as mock_webbrowser:
 

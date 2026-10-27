@@ -33,6 +33,10 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
+      - name: Install Playwright Browsers
+        run: |
+          playwright install chromium
+
       - name: Run Fast Parallel Test Suite (Non-Hardware)
         run: |
           python tools/run_fast_tests.py --fast -w 2 -v
