@@ -131,6 +131,11 @@ class TextToSpeech:
         "lily": "bf_lily",
     }
 
+    SHUTDOWN_CLEAN_STOP = "CLEAN_STOP"
+    SHUTDOWN_RECOVERED_ABORT = "RECOVERED_ABORT"
+    SHUTDOWN_UNCLEAN_FAILED = "UNCLEAN_FAILED"
+    SHUTDOWN_TIMEOUT_BLOCKED = "TIMEOUT_BLOCKED"
+
     def __init__(self, config: Dict[str, Any]):
         tts_cfg = config.get("tts", {})
         self.engine = tts_cfg.get("engine", "kokoro").lower()
@@ -171,10 +176,16 @@ class TextToSpeech:
         self._session_word_count = 0
         self._underrun_count: int = 0
         self._retained_streams: deque = deque(maxlen=8)
+        self._stream_shutdown_timed_out: bool = False
+        self._stream_cleanup_uncertain: bool = False
+        self._last_shutdown_outcome: str = "NONE"
+        self._shutdown_worker = None
+        self._shutdown_stream = None
+        self._in_stop: bool = False
 
         # Speculative token chunker & high-throughput lock-free audio ring buffer (120s capacity at up to 48kHz)
         self._chunker = StreamingSentenceChunker()
-        self._ring_buffer = AudioRingBuffer(capacity_samples=48000 * 120)
+        self._ring_buffer = AudioRingBuffer(capacity_samples=48000 * 120, ramp_samples=120)
         self._stream_device: Optional[int] = None
         self._stream_sample_rate: int = 24000
         self._synth_has_started: bool = False
@@ -433,8 +444,206 @@ class TextToSpeech:
         for c in clauses:
             self.queue_sentence(c)
 
-    def stop(self):
+    def _close_stream_safely(self, stream: Any, stop_timeout: float = 0.100) -> bool:
+        """Safely stops and closes a PortAudio hardware stream on a dedicated control thread.
+
+        PortAudio stream operations (stop, abort, close) are NOT thread-safe on the
+        same stream pointer. If Pa_StopStream hangs inside a kernel driver deadlock,
+        concurrently invoking abort() or close() on that same stream handle will cause
+        memory corruption or process termination.
+
+        This method bounds the caller's wait time to `stop_timeout`. If the native
+        operation does not complete within `stop_timeout`, the caller abandons the wait,
+        retains ownership of the stream handle in `_retained_streams` without calling
+        abort or close, and logs an explicit warning. Outstanding shutdown workers are
+        strictly bounded: at most one worker thread may be active, and subsequent stream
+        creation fails closed until the active worker finishes.
+
+        Returns:
+            bool: True if the stream stopped and closed cleanly within `stop_timeout`,
+                  False if the native call stalled or failed and was safely retained.
+        """
+        if stream is None:
+            return True
+
+        if hasattr(self, "_retained_streams"):
+            self._retained_streams.append(stream)
+
+        # Enforce single outstanding native shutdown operation
+        if getattr(self, "_shutdown_worker", None) and self._shutdown_worker.is_alive():
+            if self._shutdown_stream is stream:
+                self._shutdown_worker.join(timeout=stop_timeout)
+                if self._shutdown_worker.is_alive():
+                    self._stream_shutdown_timed_out = True
+                    self._stream_cleanup_uncertain = True
+                    self._last_shutdown_outcome = self.SHUTDOWN_TIMEOUT_BLOCKED
+                    return False
+                prior_status = getattr(self._shutdown_worker, "outcome", {}).get("status", self.SHUTDOWN_UNCLEAN_FAILED)
+                self._last_shutdown_outcome = prior_status
+                if prior_status in (self.SHUTDOWN_CLEAN_STOP, self.SHUTDOWN_RECOVERED_ABORT):
+                    self._shutdown_worker = None
+                    self._shutdown_stream = None
+                    self._stream_shutdown_timed_out = False
+                    self._stream_cleanup_uncertain = False
+                    return True
+                self._shutdown_worker = None
+                self._stream_shutdown_timed_out = False
+                self._stream_cleanup_uncertain = True
+                logger.error("Prior native stream shutdown completed with unclean outcome: %s", prior_status)
+                return False
+
+            logger.error(
+                "Cannot initiate stream shutdown: prior shutdown worker is still active. "
+                "Refusing to spawn additional shutdown workers to prevent thread and handle accumulation."
+            )
+            self._stream_shutdown_timed_out = True
+            self._stream_cleanup_uncertain = True
+            self._last_shutdown_outcome = self.SHUTDOWN_TIMEOUT_BLOCKED
+            return False
+
+        self._shutdown_stream = stream
+        worker_outcome: dict[str, Any] = {
+            "status": "UNKNOWN",
+            "stop_error": None,
+            "abort_error": None,
+            "close_error": None,
+        }
+
+        def _native_shutdown_worker():
+            stop_ok = False
+            abort_ok = False
+            close_ok = False
+            try:
+                stream.stop(ignore_errors=False)
+                stop_ok = True
+            except (sd.PortAudioError, OSError, RuntimeError) as exc:
+                worker_outcome["stop_error"] = exc
+                logger.debug("stream.stop(ignore_errors=False) raised (%s); attempting sequential stream.abort()", exc)
+                try:
+                    stream.abort(ignore_errors=False)
+                    abort_ok = True
+                except (sd.PortAudioError, OSError, RuntimeError) as abort_exc:
+                    worker_outcome["abort_error"] = abort_exc
+                    logger.warning("Sequential stream.abort(ignore_errors=False) failed: %s", abort_exc)
+                except Exception as abort_exc:  # noqa: BLE001
+                    worker_outcome["abort_error"] = abort_exc
+                    logger.warning("Unexpected exception during stream.abort(): %s", abort_exc)
+            except Exception as exc:  # noqa: BLE001
+                worker_outcome["stop_error"] = exc
+                logger.debug("Unexpected exception during stream.stop(): %s", exc)
+                try:
+                    stream.abort(ignore_errors=False)
+                    abort_ok = True
+                except Exception as abort_exc:  # noqa: BLE001
+                    worker_outcome["abort_error"] = abort_exc
+                    logger.warning("Unexpected exception during stream.abort(): %s", abort_exc)
+            finally:
+                try:
+                    stream.close(ignore_errors=False)
+                    close_ok = True
+                except Exception as close_exc:  # noqa: BLE001
+                    worker_outcome["close_error"] = close_exc
+                    logger.error("stream.close(ignore_errors=False) failed: %s", close_exc)
+
+            if close_ok and stop_ok:
+                worker_outcome["status"] = self.SHUTDOWN_CLEAN_STOP
+            elif close_ok and abort_ok:
+                worker_outcome["status"] = self.SHUTDOWN_RECOVERED_ABORT
+            else:
+                worker_outcome["status"] = self.SHUTDOWN_UNCLEAN_FAILED
+
+        shutdown_thread = threading.Thread(
+            target=_native_shutdown_worker,
+            name="Jarvis-TTS-StreamShutdown",
+            daemon=True,
+        )
+        shutdown_thread.outcome = worker_outcome
+        self._shutdown_worker = shutdown_thread
+        shutdown_thread.start()
+        shutdown_thread.join(timeout=stop_timeout)
+
+        if shutdown_thread.is_alive():
+            logger.warning(
+                "Native audio stream.stop() did not complete within %.3fs. "
+                "Retaining handle without concurrent abort/close to prevent PortAudio memory corruption.",
+                stop_timeout,
+            )
+            self._stream_shutdown_timed_out = True
+            self._stream_cleanup_uncertain = True
+            self._last_shutdown_outcome = self.SHUTDOWN_TIMEOUT_BLOCKED
+            return False
+
+        status = worker_outcome.get("status", self.SHUTDOWN_UNCLEAN_FAILED)
+        self._last_shutdown_outcome = status
+
+        if status in (self.SHUTDOWN_CLEAN_STOP, self.SHUTDOWN_RECOVERED_ABORT):
+            self._shutdown_worker = None
+            self._shutdown_stream = None
+            self._stream_shutdown_timed_out = False
+            self._stream_cleanup_uncertain = False
+            return True
+
+        self._shutdown_worker = None
+        self._stream_shutdown_timed_out = False
+        self._stream_cleanup_uncertain = True
+        logger.error(
+            "Native audio stream cleanup failed (stop_err=%s, abort_err=%s, close_err=%s). "
+            "Stream state is uncertain.",
+            worker_outcome["stop_error"],
+            worker_outcome["abort_error"],
+            worker_outcome["close_error"],
+        )
+        return False
+
+    def reconcile_stream_lifecycle(self, force: bool = False) -> bool:
+        """Reconciles uncertain or stalled stream lifecycle states.
+
+        If a prior shutdown worker was running and has since terminated cleanly,
+        this reconciles the state and returns True.
+        If `force=True` is provided, forces clearing of `_stream_cleanup_uncertain`
+        and `_shutdown_stream` (e.g. after explicit audio device re-enumeration or
+        subsystem reset by the host).
+
+        Returns:
+            bool: True if stream lifecycle is clear/reconciled, False if still stalled or unclean.
+        """
+        if getattr(self, "_shutdown_worker", None):
+            if self._shutdown_worker.is_alive():
+                if not force:
+                    return False
+                logger.warning("Force-reconciling stream lifecycle while shutdown worker is still alive.")
+            else:
+                prior_outcome = getattr(self._shutdown_worker, "outcome", {}).get("status", self.SHUTDOWN_UNCLEAN_FAILED)
+                self._last_shutdown_outcome = prior_outcome
+                if prior_outcome in (self.SHUTDOWN_CLEAN_STOP, self.SHUTDOWN_RECOVERED_ABORT):
+                    self._shutdown_worker = None
+                    self._shutdown_stream = None
+                    self._stream_shutdown_timed_out = False
+                    self._stream_cleanup_uncertain = False
+                    return True
+
+        if getattr(self, "_stream_cleanup_uncertain", False):
+            if not force:
+                return False
+            logger.warning("Force-clearing uncertain stream cleanup state.")
+
+        self._shutdown_worker = None
+        self._shutdown_stream = None
+        self._stream_shutdown_timed_out = False
+        self._stream_cleanup_uncertain = False
+        return True
+
+    def stop(self, stop_timeout: float = 0.100, ramp_timeout: float = 0.030):
         """Immediately interrupts and halts speech playback across all engines."""
+        if getattr(self, "_in_stop", False):
+            return
+        self._in_stop = True
+        try:
+            self._do_stop(stop_timeout=stop_timeout, ramp_timeout=ramp_timeout)
+        finally:
+            self._in_stop = False
+
+    def _do_stop(self, stop_timeout: float = 0.100, ramp_timeout: float = 0.030):
         self._stop_event.set()
         self._stream_active = False
 
@@ -476,17 +685,22 @@ class TextToSpeech:
             except Exception:
                 break
 
-        # Halt & close continuous sounddevice hardware output stream immediately via abort
+        # Coordinated fade-and-stop: allow bounded time (~25-30 ms) for the callback to consume the anti-click ramp
         stream = getattr(self, "_output_stream", None)
         if stream:
-            try:
-                stream.abort()
-                stream.close()
-            except Exception:
-                pass
-            if hasattr(self, "_retained_streams"):
-                self._retained_streams.append(stream)
             self._output_stream = None
+            if getattr(stream, "active", False):
+                ramp_deadline = time.monotonic() + ramp_timeout
+                while (
+                    hasattr(self, "_ring_buffer")
+                    and self._ring_buffer._consumer_epoch != self._ring_buffer._barge_in_epoch
+                    and time.monotonic() < ramp_deadline
+                ):
+                    time.sleep(0.002)
+            self._close_stream_safely(stream, stop_timeout=stop_timeout)
+        elif getattr(self, "_shutdown_worker", None) and self._shutdown_worker.is_alive():
+            # A previous native stream shutdown is still pending; wait bounded time on existing worker
+            self._close_stream_safely(self._shutdown_stream, stop_timeout=stop_timeout)
         else:
             # Fallback halt for default sounddevice stream
             try:
@@ -672,42 +886,35 @@ class TextToSpeech:
             if status and getattr(status, "output_underflow", False):
                 self._underrun_count += 1
 
-            if self._stop_event.is_set() or not self._stream_active:
+            has_pending_ramp = bool(
+                hasattr(self, "_ring_buffer")
+                and self._ring_buffer._consumer_epoch != self._ring_buffer._barge_in_epoch
+            )
+
+            if (self._stop_event.is_set() or not self._stream_active) and not has_pending_ramp:
                 outdata.fill(0.0)
                 return
 
-            # Pre-buffer cushion: wait until at least 4800 samples (at 48kHz) or 2400 (at 24kHz)
-            # Prevents rapid buffer-starvation underrun clicks ("electric shock / robotic bugging" sound)
-            if not getattr(self, "_prebuffer_filled", True):
-                cushion = 4800 if getattr(self, "_stream_sample_rate", 24000) == 48000 else 2400
-                synth_active = bool(getattr(self, "_synth_thread", None) and self._synth_thread.is_alive())
-                q_has_work = bool(getattr(self, "_sentence_queue", None) and not self._sentence_queue.empty())
-                synth_done = getattr(self, "_synth_has_started", False) and (not synth_active) and (not q_has_work)
+            synth_active = bool(getattr(self, "_synth_thread", None) and self._synth_thread.is_alive())
+            q_has_work = bool(getattr(self, "_sentence_queue", None) and not self._sentence_queue.empty())
+            synth_done = getattr(self, "_synth_has_started", False) and (not synth_active) and (not q_has_work)
 
+            # Pre-buffer cushion (~2 PortAudio blocks: 2048 @ 48kHz / 1024 @ 24kHz = ~42.7ms)
+            # Prevents rapid buffer-starvation underruns without adding artificial 100ms latency.
+            if not getattr(self, "_prebuffer_filled", True) and not has_pending_ramp:
+                cushion = max(1024, frames * 2)
                 if self._ring_buffer.available_samples >= cushion or (synth_done and self._ring_buffer.available_samples > 0):
                     self._prebuffer_filled = True
                 else:
                     outdata.fill(0.0)
                     return
 
-            samples, n = self._ring_buffer.read(frames)
-            if n > 0:
-                if outdata.ndim == 2 and outdata.shape[1] >= 2:
-                    outdata[:n, 0] = samples[:n]
-                    outdata[:n, 1] = samples[:n]
-                elif outdata.ndim == 2:
-                    outdata[:n, 0] = samples[:n]
-                else:
-                    outdata[:n] = samples[:n]
+            # Direct zero-allocation read into PortAudio outdata buffer
+            n = self._ring_buffer.read_into(outdata, frames=frames)
 
-            if n < frames:
-                if outdata.ndim == 2:
-                    outdata[n:, :].fill(0.0)
-                else:
-                    outdata[n:].fill(0.0)
-                # If buffer completely emptied while synthesis is still actively generating the next chunk,
-                # re-arm prebuffer cushion to prevent rapid frame-by-frame on/off stuttering.
-                if n == 0 and bool(getattr(self, "_synth_thread", None) and self._synth_thread.is_alive()):
+            if n < frames and (synth_active or q_has_work):
+                self._underrun_count += 1
+                if n == 0:
                     self._prebuffer_filled = False
         except Exception:
             # Guarantee zero-fill in all failure paths; never let exceptions escape across PortAudio CFFI boundary
@@ -715,6 +922,46 @@ class TextToSpeech:
 
     def start_streaming_session(self):
         """Initializes a double-buffered streaming session with concurrent pre-synthesis."""
+        # Fail closed if a prior stream shutdown is still stalled in the native driver
+        if getattr(self, "_shutdown_worker", None):
+            if self._shutdown_worker.is_alive():
+                logger.error(
+                    "Cannot start streaming session: prior PortAudio stream shutdown is still stalled "
+                    "in native driver. Refusing to create new stream until ownership is released."
+                )
+                self._stream_active = False
+                self._is_speaking = False
+                self._stream_shutdown_timed_out = True
+                self._stream_cleanup_uncertain = True
+                return False
+            prior_outcome = getattr(self._shutdown_worker, "outcome", {}).get("status", self.SHUTDOWN_UNCLEAN_FAILED)
+            self._last_shutdown_outcome = prior_outcome
+            if prior_outcome in (self.SHUTDOWN_CLEAN_STOP, self.SHUTDOWN_RECOVERED_ABORT):
+                self._shutdown_worker = None
+                self._shutdown_stream = None
+                self._stream_shutdown_timed_out = False
+                self._stream_cleanup_uncertain = False
+            else:
+                self._shutdown_worker = None
+                self._stream_shutdown_timed_out = False
+                self._stream_cleanup_uncertain = True
+                logger.error(
+                    "Cannot start streaming session: prior stream shutdown completed with unclean outcome (%s).",
+                    prior_outcome,
+                )
+                self._stream_active = False
+                self._is_speaking = False
+                return False
+
+        if getattr(self, "_stream_cleanup_uncertain", False):
+            logger.error(
+                "Cannot start streaming session: prior stream cleanup failed or remains uncertain. "
+                "Refusing to create new hardware stream to prevent concurrent driver corruption."
+            )
+            self._stream_active = False
+            self._is_speaking = False
+            return False
+
         self._stop_event.clear()
         self._is_speaking = True
         self._stream_active = True
@@ -770,12 +1017,18 @@ class TextToSpeech:
                         if self._stop_event.is_set() or not self._stream_active:
                             break
                         try:
+                            producer_epoch = self._ring_buffer.barge_in_epoch
                             samples, sr = self._kokoro.create(
                                 chunk,
                                 voice=self._resolve_voice(),
                                 speed=self.kokoro_speed,
                                 lang=self.kokoro_lang
                             )
+                            if self._ring_buffer.barge_in_epoch != producer_epoch or self._stop_event.is_set():
+                                if hasattr(self, "_resampler"):
+                                    self._resampler.reset()
+                                break
+
                             padded_samples = self._smooth_and_pad_audio(
                                 samples, sr, chunk, apply_dsp=self.dsp_filter
                             )
@@ -787,9 +1040,18 @@ class TextToSpeech:
                                 except Exception:
                                     pass
 
+                            if self._ring_buffer.barge_in_epoch != producer_epoch or self._stop_event.is_set():
+                                if hasattr(self, "_resampler"):
+                                    self._resampler.reset()
+                                break
+
                             if not self._stop_event.is_set():
                                 # Write directly to the audio ring buffer for gapless WASAPI playback
-                                self._ring_buffer.write(padded_samples)
+                                written = self._ring_buffer.write(padded_samples, producer_epoch=producer_epoch)
+                                if written == 0 and self._ring_buffer.barge_in_epoch != producer_epoch:
+                                    if hasattr(self, "_resampler"):
+                                        self._resampler.reset()
+                                    break
                                 if getattr(self, "_shm_transport", None):
                                     try:
                                         self._shm_transport.write_pcm(padded_samples)
@@ -827,7 +1089,8 @@ class TextToSpeech:
                         except Exception as e:
                             logger.error(f"Playback error: {e}")
 
-                self._is_speaking = False
+                if not use_stream_callback:
+                    self._is_speaking = False
 
             # Launch synthesis producer thread first
             self._synth_thread = threading.Thread(target=_synth_worker, daemon=True, name="Jarvis-TTS-Synth")
@@ -975,20 +1238,16 @@ class TextToSpeech:
 
                 time.sleep(0.01)
 
-            # Brief cushion for DMA hardware buffer flush
+            # Brief cushion (~50ms empirical estimate of driver DMA buffer latency;
+            # accounts for queued hardware samples after the ring buffer drains)
             if not self._stop_event.is_set() and not timed_out:
                 time.sleep(0.05)
 
             # Stop and close the hardware output stream
             if self._output_stream:
-                try:
-                    self._output_stream.stop()
-                    self._output_stream.close()
-                except Exception:
-                    pass
-                if hasattr(self, "_retained_streams"):
-                    self._retained_streams.append(self._output_stream)
+                stream = self._output_stream
                 self._output_stream = None
+                self._close_stream_safely(stream, stop_timeout=0.100)
 
             if self._playback_thread and self._playback_thread.is_alive():
                 self._playback_thread.join(timeout=0.2)
