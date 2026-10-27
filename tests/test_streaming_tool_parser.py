@@ -193,6 +193,31 @@ class TestStreamingToolParserSuite(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_fire_and_forget_task_exception_logged_without_warning(self):
+        """Verifies that an unawaited speculative task exception is handled and logged via the done callback."""
+        async def run_test():
+            def failing_callback(name, args):
+                raise RuntimeError("Fire-and-forget tool failure")
+
+            coordinator = DualTrackCoordinator(filler_threshold_ms=10.0)
+            parser = StreamingToolCallParser(
+                idempotent_read_tools={"get_battery_status"},
+                dispatch_callback=failing_callback,
+                coordinator=coordinator,
+            )
+
+            with self.assertLogs("Jarvis.StreamingToolParser", level="ERROR") as log_capture:
+                # Intentionally do NOT await the returned task directly
+                task = parser.feed_chunk('{"name": "get_battery_status", "arguments": {}}', call_id="unawaited_fail")
+                self.assertIsInstance(task, asyncio.Task)
+                # Wait for task completion using asyncio.wait without retrieving its result/exception
+                await asyncio.wait([task], timeout=2.0)
+
+            # Verify the exception was intercepted and logged by the named done callback
+            self.assertTrue(any("Fire-and-forget tool failure" in msg for msg in log_capture.output))
+
+        asyncio.run(run_test())
+
 
 if __name__ == "__main__":
     unittest.main()

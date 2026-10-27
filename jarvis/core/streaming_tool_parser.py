@@ -82,6 +82,14 @@ class StreamingToolCallParser:
         else:
             self._buffers["default_0"] = value
 
+    @staticmethod
+    def _log_unhandled_task_exception(task: asyncio.Task) -> None:
+        """Done callback that retrieves and logs unhandled exceptions from fire-and-forgotten speculative tasks."""
+        if not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                logger.error("Speculative early tool execution failed: %s", exc)
+
     def feed_chunk(self, delta_json: str, call_id: str = "default_0") -> Optional[Any]:
         """Feeds partial JSON tokens and triggers early execution when valid tool JSON closes.
 
@@ -141,10 +149,7 @@ class StreamingToolCallParser:
                         )
                         task = loop.create_task(coro)
                         # Attach done callback to prevent unhandled exception warnings if task is fire-and-forgotten
-                        task.add_done_callback(
-                            lambda t: logger.error("Speculative early tool execution failed: %s", t.exception())
-                            if not t.cancelled() and t.exception() else None
-                        )
+                        task.add_done_callback(self._log_unhandled_task_exception)
                         return task
                 except RuntimeError:
                     pass
