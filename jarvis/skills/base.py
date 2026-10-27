@@ -14,6 +14,80 @@ class SpeculationForbiddenError(PermissionError):
     pass
 
 
+# Verified Level-0 read-only query and inspection tools safe unconditionally
+KNOWN_READ_ONLY_TOOLS: set[str] = {
+    "get_battery_status",
+    "get_current_time_and_date",
+    "get_system_vitals",
+    "get_weather",
+    "web_search",
+    "get_wikipedia_summary",
+    "get_tech_news_headlines",
+    "get_daily_briefing",
+    "get_voice_settings",
+    "get_user_preferences",
+    "get_pipeline_latency_stats",
+    "get_background_task_output",
+    "get_recent_workspace_mutations",
+    "list_active_timers",
+    "list_calendar_events",
+    "list_open_browser_tabs",
+    "list_pending_tasks",
+    "list_running_applications",
+    "list_background_tasks",
+    "list_staged_documents",
+    "list_photos",
+    "list_compiled_reflex_macros",
+    "list_custom_skills",
+    "list_audio_devices",
+    "list_directory",
+    "read_clipboard",
+    "read_file",
+    "read_multiple_files",
+    "read_webpage_content",
+    "read_webpage_content_cdp",
+    "browse_and_read_webpage",
+    "read_recent_notes",
+    "read_email_details",
+    "read_archived_document",
+    "recall_fact",
+    "recall_episodic_lessons",
+    "recall_past_conversation",
+    "semantic_search_memory",
+    "search_codebase",
+    "search_desktop_files_fast",
+    "search_everything",
+    "search_notes",
+    "search_emails",
+    "search_archived_documents",
+    "git_status",
+    "git_diff",
+    "query_codebase_graph",
+    "ast_search_codebase",
+    "diagnose_test_failure_ast",
+    "profile_runtime",
+    "audit_memory_heap",
+    "audit_vram_and_thermal_budget",
+    "audit_webpage_accessibility",
+    "audit_webpage_performance",
+    "capture_devtools_snapshot",
+    "capture_webpage_screenshot",
+    "describe_photo",
+    "inspect_file_locks",
+    "inspect_port_holders",
+    "inspect_screen",
+    "see_screen",
+    "inspect_screen_with_marks",
+    "inspect_ram_hogs",
+    "inspect_window_controls",
+    "check_unread_emails",
+    "check_hardware_health",
+    "jarvis_doctor",
+    "run_system_troubleshooting",
+    "verify_learned_habits",
+}
+
+
 @dataclass
 class SkillMetadata:
     """Metadata describing execution constraints and resource scopes of a registered skill."""
@@ -30,9 +104,10 @@ class SkillMetadata:
 
 import contextvars
 
-# ContextVar tracking active ToolOrchestrator execution boundary
-_active_orchestrator_scope: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "_active_orchestrator_scope", default=False
+# ContextVar tracking active single-use ToolOrchestrator execution capability
+# When active, holds dict: {"tool_name": str, "consumed": bool}
+_active_orchestrator_scope: contextvars.ContextVar[Optional[dict[str, Any]]] = contextvars.ContextVar(
+    "_active_orchestrator_scope", default=None
 )
 
 
@@ -88,17 +163,21 @@ class SkillRegistry:
                         t_name,
                     )
 
-        def _resolve_risk(t_name: str) -> int:
-            if risk_level is not None:
-                return risk_level
-            if read_only:
+        def _resolve_read_only(t_name: str) -> bool:
+            return bool(read_only) or (t_name in KNOWN_READ_ONLY_TOOLS)
+
+        def _resolve_risk(t_name: str, is_ro: bool) -> int:
+            if is_ro:
                 return 0
-            try:
-                from jarvis.core.security_boundaries import TurnTaintTracker
-                if t_name in getattr(TurnTaintTracker, "KNOWN_READ_ONLY_TOOLS", set()):
-                    return 0
-            except Exception:
-                pass
+            if risk_level is not None:
+                if risk_level == 0:
+                    import logging
+                    logging.getLogger("Jarvis.SkillRegistry").warning(
+                        "Inconsistent tool registration: tool '%s' declared risk_level=0 but is not certified read_only. Failing closed to risk_level=1.",
+                        t_name,
+                    )
+                    return 1
+                return risk_level
             return 1
 
         # Case 1: Bare decorator @SkillRegistry.register
@@ -106,8 +185,8 @@ class SkillRegistry:
             func = name
             tool_name = func.__name__
             _check_collision(tool_name, origin)
-            resolved_risk = _resolve_risk(tool_name)
-            effective_ro = read_only or (resolved_risk == 0)
+            effective_ro = _resolve_read_only(tool_name)
+            resolved_risk = _resolve_risk(tool_name, effective_ro)
             doc = (func.__doc__ or "").strip()
             cls._tools[tool_name] = func
             cls._descriptions[tool_name] = doc
@@ -130,8 +209,8 @@ class SkillRegistry:
         def decorator(func: Callable):
             tool_name = name or func.__name__
             _check_collision(tool_name, origin)
-            resolved_risk = _resolve_risk(tool_name)
-            effective_ro = read_only or (resolved_risk == 0)
+            effective_ro = _resolve_read_only(tool_name)
+            resolved_risk = _resolve_risk(tool_name, effective_ro)
             doc = description or (func.__doc__ or "").strip()
             cls._tools[tool_name] = func
             cls._descriptions[tool_name] = doc
@@ -272,7 +351,15 @@ class SkillRegistry:
             )
 
         # CRITICAL SECURITY GATE: Direct execution boundary
-        if not _active_orchestrator_scope.get():
+        # Single-use authorization capability bound to exact tool authorized by orchestrator
+        cap = _active_orchestrator_scope.get()
+        is_authorized_orchestrator_call = False
+        if isinstance(cap, dict) and not cap.get("consumed", False) and cap.get("tool_name") == resolved:
+            # Consume capability so nested or concurrent child calls cannot inherit it
+            cap["consumed"] = True
+            is_authorized_orchestrator_call = True
+
+        if not is_authorized_orchestrator_call:
             try:
                 from jarvis.core.security_boundaries import TurnTaintTracker, SecurityBoundaryViolation
                 tracker = TurnTaintTracker.get_instance()

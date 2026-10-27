@@ -21,6 +21,10 @@ STATE_SPEAKING = 0
 STATE_BUFFERING_POSSIBLE_TAG = 1
 STATE_ACCUMULATING_TOOL_CALL = 2
 
+# Streaming buffer resource boundaries
+MAX_STREAMING_BUFFER_BYTES: int = 65536  # 64 KB per tool call buffer
+MAX_ACTIVE_CALL_BUFFERS: int = 128
+
 # Canonical set of Level-0 read-only tools safe for speculative dispatch
 DEFAULT_IDEMPOTENT_READ_TOOLS: Set[str] = {
     "get_battery_status",
@@ -64,11 +68,12 @@ class StreamingToolCallParser:
         dispatch_callback: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
         coordinator: Optional[Any] = None,
     ) -> None:
-        self.idempotent_read_tools = idempotent_read_tools or set(DEFAULT_IDEMPOTENT_READ_TOOLS)
+        self.idempotent_read_tools = set(DEFAULT_IDEMPOTENT_READ_TOOLS) if idempotent_read_tools is None else set(idempotent_read_tools)
         self.dispatch_callback = dispatch_callback
         self.coordinator = coordinator
         self._buffers: dict[str, str] = {}
         self._dispatched_call_ids: Set[str] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
 
     @property
     def _buffer(self) -> str:
@@ -102,7 +107,21 @@ class StreamingToolCallParser:
         if call_id in self._dispatched_call_ids:
             return None
 
-        self._buffers[call_id] = self._buffers.get(call_id, "") + delta_json
+        current_buf = self._buffers.get(call_id, "")
+        if len(current_buf) + len(delta_json) > MAX_STREAMING_BUFFER_BYTES:
+            logger.warning(
+                "Streaming buffer ceiling exceeded (%d bytes) for call_id '%s'; discarding delta.",
+                MAX_STREAMING_BUFFER_BYTES,
+                call_id,
+            )
+            return None
+
+        if call_id not in self._buffers and len(self._buffers) >= MAX_ACTIVE_CALL_BUFFERS:
+            oldest_key = next(iter(self._buffers))
+            self._buffers.pop(oldest_key, None)
+            logger.warning("Evicted oldest streaming buffer '%s' (capacity %d reached)", oldest_key, MAX_ACTIVE_CALL_BUFFERS)
+
+        self._buffers[call_id] = current_buf + delta_json
         stripped = self._buffers[call_id].strip()
         if not stripped.endswith("}"):
             return None
@@ -148,7 +167,8 @@ class StreamingToolCallParser:
                             is_read_only=True,
                         )
                         task = loop.create_task(coro)
-                        # Attach done callback to prevent unhandled exception warnings if task is fire-and-forgotten
+                        self._pending_tasks.add(task)
+                        task.add_done_callback(self._pending_tasks.discard)
                         task.add_done_callback(self._log_unhandled_task_exception)
                         return task
                 except RuntimeError:
@@ -167,7 +187,21 @@ class StreamingToolCallParser:
         if call_id in self._dispatched_call_ids:
             return None
 
-        self._buffers[call_id] = self._buffers.get(call_id, "") + delta_json
+        current_buf = self._buffers.get(call_id, "")
+        if len(current_buf) + len(delta_json) > MAX_STREAMING_BUFFER_BYTES:
+            logger.warning(
+                "Streaming buffer ceiling exceeded (%d bytes) for call_id '%s'; discarding delta.",
+                MAX_STREAMING_BUFFER_BYTES,
+                call_id,
+            )
+            return None
+
+        if call_id not in self._buffers and len(self._buffers) >= MAX_ACTIVE_CALL_BUFFERS:
+            oldest_key = next(iter(self._buffers))
+            self._buffers.pop(oldest_key, None)
+            logger.warning("Evicted oldest streaming buffer '%s' (capacity %d reached)", oldest_key, MAX_ACTIVE_CALL_BUFFERS)
+
+        self._buffers[call_id] = current_buf + delta_json
         stripped = self._buffers[call_id].strip()
         if not stripped.endswith("}"):
             return None
@@ -210,9 +244,13 @@ class StreamingToolCallParser:
         return None
 
     def reset(self) -> None:
-        """Resets the internal streaming buffer and dispatched call tracking."""
+        """Resets the internal streaming buffer, dispatched call tracking, and cancels pending tasks."""
         self._buffers.clear()
         self._dispatched_call_ids.clear()
+        for task in list(self._pending_tasks):
+            if not task.done():
+                task.cancel()
+        self._pending_tasks.clear()
 
 
 class NonceGuardedStreamParser:

@@ -147,32 +147,42 @@ class DefaultDenyModuleFinder:
 
 
 # 3. Normalized Read-Allowlist & Write-Deny Audit Hook
-def _install_audit_hook(allowlist_roots: list[str]) -> None:
-    """Installs a PEP 578 audit hook enforcing normalized read allowlisting and write denial."""
+def _install_audit_hook(allowlist_roots: list[str], scratch_dir: str) -> None:
+    """Installs a PEP 578 audit hook enforcing normalized read allowlisting and strict scratch-only mutations."""
     norm_allowlist = [os.path.realpath(os.path.normcase(r)) for r in allowlist_roots if r]
+    norm_scratch = os.path.realpath(os.path.normcase(scratch_dir))
+
+    def _normalize_path(path_candidate: Any) -> str | None:
+        if isinstance(path_candidate, (int, float)):
+            return None
+        if isinstance(path_candidate, bytes):
+            try:
+                path_candidate = path_candidate.decode("utf-8", errors="replace")
+            except (UnicodeDecodeError, AttributeError):
+                return None
+        if not isinstance(path_candidate, str) and not isinstance(path_candidate, Path):
+            return None
+        try:
+            norm_target = os.path.realpath(os.path.normcase(os.path.abspath(str(path_candidate))))
+            return norm_target.removeprefix("\\\\?\\")
+        except (OSError, ValueError):
+            return None
+
+    def _is_scratch_path(path_candidate: Any) -> bool:
+        norm = _normalize_path(path_candidate)
+        if not norm:
+            return False
+        return norm == norm_scratch or norm.startswith(norm_scratch + os.sep)
 
     def _is_path_allowed(path_candidate: Any) -> bool:
         if isinstance(path_candidate, int):
             # Already open integer file descriptors are permitted
             return True
-        if isinstance(path_candidate, bytes):
-            try:
-                path_candidate = path_candidate.decode("utf-8", errors="replace")
-            except (UnicodeDecodeError, AttributeError):
-                return False
-        if not isinstance(path_candidate, str):
-            return True
-
-        # Normalize resolving symlinks, junctions, and case
-        try:
-            norm_target = os.path.realpath(os.path.normcase(os.path.abspath(path_candidate)))
-            ext_prefix = "\\\\?\\"
-            norm_target = norm_target.removeprefix(ext_prefix)
-        except (OSError, ValueError):
+        norm = _normalize_path(path_candidate)
+        if not norm:
             return False
-
         for root in norm_allowlist:
-            if norm_target == root or norm_target.startswith(root + os.sep):
+            if norm == root or norm.startswith(root + os.sep):
                 return True
         return False
 
@@ -198,16 +208,19 @@ def _install_audit_hook(allowlist_roots: list[str]) -> None:
         if event in ("sys._getframe", "sys._current_frames"):
             raise PermissionError(f"[AuditHook] Introspection operation '{event}' blocked in isolated sandbox.")
 
-        # 5. Filesystem open inspection: write deny + read allowlist
+        # 5. Filesystem open inspection: write deny outside scratch + read allowlist
         if event == "open":
             mode = args[1] if len(args) > 1 else None
             flags = args[2] if len(args) > 2 else 0
-            if mode and isinstance(mode, str) and any(m in mode for m in ("w", "a", "+", "x")):
-                raise PermissionError(f"[AuditHook] Filesystem write prohibited (mode='{mode}')")
-            if isinstance(flags, int) and (flags & 0x030B):
-                raise PermissionError(f"[AuditHook] Filesystem write flags prohibited (flags={hex(flags)})")
-
+            is_write_mode = (mode and isinstance(mode, str) and any(m in mode for m in ("w", "a", "+", "x")))
+            is_write_flags = (isinstance(flags, int) and bool(flags & 0x030B))
             target_path = args[0] if len(args) > 0 else None
+
+            if (is_write_mode or is_write_flags) and (
+                not isinstance(target_path, int) and (target_path is None or not _is_scratch_path(target_path))
+            ):
+                raise PermissionError(f"[AuditHook] Filesystem write prohibited outside scratch: '{target_path}'")
+
             if target_path is not None and not _is_path_allowed(target_path):
                 raise PermissionError(f"[AuditHook] Read access denied: '{target_path}' is outside allowlist.")
 
@@ -216,6 +229,33 @@ def _install_audit_hook(allowlist_roots: list[str]) -> None:
             target_path = args[0] if len(args) > 0 else "."
             if not _is_path_allowed(target_path):
                 raise PermissionError(f"[AuditHook] Directory listing denied: '{target_path}' is outside allowlist.")
+
+        # 7. Filesystem mutation events: deny dangerous operations outside scratch directory
+        if event in ("os.remove", "os.unlink", "os.rmdir"):
+            target_path = args[0] if len(args) > 0 else None
+            if target_path is not None and not _is_scratch_path(target_path):
+                raise PermissionError(f"[AuditHook] Filesystem deletion denied outside scratch: '{target_path}'")
+
+        if event in ("os.rename", "os.replace"):
+            src_path = args[0] if len(args) > 0 else None
+            dst_path = args[1] if len(args) > 1 else None
+            if src_path is not None and not _is_scratch_path(src_path):
+                raise PermissionError(f"[AuditHook] Filesystem rename source denied outside scratch: '{src_path}'")
+            if dst_path is not None and not _is_scratch_path(dst_path):
+                raise PermissionError(f"[AuditHook] Filesystem rename destination denied outside scratch: '{dst_path}'")
+
+        if event in ("os.link", "os.symlink"):
+            raise PermissionError(f"[AuditHook] Link creation prohibited in isolated sandbox: '{event}'")
+
+        if event == "os.mkdir":
+            target_path = args[0] if len(args) > 0 else None
+            if target_path is not None and not _is_scratch_path(target_path):
+                raise PermissionError(f"[AuditHook] Directory creation denied outside scratch: '{target_path}'")
+
+        if event in ("os.chmod", "os.truncate"):
+            target_path = args[0] if len(args) > 0 else None
+            if target_path is not None and not _is_scratch_path(target_path):
+                raise PermissionError(f"[AuditHook] Filesystem attribute modification denied outside scratch: '{target_path}'")
 
     sys.addaudithook(_audit_guard)
 
@@ -259,7 +299,7 @@ def main() -> int:
 
     # Step 3: Install audit hook
     try:
-        _install_audit_hook(allowlist)
+        _install_audit_hook(allowlist, scratch_dir=str(scratch_dir))
     except (RuntimeError, ValueError, OSError) as e:
         result_file_handle.write(json.dumps({"status": "error", "error": f"Failed to install audit hook: {e}"}))
         result_file_handle.close()

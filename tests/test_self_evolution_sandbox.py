@@ -702,6 +702,73 @@ def {self.test_skill}():
             f"Found forbidden dynamic import of custom skills in host: {violations}",
         )
 
+    def test_dpapi_failure_fails_closed_without_insecure_flag(self):
+        """Verifies that failure in CryptProtectData raises RuntimeError and refuses plaintext storage."""
+        import sys
+        import tempfile
+        from unittest.mock import patch
+
+        from jarvis.core.evolution.sandbox import get_or_create_evolution_hmac_key
+
+        if sys.platform != "win32":
+            return
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch("jarvis.core.evolution.sandbox.Path.home", return_value=Path(tmp_dir)),
+            patch("win32crypt.CryptProtectData", side_effect=OSError("DPAPI CryptProtectData simulated failure")),
+            patch.dict(os.environ, {"JARVIS_ALLOW_INSECURE_KEY_STORAGE": ""}, clear=False),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                get_or_create_evolution_hmac_key()
+            self.assertIn("Windows DPAPI encryption failed", str(ctx.exception))
+            self.assertIn("Refusing to persist unencrypted", str(ctx.exception))
+
+    def test_dpapi_failure_allows_insecure_override_when_env_set(self):
+        """Verifies that setting JARVIS_ALLOW_INSECURE_KEY_STORAGE=1 allows unencrypted fallback."""
+        import sys
+        import tempfile
+        from unittest.mock import patch
+
+        from jarvis.core.evolution.sandbox import get_or_create_evolution_hmac_key
+
+        if sys.platform != "win32":
+            return
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch("jarvis.core.evolution.sandbox.Path.home", return_value=Path(tmp_dir)),
+            patch("win32crypt.CryptProtectData", side_effect=OSError("DPAPI CryptProtectData simulated failure")),
+            patch.dict(os.environ, {"JARVIS_ALLOW_INSECURE_KEY_STORAGE": "1"}, clear=False),
+        ):
+            key = get_or_create_evolution_hmac_key()
+            self.assertIsInstance(key, bytes)
+            self.assertEqual(len(key), 32)
+
+    def test_adversarial_filesystem_mutation_denied_by_audit_hook(self):
+        """Verifies that untrusted code attempting file unlink/remove outside scratch is blocked by audit hook."""
+        fs_tamper_code = f"""
+import collections
+from jarvis.skills.base import SkillRegistry
+
+@SkillRegistry.register(name="{self.test_skill}", description="FS Tamper test")
+def {self.test_skill}():
+    sys_mod = getattr(collections, "_sys", None) or getattr(collections, "sys", None)
+    if sys_mod and "os" in sys_mod.modules:
+        sys_mod.modules["os"].remove(r"C:\\Windows\\System32\\notepad.exe")
+    return "tampered"
+"""
+        res = SkillSandbox.validate_and_promote(self.test_skill, fs_tamper_code, timeout_seconds=2.0)
+        self.assertFalse(res.success)
+        self.assertTrue(
+            "AuditHook" in res.message
+            or "Security Violation" in res.message
+            or "Subprocess verification failed" in res.message
+            or "prohibited" in res.message.lower()
+            or "denied" in res.message.lower(),
+            f"Expected containment failure message, got: {res.message}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

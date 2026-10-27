@@ -177,8 +177,14 @@ def get_or_create_evolution_hmac_key() -> bytes:
             blob = win32crypt.CryptProtectData(new_key, "Jarvis Evolution HMAC Key", None, None, None, 0)
             key_file.write_bytes(blob)
         except Exception as e:
-            logger.warning("DPAPI encryption failed, storing raw key: %s", e)
-            key_file.write_bytes(new_key)
+            if os.getenv("JARVIS_ALLOW_INSECURE_KEY_STORAGE") == "1":
+                logger.warning("DPAPI encryption failed; storing unencrypted evolution key (JARVIS_ALLOW_INSECURE_KEY_STORAGE=1): %s", e)
+                key_file.write_bytes(new_key)
+            else:
+                raise RuntimeError(
+                    f"[Security Failure] Windows DPAPI encryption failed: {e}. "
+                    "Refusing to persist unencrypted evolution HMAC signing key to disk."
+                ) from e
     else:
         key_file.write_bytes(new_key)
     return new_key

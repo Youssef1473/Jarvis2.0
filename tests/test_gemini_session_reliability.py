@@ -6,6 +6,7 @@ seamless multi-turn session continuation without live API calls.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 import unittest
@@ -61,6 +62,9 @@ class TestGeminiSessionReliability(unittest.TestCase):
             "memory": {"db_path": "memory.db"},
             "llm": {"provider": "gemini"},
         }
+        self.env_patcher = patch.dict(os.environ, {"GEMINI_API_KEY": "fake_gemini_api_key_for_testing"})
+        self.env_patcher.start()
+
         self.mock_client = MagicMock()
         self.mock_chat = MagicMock()
         self.mock_client.chats.create.return_value = self.mock_chat
@@ -79,6 +83,7 @@ class TestGeminiSessionReliability(unittest.TestCase):
 
     def tearDown(self):
         self.patcher.stop()
+        self.env_patcher.stop()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_iteration_ceiling_stops_safely_and_invalidates_chat(self):

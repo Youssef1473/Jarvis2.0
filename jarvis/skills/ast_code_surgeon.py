@@ -170,6 +170,7 @@ def localize_ast_fault_node(file_path: str, target_line: int) -> Dict[str, Any]:
     name="diagnose_test_failure_ast",
     description="Parses traceback output, isolates the failing frame, and localizes the exact AST function or block bounds.",
     risk_level=0,
+    read_only=True,
 )
 def diagnose_test_failure_ast(traceback_output: str, workspace_root: str = ".") -> Dict[str, Any]:
     """Diagnoses a test failure traceback and pinpoints the AST code node to surgical precision."""

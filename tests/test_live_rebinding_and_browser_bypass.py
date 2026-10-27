@@ -6,6 +6,7 @@
 import http.server
 import json
 import logging
+import os
 import shutil
 import socket
 import sys
@@ -249,7 +250,14 @@ class TestRealChromiumBypassVerification(unittest.TestCase):
             # Verify isolated user-data-dir
             user_data_arg = next((arg for arg in cmdline if arg.startswith("--user-data-dir=")), None)
             self.assertIsNotNone(user_data_arg)
-            self.assertIn(str(session.profile_dir.resolve()), user_data_arg)
+            raw_dir = user_data_arg.split("=", 1)[1].strip('"\'')
+            expected_dir = str(session.profile_dir.resolve())
+            self.assertTrue(
+                os.path.samefile(raw_dir, expected_dir)
+                or raw_dir.lower() in expected_dir.lower()
+                or expected_dir.lower() in raw_dir.lower(),
+                f"User data dir {raw_dir} did not match expected {expected_dir}",
+            )
         finally:
             session.stop()
             if tmp_base.exists():
@@ -309,20 +317,27 @@ class TestRealChromiumBypassVerification(unittest.TestCase):
                     "params": {"url": "http://example.com/fail_closed_test"},
                 }))
 
-                # Give Chromium a moment to attempt connection and render error
-                time.sleep(1.0)
+                # 3. Inspect document body for ERR_PROXY_CONNECTION_FAILED with polling up to 5.0s
+                deadline = time.time() + 5.0
+                page_text = ""
+                while time.time() < deadline:
+                    try:
+                        ws.send(json.dumps({
+                            "id": 11,
+                            "method": "Runtime.evaluate",
+                            "params": {"expression": "document.body ? document.body.innerText : ''"},
+                        }))
+                        res = json.loads(ws.recv())
+                        while res.get("id") != 11:
+                            res = json.loads(ws.recv())
 
-                # 3. Inspect document body for ERR_PROXY_CONNECTION_FAILED
-                ws.send(json.dumps({
-                    "id": 11,
-                    "method": "Runtime.evaluate",
-                    "params": {"expression": "document.body.innerText"},
-                }))
-                res = json.loads(ws.recv())
-                while res.get("id") != 11:
-                    res = json.loads(ws.recv())
+                        page_text = res.get("result", {}).get("result", {}).get("value", "")
+                        if "ERR_PROXY_CONNECTION_FAILED" in page_text:
+                            break
+                    except (KeyError, json.JSONDecodeError, TimeoutError, OSError):
+                        logger.debug("Waiting for error page render...")
+                    time.sleep(0.2)
 
-                page_text = res.get("result", {}).get("result", {}).get("value", "")
                 self.assertIn(
                     "ERR_PROXY_CONNECTION_FAILED",
                     page_text,

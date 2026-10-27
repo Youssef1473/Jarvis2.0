@@ -178,7 +178,7 @@ class ToolOrchestrator:
             except Exception as e:
                 logger.debug("Tool status callback notice (start): %s", e)
 
-        orch_token = _active_orchestrator_scope.set(True)
+        orch_token = _active_orchestrator_scope.set({"tool_name": tool_name, "consumed": False})
         try:
             # 4. Physical Execution via SkillRegistry
             exec_kwargs = dict(sanitized_args)
@@ -360,7 +360,7 @@ class ToolOrchestrator:
                     pass
 
             def _orch_run():
-                orch_token = _active_orchestrator_scope.set(True)
+                orch_token = _active_orchestrator_scope.set({"tool_name": tool_name, "consumed": False})
                 try:
                     return SkillRegistry.execute(tool_name, **exec_kwargs)
                 finally:

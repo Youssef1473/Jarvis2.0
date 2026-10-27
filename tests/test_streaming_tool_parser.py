@@ -218,6 +218,88 @@ class TestStreamingToolParserSuite(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_empty_allowlist_disables_speculative_dispatch(self):
+        """Verifies that explicitly providing an empty set for idempotent_read_tools does not fall back to defaults."""
+        dispatched = []
+        parser = StreamingToolCallParser(
+            idempotent_read_tools=set(),
+            dispatch_callback=lambda n, a: dispatched.append(n),
+        )
+        self.assertEqual(len(parser.idempotent_read_tools), 0)
+        # Even a canonical Level-0 tool should NOT be dispatched
+        res = parser.feed_chunk('{"name": "get_battery_status", "arguments": {}}', call_id="empty_set_test")
+        self.assertIsNone(res)
+        self.assertEqual(len(dispatched), 0)
+
+    def test_streaming_buffer_size_ceiling(self):
+        """Verifies that chunk accumulation exceeding MAX_STREAMING_BUFFER_BYTES is discarded safely."""
+        parser = StreamingToolCallParser()
+        # Feed 65500 bytes (under 64KB limit)
+        chunk_1 = "a" * 65500
+        res = parser.feed_chunk(chunk_1, call_id="c_overflow")
+        self.assertIsNone(res)
+        self.assertEqual(len(parser._buffers["c_overflow"]), 65500)
+
+        # Feed another 100 bytes (total 65600 > 65536)
+        with self.assertLogs("Jarvis.StreamingToolParser", level="WARNING") as log_capture:
+            res2 = parser.feed_chunk("b" * 100, call_id="c_overflow")
+            self.assertIsNone(res2)
+            self.assertTrue(any("Streaming buffer ceiling exceeded" in msg for msg in log_capture.output))
+        # The buffer must not have grown beyond the previous size
+        self.assertEqual(len(parser._buffers["c_overflow"]), 65500)
+
+    def test_streaming_buffer_capacity_eviction(self):
+        """Verifies that exceeding MAX_ACTIVE_CALL_BUFFERS evicts the oldest incomplete buffer."""
+        parser = StreamingToolCallParser()
+        # Fill up to 128 distinct call buffers
+        for i in range(128):
+            parser.feed_chunk('{"name": ', call_id=f"call_{i}")
+        self.assertEqual(len(parser._buffers), 128)
+        self.assertIn("call_0", parser._buffers)
+
+        # Adding a 129th buffer must evict the oldest key (call_0)
+        with self.assertLogs("Jarvis.StreamingToolParser", level="WARNING") as log_capture:
+            parser.feed_chunk('{"name": ', call_id="call_128")
+            self.assertTrue(any("capacity 128 reached" in msg for msg in log_capture.output))
+
+        self.assertEqual(len(parser._buffers), 128)
+        self.assertNotIn("call_0", parser._buffers)
+        self.assertIn("call_128", parser._buffers)
+
+    def test_reset_cancels_pending_tasks(self):
+        """Verifies that parser.reset() cancels any in-flight speculative tasks."""
+        async def run_test():
+            task_started = asyncio.Event()
+
+            async def mock_execute(*args, **kwargs):
+                task_started.set()
+                await asyncio.sleep(5.0)
+                return "completed"
+
+            coordinator = DualTrackCoordinator(filler_threshold_ms=10.0)
+            coordinator.execute_with_masking = mock_execute
+
+            parser = StreamingToolCallParser(
+                idempotent_read_tools={"get_battery_status"},
+                coordinator=coordinator,
+            )
+
+            task = parser.feed_chunk('{"name": "get_battery_status", "arguments": {}}', call_id="c_cancel")
+            self.assertIsInstance(task, asyncio.Task)
+            self.assertIn(task, parser._pending_tasks)
+
+            # Wait until task starts
+            await task_started.wait()
+
+            # Call reset()
+            parser.reset()
+            self.assertEqual(len(parser._pending_tasks), 0)
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertTrue(task.cancelled())
+
+        asyncio.run(run_test())
+
 
 if __name__ == "__main__":
     unittest.main()
