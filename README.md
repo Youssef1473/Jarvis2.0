@@ -6,7 +6,7 @@
 [![Platform: Windows 11](https://img.shields.io/badge/Platform-Windows%2011%2064--bit-0078D6.svg)](https://www.microsoft.com/windows)
 [![CUDA 12.x](https://img.shields.io/badge/CUDA-RTX%203050%20(4GB)-76B900.svg)](https://developer.nvidia.com/cuda-toolkit)
 
-An autonomous, full-duplex desktop AI operating system daemon engineered from the bare metal up for **Windows 11**. Jarvis 2.0 combines an authentic cinematic J.A.R.V.I.S. persona (voiced by Paul Bettany via Kokoro-82M ONNX latent blending), hardware-pinned MMCSS audio workers, low-latency barge-in cancellation (<1ms), a 4-tier vector/lexical memory pyramid, and closed-loop OS automation via Chrome DevTools Protocol (CDP) and Windows UI Automation (pywinauto).
+An autonomous, full-duplex desktop AI operating system daemon engineered from the bare metal up for **Windows 11**. Jarvis 2.0 combines a British cinematic-style assistant persona (inspired by J.A.R.V.I.S. via Kokoro-82M ONNX latent blending), hardware-pinned MMCSS audio workers, low-latency barge-in cancellation (<1ms), a 4-tier vector/lexical memory pyramid, and closed-loop OS automation via Chrome DevTools Protocol (CDP) and Windows UI Automation (pywinauto).
 
 ---
 
@@ -18,7 +18,7 @@ Jarvis 2.0 operates as a deterministic, real-time operating system service with 
 [1. INPUT]
   WASAPI Mic & Loopback / Push-to-Talk (End key)
   └──► MMCSS "Pro Audio" Scheduling & P-Core Thread Pinning (Mask: 0xFF)
-  └──► Lock-Free C-Level AudioRingBuffer (120s Circular Buffer)
+  └──► Zero-Allocation AudioRingBuffer (ctypes.memmove + cos^2 roll-off, 120s)
 
 [2. INGESTION]
   Unified Barge-In & Acoustic Gate (~0.74µs epoch cut + 2.5ms cos^2 anti-click)
@@ -40,7 +40,7 @@ Jarvis 2.0 operates as a deterministic, real-time operating system service with 
   └──► SafetyGate: Token-sandboxed PowerShell runner on isolated E-cores
 
 [5. SPEECH SYNTHESIS & DSP]
-  Neural Kokoro-82M ONNX + Paul Bettany DSP Chain
+  Neural Kokoro-82M ONNX + British Cinematic DSP Chain
   ├──► Latent Style Blending: 50% bm_fable + 30% bm_george + 20% bm_daniel
   ├──► 32-sample FIR Polyphase Upsampler (24kHz ONNX -> 48kHz WASAPI DAC)
   ├──► Acoustic DSP: 110Hz HPF + 7.5ms comb micro-reflection (-21.4 dB wet)
@@ -51,7 +51,7 @@ Jarvis 2.0 operates as a deterministic, real-time operating system service with 
 
 ## 2. Key Subsystem Highlights
 
-### Authentic Paul Bettany Voice Persona & Acoustic DSP
+### British Cinematic Voice Persona & Acoustic DSP
 * **Latent Style Blending:** Normalizes linear combinations of $510 \times 1 \times 256$ float style tensors in StyleTTS-2 latent space (`50% bm_fable + 30% bm_george + 20% bm_daniel`), delivering authentic British diction and dry wit.
 * **Polyphase Boundary Reconstruction:** Features `StatefulPolyphaseUpsampler` with a 32-sample Kaiser-windowed FIR filter to eliminate WASAPI resampler clicks, high-frequency distortion, and boundary discontinuities.
 * **Sub-Millisecond Barge-in:** Voice Activity Detection (VAD) cuts audio ring buffers and invalidates stale speech via atomic epoch transitions (~0.74µs epoch cut, ~5.6µs PCM read/write), preserving active reasoning context via `ReasoningBookmarkStack`.
@@ -99,11 +99,11 @@ Jarvis 2.0 exposes **143 atomic capabilities across 36 specialized modules**, go
 * **Live Search & Telemetry (`jarvis.skills.web_search`):** Fetches real-time internet intelligence via DuckDuckGo and worldwide meteorological telemetry via Open-Meteo (`web_search`, `get_weather`, `get_wikipedia_summary`).
 
 ### 3.4 Acoustic, Voice & Conversational Full-Duplex Subsystem
-* **Neural Bettany Voice Synthesis (`jarvis.audio.tts`):** Generates 24kHz speech via Kokoro-82M ONNX using a custom latent style tensor blend (`50% bm_fable + 30% bm_george + 20% bm_daniel`) pinned to dedicated P-core threads (`0xFF`).
+* **Cinematic Voice Synthesis (`jarvis.audio.tts`):** Generates 24kHz speech via Kokoro-82M ONNX using a custom latent style tensor blend (`50% bm_fable + 30% bm_george + 20% bm_daniel`) pinned to dedicated P-core threads (`0xFF`).
 * **MCU DSP Audio Chain:** Applies a 110Hz high-pass filter, 7.5ms micro-reflection comb filter (-21.4 dB wet), 5ms Hann cross-fading, 32-sample polyphase upsampling to 48kHz, and natural conversational breath pauses (130ms / 240ms).
 * **Instant Barge-In Interruption:** Clears audio ring buffers atomically in sub-millisecond cycles (~0.74µs epoch invalidation) whenever you speak mid-sentence, snapshotting active reasoning bookmarks onto `ReasoningBookmarkStack`.
 * **GPU-Accelerated Transcription (`jarvis.audio.stt`):** Low-latency CUDA INT8 Whisper transcription via `faster-whisper`, governed by dynamic silence scaling and VAD hesitation damping.
-* **Sub-1ms Timbre Switching & Device Routing (`jarvis.skills.voice_control`):** Shifts voice profiles across Bettany, Classic, Authoritative, Crisp, and Friday personas, tunes speech speed, and dynamically re-routes audio output devices (`set_voice_profile`, `get_voice_settings`, `set_speech_rate`, `list_audio_devices`, `set_audio_output_device`).
+* **Sub-1ms Timbre Switching & Device Routing (`jarvis.skills.voice_control`):** Shifts voice profiles across British Cinematic, Classic, Authoritative, Crisp, and Friday personas, tunes speech speed, and dynamically re-routes audio output devices (`set_voice_profile`, `get_voice_settings`, `set_speech_rate`, `list_audio_devices`, `set_audio_output_device`).
 
 ### 3.5 Sovereign 4-Tier Memory & Knowledge Pyramid
 * **Tier 1: Core User Preferences (`<1KB`) (`jarvis.skills.productivity`):** Maintains self-editing personal habits, naming preferences, and directives injected into working memory on every turn (`update_user_preference`, `get_user_preferences`, `delete_user_preference`).
