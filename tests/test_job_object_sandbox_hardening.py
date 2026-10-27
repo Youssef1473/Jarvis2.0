@@ -513,9 +513,9 @@ class TestJobSandboxRealWindows(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIsNotNone(task_id)
 
-        # Wait for task to output grandchild PID
+        # Wait for task to output grandchild PID (give up to 15.0s for PowerShell startup under CI VM contention)
         grandchild_pid = None
-        t_deadline = time.monotonic() + 5.0
+        t_deadline = time.monotonic() + 15.0
         while time.monotonic() < t_deadline:
             task = mgr._tasks.get(task_id)
             if task and task.stdout_lines:

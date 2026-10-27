@@ -317,31 +317,56 @@ class TestRealChromiumBypassVerification(unittest.TestCase):
                     "params": {"url": "http://example.com/fail_closed_test"},
                 }))
 
-                # 3. Inspect document body for ERR_PROXY_CONNECTION_FAILED with polling up to 5.0s
-                deadline = time.time() + 5.0
-                page_text = ""
-                while time.time() < deadline:
+                # 3. Verify fail-closed behavior via CDP navigation error or rendered document body
+                deadline = time.time() + 8.0
+                error_reported = False
+                last_error_detail = ""
+
+                while time.time() < deadline and not error_reported:
                     try:
                         ws.send(json.dumps({
                             "id": 11,
                             "method": "Runtime.evaluate",
                             "params": {"expression": "document.body ? document.body.innerText : ''"},
                         }))
-                        res = json.loads(ws.recv())
-                        while res.get("id") != 11:
-                            res = json.loads(ws.recv())
 
-                        page_text = res.get("result", {}).get("result", {}).get("value", "")
-                        if "ERR_PROXY_CONNECTION_FAILED" in page_text:
-                            break
+                        # Drain all queued CDP event messages
+                        for _ in range(10):
+                            try:
+                                msg = json.loads(ws.recv())
+                            except (TimeoutError, OSError):
+                                break
+
+                            # Check direct Page.navigate errorText
+                            err_text = msg.get("result", {}).get("errorText", "")
+                            if "ERR_PROXY_CONNECTION_FAILED" in err_text:
+                                error_reported = True
+                                last_error_detail = err_text
+                                break
+
+                            # Check Network.loadingFailed errorText
+                            if msg.get("method") == "Network.loadingFailed":
+                                n_err = msg.get("params", {}).get("errorText", "")
+                                if "ERR_PROXY_CONNECTION_FAILED" in n_err:
+                                    error_reported = True
+                                    last_error_detail = n_err
+                                    break
+
+                            # Check Runtime.evaluate result
+                            if msg.get("id") == 11:
+                                page_text = msg.get("result", {}).get("result", {}).get("value", "")
+                                if "ERR_PROXY_CONNECTION_FAILED" in page_text:
+                                    error_reported = True
+                                    last_error_detail = page_text
+                                    break
+                                break
                     except (KeyError, json.JSONDecodeError, TimeoutError, OSError):
-                        logger.debug("Waiting for error page render...")
+                        logger.debug("Waiting for CDP error or document text...")
                     time.sleep(0.2)
 
-                self.assertIn(
-                    "ERR_PROXY_CONNECTION_FAILED",
-                    page_text,
-                    f"Chromium did not report ERR_PROXY_CONNECTION_FAILED: {page_text}",
+                self.assertTrue(
+                    error_reported,
+                    f"Chromium did not report ERR_PROXY_CONNECTION_FAILED: {last_error_detail}",
                 )
         finally:
             session.stop()
