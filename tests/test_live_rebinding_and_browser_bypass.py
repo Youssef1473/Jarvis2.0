@@ -301,7 +301,8 @@ class TestRealChromiumBypassVerification(unittest.TestCase):
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{session.cdp_port}/json/list") as r:
                 tabs = json.loads(r.read())
-            ws_url = tabs[0]["webSocketDebuggerUrl"]
+            page_tab = next((t for t in tabs if t.get("type") == "page"), tabs[0])
+            ws_url = page_tab["webSocketDebuggerUrl"]
 
             from websockets.sync.client import connect
 
@@ -317,42 +318,24 @@ class TestRealChromiumBypassVerification(unittest.TestCase):
                     "params": {"url": "http://example.com/fail_closed_test"},
                 }))
 
-                # 3. Capture direct Page.navigate response or fallback to document body
+                # 3. Capture Page.navigate response or error event with polling up to 15.0s
                 error_reported = False
                 last_error_detail = ""
+                deadline = time.monotonic() + 15.0
 
-                try:
-                    res = json.loads(ws.recv(timeout=5.0))
-                    while res.get("id") != 10:
-                        res = json.loads(ws.recv(timeout=5.0))
-                    err_text = res.get("result", {}).get("errorText", "")
-                    if "ERR_PROXY_CONNECTION_FAILED" in err_text:
-                        error_reported = True
-                        last_error_detail = err_text
-                except (TimeoutError, OSError, KeyError, json.JSONDecodeError):
-                    pass
-
-                if not error_reported:
-                    # Fallback to checking document body text
-                    deadline = time.time() + 5.0
-                    while time.time() < deadline and not error_reported:
-                        try:
-                            ws.send(json.dumps({
-                                "id": 11,
-                                "method": "Runtime.evaluate",
-                                "params": {"expression": "document.body ? document.body.innerText : ''"},
-                            }))
-                            res = json.loads(ws.recv(timeout=2.0))
-                            while res.get("id") != 11:
-                                res = json.loads(ws.recv(timeout=2.0))
-                            body_val = res.get("result", {}).get("result", {}).get("value", "")
-                            if "ERR_PROXY_CONNECTION_FAILED" in body_val:
-                                error_reported = True
-                                last_error_detail = body_val
-                                break
-                        except (KeyError, json.JSONDecodeError, TimeoutError, OSError):
-                            pass
-                        time.sleep(0.2)
+                while time.monotonic() < deadline and not error_reported:
+                    try:
+                        res = json.loads(ws.recv(timeout=1.0))
+                        err_text = res.get("result", {}).get("errorText", "") or res.get("params", {}).get("errorText", "")
+                        if "ERR_PROXY_CONNECTION_FAILED" in err_text or "ERR_PROXY_CONNECTION_FAILED" in str(res):
+                            error_reported = True
+                            last_error_detail = err_text or str(res)
+                            break
+                        if res.get("id") == 10:
+                            last_error_detail = str(res)
+                            break
+                    except (TimeoutError, OSError):
+                        pass
 
                 self.assertTrue(
                     error_reported,
