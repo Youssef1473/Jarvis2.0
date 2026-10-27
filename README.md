@@ -254,6 +254,9 @@ python tools/run_fast_tests.py --hardware
 
 # Run the complete test gate
 python tools/run_fast_tests.py --all
+
+# Run reproducible latency & throughput benchmarks
+python tools/benchmarks/run_all_benchmarks.py
 ```
 
 ---
