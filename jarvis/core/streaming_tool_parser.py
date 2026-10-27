@@ -83,7 +83,14 @@ class StreamingToolCallParser:
             self._buffers["default_0"] = value
 
     def feed_chunk(self, delta_json: str, call_id: str = "default_0") -> Optional[Any]:
-        """Feeds partial JSON tokens and triggers early execution when valid tool JSON closes."""
+        """Feeds partial JSON tokens and triggers early execution when valid tool JSON closes.
+
+        Returns:
+            - None if no tool JSON object has closed or if the call has already been dispatched.
+            - The cached tool result (dict/Any) if a cache hit occurred in DualTrackCoordinator.
+            - An asyncio.Task if DualTrackCoordinator scheduled acoustic masking on a running event loop.
+            - The synchronous dispatch_callback result (or parsed payload) if no event loop/coordinator is active.
+        """
         if call_id in self._dispatched_call_ids:
             return None
 
@@ -133,6 +140,11 @@ class StreamingToolCallParser:
                             is_read_only=True,
                         )
                         task = loop.create_task(coro)
+                        # Attach done callback to prevent unhandled exception warnings if task is fire-and-forgotten
+                        task.add_done_callback(
+                            lambda t: logger.error("Speculative early tool execution failed: %s", t.exception())
+                            if not t.cancelled() and t.exception() else None
+                        )
                         return task
                 except RuntimeError:
                     pass

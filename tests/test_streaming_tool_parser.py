@@ -170,6 +170,29 @@ class TestStreamingToolParserSuite(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_feed_chunk_task_exception_handled_safely(self):
+        """Verifies that exceptions in speculative tasks do not crash the parser or unretrieved loop state."""
+        async def run_test():
+            def failing_callback(name, args):
+                raise ValueError("Simulated tool crash in speculative execution")
+
+            coordinator = DualTrackCoordinator(filler_threshold_ms=50.0)
+            parser = StreamingToolCallParser(
+                idempotent_read_tools={"get_battery_status"},
+                dispatch_callback=failing_callback,
+                coordinator=coordinator,
+            )
+
+            task = parser.feed_chunk('{"name": "get_battery_status", "arguments": {}}', call_id="fail_call")
+            self.assertIsInstance(task, asyncio.Task)
+
+            # Awaiting the task raises the exception, verifying it propagates to caller properly
+            with self.assertRaises(ValueError) as ctx:
+                await task
+            self.assertIn("Simulated tool crash", str(ctx.exception))
+
+        asyncio.run(run_test())
+
 
 if __name__ == "__main__":
     unittest.main()
