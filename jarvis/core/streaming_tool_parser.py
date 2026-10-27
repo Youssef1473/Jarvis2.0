@@ -67,16 +67,28 @@ class StreamingToolCallParser:
         self.idempotent_read_tools = idempotent_read_tools or set(DEFAULT_IDEMPOTENT_READ_TOOLS)
         self.dispatch_callback = dispatch_callback
         self.coordinator = coordinator
-        self._buffer = ""
+        self._buffers: dict[str, str] = {}
         self._dispatched_call_ids: Set[str] = set()
+
+    @property
+    def _buffer(self) -> str:
+        """Backward-compatibility property returning default buffer."""
+        return self._buffers.get("default_0", "")
+
+    @_buffer.setter
+    def _buffer(self, value: str) -> None:
+        if not value:
+            self._buffers.pop("default_0", None)
+        else:
+            self._buffers["default_0"] = value
 
     def feed_chunk(self, delta_json: str, call_id: str = "default_0") -> Optional[Any]:
         """Feeds partial JSON tokens and triggers early execution when valid tool JSON closes."""
         if call_id in self._dispatched_call_ids:
             return None
 
-        self._buffer += delta_json
-        stripped = self._buffer.strip()
+        self._buffers[call_id] = self._buffers.get(call_id, "") + delta_json
+        stripped = self._buffers[call_id].strip()
         if not stripped.endswith("}"):
             return None
 
@@ -95,7 +107,7 @@ class StreamingToolCallParser:
 
         if tool_name and tool_name in self.idempotent_read_tools and isinstance(tool_args, dict):
             self._dispatched_call_ids.add(call_id)
-            self._buffer = ""
+            self._buffers.pop(call_id, None)
             logger.info("Speculative early tool dispatch for '%s' with args %s", tool_name, list(tool_args.keys()))
 
             # Acoustic masking via DualTrackCoordinator if configured
@@ -120,7 +132,8 @@ class StreamingToolCallParser:
                             tool_coro=(lambda: self.dispatch_callback(tool_name, tool_args)) if self.dispatch_callback else (lambda: parsed),
                             is_read_only=True,
                         )
-                        loop.create_task(coro)
+                        task = loop.create_task(coro)
+                        return task
                 except RuntimeError:
                     pass
 
@@ -137,8 +150,8 @@ class StreamingToolCallParser:
         if call_id in self._dispatched_call_ids:
             return None
 
-        self._buffer += delta_json
-        stripped = self._buffer.strip()
+        self._buffers[call_id] = self._buffers.get(call_id, "") + delta_json
+        stripped = self._buffers[call_id].strip()
         if not stripped.endswith("}"):
             return None
 
@@ -157,7 +170,7 @@ class StreamingToolCallParser:
 
         if tool_name and tool_name in self.idempotent_read_tools and isinstance(tool_args, dict):
             self._dispatched_call_ids.add(call_id)
-            self._buffer = ""
+            self._buffers.pop(call_id, None)
             logger.info("Speculative early tool dispatch (async) for '%s' with args %s", tool_name, list(tool_args.keys()))
 
             if self.coordinator is not None:
@@ -181,7 +194,7 @@ class StreamingToolCallParser:
 
     def reset(self) -> None:
         """Resets the internal streaming buffer and dispatched call tracking."""
-        self._buffer = ""
+        self._buffers.clear()
         self._dispatched_call_ids.clear()
 
 

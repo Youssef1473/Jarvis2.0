@@ -1,15 +1,14 @@
 """Automated tests for speculative streaming tool call parser and dual-track acoustic masking."""
 import asyncio
-import json
-import unittest
 import sys
+import unittest
 from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.core.streaming_tool_parser import StreamingToolCallParser
 from jarvis.core.pipeline.dual_track import DualTrackCoordinator
+from jarvis.core.streaming_tool_parser import StreamingToolCallParser
 
 
 class TestStreamingToolParserSuite(unittest.TestCase):
@@ -109,6 +108,65 @@ class TestStreamingToolParserSuite(unittest.TestCase):
             )
             self.assertEqual(res, "slow_tool_done")
             self.assertEqual(len(spoken_fillers), 1)
+
+        asyncio.run(run_test())
+
+    def test_interleaved_streaming_tool_calls_buffer_isolation(self):
+        """Verifies that interleaved streaming chunks for distinct call_ids do not corrupt buffers."""
+        dispatched = []
+
+        def callback(name, args):
+            dispatched.append((name, args))
+            return f"result_{name}"
+
+        parser = StreamingToolCallParser(
+            idempotent_read_tools={"get_battery_status", "get_weather"},
+            dispatch_callback=callback,
+        )
+
+        # Interleave feed chunks from c1 (weather) and c2 (battery)
+        parser.feed_chunk('{"name": ', call_id="c1")
+        parser.feed_chunk('{"name": "get_battery_status"', call_id="c2")
+        parser.feed_chunk('"get_weather", "arguments": {"city": ', call_id="c1")
+        parser.feed_chunk(', "arguments": {}}', call_id="c2")  # c2 completes
+        parser.feed_chunk('"London"}}', call_id="c1")           # c1 completes
+
+        self.assertEqual(len(dispatched), 2)
+        # Verify c2 completed first based on chunk completion order
+        self.assertEqual(dispatched[0][0], "get_battery_status")
+        self.assertEqual(dispatched[0][1], {})
+        self.assertEqual(dispatched[1][0], "get_weather")
+        self.assertEqual(dispatched[1][1], {"city": "London"})
+
+    def test_exactly_once_callback_dispatch_with_coordinator(self):
+        """Verifies that feed_chunk does not dispatch duplicate callback when coordinator is attached."""
+        dispatched_count = 0
+
+        async def run_test():
+            nonlocal dispatched_count
+
+            def counting_callback(name, args):
+                nonlocal dispatched_count
+                dispatched_count += 1
+                return "ok"
+
+            coordinator = DualTrackCoordinator(
+                filler_threshold_ms=50.0,
+            )
+
+            parser = StreamingToolCallParser(
+                idempotent_read_tools={"get_battery_status"},
+                dispatch_callback=counting_callback,
+                coordinator=coordinator,
+            )
+
+            res = parser.feed_chunk('{"name": "get_battery_status", "arguments": {}}', call_id="coord_call")
+            # In an active event loop with coordinator, feed_chunk returns the asyncio.Task
+            self.assertIsNotNone(res)
+            self.assertTrue(asyncio.iscoroutine(res) or isinstance(res, asyncio.Task))
+            await res
+            # Must be called exactly once
+            self.assertEqual(dispatched_count, 1)
 
         asyncio.run(run_test())
 
