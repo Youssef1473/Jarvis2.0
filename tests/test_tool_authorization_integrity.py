@@ -202,6 +202,7 @@ class TestToolAuthorizationIntegrity(unittest.TestCase):
             self.assertIn("Dual-Key Safety Gate", str(ctx.exception))
 
             # B. Dispatch boundary: direct skill call with fix=True rejects before ruff subprocess
+            self.tracker.reset_turn()
             res = SkillRegistry.execute("check_code_diagnostics", target_path=str(test_file), fix=True)
             self.assertIn("Execution rejected: Automated code mutation via 'fix=True' is prohibited", res)
 

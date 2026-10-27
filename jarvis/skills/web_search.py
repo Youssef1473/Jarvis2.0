@@ -1,5 +1,7 @@
 import warnings
+
 import requests
+
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 try:
     from ddgs import DDGS
@@ -11,6 +13,7 @@ from jarvis.skills.base import SkillRegistry
 @SkillRegistry.register(
     name="web_search",
     description="Performs a real-time internet search using DuckDuckGo to find current information, news, or answers.",
+    read_only=True,
     external_ingestion=True,
 )
 def web_search(query: str, max_results: int = 4) -> str:
@@ -36,6 +39,7 @@ def web_search(query: str, max_results: int = 4) -> str:
 @SkillRegistry.register(
     name="get_weather",
     description="Retrieves current weather and temperature for any city worldwide using Open-Meteo (free, no API key).",
+    read_only=True,
     external_ingestion=True,
 )
 def get_weather(city: str) -> str:

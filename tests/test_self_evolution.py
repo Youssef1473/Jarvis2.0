@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from jarvis.skills.base import SkillRegistry
-from jarvis.core.security_boundaries import DualKeyApprovalManager
+from jarvis.core.security_boundaries import DualKeyApprovalManager, TurnTaintTracker
 from jarvis.skills.self_evolution import (
     create_or_update_custom_skill,
     list_custom_skills,
@@ -19,6 +19,9 @@ from jarvis.skills.self_evolution import (
 
 class TestSelfEvolution(unittest.TestCase):
     def setUp(self):
+        TurnTaintTracker.get_instance().reset_turn()
+        DualKeyApprovalManager.get_instance().reset()
+        DualKeyApprovalManager.get_instance().set_approval_handler(lambda req: True)
         # Clean any leftover test skills
         DualKeyApprovalManager.get_instance().grant_approval("delete_custom_skill", {"skill_name": "test_mock_greeter"})
         delete_custom_skill("test_mock_greeter")
@@ -30,6 +33,9 @@ class TestSelfEvolution(unittest.TestCase):
         delete_custom_skill("test_mock_greeter")
         DualKeyApprovalManager.get_instance().grant_approval("delete_custom_skill", {"skill_name": "test_broken_skill"})
         delete_custom_skill("test_broken_skill")
+        DualKeyApprovalManager.get_instance().set_approval_handler(None)
+        DualKeyApprovalManager.get_instance().reset()
+        TurnTaintTracker.get_instance().reset_turn()
 
     def test_syntax_error_rejection(self):
         """Verifies that invalid Python code is caught by the AST parser before saving."""

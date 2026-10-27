@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKIN
 if TYPE_CHECKING:
     from jarvis.core.pipeline.dual_track import DualTrackCoordinator
 
-from jarvis.skills.base import SkillRegistry, SkillExecutionResult
+from jarvis.skills.base import SkillRegistry, SkillExecutionResult, _active_orchestrator_scope
 from jarvis.core.security_boundaries import TurnTaintTracker, SecurityBoundaryViolation
 from jarvis.core.pipeline.interim_bridge import InterimSpeechBridge
 
@@ -178,6 +178,7 @@ class ToolOrchestrator:
             except Exception as e:
                 logger.debug("Tool status callback notice (start): %s", e)
 
+        orch_token = _active_orchestrator_scope.set(True)
         try:
             # 4. Physical Execution via SkillRegistry
             exec_kwargs = dict(sanitized_args)
@@ -212,6 +213,7 @@ class ToolOrchestrator:
                 error_message=str(err),
             )
         finally:
+            _active_orchestrator_scope.reset(orch_token)
             from jarvis.core.security_boundaries import DualKeyApprovalManager
             DualKeyApprovalManager.get_instance().clear_active_authorized(ctx_token)
             # 5. Disarm Interim Bridge on completion
@@ -357,11 +359,18 @@ class ToolOrchestrator:
                 except Exception:
                     pass
 
+            def _orch_run():
+                orch_token = _active_orchestrator_scope.set(True)
+                try:
+                    return SkillRegistry.execute(tool_name, **exec_kwargs)
+                finally:
+                    _active_orchestrator_scope.reset(orch_token)
+
             res = await self.dual_track_coordinator.execute_with_masking(
                 user_query=user_query,
                 tool_name=tool_name,
                 tool_args=sanitized_args,
-                tool_coro=lambda: SkillRegistry.execute(tool_name, **exec_kwargs),
+                tool_coro=_orch_run,
                 milestone_phrase=milestone_phrase,
             )
             return res

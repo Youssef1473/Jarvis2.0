@@ -1218,6 +1218,7 @@ class DualKeyApprovalManager:
             self._cancelled_events.clear()
             self._pre_grant_creation_hook = None
             self._post_grant_creation_hook = None
+            self._approval_handler = None
         self.clear_active_authorized()
 
 
@@ -1407,6 +1408,78 @@ class TurnTaintTracker:
         "run_background_task",
     }
 
+    # Verified Level-0 read-only query and inspection tools safe on tainted turns
+    KNOWN_READ_ONLY_TOOLS: Set[str] = {
+        "get_battery_status",
+        "get_current_time_and_date",
+        "get_system_vitals",
+        "get_weather",
+        "web_search",
+        "get_wikipedia_summary",
+        "get_tech_news_headlines",
+        "get_daily_briefing",
+        "get_voice_settings",
+        "get_user_preferences",
+        "get_pipeline_latency_stats",
+        "get_background_task_output",
+        "get_recent_workspace_mutations",
+        "list_active_timers",
+        "list_calendar_events",
+        "list_open_browser_tabs",
+        "list_pending_tasks",
+        "list_running_applications",
+        "list_background_tasks",
+        "list_staged_documents",
+        "list_photos",
+        "list_compiled_reflex_macros",
+        "list_custom_skills",
+        "list_audio_devices",
+        "list_directory",
+        "read_clipboard",
+        "read_file",
+        "read_multiple_files",
+        "read_webpage_content",
+        "read_webpage_content_cdp",
+        "browse_and_read_webpage",
+        "read_recent_notes",
+        "read_email_details",
+        "read_archived_document",
+        "recall_fact",
+        "recall_episodic_lessons",
+        "recall_past_conversation",
+        "semantic_search_memory",
+        "search_codebase",
+        "search_desktop_files_fast",
+        "search_everything",
+        "search_notes",
+        "search_emails",
+        "search_archived_documents",
+        "git_status",
+        "git_diff",
+        "query_codebase_graph",
+        "ast_search_codebase",
+        "profile_runtime",
+        "audit_memory_heap",
+        "audit_vram_and_thermal_budget",
+        "audit_webpage_accessibility",
+        "audit_webpage_performance",
+        "capture_devtools_snapshot",
+        "capture_webpage_screenshot",
+        "describe_photo",
+        "inspect_file_locks",
+        "inspect_port_holders",
+        "inspect_screen",
+        "see_screen",
+        "inspect_screen_with_marks",
+        "inspect_ram_hogs",
+        "inspect_window_controls",
+        "check_unread_emails",
+        "check_hardware_health",
+        "jarvis_doctor",
+        "run_system_troubleshooting",
+        "verify_learned_habits",
+    }
+
     TRUSTED_DOCUMENT_PROVENANCES: Set[str] = {"trusted_internal", "system"}
     KNOWN_DOCUMENT_PROVENANCES: Set[str] = {
         "trusted_internal",
@@ -1592,22 +1665,22 @@ class TurnTaintTracker:
             # CRITICAL CORE-SEC-04D: Do NOT return early. Ingestion classification marks turn taint,
             # but must never exempt execution-capable or mutating tools from authorization.
 
-        # 2. Determine effective risk level for dynamic MCP tools and argument-sensitive mutations
+        # 2. Determine effective risk level: unverified tools fail closed to at least risk_level=1
         effective_risk = risk_level
-        is_mcp = clean_name.startswith("mcp_") or clean_name == "mcp_call_tool"
-        if is_mcp:
-            from jarvis.skills.base import SkillRegistry
-            meta = SkillRegistry.get_metadata(clean_name)
-            is_verified_ro = bool(meta and meta.read_only)
-            # If not explicitly verified as read-only, dynamic MCP tools fail closed to at least risk_level=1
-            if not is_verified_ro and effective_risk == 0:
-                effective_risk = max(effective_risk, SkillRegistry.get_risk_level(clean_name) or 1)
+        from jarvis.skills.base import SkillRegistry
+        meta = SkillRegistry.get_metadata(clean_name)
+        is_verified_ro = bool(meta and meta.read_only) or (clean_name in self.KNOWN_READ_ONLY_TOOLS)
+        # If not explicitly verified as read-only, all tools (MCP or native) fail closed to at least risk_level=1
+        if not is_verified_ro and effective_risk == 0:
+            effective_risk = max(effective_risk, SkillRegistry.get_risk_level(clean_name) or 1)
 
         is_critical = (effective_risk >= 2) or (clean_name in self.CRITICAL_PRIVILEGE_TOOLS)
         is_privileged_mutation = (
-            (effective_risk >= 1)
-            or (clean_name in self.HIGH_PRIVILEGE_MUTATION_TOOLS)
-            or (clean_name == "check_code_diagnostics" and bool(args_dict.get("fix")))
+            (clean_name == "check_code_diagnostics" and bool(args_dict.get("fix")))
+            or (not is_verified_ro and (
+                (effective_risk >= 1)
+                or (clean_name in self.HIGH_PRIVILEGE_MUTATION_TOOLS)
+            ))
         )
 
         # SEC-H2-02: An uninitialized context has no provenance; treat as tainted for privileged mutations

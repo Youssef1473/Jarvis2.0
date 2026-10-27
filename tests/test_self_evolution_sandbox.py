@@ -20,6 +20,7 @@ from jarvis.skills.job_object_sandbox import (
     create_process_job_object,
 )
 from jarvis.skills.base import SkillRegistry
+from jarvis.core.security_boundaries import DualKeyApprovalManager
 
 
 class TestSkillSandboxAdvancedSecurity(unittest.TestCase):
@@ -131,6 +132,8 @@ class TestSkillSandboxCanaryAndRollback(unittest.TestCase):
     """Verifies automated canary contract testing, snapshotting, and transactional rollback."""
 
     def setUp(self):
+        self.approval_mgr = DualKeyApprovalManager.get_instance()
+        self.approval_mgr.set_approval_handler(lambda req: True)
         self.test_skill = f"skill_{self._testMethodName}"
         self.target_path = CUSTOM_SKILLS_DIR / f"{self.test_skill}.py"
         self.meta_path = CUSTOM_SKILLS_DIR / f"{self.test_skill}.meta.json"
@@ -148,6 +151,8 @@ class TestSkillSandboxCanaryAndRollback(unittest.TestCase):
         sys.modules.pop(f"jarvis.skills.custom.{self.test_skill}", None)
 
     def tearDown(self):
+        self.approval_mgr.set_approval_handler(None)
+        self.approval_mgr.reset()
         if self.target_path.exists():
             try:
                 self.target_path.unlink()
@@ -311,12 +316,16 @@ class TestOutOfProcessSandboxSecurity(unittest.TestCase):
     """Verifies strict out-of-process isolation, scrubbed env, audit allowlist, and DPAPI HMAC guards."""
 
     def setUp(self):
+        self.approval_mgr = DualKeyApprovalManager.get_instance()
+        self.approval_mgr.set_approval_handler(lambda req: True)
         self.test_skill = f"skill_{self._testMethodName}"
         self.target_path = CUSTOM_SKILLS_DIR / f"{self.test_skill}.py"
         self.meta_path = CUSTOM_SKILLS_DIR / f"{self.test_skill}.meta.json"
         self._cleanup()
 
     def tearDown(self):
+        self.approval_mgr.set_approval_handler(None)
+        self.approval_mgr.reset()
         self._cleanup()
 
     def _cleanup(self):

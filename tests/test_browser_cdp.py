@@ -9,12 +9,21 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jarvis.skills.base import SkillRegistry
+from jarvis.core.security_boundaries import TurnTaintTracker, DualKeyApprovalManager
 import jarvis.skills.browser_cdp as b_cdp
 import jarvis.skills.os_control as os_ctrl
 
 
 class TestBrowserCDPSuite(unittest.TestCase):
     """Verifies CDP probe latency, silent tab navigation, and graceful Win32 fallbacks."""
+
+    def setUp(self):
+        TurnTaintTracker.get_instance().reset_turn()
+        DualKeyApprovalManager.get_instance().reset()
+
+    def tearDown(self):
+        TurnTaintTracker.get_instance().reset_turn()
+        DualKeyApprovalManager.get_instance().reset()
 
     def test_cdp_probe_safety_and_speed(self):
         """Verifies CDP probe rejects non-localhost addresses and responds in <60ms."""
@@ -197,6 +206,7 @@ class TestBrowserCDPSuite(unittest.TestCase):
             val = b_cdp.execute_cdp_javascript("6 * 7", target_id_or_title="Calculator")
             self.assertEqual(val, 42)
 
+            DualKeyApprovalManager.get_instance().set_approval_handler(lambda req: True)
             skill_res = SkillRegistry.execute("execute_browser_javascript", script="6 * 7", tab_name="Calculator")
             self.assertIn("JavaScript Evaluation Result", skill_res)
             self.assertIn("42", skill_res)

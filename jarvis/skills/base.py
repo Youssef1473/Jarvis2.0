@@ -20,11 +20,20 @@ class SkillMetadata:
     name: str
     func: Callable
     read_only: bool = False
+    risk_level: int = 1
     external_ingestion: bool = False
     scopes: ResourceScope = ResourceScope.NONE
     path_arg_names: Tuple[str, ...] = ()
     default_timeout_ms: int = 1500
     origin: str = "builtin"
+
+
+import contextvars
+
+# ContextVar tracking active ToolOrchestrator execution boundary
+_active_orchestrator_scope: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_active_orchestrator_scope", default=False
+)
 
 
 @dataclass
@@ -50,7 +59,7 @@ class SkillRegistry:
         cls,
         name: str | Callable | None = None,
         description: str | None = None,
-        risk_level: int = 0,
+        risk_level: Optional[int] = None,
         read_only: bool = False,
         external_ingestion: bool = False,
         scopes: ResourceScope = ResourceScope.NONE,
@@ -79,19 +88,35 @@ class SkillRegistry:
                         t_name,
                     )
 
+        def _resolve_risk(t_name: str) -> int:
+            if risk_level is not None:
+                return risk_level
+            if read_only:
+                return 0
+            try:
+                from jarvis.core.security_boundaries import TurnTaintTracker
+                if t_name in getattr(TurnTaintTracker, "KNOWN_READ_ONLY_TOOLS", set()):
+                    return 0
+            except Exception:
+                pass
+            return 1
+
         # Case 1: Bare decorator @SkillRegistry.register
         if callable(name):
             func = name
             tool_name = func.__name__
             _check_collision(tool_name, origin)
+            resolved_risk = _resolve_risk(tool_name)
+            effective_ro = read_only or (resolved_risk == 0)
             doc = (func.__doc__ or "").strip()
             cls._tools[tool_name] = func
             cls._descriptions[tool_name] = doc
-            cls._risk_levels[tool_name] = risk_level
+            cls._risk_levels[tool_name] = resolved_risk
             cls._metadata[tool_name] = SkillMetadata(
                 name=tool_name,
                 func=func,
-                read_only=read_only,
+                read_only=effective_ro,
+                risk_level=resolved_risk,
                 external_ingestion=external_ingestion,
                 scopes=scopes,
                 path_arg_names=tuple(path_arg_names),
@@ -105,14 +130,17 @@ class SkillRegistry:
         def decorator(func: Callable):
             tool_name = name or func.__name__
             _check_collision(tool_name, origin)
+            resolved_risk = _resolve_risk(tool_name)
+            effective_ro = read_only or (resolved_risk == 0)
             doc = description or (func.__doc__ or "").strip()
             cls._tools[tool_name] = func
             cls._descriptions[tool_name] = doc
-            cls._risk_levels[tool_name] = risk_level
+            cls._risk_levels[tool_name] = resolved_risk
             cls._metadata[tool_name] = SkillMetadata(
                 name=tool_name,
                 func=func,
-                read_only=read_only,
+                read_only=effective_ro,
+                risk_level=resolved_risk,
                 external_ingestion=external_ingestion,
                 scopes=scopes,
                 path_arg_names=tuple(path_arg_names),
@@ -243,20 +271,30 @@ class SkillRegistry:
                 error_message=f"Tool '{name}' not found.",
             )
 
-        # Ingestion boundary: reliably record untrusted external data intake
-        try:
-            from jarvis.core.security_boundaries import TurnTaintTracker
-            tracker = TurnTaintTracker.get_instance()
-            if tracker.is_untrusted_ingestion(resolved) or cls.is_ingestion_tool(resolved):
-                tracker.record_ingestion(resolved, kwargs)
-        except Exception as e:
-            # Defensive isolation: ensure taint tracking evaluation errors never mask the physical skill invocation
-            import logging
-            logging.getLogger("Jarvis.SkillRegistry").debug(
-                "Ingestion taint tracking skipped for tool '%s' (exception: %s)",
-                resolved,
-                type(e).__name__,
-            )
+        # CRITICAL SECURITY GATE: Direct execution boundary
+        if not _active_orchestrator_scope.get():
+            try:
+                from jarvis.core.security_boundaries import TurnTaintTracker, SecurityBoundaryViolation
+                tracker = TurnTaintTracker.get_instance()
+                effective_risk = cls.get_risk_level(resolved)
+
+                gate_decision = tracker.evaluate_tool_execution(
+                    resolved, kwargs, risk_level=effective_risk
+                )
+                if not gate_decision.allowed:
+                    return SkillExecutionResult(
+                        result=f"Security Violation: Security gate denied execution of tool '{name}'.",
+                        success=False,
+                        error_type="security_violation",
+                        error_message=f"Security gate denied execution of tool '{name}'.",
+                    )
+            except SecurityBoundaryViolation as sec_err:
+                return SkillExecutionResult(
+                    result=f"Security Violation: {sec_err}",
+                    success=False,
+                    error_type="security_violation",
+                    error_message=str(sec_err),
+                )
 
         try:
             output = tool(**kwargs)
@@ -275,4 +313,8 @@ class SkillRegistry:
 
     @classmethod
     def execute(cls, name: str, **kwargs) -> Any:
-        return cls.execute_with_status(name, **kwargs).result
+        res = cls.execute_with_status(name, **kwargs)
+        if not res.success and res.error_type == "security_violation":
+            from jarvis.core.security_boundaries import SecurityBoundaryViolation
+            raise SecurityBoundaryViolation(res.error_message or str(res.result))
+        return res.result
