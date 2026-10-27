@@ -1,34 +1,52 @@
 """Self-Evolution Sandbox & Subprocess Validation Gate for Jarvis 2.0.
 
-Mitigates the Chief Dissent by isolating LLM-generated Python skills in an isolated
-child process before permitting hot-reloading into the running assistant memory.
+Provides out-of-process isolation, AST static inspection, canary verification,
+and kernel-level Win32 Job Object resource containment for dynamically synthesized skills.
 """
+from __future__ import annotations
+
 import ast
-from dataclasses import dataclass
-import importlib.util
+import hashlib
+import hmac
+import inspect
+import json
 import logging
 import os
-from pathlib import Path
 import re
+import secrets
 import shutil
 import subprocess
 import sys
+import threading
 import time
-from typing import Any, List, Optional, Set, Tuple
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
+from jarvis.skills.job_object_sandbox import (
+    BELOW_NORMAL_PRIORITY_CLASS,
+    JOB_OBJECT_UILIMIT_ALL,
+    SandboxedProcess,
+)
+from jarvis.skills.job_object_sandbox import (
+    apply_job_ui_restrictions as _canonical_ui,
+)
 
 logger = logging.getLogger("Jarvis.Evolution.Sandbox")
 
 WORKSPACE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 CUSTOM_SKILLS_DIR = WORKSPACE_DIR / "jarvis" / "skills" / "custom"
 SCRATCH_DIR = WORKSPACE_DIR / "data" / "evolution_scratch"
-
 SNAPSHOTS_DIR = WORKSPACE_DIR / "data" / "evolution_snapshots"
+ISOLATED_RUNNER_PATH = Path(__file__).resolve().parent / "isolated_runner.py"
 
 CUSTOM_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
 SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+
+_SANDBOX_CONCURRENCY_SEMAPHORE = threading.Semaphore(4)
 
 
 @dataclass
@@ -37,44 +55,14 @@ class SandboxResult:
     success: bool
     skill_name: str
     message: str
-    target_path: Optional[Path] = None
+    target_path: Path | None = None
     stdout: str = ""
     stderr: str = ""
 
 
-
 def apply_job_ui_restrictions(job_handle: int) -> bool:
-    """Applies Win32 UI Restrictions (JobObjectBasicUIRestrictions = 4) to the Job Object.
-
-    Enforces UIRestrictionsClass = 0x000000FF covering HANDLES, READCLIPBOARD,
-    WRITECLIPBOARD, SYSTEMPARAMETERS, DISPLAYSETTINGS, GLOBALATOMS, DESKTOP, EXITWINDOWS.
-    """
-    if sys.platform != "win32" or not job_handle:
-        return False
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        class JOBOBJECT_BASIC_UI_RESTRICTIONS(ctypes.Structure):
-            _fields_ = [("UIRestrictionsClass", wintypes.DWORD)]
-
-        JobObjectBasicUIRestrictions = 4
-        ui_restrictions = JOBOBJECT_BASIC_UI_RESTRICTIONS()
-        # Enforces UI restrictions: READCLIPBOARD (0x02), WRITECLIPBOARD (0x04),
-        # SYSTEMPARAMETERS (0x08), DISPLAYSETTINGS (0x10), EXITWINDOWS (0x80) = 0x9E
-        ui_restrictions.UIRestrictionsClass = 0x0000009E
-
-        k32 = ctypes.windll.kernel32
-        ok = k32.SetInformationJobObject(
-            job_handle,
-            JobObjectBasicUIRestrictions,
-            ctypes.byref(ui_restrictions),
-            ctypes.sizeof(ui_restrictions),
-        )
-        return bool(ok)
-    except Exception as e:
-        logger.debug("apply_job_ui_restrictions failed: %s", e)
-        return False
+    """Applies Win32 UI Restrictions (JobObjectBasicUIRestrictions = 4) using JOB_OBJECT_UILIMIT_ALL (0xFF)."""
+    return _canonical_ui(job_handle, ui_flags=JOB_OBJECT_UILIMIT_ALL)
 
 
 def install_canary_c_audit_hook() -> None:
@@ -101,10 +89,7 @@ def install_canary_c_audit_hook() -> None:
 
 
 def atomic_rollback_file(snapshot_path: Path, target_path: Path, max_attempts: int = 4) -> bool:
-    """Atomically restores target_path from snapshot_path via staging temp file and os.replace.
-
-    Retries on transient Windows PermissionError (Defender/MsMpEng lock) with exponential backoff.
-    """
+    """Atomically restores target_path from snapshot_path via staging temp file and os.replace."""
     if not snapshot_path.exists():
         return False
 
@@ -136,129 +121,156 @@ def atomic_rollback_file(snapshot_path: Path, target_path: Path, max_attempts: i
                 pass
 
 
-class Win32JobObject:
-    """Manages an ephemeral Windows Job Object with strict process and memory limits."""
+def _get_scrubbed_env(scratch_dir: Path | None = None) -> dict[str, str]:
+    """Returns a minimal scrubbed environment containing only required OS primitives.
 
-    def __init__(self, max_processes: Optional[int] = None, max_memory_bytes: int = 1024 * 1024 * 1024):
-        self._handle = None
-        if max_processes is None:
-            # On Windows, virtualenv launcher stubs + background workers require up to 4 processes
-            self.max_processes = 4
-        else:
-            self.max_processes = max_processes
-        self.max_memory_bytes = max_memory_bytes
-        if sys.platform != "win32":
-            return
+    Explicitly excludes PYTHONPATH, PYTHONUTF8, and all user API keys/credentials.
+    Points TEMP and TMP to the ephemeral scratch directory to prevent user temp access.
+    """
+    allowed_keys = {
+        "SYSTEMROOT",
+        "WINDIR",
+        "PATH",
+        "COMSPEC",
+        "PATHEXT",
+        "NUMBER_OF_PROCESSORS",
+        "OS",
+    }
+    scrubbed = {}
+    for k in allowed_keys:
+        if k in os.environ:
+            scrubbed[k] = os.environ[k]
+    scrubbed.setdefault("SYSTEMROOT", r"C:\Windows")
+    scrubbed.setdefault("WINDIR", r"C:\Windows")
 
+    if scratch_dir is not None:
+        scrubbed["TEMP"] = str(scratch_dir)
+        scrubbed["TMP"] = str(scratch_dir)
+    elif "TEMP" in os.environ:
+        scrubbed["TEMP"] = os.environ["TEMP"]
+        scrubbed["TMP"] = os.environ.get("TMP", os.environ["TEMP"])
+
+    return scrubbed
+
+
+def get_or_create_evolution_hmac_key() -> bytes:
+    """Retrieves or generates a machine-local HMAC secret protected via Windows DPAPI."""
+    key_dir = Path.home() / ".jarvis_sec"
+    key_dir.mkdir(parents=True, exist_ok=True)
+    key_file = key_dir / "evolution_hmac.dat"
+
+    if key_file.exists():
         try:
-            import ctypes
-            from ctypes import wintypes
-
-            class IO_COUNTERS(ctypes.Structure):
-                _fields_ = [
-                    ("ReadOperationCount", ctypes.c_uint64),
-                    ("WriteOperationCount", ctypes.c_uint64),
-                    ("OtherOperationCount", ctypes.c_uint64),
-                    ("ReadTransferCount", ctypes.c_uint64),
-                    ("WriteTransferCount", ctypes.c_uint64),
-                    ("OtherTransferCount", ctypes.c_uint64),
-                ]
-
-            class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-                _fields_ = [
-                    ("PerProcessUserTimeLimit", ctypes.c_int64),
-                    ("PerJobUserTimeLimit", ctypes.c_int64),
-                    ("LimitFlags", wintypes.DWORD),
-                    ("MinimumWorkingSetSize", ctypes.c_size_t),
-                    ("MaximumWorkingSetSize", ctypes.c_size_t),
-                    ("ActiveProcessLimit", wintypes.DWORD),
-                    ("Affinity", ctypes.c_size_t),
-                    ("PriorityClass", wintypes.DWORD),
-                    ("SchedulingClass", wintypes.DWORD),
-                ]
-
-            class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-                _fields_ = [
-                    ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                    ("IoInfo", IO_COUNTERS),
-                    ("ProcessMemoryLimit", ctypes.c_size_t),
-                    ("JobMemoryLimit", ctypes.c_size_t),
-                    ("PeakProcessMemoryLimit", ctypes.c_size_t),
-                    ("PeakJobMemoryLimit", ctypes.c_size_t),
-                ]
-
-            k32 = ctypes.windll.kernel32
-            hJob = k32.CreateJobObjectW(None, None)
-            if not hJob:
-                return
-
-            JobObjectExtendedLimitInformation = 9
-            JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
-            JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x00000100
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
-
-            limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-            limits.BasicLimitInformation.LimitFlags = (
-                JOB_OBJECT_LIMIT_ACTIVE_PROCESS
-                | JOB_OBJECT_LIMIT_PROCESS_MEMORY
-                | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            )
-            limits.BasicLimitInformation.ActiveProcessLimit = self.max_processes
-            limits.ProcessMemoryLimit = max_memory_bytes
-
-            ok = k32.SetInformationJobObject(
-                hJob,
-                JobObjectExtendedLimitInformation,
-                ctypes.byref(limits),
-                ctypes.sizeof(limits),
-            )
-            if ok:
-                self._handle = hJob
-                apply_job_ui_restrictions(hJob)
-            else:
-                k32.CloseHandle(hJob)
+            raw_blob = key_file.read_bytes()
+            if sys.platform == "win32":
+                import win32crypt
+                _, key = win32crypt.CryptUnprotectData(raw_blob, None, None, None, 0)
+                return bytes(key)
+            return raw_blob
         except Exception as e:
-            logger.debug("Win32JobObject initialization failed: %s", e)
-            self._handle = None
+            logger.warning("Failed to decrypt evolution HMAC key: %s; regenerating", e)
 
-    def assign_process(self, proc: Any) -> bool:
-        """Assigns the given subprocess to this Job Object."""
-        if not self._handle:
-            return False
+    new_key = secrets.token_bytes(32)
+    if sys.platform == "win32":
         try:
-            import ctypes
-            from ctypes import wintypes
-            raw_handle = getattr(proc, "_handle", None)
-            if raw_handle:
-                k32 = ctypes.windll.kernel32
-                k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-                k32.AssignProcessToJobObject.restype = wintypes.BOOL
-                res = k32.AssignProcessToJobObject(self._handle, int(raw_handle))
-                return bool(res)
+            import win32crypt
+            blob = win32crypt.CryptProtectData(new_key, "Jarvis Evolution HMAC Key", None, None, None, 0)
+            key_file.write_bytes(blob)
         except Exception as e:
-            logger.debug("Win32JobObject assign_process failed: %s", e)
+            logger.warning("DPAPI encryption failed, storing raw key: %s", e)
+            key_file.write_bytes(new_key)
+    else:
+        key_file.write_bytes(new_key)
+    return new_key
+
+
+def compute_skill_signature_payload(
+    skill_name: str,
+    code_hash: str,
+    tools_meta: dict[str, Any],
+    risk_level: int = 2,
+    external_ingestion: bool = True,
+) -> str:
+    """Formats a deterministic canonical JSON payload binding all security-critical metadata for HMAC signing."""
+    canonical_payload = {
+        "code_hash": code_hash.lower(),
+        "external_ingestion": bool(external_ingestion),
+        "risk_level": int(risk_level),
+        "skill_name": skill_name,
+        "tools": tools_meta,
+    }
+    return json.dumps(canonical_payload, sort_keys=True, separators=(",", ":"))
+
+
+def sign_custom_skill(
+    skill_name: str,
+    code_hash: str,
+    tools_meta: dict[str, Any],
+    risk_level: int = 2,
+    external_ingestion: bool = True,
+) -> str:
+    """Computes an HMAC-SHA256 signature binding the skill name, code hash, tool metadata,
+
+    risk level, and external ingestion flag using the DPAPI-protected key.
+    """
+    key = get_or_create_evolution_hmac_key()
+    payload = compute_skill_signature_payload(skill_name, code_hash, tools_meta, risk_level, external_ingestion)
+    return hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def verify_custom_skill_signature(
+    skill_name: str,
+    code_hash: str,
+    tools_meta: dict[str, Any],
+    signature: str,
+    risk_level: int = 2,
+    external_ingestion: bool = True,
+) -> bool:
+    """Verifies HMAC-SHA256 signature against the canonical skill metadata."""
+    if not signature:
+        return False
+    try:
+        expected = sign_custom_skill(skill_name, code_hash, tools_meta, risk_level, external_ingestion)
+        return hmac.compare_digest(expected.lower(), signature.lower())
+    except Exception as e:
+        logger.warning("Custom skill HMAC verification failed: %s", e)
         return False
 
-    def close(self):
-        """Closes the job object handle."""
-        if self._handle:
-            try:
-                import ctypes
-                from ctypes import wintypes
-                k32 = ctypes.windll.kernel32
-                k32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
-                k32.TerminateJobObject.restype = wintypes.BOOL
-                k32.TerminateJobObject(self._handle, 1)
-                k32.CloseHandle(self._handle)
-            except Exception:
-                pass
-            self._handle = None
 
-    def __enter__(self):
-        return self
+def _create_sandboxed_tool_proxy(clean_name: str, tool_name: str, tool_meta: dict[str, Any]) -> Callable:
+    """Creates a callable proxy function executing the tool out-of-process under Job Object sandboxing."""
+    def sandboxed_tool_proxy(**kwargs):
+        return SkillSandbox.execute_sandboxed_custom_skill(clean_name, tool_name, kwargs)
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+    sandboxed_tool_proxy.__name__ = tool_name
+    description = tool_meta.get("description", "")
+    sandboxed_tool_proxy.__doc__ = description
+
+    type_map = {
+        "int": int,
+        "float": float,
+        "str": str,
+        "bool": bool,
+        "list": list,
+        "dict": dict,
+    }
+    parameters = []
+    for p in tool_meta.get("parameters", []):
+        p_name = p.get("name")
+        if not p_name or not p_name.isidentifier():
+            continue
+        p_type = type_map.get(p.get("type", "str"), str)
+        default = p.get("default", inspect.Parameter.empty) if p.get("has_default") else inspect.Parameter.empty
+        parameters.append(
+            inspect.Parameter(
+                name=p_name,
+                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=default,
+                annotation=p_type,
+            )
+        )
+    sandboxed_tool_proxy.__signature__ = inspect.Signature(parameters)
+    return sandboxed_tool_proxy
 
 
 class SkillSandbox:
@@ -268,8 +280,7 @@ class SkillSandbox:
     install_canary_c_audit_hook = staticmethod(install_canary_c_audit_hook)
     atomic_rollback_file = staticmethod(atomic_rollback_file)
 
-    # Prohibited AST calls to protect host integrity
-    BLOCKED_CALLS: Set[str] = {
+    BLOCKED_CALLS: set[str] = {
         "os.system",
         "os.popen",
         "os.spawn",
@@ -305,8 +316,7 @@ class SkillSandbox:
         "pathlib.Path.mkdir",
     }
 
-    # Prohibited method names across all receiver types (filesystem mutations / escapes)
-    BLOCKED_DESTRUCTIVE_METHODS: Set[str] = {
+    BLOCKED_DESTRUCTIVE_METHODS: set[str] = {
         "unlink",
         "rmdir",
         "remove",
@@ -319,8 +329,7 @@ class SkillSandbox:
         "truncate",
     }
 
-    # Prohibited reflection functions (dynamic object attribute access / meta-programming)
-    BLOCKED_REFLECTION_CALLS: Set[str] = {
+    BLOCKED_REFLECTION_CALLS: set[str] = {
         "getattr",
         "setattr",
         "delattr",
@@ -329,8 +338,7 @@ class SkillSandbox:
         "vars",
     }
 
-    # Prohibited dunder and frame attributes (sandbox escape vectors via class hierarchy and frame introspection)
-    BLOCKED_ATTRIBUTES: Set[str] = {
+    BLOCKED_ATTRIBUTES: set[str] = {
         "__subclasses__",
         "__globals__",
         "__mro__",
@@ -360,8 +368,7 @@ class SkillSandbox:
         "tb_next",
     }
 
-    # Prohibited modules to import
-    BLOCKED_MODULES: Set[str] = {
+    BLOCKED_MODULES: set[str] = {
         "builtins",
         "ctypes",
         "importlib",
@@ -384,28 +391,35 @@ class SkillSandbox:
         return slug
 
     @classmethod
-    def check_ast_security(cls, code: str) -> Tuple[bool, str]:
+    def check_ast_security(cls, code: str) -> tuple[bool, str]:
         """Performs static syntax and deep AST security checks on untrusted code."""
         try:
             tree = ast.parse(code)
         except SyntaxError as e:
             return False, f"Python SyntaxError on line {e.lineno}: {e.msg}"
 
-        # Inspect AST for dangerous patterns, imports, and reflection escapes
         for node in ast.walk(tree):
-            # 1. Imports inspection
+            # 1. Imports inspection: block dangerous modules & unapproved jarvis.* imports
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     root_mod = alias.name.split(".")[0]
                     if root_mod in cls.BLOCKED_MODULES:
                         return False, f"Security Violation: Importing module '{alias.name}' is blocked inside autonomous skills."
+                    if root_mod == "jarvis":
+                        return False, f"Security Violation: Importing '{alias.name}' is prohibited inside autonomous skills."
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
                     root_mod = node.module.split(".")[0]
                     if root_mod in cls.BLOCKED_MODULES:
                         return False, f"Security Violation: Importing from module '{node.module}' is blocked inside autonomous skills."
+                    if root_mod == "jarvis":
+                        # Allow exactly 'from jarvis.skills.base import SkillRegistry'
+                        if node.module == "jarvis.skills.base" and all(a.name == "SkillRegistry" for a in node.names):
+                            pass
+                        else:
+                            return False, f"Security Violation: Importing from '{node.module}' is prohibited inside autonomous skills."
 
-            # 2. Attribute access inspection (catches dunder escapes and blocked call bindings)
+            # 2. Attribute access inspection
             elif isinstance(node, ast.Attribute):
                 if node.attr in cls.BLOCKED_ATTRIBUTES:
                     return False, f"Security Violation: Access to dunder attribute '{node.attr}' is prohibited (sandbox reflection protection)."
@@ -414,7 +428,7 @@ class SkillSandbox:
                 if full_attr in cls.BLOCKED_CALLS:
                     return False, f"Security Violation: '{full_attr}' is blocked inside autonomous skills."
 
-            # 3. Call invocation inspection (catches reflection and blocked execution)
+            # 3. Call invocation inspection
             elif isinstance(node, ast.Call):
                 func = node.func
                 call_name = ""
@@ -443,21 +457,18 @@ class SkillSandbox:
                             if any(m in kw.value.value for m in ("w", "a", "+", "x")):
                                 return False, f"Security Violation: File write operations are prohibited (attempted mode '{kw.value.value}' in open())."
 
-            # 4. Operational Invariant: Infinite While Loop Detection (Unbounded Spin-Locks)
+            # 4. Operational Invariant: Infinite While Loop Detection
             elif isinstance(node, ast.While):
                 is_const_true = (
                     (isinstance(node.test, ast.Constant) and bool(node.test.value) is True) or
                     (isinstance(node.test, ast.Name) and node.test.id == "True")
                 )
                 if is_const_true:
-                    has_exit = any(
-                        isinstance(child, (ast.Break, ast.Return))
-                        for child in ast.walk(node)
-                    )
-                    if not has_exit:
-                        return False, "Operational Guardrail Violation: Unbounded 'while True' loop detected with no exit break/return."
+                    has_break = any(isinstance(child, ast.Break) for child in ast.walk(node))
+                    if not has_break:
+                        return False, "Operational Guardrail Violation: Unbounded 'while True' loop detected without explicit break condition."
 
-            # 5. Operational Invariant: Massive Literal Memory Allocation (>50M elements)
+            # 5. Operational Invariant: Massive Literal Memory Allocation
             elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
                 for operand in (node.left, node.right):
                     if isinstance(operand, ast.Constant) and isinstance(operand.value, (int, float)):
@@ -467,8 +478,8 @@ class SkillSandbox:
         return True, "AST security checks passed."
 
     @classmethod
-    def create_snapshot(cls, clean_name: str) -> Optional[Path]:
-        """Creates a versioned backup snapshot of an existing custom skill before updating."""
+    def create_snapshot(cls, clean_name: str) -> Path | None:
+        """Creates a versioned backup snapshot of both .py and .meta.json before updating."""
         target_file = CUSTOM_SKILLS_DIR / f"{clean_name}.py"
         if not target_file.exists():
             return None
@@ -477,6 +488,9 @@ class SkillSandbox:
         snapshot_file = SNAPSHOTS_DIR / f"{clean_name}_{timestamp}.py"
         try:
             shutil.copy2(target_file, snapshot_file)
+            meta_file = CUSTOM_SKILLS_DIR / f"{clean_name}.meta.json"
+            if meta_file.exists():
+                shutil.copy2(meta_file, SNAPSHOTS_DIR / f"{clean_name}_{timestamp}.meta.json")
             logger.info("Created snapshot for '%s' at '%s'", clean_name, snapshot_file.name)
             return snapshot_file
         except Exception as e:
@@ -484,21 +498,38 @@ class SkillSandbox:
             return None
 
     @classmethod
-    def rollback_snapshot(cls, clean_name: str, snapshot_path: Optional[Path]) -> bool:
-        """Restores a custom skill from its previous snapshot or cleans up on failure."""
+    def rollback_snapshot(cls, clean_name: str, snapshot_path: Path | None) -> bool:
+        """Restores a custom skill and sidecar from snapshot, re-registering proxies without host module import."""
         target_file = CUSTOM_SKILLS_DIR / f"{clean_name}.py"
+        target_meta = CUSTOM_SKILLS_DIR / f"{clean_name}.meta.json"
+
         if snapshot_path and snapshot_path.exists():
             try:
                 rolled_back = atomic_rollback_file(snapshot_path, target_file)
                 if not rolled_back:
                     shutil.copy2(snapshot_path, target_file)
+
+                snap_meta = snapshot_path.with_suffix(".meta.json")
+                if snap_meta.exists():
+                    shutil.copy2(snap_meta, target_meta)
+                    try:
+                        with open(target_meta, "r", encoding="utf-8") as f:
+                            meta_data = json.load(f)
+                        for t_name, t_meta in meta_data.get("tools", {}).items():
+                            proxy_fn = _create_sandboxed_tool_proxy(clean_name, t_name, t_meta)
+                            SkillRegistry.register(
+                                name=t_name,
+                                description=t_meta.get("description", ""),
+                                risk_level=2,
+                                read_only=False,
+                                external_ingestion=True,
+                                default_timeout_ms=15000,
+                                origin="custom",
+                            )(proxy_fn)
+                    except Exception as meta_err:
+                        logger.warning("Failed to restore proxies on snapshot rollback: %s", meta_err)
+
                 logger.info("Rolled back '%s' to snapshot '%s'", clean_name, snapshot_path.name)
-                module_name = f"jarvis.skills.custom.{clean_name}"
-                spec = importlib.util.spec_from_file_location(module_name, str(target_file))
-                if spec and spec.loader:
-                    mod = importlib.util.module_from_spec(spec)
-                    sys.modules[module_name] = mod
-                    spec.loader.exec_module(mod)
                 return True
             except Exception as e:
                 logger.error("Failed to restore snapshot for '%s': %s", clean_name, e)
@@ -509,13 +540,15 @@ class SkillSandbox:
                     target_file.unlink()
                 except Exception:
                     pass
-            module_name = f"jarvis.skills.custom.{clean_name}"
-            if module_name in sys.modules:
-                del sys.modules[module_name]
+            if target_meta.exists():
+                try:
+                    target_meta.unlink()
+                except Exception:
+                    pass
             return True
 
     @classmethod
-    def list_snapshots(cls, clean_name: Optional[str] = None) -> List[Path]:
+    def list_snapshots(cls, clean_name: str | None = None) -> list[Path]:
         """Lists existing versioned snapshots, optionally filtered by skill name."""
         if not SNAPSHOTS_DIR.exists():
             return []
@@ -524,24 +557,14 @@ class SkillSandbox:
 
     @classmethod
     def generate_canary_script(cls, clean_name: str, scratch_path: Path) -> str:
-        """Generates an automated semantic canary verification script for the subprocess.
-
-        Verifies:
-        1. Module load and compilation without exception.
-        2. Registration of at least one valid tool in SkillRegistry.
-        3. Tool contract inspection: docstrings, signature parameter inspectability.
-        4. Operational Invariants:
-           - Global socket timeout to prevent network hangs.
-           - Active memory tracking (tracemalloc) to prevent memory bombs (>64MB).
-           - Smoke invocation under a 2.0s execution watchdog to catch spin-locks.
-        5. Emission of CANARY_VERIFICATION_SUCCESS and SANDBOX_LOAD_SUCCESS markers.
-        """
+        """Generates an automated semantic canary verification script for the subprocess."""
         escaped_path = str(scratch_path).replace("\\", "\\\\")
         escaped_ws = str(WORKSPACE_DIR).replace("\\", "\\\\")
         return f"""import builtins
 import io
 import inspect
 import importlib.util
+import json
 import os
 import socket
 import sys
@@ -552,13 +575,11 @@ import tracemalloc
 if r'{escaped_ws}' not in sys.path:
     sys.path.insert(0, r'{escaped_ws}')
 
-# Operational Guardrail 1: Enforce global socket timeout to prevent indefinite network hangs
 try:
     socket.setdefaulttimeout(2.5)
 except Exception:
     pass
 
-# Operational Guardrail 2: Wrap builtins.open and io.open to disallow file writes inside the canary
 _real_open = builtins.open
 def _sandboxed_open(file, mode='r', *args, **kwargs):
     if any(m in mode for m in ('w', 'a', '+', 'x')):
@@ -568,7 +589,6 @@ def _sandboxed_open(file, mode='r', *args, **kwargs):
 builtins.open = _sandboxed_open
 io.open = _sandboxed_open
 
-# Operational Guardrail 3: Mock dangerous modules in sys.modules to prevent subprocess / OS leaks
 class BlockedSandboxModule:
     def __init__(self, mod_name: str):
         self.__name__ = mod_name
@@ -580,12 +600,10 @@ class BlockedSandboxModule:
 for _blocked in ["subprocess", "shutil", "winreg", "ctypes"]:
     sys.modules[_blocked] = BlockedSandboxModule(_blocked)
 
-# Operational Guardrail 4: Block raw socket creation
 def _blocked_socket(*args, **kwargs):
     raise PermissionError("Canary sandbox violation: Raw socket creation is disabled inside the canary sandbox.")
 socket.socket = _blocked_socket
 
-# Operational Guardrail 5: Track memory allocations to catch massive arrays / memory leaks
 tracemalloc.start()
 
 try:
@@ -596,7 +614,6 @@ try:
 
     mod = importlib.util.module_from_spec(spec)
 
-    # Gate 2 PEP 578 Irreversible C-Audit Hook installed immediately before executing candidate module
     def _canary_audit_guard(event, args):
         blocked_events = {{
             "os.system", "os.spawn", "os.exec", "os.fork", "os.posix_spawn",
@@ -623,7 +640,6 @@ try:
     from jarvis.skills.base import SkillRegistry
     tools = SkillRegistry.get_all_tools()
 
-    # Find tools defined in this module
     module_tools = [
         name for name, fn in tools.items()
         if getattr(fn, '__module__', '') == '{clean_name}' or name == '{clean_name}'
@@ -640,6 +656,16 @@ try:
         sys.stdout.flush()
         os._exit(3)
 
+    type_str_map = {{
+        int: "int",
+        float: "float",
+        str: "str",
+        bool: "bool",
+        list: "list",
+        dict: "dict",
+    }}
+    canary_meta = {{}}
+
     for tool_name in module_tools:
         tool_fn = tools[tool_name]
         if not callable(tool_fn):
@@ -647,23 +673,47 @@ try:
             sys.stdout.flush()
             os._exit(4)
         sig = inspect.signature(tool_fn)
+        raw_doc = (getattr(tool_fn, "__doc__", "") or "").strip()
+        clean_doc = "".join(c for c in raw_doc if c.isprintable())[:500]
+
+        param_list = []
         dummy_kwargs = {{}}
         for p_name, param in sig.parameters.items():
-            if param.default != inspect.Parameter.empty:
+            if not p_name.isidentifier():
                 continue
             ann = param.annotation
-            if ann in (int, float):
-                dummy_kwargs[p_name] = 0
-            elif ann is bool:
-                dummy_kwargs[p_name] = False
-            elif ann is list:
-                dummy_kwargs[p_name] = []
-            elif ann is dict:
-                dummy_kwargs[p_name] = {{}}
-            else:
-                dummy_kwargs[p_name] = "test"
+            ann_str = type_str_map.get(ann, "str")
+            has_default = param.default != inspect.Parameter.empty
+            def_val = param.default if has_default else None
+            if has_default:
+                try:
+                    json.dumps(def_val)
+                except Exception:
+                    def_val = str(def_val)
+            param_list.append({{
+                "name": p_name,
+                "type": ann_str,
+                "has_default": has_default,
+                "default": def_val,
+            }})
 
-        # Operational Guardrail 3: Smoke-test invocation inside 2.0s watchdog thread
+            if not has_default:
+                if ann in (int, float):
+                    dummy_kwargs[p_name] = 0
+                elif ann is bool:
+                    dummy_kwargs[p_name] = False
+                elif ann is list:
+                    dummy_kwargs[p_name] = []
+                elif ann is dict:
+                    dummy_kwargs[p_name] = {{}}
+                else:
+                    dummy_kwargs[p_name] = "test"
+
+        canary_meta[tool_name] = {{
+            "description": clean_doc,
+            "parameters": param_list,
+        }}
+
         smoke_done = threading.Event()
         smoke_exc = []
 
@@ -697,7 +747,6 @@ try:
             time.sleep(0.05)
             os._exit(7)
 
-    # Operational Guardrail 4: Verify memory allocation threshold (< 64MB)
     current_b, peak_b = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     peak_mb = peak_b / (1024 * 1024)
@@ -710,6 +759,7 @@ try:
         time.sleep(0.05)
         os._exit(6)
 
+    sys.stdout.write('CANARY_METADATA_START\\n' + json.dumps(canary_meta) + '\\nCANARY_METADATA_END\\n')
     sys.stdout.write('CANARY_VERIFICATION_SUCCESS\\nSANDBOX_LOAD_SUCCESS\\n')
     sys.stdout.flush()
     sys.stderr.flush()
@@ -731,16 +781,11 @@ except Exception as e:
         skill_name: str,
         python_code: str,
         timeout_seconds: float = 20.0,
-        memory_manager: Optional[Any] = None,
+        memory_manager: Any | None = None,
         user_approved: bool = False,
     ) -> SandboxResult:
-        """Executes full sandboxed lifecycle:
-        1. Snapshot versioning if modifying an existing skill
-        2. Static AST syntax, import, reflection & security analysis
-        3. Isolation in ephemeral scratchpad file
-        4. Subprocess dry-run execution & automated canary contract verification under Win32 Job Object
-        5. Promotion to jarvis/skills/custom/ and live memory hot-reload
-        6. Transactional rollback to snapshot on any failure & Reflexion episodic lesson synthesis
+        """Executes full sandboxed lifecycle: AST gate, canary execution, metadata extraction,
+        HMAC-signed sidecar creation, and proxy registration without host module import.
         """
         clean_name = cls.sanitize_skill_name(skill_name)
         code = python_code.strip()
@@ -748,17 +793,14 @@ except Exception as e:
         if not code:
             return SandboxResult(success=False, skill_name=clean_name, message="Code content cannot be empty.")
 
-        # 0. Snapshot versioning of existing skill
         snapshot_path = cls.create_snapshot(clean_name)
 
-        # 1. AST Static Gate
         is_safe, sec_msg = cls.check_ast_security(code)
         if not is_safe:
             logger.warning("Sandbox blocked skill '%s': %s", clean_name, sec_msg)
             cls._record_failure_lesson(clean_name, code, sec_msg, memory_manager)
             return SandboxResult(success=False, skill_name=clean_name, message=sec_msg)
 
-        # Ensure SkillRegistry import
         if "SkillRegistry" not in code:
             code = "from jarvis.skills.base import SkillRegistry\n\n" + code
 
@@ -766,109 +808,41 @@ except Exception as e:
         scratch_file = SCRATCH_DIR / f"temp_{clean_name}_{int(time.time() * 1000)}.py"
         target_file = CUSTOM_SKILLS_DIR / f"{clean_name}.py"
 
-        # 2. Write to Ephemeral Scratchpad
         try:
             with open(scratch_file, "w", encoding="utf-8") as f:
                 f.write(code)
         except Exception as e:
             return SandboxResult(success=False, skill_name=clean_name, message=f"Failed to write scratchpad: {e}")
 
-        # 3. Subprocess Dry-Run & Automated Canary Gate under Win32 Job Object
         runner_script = cls.generate_canary_script(clean_name, scratch_file)
 
-        with Win32JobObject(max_processes=4, max_memory_bytes=1024 * 1024 * 1024) as job:
-            try:
-                is_win = sys.platform == "win32"
-                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                if is_win:
-                    from jarvis.skills.job_object_sandbox import CREATE_SUSPENDED, resume_process
-                    creationflags |= CREATE_SUSPENDED
+        is_win = sys.platform == "win32"
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-I", "-S", "-c", runner_script],
+            cwd=str(WORKSPACE_DIR),
+            env=_get_scrubbed_env(scratch_dir=scratch_file.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            max_memory_mb=256,
+            max_processes=4,
+            requested_affinity=0xFF00,
+            priority_class=BELOW_NORMAL_PRIORITY_CLASS if is_win else None,
+            apply_ui_restrictions=is_win,
+        )
 
-                proc = subprocess.Popen(
-                    [sys.executable, "-c", runner_script],
-                    cwd=str(WORKSPACE_DIR),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    creationflags=creationflags,
-                    close_fds=True,
-                    start_new_session=(not is_win),
-                )
-
-                if is_win:
-                    assigned = False
-                    try:
-                        assigned = job.assign_process(proc)
-                    except (OSError, RuntimeError) as assign_err:
-                        logger.error("Job Object containment assignment error for canary '%s': %s", clean_name, assign_err)
-                        assigned = False
-
-                    if not assigned:
-                        proc.kill()
-                        try:
-                            proc.communicate(timeout=1.0)
-                        except (subprocess.TimeoutExpired, OSError) as comm_err:
-                            logger.debug("Canary termination communicate notice: %s", comm_err)
-                        cls._cleanup_scratch(scratch_file)
-                        cls.rollback_snapshot(clean_name, snapshot_path)
-                        logger.error("Job Object containment assignment failed for canary '%s'; aborting execution.", clean_name)
-                        msg = "Security failure: Win32 Job Object assignment failed. Execution aborted to fail closed."
-                        cls._record_failure_lesson(clean_name, code, msg, memory_manager)
-                        return SandboxResult(
-                            success=False,
-                            skill_name=clean_name,
-                            message=msg,
-                        )
-
-                    resumed = False
-                    try:
-                        resumed = resume_process(proc)
-                    except (OSError, RuntimeError) as resume_err:
-                        logger.error("Failed to resume suspended canary '%s': %s", clean_name, resume_err)
-                        resumed = False
-
-                    if not resumed:
-                        proc.kill()
-                        try:
-                            proc.communicate(timeout=1.0)
-                        except (subprocess.TimeoutExpired, OSError) as comm_err:
-                            logger.debug("Canary termination communicate notice: %s", comm_err)
-                        cls._cleanup_scratch(scratch_file)
-                        cls.rollback_snapshot(clean_name, snapshot_path)
-                        logger.error("Failed to resume suspended canary '%s'; aborting execution.", clean_name)
-                        msg = "Security failure: Failed to resume suspended canary process. Execution aborted to fail closed."
-                        cls._record_failure_lesson(clean_name, code, msg, memory_manager)
-                        return SandboxResult(
-                            success=False,
-                            skill_name=clean_name,
-                            message=msg,
-                        )
-
+        try:
+            with proc_mgr as proc:
                 try:
                     stdout, stderr = proc.communicate(timeout=timeout_seconds)
-                    try:
-                        proc.wait(timeout=5.0)
-                    except (subprocess.TimeoutExpired, OSError) as wait_err:
-                        logger.debug("Canary wait notice: %s", wait_err)
                 except subprocess.TimeoutExpired:
-                    if not is_win and getattr(proc, "pid", None):
-                        try:
-                            import signal
-                            os.killpg(os.getpgid(proc.pid), getattr(signal, "SIGKILL", 9))
-                        except (ProcessLookupError, PermissionError, OSError) as kill_err:
-                            logger.debug("POSIX process-group kill notice: %s", kill_err)
-                    proc.kill()
-                    stdout, stderr = proc.communicate()
+                    proc_mgr.terminate_tree()
                     cls._cleanup_scratch(scratch_file)
                     cls.rollback_snapshot(clean_name, snapshot_path)
-                    logger.error("Sandbox verification timed out after %.1fs for '%s'", timeout_seconds, clean_name)
                     msg = f"Subprocess timed out after {timeout_seconds}s (potential infinite loop)."
                     cls._record_failure_lesson(clean_name, code, msg, memory_manager)
-                    return SandboxResult(
-                        success=False,
-                        skill_name=clean_name,
-                        message=msg,
-                    )
+                    return SandboxResult(success=False, skill_name=clean_name, message=msg)
 
                 stdout = (stdout or "").strip()
                 stderr = (stderr or "").strip()
@@ -880,7 +854,6 @@ except Exception as e:
                     cls._cleanup_scratch(scratch_file)
                     cls.rollback_snapshot(clean_name, snapshot_path)
                     error_summary = stderr or stdout or f"Exited with code {proc.returncode}"
-                    logger.error("Sandbox verification failed for '%s': %s", clean_name, error_summary)
                     msg = f"Subprocess verification failed:\n{error_summary}"
                     cls._record_failure_lesson(clean_name, code, error_summary, memory_manager)
                     return SandboxResult(
@@ -891,12 +864,37 @@ except Exception as e:
                         stderr=stderr,
                     )
 
-            except Exception as e:
-                cls._cleanup_scratch(scratch_file)
-                cls.rollback_snapshot(clean_name, snapshot_path)
+                # Parse tool metadata emitted by canary
+                meta_dict = {}
+                if "CANARY_METADATA_START" in stdout and "CANARY_METADATA_END" in stdout:
+                    try:
+                        raw_meta = stdout.split("CANARY_METADATA_START")[1].split("CANARY_METADATA_END")[0].strip()
+                        meta_dict = json.loads(raw_meta)
+                    except Exception as e:
+                        logger.warning("Failed to parse canary metadata: %s", e)
+
+                # Enforce symmetrical name collision guard on every tool in meta_dict
+                for t_name in meta_dict.keys():
+                    existing_meta = SkillRegistry.get_metadata(t_name)
+                    if existing_meta and getattr(existing_meta, "origin", "builtin") == "builtin":
+                        cls._cleanup_scratch(scratch_file)
+                        cls.rollback_snapshot(clean_name, snapshot_path)
+                        msg = f"Security Violation: Custom tool '{t_name}' collides with built-in tool."
+                        cls._record_failure_lesson(clean_name, code, msg, memory_manager)
+                        return SandboxResult(success=False, skill_name=clean_name, message=msg)
+
+        except Exception as e:
+            cls._cleanup_scratch(scratch_file)
+            cls.rollback_snapshot(clean_name, snapshot_path)
+            err_msg = str(e)
+            if "Job Object" in err_msg or "assignment failed" in err_msg.lower():
+                msg = "Security failure: Win32 Job Object assignment failed. Execution aborted to fail closed."
+            elif "Failed to resume suspended process" in err_msg:
+                msg = "Security failure: Failed to resume suspended canary process. Execution aborted to fail closed."
+            else:
                 msg = f"Subprocess execution error: {e}"
-                cls._record_failure_lesson(clean_name, code, msg, memory_manager)
-                return SandboxResult(success=False, skill_name=clean_name, message=msg)
+            cls._record_failure_lesson(clean_name, code, msg, memory_manager)
+            return SandboxResult(success=False, skill_name=clean_name, message=msg)
 
         # 3.5 Gate: Require explicit user approval before promoting to live codebase
         if not user_approved:
@@ -909,10 +907,33 @@ except Exception as e:
                 message="Skill passed canary dry-run verification, but was not promoted into live process: explicit out-of-band user approval is required.",
             )
 
-        # 4. Promotion from Scratchpad to Production Custom Directory
+        # 4. Promotion: Write custom skill file and DPAPI HMAC signed sidecar
         try:
             shutil.copy2(scratch_file, target_file)
             cls._cleanup_scratch(scratch_file)
+
+            code_bytes = target_file.read_bytes()
+            code_hash = hashlib.sha256(code_bytes).hexdigest()
+            code_hmac = sign_custom_skill(
+                clean_name,
+                code_hash,
+                meta_dict,
+                risk_level=2,
+                external_ingestion=True,
+            )
+
+            sidecar_path = CUSTOM_SKILLS_DIR / f"{clean_name}.meta.json"
+            sidecar_payload = {
+                "skill_name": clean_name,
+                "sha256": code_hash,
+                "hmac": code_hmac,
+                "risk_level": 2,
+                "external_ingestion": True,
+                "tools": meta_dict,
+            }
+            with open(sidecar_path, "w", encoding="utf-8") as f:
+                json.dump(sidecar_payload, f, indent=2)
+
         except Exception as e:
             cls._cleanup_scratch(scratch_file)
             cls.rollback_snapshot(clean_name, snapshot_path)
@@ -920,37 +941,149 @@ except Exception as e:
             cls._record_failure_lesson(clean_name, code, msg, memory_manager)
             return SandboxResult(success=False, skill_name=clean_name, message=msg)
 
-        # 5. Live Memory Hot-Reload in Host Process
-        module_name = f"jarvis.skills.custom.{clean_name}"
+        # 5. Out-of-process proxy registration (NO in-process host module import)
         try:
-            spec = importlib.util.spec_from_file_location(module_name, str(target_file))
-            if spec and spec.loader:
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[module_name] = module
-                spec.loader.exec_module(module)
+            for t_name, t_meta in meta_dict.items():
+                proxy_fn = _create_sandboxed_tool_proxy(clean_name, t_name, t_meta)
+                SkillRegistry.register(
+                    name=t_name,
+                    description=t_meta.get("description", ""),
+                    risk_level=2,
+                    read_only=False,
+                    external_ingestion=True,
+                    default_timeout_ms=15000,
+                    origin="custom",
+                )(proxy_fn)
 
-                # Clear tool schema cache
-                if hasattr(SkillRegistry, "_openai_tools_cache"):
-                    SkillRegistry._openai_tools_cache.clear()
+            if hasattr(SkillRegistry, "_openai_tools_cache"):
+                SkillRegistry._openai_tools_cache.clear()
 
-                logger.info("Skill '%s' promoted and hot-reloaded successfully.", clean_name)
-                return SandboxResult(
-                    success=True,
-                    skill_name=clean_name,
-                    message=f"Successfully engineered and hot-reloaded capability '{clean_name}', Sir! Validated via isolated subprocess sandbox and active in your current session.",
-                    target_path=target_file,
-                )
+            logger.info("Skill '%s' promoted and registered via sandboxed proxy.", clean_name)
+            return SandboxResult(
+                success=True,
+                skill_name=clean_name,
+                message=f"Successfully engineered and hot-reloaded capability '{clean_name}', Sir! Validated via isolated subprocess sandbox and active in your current session.",
+                target_path=target_file,
+            )
         except Exception as host_err:
             cls.rollback_snapshot(clean_name, snapshot_path)
-            msg = f"Host hot-reload error: {host_err}"
+            msg = f"Host proxy registration error: {host_err}"
             cls._record_failure_lesson(clean_name, code, msg, memory_manager)
-            return SandboxResult(
-                success=False,
-                skill_name=clean_name,
-                message=msg,
-            )
+            return SandboxResult(success=False, skill_name=clean_name, message=msg)
 
-        return SandboxResult(success=False, skill_name=clean_name, message="Unknown sandbox failure.")
+    @classmethod
+    def execute_sandboxed_custom_skill(
+        cls,
+        clean_name: str,
+        tool_name: str,
+        kwargs: dict[str, Any],
+        timeout_seconds: float = 10.0,
+    ) -> Any:
+        """Executes a custom skill out-of-process inside an E-core-pinned Win32 Job Object."""
+        acquired = _SANDBOX_CONCURRENCY_SEMAPHORE.acquire(timeout=2.0)
+        if not acquired:
+            return "Error: Sandbox is busy executing concurrent tasks; try again shortly."
+
+        try:
+            target_file = CUSTOM_SKILLS_DIR / f"{clean_name}.py"
+            meta_file = CUSTOM_SKILLS_DIR / f"{clean_name}.meta.json"
+
+            if not target_file.exists() or not meta_file.exists():
+                return f"Error: Custom skill '{clean_name}' does not exist on disk."
+
+            try:
+                with open(meta_file, "r", encoding="utf-8") as f:
+                    meta_data = json.load(f)
+            except Exception as e:
+                return f"Error reading skill sidecar: {e}"
+
+            code_bytes = target_file.read_bytes()
+            actual_hash = hashlib.sha256(code_bytes).hexdigest()
+            expected_hash = meta_data.get("sha256", "")
+
+            if actual_hash.lower() != expected_hash.lower():
+                return f"Security Violation: Integrity mismatch for skill '{clean_name}'. File on disk was modified."
+
+            signature = meta_data.get("hmac", "")
+            tools_meta = meta_data.get("tools", {})
+            risk_level = meta_data.get("risk_level", 2)
+            external_ingestion = meta_data.get("external_ingestion", True)
+            if not verify_custom_skill_signature(
+                clean_name,
+                actual_hash,
+                tools_meta,
+                signature,
+                risk_level=risk_level,
+                external_ingestion=external_ingestion,
+            ):
+                return f"Security Violation: DPAPI HMAC signature verification failed for skill '{clean_name}'."
+
+            nonce = secrets.token_hex(32)
+            dir_id = secrets.token_hex(16)
+            run_scratch = SCRATCH_DIR / f"run_{dir_id}"
+            run_scratch.mkdir(parents=True, exist_ok=True)
+            result_file = run_scratch / "result.json"
+
+            try:
+                cmd = [
+                    sys.executable,
+                    "-I",
+                    "-S",
+                    str(ISOLATED_RUNNER_PATH),
+                    "--module-path", str(target_file),
+                    "--tool-name", tool_name,
+                    "--result-file", str(result_file),
+                    "--expected-hash", actual_hash,
+                    "--scratch-dir", str(run_scratch),
+                ]
+
+                payload = json.dumps({"nonce": nonce, "kwargs": kwargs})
+                is_win = sys.platform == "win32"
+
+                proc_mgr = SandboxedProcess(
+                    cmd,
+                    cwd=str(run_scratch),
+                    env=_get_scrubbed_env(scratch_dir=run_scratch),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    max_memory_mb=256,
+                    max_processes=4,
+                    requested_affinity=0xFF00,
+                    priority_class=BELOW_NORMAL_PRIORITY_CLASS if is_win else None,
+                    apply_ui_restrictions=is_win,
+                )
+
+                with proc_mgr as proc:
+                    try:
+                        proc.communicate(input=payload, timeout=timeout_seconds)
+                    except subprocess.TimeoutExpired:
+                        proc_mgr.terminate_tree()
+                        return f"Error: Tool '{tool_name}' timed out after {timeout_seconds}s in isolated sandbox."
+
+                    if not result_file.exists():
+                        return f"Error: Tool '{tool_name}' terminated unexpectedly (code {proc.returncode}) without result."
+
+                    if result_file.stat().st_size > 1048576:
+                        return f"Security Violation: Output from tool '{tool_name}' exceeded 1MB ceiling; rejected."
+
+                    with open(result_file, "r", encoding="utf-8") as f:
+                        res_data = json.load(f)
+
+                    if res_data.get("nonce") != nonce:
+                        return "Security Violation: Nonce verification failed for child response."
+
+                    if res_data.get("status") == "success":
+                        return res_data.get("result")
+                    else:
+                        return f"Error executing tool '{tool_name}': {res_data.get('error', 'Unknown error')}"
+
+            finally:
+                shutil.rmtree(run_scratch, ignore_errors=True)
+
+        finally:
+            _SANDBOX_CONCURRENCY_SEMAPHORE.release()
 
     @classmethod
     def _record_failure_lesson(
@@ -958,8 +1091,8 @@ except Exception as e:
         skill_name: str,
         code: str,
         failure_msg: str,
-        memory_manager: Optional[Any] = None,
-    ) -> Optional[int]:
+        memory_manager: Any | None = None,
+    ) -> int | None:
         """Synthesizes a Reflexion lesson and records it into SQLite WAL episodic memory."""
         try:
             mem = memory_manager
@@ -968,7 +1101,7 @@ except Exception as e:
                 mem = _memory_instance
             if mem is None:
                 try:
-                    from jarvis.core.config import load_config
+                    from jarvis.core.config_loader import load_config
                     from jarvis.core.memory import MemoryManager
                     cfg = load_config()
                     mem = MemoryManager(cfg)
@@ -1012,4 +1145,3 @@ except Exception as e:
                 path.unlink()
         except Exception:
             pass
-

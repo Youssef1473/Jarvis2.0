@@ -114,7 +114,7 @@ Jarvis 2.0 exposes **143 atomic capabilities across 36 specialized modules**, go
 ### 3.6 Multimodal Perception & Visual Privacy Guard
 * **Automated Visual Privacy Guard (`jarvis.vision.privacy_guard`):** Scans active window handles and process titles against password managers, cryptocurrency wallets, and banking interfaces before frame capture, halting immediately if sensitive data is detected.
 * **Set-of-Marks UI Grounding (`jarvis.skills.screen_vision`):** Overlays numbered bounding badges over interactable UI components on screen for precise visual targeting (`inspect_screen_with_marks`, `click_marked_element`).
-* **Multi-Tier Cloud Vision Cascade (`jarvis.skills.screen_vision`, `jarvis.skills.custom.see_screen`, `jarvis.skills.photo_manager`):** Processes workstation screen frames through a 12-second bounded Gemini cascade with zero local VRAM overhead, falling back to semantic UIA if offline (`inspect_screen`, `see_screen`, `describe_photo`, `save_photo`, `save_clipboard_photo`, `list_photos`).
+* **Multi-Tier Cloud Vision Cascade (`jarvis.skills.screen_vision`, `jarvis.skills.photo_manager`):** Processes workstation screen frames through a 12-second bounded Gemini cascade with zero local VRAM overhead, falling back to semantic UIA if offline (`inspect_screen`, `see_screen`, `describe_photo`, `save_photo`, `save_clipboard_photo`, `list_photos`).
 
 ### 3.7 Cognitive Triad & Multi-Agent Deliberation
 * **Tri-Tier Cognitive Routing (`jarvis.core.cognition`):** Directs requests through Tier 0 (`<15ms` local regexes), Tier 1 (local CPU ONNX intent classification), and Tier 2 (Antigravity CLI Gemini 3.8 Flash Low/Medium/High and Claude 3.7/Sonnet 4.6 with thinking budgets).
@@ -149,7 +149,6 @@ Jarvis 2.0 exposes **143 atomic capabilities across 36 specialized modules**, go
 | `jarvis.skills.browser_cdp` | 6 | Silent CDP Browser Control | `open_browser_tab`, `close_browser_tab`, `list_open_browser_tabs`, `read_webpage_content`, `switch_to_browser_tab`, `scrape_and_archive_webpage` |
 | `jarvis.skills.calendar_manager` | 5 | Schedule Management | `schedule_calendar_event`, `list_calendar_events`, `cancel_calendar_event`, `delete_calendar`, `morning_protocol` |
 | `jarvis.skills.chrome_devtools` | 3 | DevTools Auditing & Snapshots | `audit_webpage_accessibility`, `audit_webpage_performance`, `capture_devtools_snapshot` |
-| `jarvis.skills.custom.see_screen` | 1 | Real-time Vision | `see_screen` |
 | `jarvis.skills.deep_research` | 1 | Autonomous Web Research | `deep_research` |
 | `jarvis.skills.dev_shell` | 18 | Workspace & Developer CLI | `execute_powershell`, `execute_sandboxed_powershell`, `read_file`, `write_file`, `patch_file`, `ast_search_codebase`, `check_code_diagnostics`, `query_codebase_graph`, `run_background_task` |
 | `jarvis.skills.diagnostics` | 5 | System Troubleshooting | `jarvis_doctor`, `run_system_troubleshooting`, `profile_runtime`, `audit_memory_heap`, `get_pipeline_latency_stats` |

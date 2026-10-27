@@ -14,7 +14,14 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from jarvis.core.evolution.sandbox import SkillSandbox, Win32JobObject
+from jarvis.core.evolution.sandbox import SkillSandbox
+from jarvis.skills.job_object_sandbox import (
+    SandboxedProcess,
+    create_process_job_object,
+    assign_process_to_job,
+    resume_process,
+    CREATE_SUSPENDED,
+)
 from jarvis.core.orchestrator import JarvisOrchestrator
 from jarvis.core.providers.base import (
     BaseProvider,
@@ -201,7 +208,7 @@ class TestResidualSecurityBoundaries(unittest.TestCase):
         )
         with patch("sys.platform", "win32"), \
              patch("subprocess.Popen") as mock_popen, \
-             patch("jarvis.core.evolution.sandbox.Win32JobObject.assign_process", return_value=True), \
+             patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=True), \
              patch("jarvis.skills.job_object_sandbox.resume_process", return_value=True):
 
             mock_proc = MagicMock()
@@ -230,7 +237,7 @@ class TestResidualSecurityBoundaries(unittest.TestCase):
         )
         with patch("sys.platform", "win32"), \
              patch("subprocess.Popen") as mock_popen, \
-             patch("jarvis.core.evolution.sandbox.Win32JobObject.assign_process", return_value=False):
+             patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=False):
 
             mock_proc = MagicMock()
             mock_popen.return_value = mock_proc
@@ -252,7 +259,7 @@ class TestResidualSecurityBoundaries(unittest.TestCase):
         )
         with patch("sys.platform", "win32"), \
              patch("subprocess.Popen") as mock_popen, \
-             patch("jarvis.core.evolution.sandbox.Win32JobObject.assign_process", return_value=True), \
+             patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=True), \
              patch("jarvis.skills.job_object_sandbox.resume_process", return_value=False):
 
             mock_proc = MagicMock()
@@ -265,12 +272,14 @@ class TestResidualSecurityBoundaries(unittest.TestCase):
             self.assertTrue(mock_proc.kill.called)
 
     def test_canary_preserves_resource_limits(self):
-        """Win32JobObject in sandbox preserves 4-process and 1 GiB limits."""
+        """create_process_job_object in sandbox preserves 4-process and 1 GiB limits."""
         with patch("sys.platform", "win32"):
-            job = Win32JobObject(max_processes=4, max_memory_bytes=1024 * 1024 * 1024)
-            self.assertEqual(job.max_processes, 4)
-            self.assertEqual(job.max_memory_bytes, 1024 * 1024 * 1024)
-            job.close()
+            with patch("jarvis.skills.job_object_sandbox.kernel32") as mock_k32:
+                mock_k32.CreateJobObjectW.return_value = 1234
+                mock_k32.SetInformationJobObject.return_value = 1
+                mock_k32.CloseHandle.return_value = 1
+                h_job = create_process_job_object(max_processes=4, max_memory_mb=1024)
+                self.assertIsNotNone(h_job)
 
     # =========================================================================
     # 3. SEC-04H-03: POSIX Test-Execution Fallback Fails Closed

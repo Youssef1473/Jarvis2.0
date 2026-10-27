@@ -141,7 +141,7 @@ from jarvis.skills.base import SkillRegistry
 def test_fail_closed_skill():
     return "ok"
 """
-        with mock.patch("jarvis.core.evolution.sandbox.Win32JobObject.assign_process", return_value=False):
+        with mock.patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=False):
             with mock.patch("sys.platform", "win32"):
                 res = SkillSandbox.validate_and_promote(clean_name, valid_code)
                 self.assertFalse(res.success)

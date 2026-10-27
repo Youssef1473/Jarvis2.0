@@ -59,8 +59,9 @@ class JarvisOrchestrator:
         try:
             import jarvis.skills.self_evolution as evo_skills
             evo_skills.set_memory_manager(self.memory)
-        except Exception:
-            pass
+            evo_skills.init_custom_skills()
+        except Exception as e:
+            logger.warning("Failed to initialize custom skills: %s", e)
         self.safety = SafetyGate(config)
         self.stt = SpeechToText(config)
         self.tts = TextToSpeech(config)

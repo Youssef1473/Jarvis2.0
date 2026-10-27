@@ -24,6 +24,7 @@ class SkillMetadata:
     scopes: ResourceScope = ResourceScope.NONE
     path_arg_names: Tuple[str, ...] = ()
     default_timeout_ms: int = 1500
+    origin: str = "builtin"
 
 
 @dataclass
@@ -55,6 +56,7 @@ class SkillRegistry:
         scopes: ResourceScope = ResourceScope.NONE,
         path_arg_names: Tuple[str, ...] = (),
         default_timeout_ms: int = 1500,
+        origin: str = "builtin",
     ):
         """Decorator to register a Python function as a Jarvis skill tool.
         
@@ -63,10 +65,25 @@ class SkillRegistry:
         - Call without args: @SkillRegistry.register()
         - Parameterized: @SkillRegistry.register(name="foo", read_only=True, external_ingestion=True)
         """
+        def _check_collision(t_name: str, incoming_origin: str):
+            existing_meta = cls._metadata.get(t_name)
+            if existing_meta:
+                if getattr(existing_meta, "origin", "builtin") == "builtin" and incoming_origin == "custom":
+                    raise PermissionError(
+                        f"Security Violation: Cannot overwrite built-in tool '{t_name}' with custom skill."
+                    )
+                elif getattr(existing_meta, "origin", "builtin") == "custom" and incoming_origin == "builtin":
+                    import logging
+                    logging.getLogger("Jarvis.SkillRegistry").warning(
+                        "Built-in tool '%s' is overriding previously registered custom skill.",
+                        t_name,
+                    )
+
         # Case 1: Bare decorator @SkillRegistry.register
         if callable(name):
             func = name
             tool_name = func.__name__
+            _check_collision(tool_name, origin)
             doc = (func.__doc__ or "").strip()
             cls._tools[tool_name] = func
             cls._descriptions[tool_name] = doc
@@ -79,6 +96,7 @@ class SkillRegistry:
                 scopes=scopes,
                 path_arg_names=tuple(path_arg_names),
                 default_timeout_ms=default_timeout_ms,
+                origin=origin,
             )
             cls._openai_tools_cache.clear()
             return func
@@ -86,6 +104,7 @@ class SkillRegistry:
         # Case 2: Parameterized decorator @SkillRegistry.register(...)
         def decorator(func: Callable):
             tool_name = name or func.__name__
+            _check_collision(tool_name, origin)
             doc = description or (func.__doc__ or "").strip()
             cls._tools[tool_name] = func
             cls._descriptions[tool_name] = doc
@@ -98,6 +117,7 @@ class SkillRegistry:
                 scopes=scopes,
                 path_arg_names=tuple(path_arg_names),
                 default_timeout_ms=default_timeout_ms,
+                origin=origin,
             )
             cls._openai_tools_cache.clear()
             return func

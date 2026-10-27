@@ -16,7 +16,7 @@ logger = logging.getLogger("Jarvis.Skills.DevShell")
 WORKSPACE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
-def _resolve_workspace_path(file_path: str) -> Path:
+def _resolve_workspace_path(file_path: str, for_write: bool = False) -> Path:
     from jarvis.core.security_boundaries import (
         SecurityBoundaryViolation,
         validate_confined_path,
@@ -28,7 +28,21 @@ def _resolve_workspace_path(file_path: str) -> Path:
         safe_path = validate_confined_path(target, str(WORKSPACE_DIR))
     except SecurityBoundaryViolation as err:
         raise ValueError(f"Path must stay inside the Jarvis workspace: {err}") from err
-    return Path(safe_path)
+    resolved = Path(safe_path)
+    if for_write:
+        custom_dir = (WORKSPACE_DIR / "jarvis" / "skills" / "custom").resolve()
+        try:
+            if resolved.resolve() == custom_dir or custom_dir in resolved.resolve().parents:
+                raise ValueError(
+                    "Security Violation: Direct modification of 'jarvis/skills/custom/' via generic file tools is prohibited. "
+                    "Custom skills must go through the dedicated self-evolution pipeline."
+                )
+        except ValueError:
+            raise
+        except Exception as e:
+            if "Security Violation" in str(e):
+                raise
+    return resolved
 
 
 # execute_powershell uses the Job Object for *lifecycle* containment (the whole
@@ -75,7 +89,8 @@ def execute_powershell(command: str, timeout_seconds: int = 25) -> str:
     )
     status = res.get("status")
     if status == "timeout":
-        return f"Error: Command timed out after {effective_timeout:.1f} seconds."
+        timeout_disp = int(effective_timeout) if float(effective_timeout).is_integer() else f"{effective_timeout:.1f}"
+        return f"Error: Command timed out after {timeout_disp} seconds."
     if status == "cancelled":
         return "Error: Command cancelled by interrupt."
     if status not in ("ok", "failed"):
@@ -255,7 +270,10 @@ def read_multiple_files(
 )
 def write_file(file_path: str, content: str, overwrite: bool = False) -> str:
     """Writes content to a file in the workspace."""
-    target = _resolve_workspace_path(file_path)
+    try:
+        target = _resolve_workspace_path(file_path, for_write=True)
+    except ValueError as val_err:
+        return f"Error writing file: {val_err}"
     if target.exists() and not overwrite:
         return f"File already exists at '{target}'. Set overwrite=True if you intend to replace it."
 
@@ -282,7 +300,10 @@ def write_file(file_path: str, content: str, overwrite: bool = False) -> str:
 )
 def patch_file(file_path: str, target_snippet: str, replacement_snippet: str) -> str:
     """Replaces a unique target_snippet in a file with replacement_snippet."""
-    target = _resolve_workspace_path(file_path)
+    try:
+        target = _resolve_workspace_path(file_path, for_write=True)
+    except ValueError as val_err:
+        return f"Error patching file: {val_err}"
     if not target.exists() or not target.is_file():
         return f"File does not exist: {target}"
 

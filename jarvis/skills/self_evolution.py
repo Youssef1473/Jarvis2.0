@@ -2,15 +2,13 @@
 Enables Jarvis to write, validate, register, and hot-reload new Python skills
 into his own running brain at runtime using Google AI Pro models.
 """
-import ast
-import importlib.util
 import json
 import logging
 import os
-from pathlib import Path
 import re
 import sys
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
 
@@ -116,7 +114,23 @@ def delete_custom_skill(skill_name: str, user_approved: bool = False) -> str:
         return "Security failure: Deleting custom skill requires explicit out-of-band human confirmation."
 
     try:
-        target_file.unlink()
+        if target_file.exists():
+            target_file.unlink()
+        meta_file = CUSTOM_SKILLS_DIR / f"{clean_name}.meta.json"
+        if meta_file.exists():
+            try:
+                with open(meta_file, "r", encoding="utf-8") as f:
+                    meta_data = json.load(f)
+                for t_name in meta_data.get("tools", {}).keys():
+                    SkillRegistry.unregister(t_name)
+            except Exception:
+                pass
+            try:
+                meta_file.unlink()
+            except Exception:
+                pass
+
+        SkillRegistry.unregister(clean_name)
         module_name = f"jarvis.skills.custom.{clean_name}"
         if module_name in sys.modules:
             del sys.modules[module_name]
@@ -130,33 +144,101 @@ def delete_custom_skill(skill_name: str, user_approved: bool = False) -> str:
         return f"Error deleting custom skill '{clean_name}': {e}"
 
 
-def load_all_custom_skills() -> List[str]:
-    """Scans jarvis/skills/custom/ and imports all custom skill modules on startup."""
+_CUSTOM_SKILLS_INITIALIZED: bool = False
+
+
+def init_custom_skills(force: bool = False) -> list[str]:
+    """Scans jarvis/skills/custom/ and registers SandboxedSkillProxy handlers for verified custom skills.
+
+    Refuses to load any skill lacking a valid sidecar metadata file or failing DPAPI HMAC verification.
+    Zero module code is imported or executed in the host process.
+    Idempotent by default unless force=True.
+    """
+    global _CUSTOM_SKILLS_INITIALIZED
+    if _CUSTOM_SKILLS_INITIALIZED and not force:
+        return []
+
+    import hashlib
+
+    from jarvis.core.evolution.sandbox import (
+        _create_sandboxed_tool_proxy,
+        verify_custom_skill_signature,
+    )
+
     loaded = []
     if not CUSTOM_SKILLS_DIR.exists():
+        _CUSTOM_SKILLS_INITIALIZED = True
         return loaded
 
     for file_path in CUSTOM_SKILLS_DIR.glob("*.py"):
-        if file_path.stem == "__init__" or file_path.stem.startswith("."):
+        clean_name = file_path.stem
+        if clean_name == "__init__" or clean_name.startswith("."):
             continue
 
-        module_name = f"jarvis.skills.custom.{file_path.stem}"
+        meta_file = CUSTOM_SKILLS_DIR / f"{clean_name}.meta.json"
+        if not meta_file.exists():
+            logger.warning("Refusing to load unauthenticated custom skill '%s': missing sidecar metadata.", clean_name)
+            continue
+
         try:
-            spec = importlib.util.spec_from_file_location(module_name, str(file_path))
-            if spec and spec.loader:
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[module_name] = module
-                spec.loader.exec_module(module)
-                loaded.append(file_path.stem)
-                logger.info("Loaded custom autonomous skill: %s", file_path.stem)
+            with open(meta_file, "r", encoding="utf-8") as f:
+                meta_data = json.load(f)
+
+            code_bytes = file_path.read_bytes()
+            actual_hash = hashlib.sha256(code_bytes).hexdigest()
+            expected_hash = meta_data.get("sha256", "")
+
+            if actual_hash.lower() != expected_hash.lower():
+                logger.warning("Refusing to load tampered custom skill '%s': hash mismatch.", clean_name)
+                continue
+
+            tools_dict = meta_data.get("tools", {})
+            risk_level = meta_data.get("risk_level", 2)
+            external_ingestion = meta_data.get("external_ingestion", True)
+            signature = meta_data.get("hmac", "")
+
+            if not verify_custom_skill_signature(
+                clean_name,
+                actual_hash,
+                tools_dict,
+                signature,
+                risk_level=risk_level,
+                external_ingestion=external_ingestion,
+            ):
+                logger.warning("Refusing to load untrusted custom skill '%s': invalid DPAPI HMAC signature.", clean_name)
+                continue
+
+            for t_name, t_meta in tools_dict.items():
+                existing_meta = SkillRegistry.get_metadata(t_name)
+                if existing_meta and getattr(existing_meta, "origin", "builtin") == "builtin":
+                    logger.warning("Skipping custom tool '%s': collides with built-in tool.", t_name)
+                    continue
+
+                proxy_fn = _create_sandboxed_tool_proxy(clean_name, t_name, t_meta)
+                SkillRegistry.register(
+                    name=t_name,
+                    description=t_meta.get("description", ""),
+                    risk_level=2,
+                    read_only=False,
+                    external_ingestion=True,
+                    default_timeout_ms=15000,
+                    origin="custom",
+                )(proxy_fn)
+
+            loaded.append(clean_name)
+            logger.info("Registered sandboxed proxy for custom skill: %s", clean_name)
         except Exception as e:
-            logger.warning("Failed to auto-load custom skill %s on startup: %s", file_path.name, e)
+            logger.warning("Failed to initialize custom skill '%s': %s", clean_name, e)
+
+    _CUSTOM_SKILLS_INITIALIZED = True
+    if hasattr(SkillRegistry, "_openai_tools_cache"):
+        SkillRegistry._openai_tools_cache.clear()
 
     return loaded
 
 
-# Automatically load existing custom skills when this module is imported
-load_all_custom_skills()
+# Backward compatibility alias
+load_all_custom_skills = init_custom_skills
 
 _reflex_engine_instance = None
 

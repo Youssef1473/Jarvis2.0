@@ -89,6 +89,11 @@ def main():
             pass
 
     if "--check-health" in sys.argv:
+        try:
+            from jarvis.skills.self_evolution import init_custom_skills
+            init_custom_skills()
+        except Exception as e:
+            logging.getLogger("Jarvis").warning("Failed to initialize custom skills during health check: %s", e)
         from jarvis.core.health_check import run_system_health_check, format_health_report
         report = run_system_health_check()
         print(format_health_report(report))

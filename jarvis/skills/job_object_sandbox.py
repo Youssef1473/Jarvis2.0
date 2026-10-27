@@ -40,14 +40,20 @@ ntdll = ctypes.WinDLL("ntdll") if sys.platform == "win32" else None
 
 # Job Object Information Classes
 JobObjectBasicAccountingInformation = 1
+JobObjectBasicUIRestrictions = 4
 JobObjectExtendedLimitInformation = 9
 
 # Job Object Limits
 JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
 JOB_OBJECT_LIMIT_AFFINITY = 0x00000010
+JOB_OBJECT_LIMIT_PRIORITY_CLASS = 0x00000020
 JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
 JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION = 0x00000400
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+
+# Priority & UI restriction constants
+BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+JOB_OBJECT_UILIMIT_ALL = 0x000000FF
 
 # Process creation flags (defined here: subprocess.CREATE_* only exist on Windows)
 CREATE_SUSPENDED = 0x00000004
@@ -272,13 +278,40 @@ def _collect_output(proc: subprocess.Popen, timeout: float = _COLLECT_TIMEOUT_SE
         return "", ""
 
 
+class JOBOBJECT_BASIC_UI_RESTRICTIONS(ctypes.Structure):
+    _fields_ = [
+        ("UIRestrictionsClass", ctypes.c_uint32),
+    ]
+
+
+def apply_job_ui_restrictions(h_job: Any, ui_flags: int = JOB_OBJECT_UILIMIT_ALL) -> bool:
+    """Applies Win32 UI restrictions to the Job Object (defaults to 0xFF = all restrictions)."""
+    if kernel32 is None or not h_job:
+        return False
+    try:
+        ui_restrictions = JOBOBJECT_BASIC_UI_RESTRICTIONS()
+        ui_restrictions.UIRestrictionsClass = ui_flags
+        ok = kernel32.SetInformationJobObject(
+            wintypes.HANDLE(int(h_job)),
+            JobObjectBasicUIRestrictions,
+            ctypes.byref(ui_restrictions),
+            ctypes.sizeof(ui_restrictions),
+        )
+        return bool(ok)
+    except Exception as e:
+        logger.debug("apply_job_ui_restrictions failed: %s", e)
+        return False
+
+
 def create_process_job_object(
     max_memory_mb: Optional[int] = None,
     max_processes: Optional[int] = None,
     kill_on_close: bool = True,
     requested_affinity: int = 0,
+    priority_class: Optional[int] = None,
+    apply_ui_restrictions: bool = False,
 ) -> Optional[int]:
-    """Creates a Win32 Job Object configured with process/memory limits and KILL_ON_JOB_CLOSE."""
+    """Creates a Win32 Job Object configured with process/memory limits, affinity, priority, and KILL_ON_JOB_CLOSE."""
     if kernel32 is None:
         return None
     h_job = kernel32.CreateJobObjectW(None, None)
@@ -301,6 +334,10 @@ def create_process_job_object(
         limit_flags |= JOB_OBJECT_LIMIT_AFFINITY
         ext_info.BasicLimitInformation.Affinity = safe_affinity
 
+    if priority_class:
+        limit_flags |= JOB_OBJECT_LIMIT_PRIORITY_CLASS
+        ext_info.BasicLimitInformation.PriorityClass = priority_class
+
     ext_info.BasicLimitInformation.LimitFlags = limit_flags
     if not kernel32.SetInformationJobObject(
         h_job,
@@ -310,6 +347,10 @@ def create_process_job_object(
     ):
         kernel32.CloseHandle(h_job)
         return None
+
+    if apply_ui_restrictions:
+        apply_job_ui_restrictions(h_job, JOB_OBJECT_UILIMIT_ALL)
+
     return int(h_job)
 
 
@@ -389,6 +430,8 @@ class SandboxedProcess:
         max_processes: Optional[int] = None,
         requested_affinity: int = 0,
         creationflags: int = 0,
+        priority_class: Optional[int] = None,
+        apply_ui_restrictions: bool = False,
     ) -> None:
         self.command = command
         self.cwd = cwd
@@ -404,6 +447,8 @@ class SandboxedProcess:
         self.max_processes = max_processes
         self.requested_affinity = requested_affinity
         self.creationflags = creationflags
+        self.priority_class = priority_class
+        self.apply_ui_restrictions = apply_ui_restrictions
 
         self.proc: Optional[subprocess.Popen] = None
         self.h_job: Optional[int] = None
@@ -447,6 +492,8 @@ class SandboxedProcess:
                     max_processes=self.max_processes,
                     kill_on_close=True,
                     requested_affinity=self.requested_affinity,
+                    priority_class=self.priority_class,
+                    apply_ui_restrictions=self.apply_ui_restrictions,
                 )
             except Exception as e:
                 logger.error("SandboxedProcess: Job Object creation error: %s", e)
