@@ -273,6 +273,63 @@ class TestPhase4MCPToolRiskAndGate(unittest.TestCase):
             self.assertFalse(meta.read_only, f"Tool {reg_tool} was untrusted but accepted as read-only!")
             self.assertEqual(meta.risk_level, 1)
 
+    def test_mcp_manager_configuration_path_propagates_consequential_tools_end_to_end(self):
+        """Server configuration declaring consequential_tools propagates to registration, sets risk 2, and rejects clean-turn write."""
+        from jarvis.core.mcp_manager import MCPManager
+
+        mock_session = MagicMock(spec=MCPClientSession)
+        mock_session.name = "prod_ops"
+        mock_session.list_tools.return_value = [
+            {"name": "create_issue", "description": "Creates an issue"},
+            {"name": "read_metrics", "description": "Inspects metrics"},
+        ]
+
+        # Config declares create_issue as consequential and read_metrics as read-only
+        server_config = {
+            "mcpServers": {
+                "prod_ops": {
+                    "transport": "http",
+                    "endpoint_url": "http://127.0.0.1:9090",
+                    "consequential_tools": ["create_issue"],
+                    "trusted_read_only_tools": ["read_metrics"],
+                }
+            }
+        }
+
+        mgr = MCPManager()
+        with (
+            patch.object(mgr, "load_servers_config", return_value=server_config["mcpServers"]),
+            patch.object(mgr, "connect_http", return_value=mock_session) as mock_connect,
+        ):
+            registered_by_server = mgr.start_configured_servers(auto_register_skills=True)
+
+        self.assertIn("prod_ops", registered_by_server)
+        registered_tools = registered_by_server["prod_ops"]
+        self.addCleanup(lambda: [SkillRegistry.unregister(t) for t in registered_tools])
+
+        # Verify connect_http received consequential_tools
+        mock_connect.assert_called_once()
+        self.assertEqual(mock_connect.call_args.kwargs.get("consequential_tools"), ["create_issue"])
+
+        # Verify create_issue registered with risk_level=2
+        ci_meta = SkillRegistry.get_metadata("mcp_prod_ops_create_issue")
+        self.assertIsNotNone(ci_meta)
+        self.assertEqual(ci_meta.risk_level, 2)
+        self.assertFalse(ci_meta.read_only)
+
+        # Verify read_metrics registered with risk_level=0 (read-only)
+        rm_meta = SkillRegistry.get_metadata("mcp_prod_ops_read_metrics")
+        self.assertIsNotNone(rm_meta)
+        self.assertEqual(rm_meta.risk_level, 0)
+        self.assertTrue(rm_meta.read_only)
+
+        # Verify execution of consequential tool is rejected on a clean turn without approval
+        self.assertFalse(self.tracker.is_tainted)
+        with self.assertRaises(SecurityBoundaryViolation) as ctx:
+            SkillRegistry.execute("mcp_prod_ops_create_issue", title="Unapproved Incident")
+        self.assertIn("Critical Authorization Gate", str(ctx.exception))
+        self.assertFalse(mock_session.call_tool.called)
+
 
 class TestPhase4TruthfulCancellation(unittest.TestCase):
     """Finding 3: Cancellation semantics and Job Object child process tree cessation."""

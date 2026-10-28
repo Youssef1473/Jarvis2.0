@@ -14,9 +14,9 @@ import sys
 import threading
 import time
 import urllib.request
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
-from collections.abc import Iterable
 
 from jarvis.core.security_boundaries import (
     TurnTaintTracker,
@@ -685,6 +685,7 @@ class MCPManager:
         headers: dict[str, str] | None = None,
         tool_cache_ttl_sec: float = DEFAULT_TOOL_CACHE_TTL_SEC,
         trusted_read_only_tools: Iterable[str] | None = None,
+        consequential_tools: Iterable[str] | None = None,
     ) -> MCPClientSession:
         """Establishes a stateless HTTP MCP session and auto-registers tools."""
         with self._lock:
@@ -698,6 +699,7 @@ class MCPManager:
                 headers=headers,
                 tool_cache_ttl_sec=tool_cache_ttl_sec,
                 trusted_read_only_tools=trusted_read_only_tools,
+                consequential_tools=consequential_tools,
             )
             self.active_sessions[name] = session
             return session
@@ -710,6 +712,7 @@ class MCPManager:
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         trusted_read_only_tools: Iterable[str] | None = None,
+        consequential_tools: Iterable[str] | None = None,
     ) -> MCPClientSession:
         """Establishes an E-core sandboxed stdio MCP session and auto-registers tools."""
         with self._lock:
@@ -724,6 +727,7 @@ class MCPManager:
                 env=env,
                 cwd=cwd,
                 trusted_read_only_tools=trusted_read_only_tools,
+                consequential_tools=consequential_tools,
             )
             self.active_sessions[name] = session
             return session
@@ -777,11 +781,18 @@ class MCPManager:
                     transport = "http" if "endpoint_url" in server_def else "stdio"
 
                 trusted_ro = server_def.get("trusted_read_only_tools") or server_def.get("read_only_tools") or []
+                consequential = server_def.get("consequential_tools") or []
                 session: MCPClientSession | None = None
                 if transport == "http":
                     url = server_def.get("endpoint_url", "")
                     headers = server_def.get("headers")
-                    session = self.connect_http(server_name, url, headers=headers, trusted_read_only_tools=trusted_ro)
+                    session = self.connect_http(
+                        server_name,
+                        url,
+                        headers=headers,
+                        trusted_read_only_tools=trusted_ro,
+                        consequential_tools=consequential,
+                    )
                 elif transport == "stdio":
                     cmd = server_def.get("command")
                     args = server_def.get("args", [])
@@ -805,10 +816,15 @@ class MCPManager:
                         env=resolved_env or None,
                         cwd=cwd,
                         trusted_read_only_tools=trusted_ro,
+                        consequential_tools=consequential,
                     )
 
                 if session and auto_register_skills:
-                    registered_tools = register_discovered_mcp_tools(session, trusted_read_only_tools=trusted_ro)
+                    registered_tools = register_discovered_mcp_tools(
+                        session,
+                        trusted_read_only_tools=trusted_ro,
+                        consequential_tools=consequential,
+                    )
                     registered_by_server[server_name] = registered_tools
                     logger.info("MCP server '%s' started with %d tools registered.", server_name, len(registered_tools))
                 elif session:
