@@ -279,6 +279,24 @@ def _create_sandboxed_tool_proxy(clean_name: str, tool_name: str, tool_meta: dic
     return sandboxed_tool_proxy
 
 
+def _has_loop_scoped_break(loop_node: ast.While) -> bool:
+    """Checks if the loop contains an ast.Break that directly breaks this loop,
+
+    ignoring breaks nested inside inner loops (for, while, async for).
+    """
+    queue = list(loop_node.body) + list(loop_node.orelse)
+    while queue:
+        item = queue.pop()
+        if isinstance(item, ast.Break):
+            return True
+        if isinstance(item, (ast.While, ast.For, ast.AsyncFor)):
+            # Breaks inside nested inner loops target the inner loop, not this while loop
+            continue
+        for child in ast.iter_child_nodes(item):
+            queue.append(child)
+    return False
+
+
 class SkillSandbox:
     """Isolates, compiles, and tests LLM-generated code in an ephemeral subprocess."""
 
@@ -469,10 +487,8 @@ class SkillSandbox:
                     (isinstance(node.test, ast.Constant) and bool(node.test.value) is True) or
                     (isinstance(node.test, ast.Name) and node.test.id == "True")
                 )
-                if is_const_true:
-                    has_break = any(isinstance(child, ast.Break) for child in ast.walk(node))
-                    if not has_break:
-                        return False, "Operational Guardrail Violation: Unbounded 'while True' loop detected without explicit break condition."
+                if is_const_true and not _has_loop_scoped_break(node):
+                    return False, "Operational Guardrail Violation: Unbounded 'while True' loop detected without explicit break condition."
 
             # 5. Operational Invariant: Massive Literal Memory Allocation
             elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
@@ -480,6 +496,22 @@ class SkillSandbox:
                     if isinstance(operand, ast.Constant) and isinstance(operand.value, (int, float)):
                         if operand.value > 50_000_000:
                             return False, f"Operational Guardrail Violation: Massive allocation multiplier ({int(operand.value):,}) detected."
+
+            # 6. Reflection & Dangerous Function Aliasing Inspection
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                assigned_val = getattr(node, "value", None)
+                if isinstance(assigned_val, ast.Name):
+                    if (
+                        assigned_val.id in cls.BLOCKED_REFLECTION_CALLS
+                        or assigned_val.id in cls.BLOCKED_CALLS
+                        or assigned_val.id in cls.BLOCKED_MODULES
+                    ):
+                        return False, f"Security Violation: Aliasing blocked function/module '{assigned_val.id}' is prohibited inside autonomous skills."
+                elif isinstance(assigned_val, ast.Attribute):
+                    val_id = assigned_val.value.id if isinstance(assigned_val.value, ast.Name) else ""
+                    full_attr = f"{val_id}.{assigned_val.attr}" if val_id else assigned_val.attr
+                    if full_attr in cls.BLOCKED_CALLS or assigned_val.attr in cls.BLOCKED_ATTRIBUTES:
+                        return False, f"Security Violation: Aliasing blocked attribute/function '{full_attr}' is prohibited inside autonomous skills."
 
         return True, "AST security checks passed."
 

@@ -317,9 +317,15 @@ def main() -> int:
         raw_input = sys.stdin.read()
         sys.stdin.close()
         payload = json.loads(raw_input) if raw_input else {}
-        nonce = payload.get("nonce", "")
-        kwargs = payload.get("kwargs", {})
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, OSError) as e:
+        if not isinstance(payload, dict):
+            raise TypeError("Invalid stdin payload: expected a JSON dictionary object.")
+        nonce = payload.get("nonce")
+        kwargs = payload.get("kwargs")
+        if not isinstance(nonce, str) or not nonce.strip():
+            raise ValueError("Invalid stdin payload: 'nonce' must be a non-empty string.")
+        if not isinstance(kwargs, dict):
+            raise TypeError("Invalid stdin payload: 'kwargs' must be a JSON dictionary.")
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError, OSError) as e:
         result_file_handle.write(json.dumps({"status": "error", "error": f"Failed to parse stdin payload: {e}"}))
         result_file_handle.close()
         return 4

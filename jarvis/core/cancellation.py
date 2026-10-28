@@ -165,6 +165,9 @@ class ToolCancellationToken:
         self.cancel_event = threading.Event()
         self.parent_token = parent_token
         self.fencing_token = FencingToken(fencing_id=fencing_id or 0)
+        self._cancellation_requested: bool = False
+        self._confirmed_stopped: bool = False
+        self._drain_callbacks: list[Callable[[], None]] = []
 
     @property
     def is_cancelled(self) -> bool:
@@ -175,10 +178,34 @@ class ToolCancellationToken:
             return True
         return bool(self.parent_token is not None and self.parent_token.is_cancelled)
 
+    @property
+    def cancellation_requested(self) -> bool:
+        """Returns True if cancellation was requested explicitly or via deadline/barge-in."""
+        return self._cancellation_requested or self.is_cancelled
+
+    @property
+    def confirmed_stopped(self) -> bool:
+        """Returns True if child execution was confirmed drained and stopped."""
+        return self._confirmed_stopped
+
+    def mark_confirmed_stopped(self) -> None:
+        """Records that the running execution or child process tree has confirmed stopped."""
+        self._confirmed_stopped = True
+
+    def register_drain_callback(self, callback: Callable[[], None]) -> None:
+        """Registers a callback (e.g. Job Object termination) to run upon cancellation."""
+        self._drain_callbacks.append(callback)
+
     def cancel(self) -> None:
-        """Triggers cooperative cancellation and invalidates the fencing token."""
+        """Triggers cooperative cancellation, executes drain callbacks, and invalidates the fencing token."""
+        self._cancellation_requested = True
         self.cancel_event.set()
         self.fencing_token.is_invalidated = True
+        for cb in list(self._drain_callbacks):
+            try:
+                cb()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Tool cancellation callback error: %s", e)
 
     def remaining_time(self) -> float:
         """Returns seconds remaining before deadline, or float('inf') if no deadline."""

@@ -16,6 +16,7 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any
+from collections.abc import Iterable
 
 from jarvis.core.security_boundaries import (
     TurnTaintTracker,
@@ -31,6 +32,53 @@ DEFAULT_TIMEOUT_SEC = 5.0
 DEFAULT_TOOL_CACHE_TTL_SEC = 60.0
 STDIO_MEMORY_LIMIT_MB = 512
 STDIO_AFFINITY_MASK = 0xFF00
+
+MCP_BASE_ENV_ALLOWLIST: frozenset[str] = frozenset({
+    # Windows system runtime & executables
+    "SYSTEMROOT",
+    "WINDIR",
+    "PATH",
+    "PATHEXT",
+    "COMSPEC",
+    "SYSTEMDRIVE",
+    # Ephemeral temp directories
+    "TEMP",
+    "TMP",
+    # User / host execution profile
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "USERNAME",
+    # CPU / architecture indicators
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER",
+    "PROCESSOR_LEVEL",
+    "PROCESSOR_REVISION",
+    "OS",
+})
+
+CONSEQUENTIAL_MCP_PATTERNS = (
+    "evaluate_script",
+    "execute_script",
+    "eval_script",
+    "exec_command",
+    "execute_command",
+    "run_command",
+    "delete",
+    "destroy",
+    "drop",
+    "purge",
+    "wipe",
+    "unlink",
+    "format_disk",
+    "shutdown",
+    "reboot",
+    "terminate",
+    "kill",
+)
 
 
 def _setup_win32_job_object(proc_handle: int, max_memory_mb: int = STDIO_MEMORY_LIMIT_MB) -> int | None:
@@ -123,7 +171,17 @@ def _setup_win32_job_object(proc_handle: int, max_memory_mb: int = STDIO_MEMORY_
         if kernel32.GetProcessAffinityMask(kernel32.GetCurrentProcess(), ctypes.byref(proc_mask), ctypes.byref(sys_mask)):
             available = sys_mask.value
             targeted = STDIO_AFFINITY_MASK & available
-            safe_affinity = targeted if targeted > 0 else proc_mask.value
+            if targeted > 0:
+                safe_affinity = targeted
+            else:
+                safe_affinity = proc_mask.value
+                logger.warning(
+                    "MCP stdio server requested affinity 0x%X has zero overlap with host system mask 0x%X; "
+                    "degrading to process mask 0x%X",
+                    STDIO_AFFINITY_MASK,
+                    available,
+                    proc_mask.value,
+                )
             if safe_affinity:
                 limit_flags |= JOB_OBJECT_LIMIT_AFFINITY
                 ext_info.BasicLimitInformation.Affinity = safe_affinity
@@ -188,6 +246,8 @@ class MCPClientSession:
         cwd: str | None = None,
         headers: dict[str, str] | None = None,
         tool_cache_ttl_sec: float = DEFAULT_TOOL_CACHE_TTL_SEC,
+        trusted_read_only_tools: Iterable[str] | None = None,
+        consequential_tools: Iterable[str] | None = None,
     ):
         self.name = name
         self.transport = transport.lower()
@@ -198,6 +258,12 @@ class MCPClientSession:
         self.cwd = cwd
         self.headers = headers or {}
         self.tool_cache_ttl_sec = tool_cache_ttl_sec
+        self.trusted_read_only_tools: set[str] = {
+            t.lower().replace("-", "_") for t in (trusted_read_only_tools or [])
+        }
+        self.consequential_tools: set[str] = {
+            t.lower().replace("-", "_") for t in (consequential_tools or [])
+        }
 
         self._request_id: int = 0
         self._lock = threading.Lock()
@@ -350,9 +416,20 @@ class MCPClientSession:
 
             cwd_path = os.path.abspath(self.cwd) if self.cwd else os.getcwd()
 
-            # Merge with system environment so PATH, SystemRoot, TEMP are preserved
-            proc_env = os.environ.copy()
-            if self.env:
+            # Build scrubbed base environment (excluding host secrets, credentials, and API keys)
+            proc_env: dict[str, str] = {}
+            for k in MCP_BASE_ENV_ALLOWLIST:
+                if k in os.environ:
+                    proc_env[k] = os.environ[k]
+                elif k.upper() in os.environ:
+                    proc_env[k] = os.environ[k.upper()]
+
+            proc_env.setdefault("SYSTEMROOT", r"C:\Windows")
+            proc_env.setdefault("WINDIR", r"C:\Windows")
+            proc_env.setdefault("SYSTEMDRIVE", "C:")
+
+            # Explicitly overlay only declared server-specific environment variables
+            if self.env and isinstance(self.env, dict):
                 for k, v in self.env.items():
                     if isinstance(v, str):
                         proc_env[k] = os.path.expandvars(v)
@@ -514,10 +591,26 @@ class MCPClientSession:
         logger.info("Closed MCP session '%s'", self.name)
 
 
-def register_discovered_mcp_tools(session: MCPClientSession) -> list[str]:
+def register_discovered_mcp_tools(
+    session: MCPClientSession,
+    trusted_read_only_tools: Iterable[str] | None = None,
+    consequential_tools: Iterable[str] | None = None,
+) -> list[str]:
     """Discovers tools from an MCPClientSession and registers them in SkillRegistry with taint tracking."""
     tools = session.list_tools()
     registered_names: list[str] = []
+
+    trusted_ro: set[str] = set()
+    if trusted_read_only_tools is not None:
+        trusted_ro = {t.lower().replace("-", "_") for t in trusted_read_only_tools}
+    elif getattr(session, "trusted_read_only_tools", None):
+        trusted_ro = set(session.trusted_read_only_tools)
+
+    consequential_set: set[str] = set()
+    if consequential_tools is not None:
+        consequential_set = {t.lower().replace("-", "_") for t in consequential_tools}
+    elif getattr(session, "consequential_tools", None):
+        consequential_set = set(session.consequential_tools)
 
     for tool_spec in tools:
         raw_name = tool_spec.get("name", "")
@@ -528,12 +621,23 @@ def register_discovered_mcp_tools(session: MCPClientSession) -> list[str]:
         registered_name = f"mcp_{session.name}_{clean_tool_name}"
         desc = tool_spec.get("description", f"External MCP tool '{raw_name}' from server '{session.name}'.")
 
-        # Consequential code/script execution tools fail closed to risk_level=2 (Critical)
-        is_code_exec = any(
-            term in clean_tool_name
-            for term in ("evaluate_script", "execute_script", "eval_script", "exec_command", "execute_command", "run_command")
+        # Consequential / destructive code or command execution tools fail closed to risk_level=2 (Critical)
+        is_consequential = (
+            (clean_tool_name in consequential_set or raw_name.lower() in consequential_set)
+            or any(term in clean_tool_name for term in CONSEQUENTIAL_MCP_PATTERNS)
         )
-        tool_risk = 2 if is_code_exec else 1
+        is_trusted_ro = (clean_tool_name in trusted_ro or raw_name.lower() in trusted_ro) and not is_consequential
+
+        if is_trusted_ro:
+            tool_risk = 0
+            tool_ro = True
+            SkillRegistry.certify_test_read_only_tool(registered_name)
+        elif is_consequential:
+            tool_risk = 2
+            tool_ro = False
+        else:
+            tool_risk = 1
+            tool_ro = False
 
         # Closure generator binding session and tool name
         def _build_handler(sess: MCPClientSession, t_name: str, reg_name: str, doc_desc: str):
@@ -547,11 +651,18 @@ def register_discovered_mcp_tools(session: MCPClientSession) -> list[str]:
             return _handler
 
         handler_fn = _build_handler(session, raw_name, registered_name, desc)
-        # Register with risk_level=tool_risk (tainting & gated), origin="mcp", and external_ingestion=True
-        SkillRegistry.register(name=registered_name, description=desc, risk_level=tool_risk, origin="mcp", external_ingestion=True)(handler_fn)
+        # Register with risk_level=tool_risk (tainting & gated), origin="mcp", external_ingestion=True, and read_only=tool_ro
+        SkillRegistry.register(
+            name=registered_name,
+            description=desc,
+            risk_level=tool_risk,
+            origin="mcp",
+            external_ingestion=True,
+            read_only=tool_ro,
+        )(handler_fn)
         TurnTaintTracker.get_instance().register_ingestion_tool(registered_name)
         registered_names.append(registered_name)
-        logger.info("Registered dynamic MCP skill: %s (risk_level=%d)", registered_name, tool_risk)
+        logger.info("Registered dynamic MCP skill: %s (risk_level=%d, read_only=%s)", registered_name, tool_risk, tool_ro)
 
     return registered_names
 
@@ -573,6 +684,7 @@ class MCPManager:
         endpoint_url: str,
         headers: dict[str, str] | None = None,
         tool_cache_ttl_sec: float = DEFAULT_TOOL_CACHE_TTL_SEC,
+        trusted_read_only_tools: Iterable[str] | None = None,
     ) -> MCPClientSession:
         """Establishes a stateless HTTP MCP session and auto-registers tools."""
         with self._lock:
@@ -585,6 +697,7 @@ class MCPManager:
                 endpoint_url=endpoint_url,
                 headers=headers,
                 tool_cache_ttl_sec=tool_cache_ttl_sec,
+                trusted_read_only_tools=trusted_read_only_tools,
             )
             self.active_sessions[name] = session
             return session
@@ -596,6 +709,7 @@ class MCPManager:
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
+        trusted_read_only_tools: Iterable[str] | None = None,
     ) -> MCPClientSession:
         """Establishes an E-core sandboxed stdio MCP session and auto-registers tools."""
         with self._lock:
@@ -609,6 +723,7 @@ class MCPManager:
                 args=args,
                 env=env,
                 cwd=cwd,
+                trusted_read_only_tools=trusted_read_only_tools,
             )
             self.active_sessions[name] = session
             return session
@@ -661,11 +776,12 @@ class MCPManager:
                 if not transport:
                     transport = "http" if "endpoint_url" in server_def else "stdio"
 
+                trusted_ro = server_def.get("trusted_read_only_tools") or server_def.get("read_only_tools") or []
                 session: MCPClientSession | None = None
                 if transport == "http":
                     url = server_def.get("endpoint_url", "")
                     headers = server_def.get("headers")
-                    session = self.connect_http(server_name, url, headers=headers)
+                    session = self.connect_http(server_name, url, headers=headers, trusted_read_only_tools=trusted_ro)
                 elif transport == "stdio":
                     cmd = server_def.get("command")
                     args = server_def.get("args", [])
@@ -688,10 +804,11 @@ class MCPManager:
                         args=resolved_args,
                         env=resolved_env or None,
                         cwd=cwd,
+                        trusted_read_only_tools=trusted_ro,
                     )
 
                 if session and auto_register_skills:
-                    registered_tools = register_discovered_mcp_tools(session)
+                    registered_tools = register_discovered_mcp_tools(session, trusted_read_only_tools=trusted_ro)
                     registered_by_server[server_name] = registered_tools
                     logger.info("MCP server '%s' started with %d tools registered.", server_name, len(registered_tools))
                 elif session:

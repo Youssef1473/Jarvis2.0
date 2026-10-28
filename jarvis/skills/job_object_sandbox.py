@@ -177,6 +177,13 @@ def _last_error() -> int:
     return int(getter()) if getter else 0
 
 
+def is_affinity_degraded(requested_affinity: int, resolved_affinity: int | None) -> bool:
+    """Returns True if the resolved affinity mask does not satisfy the requested affinity."""
+    if not requested_affinity or resolved_affinity is None:
+        return False
+    return (requested_affinity & resolved_affinity) == 0
+
+
 def _resolve_safe_affinity_mask(requested_affinity: int = 0xFF00) -> int | None:
     """Dynamically computes an affinity mask compatible with the host system using 64-bit c_size_t."""
     if kernel32 is None or not requested_affinity:
@@ -188,7 +195,16 @@ def _resolve_safe_affinity_mask(requested_affinity: int = 0xFF00) -> int | None:
         available = sys_mask.value
         # Match requested E-Core mask against physically available system cores
         targeted = requested_affinity & available
-        return targeted if targeted > 0 else proc_mask.value
+        if targeted > 0:
+            return targeted
+        logger.warning(
+            "Requested affinity mask 0x%X has zero overlap with host system mask 0x%X; "
+            "degrading to process mask 0x%X",
+            requested_affinity,
+            available,
+            proc_mask.value,
+        )
+        return proc_mask.value
     return None
 
 
@@ -750,9 +766,20 @@ def run_job_sandboxed_process(
         return {"status": "error", "reason": "Empty command provided"}
     if kernel32 is None:
         return {"status": "error", "reason": "Job Object sandbox requires Windows"}
+
+    if cancel_token is None:
+        try:
+            from jarvis.core.cancellation import get_current_tool_cancellation_token
+            cancel_token = get_current_tool_cancellation_token()
+        except Exception:  # noqa: BLE001
+            cancel_token = None
+
     if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+        if hasattr(cancel_token, "mark_confirmed_stopped"):
+            cancel_token.mark_confirmed_stopped()
         return {
             "status": "cancelled",
+            "cancelled_confirmed": True,
             "exit_code": None,
             "job_drained": True,
             "orphans_reaped": 0,
@@ -778,6 +805,7 @@ def run_job_sandboxed_process(
             ext_info.JobMemoryLimit = max_memory_mb * 1024 * 1024
 
         safe_affinity = _resolve_safe_affinity_mask(requested_affinity)
+        affinity_degraded = is_affinity_degraded(requested_affinity, safe_affinity)
         if safe_affinity:
             limit_flags |= JOB_OBJECT_LIMIT_AFFINITY
             ext_info.BasicLimitInformation.Affinity = safe_affinity
@@ -847,9 +875,11 @@ def run_job_sandboxed_process(
         orphans = 0
         if outcome in ("timeout", "cancelled"):
             drained = _terminate_and_drain(h_job)
+            if cancel_token is not None and hasattr(cancel_token, "mark_confirmed_stopped"):
+                cancel_token.mark_confirmed_stopped()
             try:
                 proc.wait(timeout=1.0)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             stdout, stderr = _collect_output(proc)
         else:
@@ -859,7 +889,7 @@ def run_job_sandboxed_process(
                 drained = _terminate_and_drain(h_job)
             try:
                 proc.wait(timeout=1.0)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             if not stdout and not stderr:
                 stdout, stderr = _collect_output(proc)
@@ -890,7 +920,9 @@ def run_job_sandboxed_process(
             "duration_ms": round((time.perf_counter() - t0) * 1000, 2),
             "peak_job_memory_mb": round(out_info.PeakJobMemoryUsed / (1024 * 1024), 2),
             "affinity_mask": hex(safe_affinity) if safe_affinity else "default",
+            "affinity_degraded": affinity_degraded,
             "job_drained": drained,
+            "cancelled_confirmed": drained if outcome == "cancelled" else False,
             "orphans_reaped": orphans,
             "stdout_tail": _tail(stdout, tail_chars),
             "stderr_tail": _tail(stderr, tail_chars),
