@@ -19,6 +19,11 @@ from pathlib import Path
 from typing import Any
 
 from jarvis.context.flow_state_mirror import ResourceScope
+from jarvis.core.cancellation import (
+    ToolCancellationToken,
+    bind_tool_cancellation_token,
+    reset_tool_cancellation_token,
+)
 from jarvis.core.thread_affinity import init_speculative_worker_thread
 from jarvis.skills.base import SkillMetadata, SkillRegistry, SpeculationForbiddenError
 
@@ -167,7 +172,14 @@ class SpeculativeEntry:
     snapshot: ValidationSnapshot
     meta: SkillMetadata
     bound_args: dict[str, Any]
+    cancel_token: ToolCancellationToken | None = None
     submit_monotonic_ns: int = field(default_factory=time.monotonic_ns)
+
+    def cancel(self) -> bool:
+        """Signals cooperative cancellation to running task and cancels pending future."""
+        if self.cancel_token is not None:
+            self.cancel_token.cancel()
+        return self.future.cancel()
 
 
 @dataclass
@@ -322,15 +334,27 @@ class SpeculativeExecutionEngine:
                     self._active_entries.pop(cache_key, None)
 
             snapshot = self._capture_validation_snapshot(meta, bound_args)
+            cancel_token = ToolCancellationToken()
+
+            def _speculative_runner(fn: Any, b_args: dict[str, Any], tok: ToolCancellationToken) -> Any:
+                bind_tok = bind_tool_cancellation_token(tok)
+                try:
+                    if tok.is_cancelled:
+                        return None
+                    return fn(**b_args)
+                finally:
+                    reset_tool_cancellation_token(bind_tok)
+
             import contextvars
             ctx = contextvars.copy_context()
-            future = self._executor.submit(ctx.run, meta.func, **bound_args)
+            future = self._executor.submit(ctx.run, _speculative_runner, meta.func, bound_args, cancel_token)
             entry = SpeculativeEntry(
                 cache_key=cache_key,
                 future=future,
                 snapshot=snapshot,
                 meta=meta,
                 bound_args=bound_args,
+                cancel_token=cancel_token,
                 submit_monotonic_ns=time.monotonic_ns(),
             )
             self._active_entries[cache_key] = entry
@@ -388,12 +412,35 @@ class SpeculativeExecutionEngine:
                         return result
                     else:
                         self.metrics.stale_invalidations += 1
+                        entry.cancel()
                         logger.debug("Speculative result discarded: modified mid-flight (%s)", skill_name)
-                except Exception as e:
-                    logger.debug("Speculative execution encountered exception: %s", e)
+                except TimeoutError:
+                    self.metrics.stale_invalidations += 1
+                    entry.cancel()
+                    logger.warning(
+                        "Speculative execution timed out for '%s' after %.2fs; cancelled background future",
+                        skill_name,
+                        timeout_sec,
+                    )
+                    # Brief cooperative drain window for cancellation-aware callables
+                    if not entry.future.done():
+                        try:
+                            entry.future.result(timeout=0.05)
+                        except Exception as drain_err:  # noqa: BLE001
+                            logger.debug("Speculative drain non-fatal exception for '%s': %s", skill_name, drain_err)
+
+                    # Never start a duplicate fallback execution for a timed-out task
+                    raise TimeoutError(
+                        f"Speculative execution for '{skill_name}' timed out after {timeout_sec:.2f}s; "
+                        "duplicate fallback execution blocked."
+                    )
+                except Exception as e:  # noqa: BLE001
+                    self.metrics.stale_invalidations += 1
+                    entry.cancel()
+                    logger.debug("Speculative execution encountered exception for '%s': %s", skill_name, e)
             else:
                 self.metrics.stale_invalidations += 1
-                entry.future.cancel()
+                entry.cancel()
 
         # Cache miss, timeout, or invalidation fallback
         logger.debug("Speculative cache MISS/FALLBACK for %s; running synchronously via SkillRegistry", skill_name)
@@ -405,7 +452,7 @@ class SpeculativeExecutionEngine:
         with self._entries_lock:
             for entry in self._active_entries.values():
                 if not entry.future.done():
-                    if entry.future.cancel():
+                    if entry.cancel():
                         cancelled += 1
                     else:
                         cancelled += 1

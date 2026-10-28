@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, ClassVar
 
 from jarvis.context.flow_state_mirror import ResourceScope
@@ -258,6 +259,19 @@ class SkillRegistry:
     _metadata: ClassVar[dict[str, SkillMetadata]] = {}
     _openai_tools_cache: ClassVar[dict[tuple[str, ...], list[dict[str, Any]]]] = {}
     _test_certified_read_only_tools: ClassVar[set[str]] = set()
+    _aliases: ClassVar[dict[str, str]] = {
+        "store_fact": "remember_fact",
+        "save_fact": "remember_fact",
+        "get_fact": "recall_fact",
+        "find_fact": "recall_fact",
+        "remember": "remember_fact",
+        "recall": "recall_fact",
+    }
+
+    @classmethod
+    def resolve_canonical_name(cls, name: str) -> str:
+        """Resolves tool aliases to their canonical registered name."""
+        return cls._aliases.get(name, name)
 
     @classmethod
     def certify_test_read_only_tool(cls, name: str) -> None:
@@ -344,8 +358,8 @@ class SkillRegistry:
                     )
 
         def _resolve_read_only(t_name: str) -> bool:
-            # 1. Custom skills, MCP tools, and untrusted extensions are strictly prohibited from being read-only
-            if origin != "builtin":
+            # 1. Custom skills and untrusted extensions are strictly prohibited from being read-only
+            if origin == "custom":
                 return False
             # 2. Elevated risk takes precedence: if risk_level > 0 was declared, it cannot be read-only
             if risk_level is not None and risk_level > 0:
@@ -438,40 +452,45 @@ class SkillRegistry:
     @classmethod
     def is_ingestion_tool(cls, name: str) -> bool:
         """Returns True if the tool is explicitly classified as an external ingestion source."""
-        meta = cls.get_metadata(name)
+        canonical = cls.resolve_canonical_name(name)
+        meta = cls.get_metadata(canonical)
         return bool(meta and getattr(meta, "external_ingestion", False))
 
     @classmethod
     def get_metadata(cls, name: str) -> SkillMetadata | None:
         """Returns the SkillMetadata for a registered tool, or a synthesized fallback."""
-        meta = cls._metadata.get(name)
+        canonical = cls.resolve_canonical_name(name)
+        meta = cls._metadata.get(canonical)
         if meta is not None:
             return meta
-        func = cls.get_tool(name)
+        func = cls.get_tool(canonical)
         if func is not None:
-            return SkillMetadata(name=name, func=func, read_only=False, external_ingestion=False)
+            return SkillMetadata(name=canonical, func=func, read_only=False, external_ingestion=False)
         return None
 
     @classmethod
     def get_risk_level(cls, name: str) -> int:
-        return cls._risk_levels.get(name, 1)
+        return cls._risk_levels.get(cls.resolve_canonical_name(name), 1)
 
     @classmethod
     def get_tool(cls, name: str) -> Callable | None:
-        return cls._tools.get(name)
+        return cls._tools.get(cls.resolve_canonical_name(name))
 
     @classmethod
-    def get_all_tools(cls) -> dict[str, Callable]:
-        return cls._tools
+    def get_all_tools(cls) -> MappingProxyType[str, Callable]:
+        from types import MappingProxyType
+        return MappingProxyType(cls._tools)
 
     @classmethod
     def unregister(cls, name: str) -> bool:
         """Unregisters a tool from the registry."""
-        if name in cls._tools:
-            del cls._tools[name]
-            cls._descriptions.pop(name, None)
-            cls._risk_levels.pop(name, None)
-            cls._metadata.pop(name, None)
+        resolved = cls.resolve_canonical_name(name)
+        if resolved in cls._tools:
+            del cls._tools[resolved]
+            cls._descriptions.pop(resolved, None)
+            cls._risk_levels.pop(resolved, None)
+            cls._metadata.pop(resolved, None)
+            cls._test_certified_read_only_tools.discard(resolved)
             cls._openai_tools_cache.clear()
             return True
         return False
@@ -542,15 +561,7 @@ class SkillRegistry:
     @classmethod
     def execute_with_status(cls, name: str, **kwargs) -> SkillExecutionResult:
         """Executes a registered skill and returns a structured SkillExecutionResult."""
-        aliases = {
-            "store_fact": "remember_fact",
-            "save_fact": "remember_fact",
-            "get_fact": "recall_fact",
-            "find_fact": "recall_fact",
-            "remember": "remember_fact",
-            "recall": "recall_fact",
-        }
-        resolved = aliases.get(name, name)
+        resolved = cls.resolve_canonical_name(name)
         tool = cls.get_tool(resolved)
         if not tool:
             err_msg = f"Error: Tool '{name}' not found."

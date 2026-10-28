@@ -156,14 +156,19 @@ class ToolOrchestrator:
             self.interim_bridge.on_tool_start(tool_name, step_index=step_index)
 
         # Check cancellation before physical actuation
-        if getattr(self, "cancel_token", None) and getattr(self.cancel_token, "is_cancelled", False):
-            logger.warning("Tool execution '%s' aborted by cancellation token.", tool_name)
+        token = getattr(self, "cancel_token", None)
+        if token is None:
+            from jarvis.core.cancellation import get_current_tool_cancellation_token
+            token = get_current_tool_cancellation_token()
+
+        if token is not None and getattr(token, "is_cancelled", False):
+            logger.warning("Tool execution '%s' aborted by cancellation token before dispatch.", tool_name)
             approval_mgr.clear_active_authorized(ctx_token)
             return OrchestratorStepResult(
-                result="Action cancelled: Operation was aborted by user interrupt.",
+                result="Action cancelled: Operation was aborted before launch.",
                 success=False,
-                failure_category="cancelled",
-                error_message="Operation was aborted by user interrupt.",
+                failure_category="cancelled_before_execution",
+                error_message="Operation was aborted by cancellation before launch.",
             )
 
         # Broadcast tool start event
@@ -207,6 +212,14 @@ class ToolOrchestrator:
             ttl_seconds=10.0,
         )
         orch_token = _active_orchestrator_scope.set(cap)
+
+        from jarvis.core.cancellation import (
+            ToolCancellationToken,
+            bind_tool_cancellation_token,
+            reset_tool_cancellation_token,
+        )
+        step_cancel_tok = token or ToolCancellationToken()
+        bind_tok = bind_tool_cancellation_token(step_cancel_tok)
         try:
             skill_res = SkillRegistry.execute_with_status(tool_name, **exec_kwargs)
             if self.dual_track_coordinator is not None and getattr(self.dual_track_coordinator, "is_read_only_tool", lambda t: False)(tool_name):
@@ -227,6 +240,7 @@ class ToolOrchestrator:
                 error_message=str(err),
             )
         finally:
+            reset_tool_cancellation_token(bind_tok)
             _active_orchestrator_scope.reset(orch_token)
             from jarvis.core.security_boundaries import DualKeyApprovalManager
             DualKeyApprovalManager.get_instance().clear_active_authorized(ctx_token)
@@ -272,14 +286,36 @@ class ToolOrchestrator:
         # Ensure active turn taint state exists in caller context before spawning worker threads
         self.taint_tracker._get_context_state(create_if_missing=True)
 
+        from jarvis.core.cancellation import (
+            ToolCancellationToken,
+            bind_tool_cancellation_token,
+            get_current_tool_cancellation_token,
+            reset_tool_cancellation_token,
+        )
+        step_cancel_tok = (
+            getattr(self, "cancel_token", None)
+            or get_current_tool_cancellation_token()
+            or ToolCancellationToken()
+        )
+
         if self.dual_track_coordinator is None:
-            return await asyncio.to_thread(
-                self.execute_step,
-                tool_name,
-                arguments,
-                step_index=step_index,
-                dual_key_confirmed=dual_key_confirmed,
-            )
+            def _direct_run():
+                b_tok = bind_tool_cancellation_token(step_cancel_tok)
+                try:
+                    return self.execute_step(
+                        tool_name,
+                        arguments,
+                        step_index=step_index,
+                        dual_key_confirmed=dual_key_confirmed,
+                    )
+                finally:
+                    reset_tool_cancellation_token(b_tok)
+
+            try:
+                return await asyncio.to_thread(_direct_run)
+            except asyncio.CancelledError:
+                step_cancel_tok.cancel()
+                raise
 
         # Strip model-injected authorization fields from arguments to prevent prompt injection bypasses
         sanitized_args = {
@@ -299,9 +335,9 @@ class ToolOrchestrator:
         }
         arg_signature = json.dumps(sanitized_args, sort_keys=True)
         # Check cancellation before dispatch or approval evaluation
-        if getattr(self, "cancel_token", None) and getattr(self.cancel_token, "is_cancelled", False):
-            logger.warning("Tool execution '%s' aborted by cancellation token.", tool_name)
-            return "Action cancelled: Operation was aborted by user interrupt."
+        if step_cancel_tok.is_cancelled:
+            logger.warning("Tool execution '%s' aborted by cancellation token before launch.", tool_name)
+            return "Action cancelled: Operation was aborted before launch."
 
         call_key = (tool_name, arg_signature)
 
@@ -318,7 +354,7 @@ class ToolOrchestrator:
         from jarvis.core.security_boundaries import DualKeyApprovalManager
         approval_mgr = DualKeyApprovalManager.get_instance()
         cancel_event = threading.Event()
-        if getattr(self, "cancel_token", None) and getattr(self.cancel_token, "is_cancelled", False):
+        if step_cancel_tok.is_cancelled:
             cancel_event.set()
 
         decision = None
@@ -332,6 +368,7 @@ class ToolOrchestrator:
                 cancel_event=cancel_event,
             )
         except asyncio.CancelledError:
+            step_cancel_tok.cancel()
             approval_mgr.cancel_approval_request(cancel_event)
             if decision is not None and getattr(decision, "grant", None) is not None:
                 approval_mgr.revoke_grant(decision.grant)
@@ -380,6 +417,7 @@ class ToolOrchestrator:
                     pass
 
             def _orch_run():
+                b_tok = bind_tool_cancellation_token(step_cancel_tok)
                 current_turn_id = None
                 try:
                     from jarvis.core.security_boundaries import TurnTaintTracker
@@ -398,6 +436,7 @@ class ToolOrchestrator:
                     return SkillRegistry.execute(tool_name, **exec_kwargs)
                 finally:
                     _active_orchestrator_scope.reset(orch_token)
+                    reset_tool_cancellation_token(b_tok)
 
             res = await self.dual_track_coordinator.execute_with_masking(
                 user_query=user_query,
@@ -407,6 +446,9 @@ class ToolOrchestrator:
                 milestone_phrase=milestone_phrase,
             )
             return res
+        except asyncio.CancelledError:
+            step_cancel_tok.cancel()
+            raise
         except Exception as err:
             logger.error("Exception during async tool execution '%s': %s", tool_name, err)
             return f"Error executing tool '{tool_name}': {err}"

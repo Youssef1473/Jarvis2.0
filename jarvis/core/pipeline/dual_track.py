@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any
 
+from jarvis.core.cancellation import get_current_tool_cancellation_token
 from jarvis.core.pipeline.interim_bridge import (
     _INTERIM_PHRASE_MAP,
     DEFAULT_INTERIM_PHRASE,
@@ -159,14 +160,15 @@ class DualTrackCoordinator:
 
     @classmethod
     def is_read_only_tool(cls, tool_name: str) -> bool:
-        """Determines whether a tool is read-only via SkillRegistry metadata or safe prefixes."""
+        """Determines whether a tool is read-only strictly via SkillRegistry metadata."""
         try:
-            meta = SkillRegistry.get_metadata(tool_name)
-            if meta is not None and getattr(meta, "read_only", False):
-                return True
+            canonical_name = SkillRegistry.resolve_canonical_name(tool_name)
+            meta = SkillRegistry.get_metadata(canonical_name)
+            if meta is not None:
+                return bool(getattr(meta, "read_only", False))
         except Exception:
             pass
-        return tool_name.startswith(cls._READ_ONLY_PREFIXES)
+        return False
 
     @staticmethod
     def get_milestone_phrase(tool_name: str) -> str:
@@ -229,6 +231,12 @@ class DualTrackCoordinator:
 
             if self.token_gate.is_cancelled(turn_epoch):
                 tool_task.cancel()
+                try:
+                    active_tok = get_current_tool_cancellation_token()
+                    if active_tok is not None:
+                        active_tok.cancel()
+                except Exception:  # noqa: BLE001
+                    pass
                 return None
 
             # 3. Tool exceeded threshold -> Fire Track A Milestone Narration
@@ -279,6 +287,12 @@ class DualTrackCoordinator:
 
         except asyncio.CancelledError:
             tool_task.cancel()
+            try:
+                active_tok = get_current_tool_cancellation_token()
+                if active_tok is not None:
+                    active_tok.cancel()
+            except Exception:  # noqa: BLE001
+                pass
             raise
         except Exception as exc:
             logger.error("Track B tool execution failed (%s): %s", tool_name, exc, exc_info=True)
