@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from jarvis.core.cancellation import reset_global_barge_in
 from jarvis.core.security_boundaries import DualKeyApprovalManager, TurnTaintTracker
 from jarvis.skills.base import SkillRegistry
 
@@ -25,9 +26,11 @@ for _t_name in TEST_HARNESS_READ_ONLY_TOOLS:
 
 @pytest.fixture(autouse=True)
 def _isolate_turn_and_security_state():
-    """Isolates taint state and approval handlers across every test execution."""
+    """Isolates taint state, approval handlers, and barge-in state across every test execution."""
     TurnTaintTracker.get_instance().reset_turn()
     DualKeyApprovalManager.get_instance().reset()
+    reset_global_barge_in()
     yield
     TurnTaintTracker.get_instance().reset_turn()
     DualKeyApprovalManager.get_instance().reset()
+    reset_global_barge_in()

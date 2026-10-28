@@ -327,7 +327,7 @@ class InteractionMemoryMixin:
                 blob = sqlite_vec.serialize_float32(vec)
                 cursor.execute("INSERT OR REPLACE INTO lessons_vec(lesson_id, embedding) VALUES (?, ?)", (lesson_id, blob))
             except Exception as e:
-                logger.debug(f"sqlite-vec lesson indexing notice: {e}")
+                logger.warning("sqlite-vec episodic lesson indexing failed (%s); continuing without vector index.", e)
 
             conn.commit()
             logger.info(f"Recorded episodic lesson #{lesson_id} for tool '{t_clean}': {l_clean[:60]}...")
@@ -397,7 +397,7 @@ class InteractionMemoryMixin:
                             item["sim"] = round(cos_sim, 3)
                             vec_matches.append(item)
         except Exception as e:
-            logger.debug(f"sqlite-vec lessons KNN search fallback: {e}")
+            logger.warning("sqlite-vec lessons KNN search failed (%s); falling back to lexical TF-IDF/BM25.", e)
 
         scores: dict[int, float] = {}
         lesson_map: dict[int, dict[str, Any]] = {}

@@ -52,8 +52,8 @@ class TemporalGraphMixin:
                 vec = self.vector_engine.dense_vectorize(embed_text)
                 blob = sqlite_vec.serialize_float32(vec)
                 cursor.execute("INSERT OR REPLACE INTO kg_edges_vec(edge_id, embedding) VALUES (?, ?)", (edge_id, blob))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("sqlite-vec knowledge edge indexing failed (%s); continuing without vector index.", e)
             return edge_id
 
     def query_active_edges(

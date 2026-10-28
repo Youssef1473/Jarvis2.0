@@ -322,7 +322,9 @@ class SpeculativeExecutionEngine:
                     self._active_entries.pop(cache_key, None)
 
             snapshot = self._capture_validation_snapshot(meta, bound_args)
-            future = self._executor.submit(meta.func, **bound_args)
+            import contextvars
+            ctx = contextvars.copy_context()
+            future = self._executor.submit(ctx.run, meta.func, **bound_args)
             entry = SpeculativeEntry(
                 cache_key=cache_key,
                 future=future,
@@ -349,8 +351,8 @@ class SpeculativeExecutionEngine:
         bound_args = bound.arguments
 
         if not meta.read_only:
-            # Must run synchronously on calling thread
-            return meta.func(**bound_args)
+            # Must run synchronously on calling thread via SkillRegistry gate
+            return SkillRegistry.execute(skill_name, **bound_args)
 
         cache_key = compute_deterministic_cache_key(skill_name, bound_args)
 
@@ -375,6 +377,14 @@ class SpeculativeExecutionEngine:
                             self.metrics.cache_hits_inflight_coalesced += 1
                         logger.debug("Speculative cache HIT: %s (saved %.2fms, completed=%s)",
                                      skill_name, saved_ms, was_done)
+                        # Monotonically propagate taint to claiming turn if this is an ingestion tool
+                        try:
+                            from jarvis.core.security_boundaries import TurnTaintTracker
+                            tracker = TurnTaintTracker.get_instance()
+                            if tracker.is_untrusted_ingestion(skill_name) or getattr(meta, "external_ingestion", False):
+                                tracker.record_ingestion(skill_name, bound_args)
+                        except Exception as e:  # noqa: BLE001
+                            logger.debug("Failed to record speculative ingestion taint for %s: %s", skill_name, e)
                         return result
                     else:
                         self.metrics.stale_invalidations += 1
@@ -386,8 +396,8 @@ class SpeculativeExecutionEngine:
                 entry.future.cancel()
 
         # Cache miss, timeout, or invalidation fallback
-        logger.debug("Speculative cache MISS/FALLBACK for %s; running synchronously", skill_name)
-        return meta.func(**bound_args)
+        logger.debug("Speculative cache MISS/FALLBACK for %s; running synchronously via SkillRegistry", skill_name)
+        return SkillRegistry.execute(skill_name, **bound_args)
 
     def discard_unclaimed(self) -> int:
         """Cancels all active speculative futures and flushes the turn cache."""

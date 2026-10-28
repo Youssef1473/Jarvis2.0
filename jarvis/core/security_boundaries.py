@@ -1479,6 +1479,7 @@ class TurnTaintTracker:
         "execute_powershell",
         "execute_browser_javascript",
         "run_background_task",
+        "release_file_lock",
     }
 
     # Verified Level-0 read-only query and inspection tools safe on tainted turns

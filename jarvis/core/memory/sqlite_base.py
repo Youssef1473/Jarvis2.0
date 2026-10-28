@@ -29,8 +29,34 @@ class SingleWriterActor:
         self._queue: queue.Queue[tuple[Callable[[sqlite3.Connection], Any], threading.Event, list, list, threading.Event, dict, threading.Lock] | None] = queue.Queue()
         self._state = self.STATE_RUNNING
         self._state_lock = threading.Lock()
+        self._vector_extension_loaded: bool = False
+        self._vector_load_error: str | None = None
+        try:
+            import sqlite_vec
+            probe = sqlite3.connect(":memory:")
+            try:
+                probe.enable_load_extension(True)
+                sqlite_vec.load(probe)
+                self._vector_extension_loaded = True
+                self._vector_load_error = None
+            finally:
+                probe.close()
+        except Exception as exc:
+            self._vector_extension_loaded = False
+            self._vector_load_error = str(exc)
+
         self._thread = threading.Thread(target=self._worker_loop, daemon=True, name="JarvisSingleWriter")
         self._thread.start()
+
+    @property
+    def is_vector_extension_loaded(self) -> bool:
+        """Returns True if sqlite_vec was successfully loaded in worker connections."""
+        return self._vector_extension_loaded
+
+    @property
+    def vector_load_error(self) -> str | None:
+        """Returns the error message if sqlite_vec failed to load, else None."""
+        return self._vector_load_error
 
     @property
     def _running(self) -> bool:
@@ -63,8 +89,15 @@ class SingleWriterActor:
             import sqlite_vec
             c.enable_load_extension(True)
             sqlite_vec.load(c)
-        except Exception:
-            pass
+            self._vector_extension_loaded = True
+            self._vector_load_error = None
+        except Exception as exc:
+            self._vector_extension_loaded = False
+            self._vector_load_error = str(exc)
+            logger.warning(
+                "SingleWriterActor: sqlite_vec extension unavailable (%s); vector virtual tables degraded.",
+                exc,
+            )
         return c
 
     def _worker_loop(self) -> None:
@@ -224,7 +257,13 @@ class SingleWriterActor:
 
         self._queue.put(None)
         if self._thread.is_alive():
-            self._thread.join(timeout=timeout)
+            if threading.current_thread() is not self._thread:
+                self._thread.join(timeout=timeout)
+            else:
+                with self._state_lock:
+                    self._state = self.STATE_STOPPED
+                self._drain_and_reject_pending()
+                return
 
         with self._state_lock:
             if not self._thread.is_alive():
@@ -241,6 +280,9 @@ class SingleWriterActor:
 class SqliteBaseMixin:
     """Provides SQLite database connection management, pool access, and schema initialization."""
 
+    _vector_extension_loaded: bool = False
+    _vector_load_error: str | None = None
+
     @contextlib.contextmanager
     def _get_connection(self):
         with self._write_lock:
@@ -256,13 +298,75 @@ class SqliteBaseMixin:
                 import sqlite_vec
                 conn.enable_load_extension(True)
                 sqlite_vec.load(conn)
-            except Exception:
-                pass
+                self._vector_extension_loaded = True
+                self._vector_load_error = None
+            except Exception as exc:
+                self._vector_extension_loaded = False
+                self._vector_load_error = str(exc)
+                logger.warning(
+                    "SqliteBaseMixin: sqlite_vec extension unavailable (%s); vector virtual tables degraded.",
+                    exc,
+                )
             try:
                 with conn:
                     yield conn
             finally:
                 conn.close()
+
+    @property
+    def is_vector_search_available(self) -> bool:
+        """Returns True if sqlite-vec extension and virtual tables are operational across all pools."""
+        if not getattr(self, "_vector_extension_loaded", False):
+            return False
+        if hasattr(self, "_writer_actor") and self._writer_actor:
+            if not getattr(self._writer_actor, "is_vector_extension_loaded", True):
+                return False
+        if hasattr(self, "_ro_vector_pool") and self._ro_vector_pool:
+            if not getattr(self._ro_vector_pool, "is_vector_extension_loaded", True):
+                return False
+        try:
+            from jarvis.memory.ro_pool import ReadOnlyConnectionPool
+            ro_pool = ReadOnlyConnectionPool.get_instance()
+            if hasattr(ro_pool, "vector_load_error") and ro_pool.vector_load_error is not None:
+                return False
+        except Exception as ro_err:
+            logger.debug("RO pool health check note: %s", ro_err)
+        return True
+
+    @property
+    def vector_load_error(self) -> str | None:
+        """Returns the first sqlite-vec load error across all connection pools, or None if operational."""
+        if getattr(self, "_vector_load_error", None):
+            return self._vector_load_error
+        if hasattr(self, "_writer_actor") and self._writer_actor and getattr(self._writer_actor, "vector_load_error", None):
+            return self._writer_actor.vector_load_error
+        if hasattr(self, "_ro_vector_pool") and self._ro_vector_pool and getattr(self._ro_vector_pool, "vector_load_error", None):
+            return self._ro_vector_pool.vector_load_error
+        try:
+            from jarvis.memory.ro_pool import ReadOnlyConnectionPool
+            ro_pool = ReadOnlyConnectionPool.get_instance()
+            if hasattr(ro_pool, "vector_load_error") and ro_pool.vector_load_error:
+                return ro_pool.vector_load_error
+        except Exception:
+            pass
+        return None
+
+    def get_vector_search_health(self) -> dict[str, Any]:
+        """Returns structured vector engine operational health status."""
+        available = self.is_vector_search_available
+        backend_name = "unknown"
+        if hasattr(self, "vector_engine") and hasattr(self.vector_engine, "get_backend_name"):
+            try:
+                backend_name = self.vector_engine.get_backend_name()
+            except (AttributeError, RuntimeError) as b_err:
+                logger.debug("Embedder backend name resolution note: %s", b_err)
+        return {
+            "status": "HEALTHY" if available else "DEGRADED",
+            "backend": "sqlite-vec" if available else "lexical-bm25-fallback",
+            "embedder_backend": backend_name,
+            "degraded": not available,
+            "error": self.vector_load_error,
+        }
 
     @contextlib.contextmanager
     def _get_ro_connection(self):
@@ -641,6 +745,10 @@ class SqliteBaseMixin:
 
             # sqlite-vec Native C Vector Virtual Table & Real-Time Sync Triggers (Native 384-dim BGE INT8)
             try:
+                if not getattr(self, "_vector_extension_loaded", False):
+                    raise RuntimeError(
+                        f"sqlite-vec extension is not loaded ({self._vector_load_error or 'extension load failed'})"
+                    )
                 import sqlite_vec
 
                 from jarvis.core.memory.onnx_embeddings import DEFAULT_EMBEDDING_DIM
@@ -775,5 +883,12 @@ class SqliteBaseMixin:
 
                 cursor.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('vec_dimension', ?)", (str(TARGET_VEC_DIM),))
                 cursor.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('embedder_backend', ?)", (current_backend,))
+                self._vector_extension_loaded = True
+                self._vector_load_error = None
             except Exception as vec_err:
-                logger.debug("sqlite-vec virtual table initialization note: %s", vec_err)
+                self._vector_extension_loaded = False
+                self._vector_load_error = str(vec_err)
+                logger.warning(
+                    "sqlite-vec virtual table initialization failed; vector search degraded to lexical BM25/TF-IDF: %s",
+                    vec_err,
+                )
