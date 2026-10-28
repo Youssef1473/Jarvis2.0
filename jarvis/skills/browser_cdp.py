@@ -1035,8 +1035,12 @@ def resolve_browser_executable(browser_name: str = "brave") -> Optional[str]:
     known_direct = [
         os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
         os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
-        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
     ]
+    # Check Playwright-managed headless Chromium before system Edge
+    import glob
+    playwright_candidates = glob.glob(os.path.expandvars(r"%LOCALAPPDATA%\ms-playwright\chromium-*\chrome-win\chrome.exe"))
+    known_direct.extend(playwright_candidates)
+    known_direct.append(os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"))
     for p in known_direct:
         if os.path.exists(p):
             return p

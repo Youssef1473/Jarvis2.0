@@ -1041,7 +1041,7 @@ def open_browser_tab(url: str = "", browser: str = "brave", new_tab: bool = True
                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
                     close_fds=True,
                 )
-                return f"Opened '{target_url}' in your active {_active_browser.title()} window, Sir."
+                return f"Opened '{target_url}' in your active {_active_browser.title()} browser window, Sir."
             except Exception as e:
                 logger.debug(f"Chromium IPC dispatch notice: {e}")
         elif not target_url:
@@ -1053,7 +1053,7 @@ def open_browser_tab(url: str = "", browser: str = "brave", new_tab: bool = True
                         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
                         close_fds=True,
                     )
-                    return f"Opened a new tab in your active {_active_browser.title()} window, Sir."
+                    return f"Opened a new browser tab in your active {_active_browser.title()} window, Sir."
                 except Exception as e:
                     logger.debug(f"Chromium IPC new-tab dispatch notice: {e}")
 

@@ -65,7 +65,7 @@ class TestPCControlAndPerformance(unittest.TestCase):
 
     def test_fast_reflex_brave_tab(self):
         """Verifies 'open a brave tab' and its speech variations execute via fast reflex in <10ms."""
-        with patch("subprocess.Popen") as mock_popen, patch("webbrowser.open_new_tab") as mock_web:
+        with patch("subprocess.Popen") as mock_popen, patch("webbrowser.open_new_tab") as mock_web, patch("jarvis.skills.windows_uia.focus_window_uia", return_value=None):
             for utterance in [
                 "open a brave tab",
                 "open a tab in brave",
@@ -76,7 +76,7 @@ class TestPCControlAndPerformance(unittest.TestCase):
             ]:
                 spoken = []
                 reply = self.brain.process_query(utterance, sentence_callback=lambda s: spoken.append(s))
-                self.assertTrue("Brave" in reply or "browser" in reply.lower(), f"Failed on utterance: '{utterance}'")
+                self.assertTrue("Brave" in reply or "browser" in reply.lower(), f"Failed on utterance: '{utterance}' (got reply: {reply!r})")
                 self.assertTrue(len(spoken) > 0, f"No speech callback on utterance: '{utterance}'")
 
     def test_pass_through_for_questions_and_self_building(self):

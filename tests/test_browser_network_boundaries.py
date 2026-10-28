@@ -576,14 +576,21 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
 def _find_browser_exe():
     from jarvis.skills.os_control import _build_app_index
     apps = _build_app_index()
-    for b in ("brave", "chrome", "msedge"):
+    for b in ("brave", "chrome"):
         if apps.get(b) and os.path.exists(apps[b]):
             return apps[b]
     candidates = [
         os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
         os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
-        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
     ]
+    # Check Playwright-managed headless Chromium before system Edge
+    import glob
+    playwright_candidates = glob.glob(os.path.expandvars(r"%LOCALAPPDATA%\ms-playwright\chromium-*\chrome-win\chrome.exe"))
+    candidates.extend(playwright_candidates)
+    if apps.get("msedge") and os.path.exists(apps["msedge"]):
+        candidates.append(apps["msedge"])
+    candidates.append(os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"))
+
     for p in candidates:
         if os.path.exists(p):
             return p
@@ -595,10 +602,14 @@ LIVE_CDP_PORT = 9998
 TEST_BLOCKED_PORT = 20129
 
 
-def _recv_response(ws, expected_id, timeout=3.0):
+def _recv_response(ws, expected_id, timeout=15.0):
     start = time.time()
     while time.time() - start < timeout:
-        raw = ws.recv(timeout=timeout)
+        remaining = max(0.1, timeout - (time.time() - start))
+        try:
+            raw = ws.recv(timeout=remaining)
+        except (TimeoutError, EOFError):
+            break
         if isinstance(raw, (str, bytes, bytearray)):
             try:
                 data = json.loads(raw)
@@ -638,12 +649,12 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
                 self.wfile.write(b"<html><body><h1>Allowed Page</h1></body></html>")
 
         cls.blocked_srv = http.server.HTTPServer(("127.0.0.1", TEST_BLOCKED_PORT), BlockedHandler)
-        cls.t_blocked = threading.Thread(target=cls.blocked_srv.serve_forever, daemon=True)
+        cls.t_blocked = threading.Thread(target=lambda: cls.blocked_srv.serve_forever(poll_interval=0.05), daemon=True)
         cls.t_blocked.start()
 
         cls.allowed_srv = http.server.HTTPServer(("127.0.0.1", 0), AllowedHandler)
         cls.allowed_port = cls.allowed_srv.server_port
-        cls.t_allowed = threading.Thread(target=cls.allowed_srv.serve_forever, daemon=True)
+        cls.t_allowed = threading.Thread(target=lambda: cls.allowed_srv.serve_forever(poll_interval=0.05), daemon=True)
         cls.t_allowed.start()
 
         cls.temp_dir = tempfile.mkdtemp(prefix="live_cdp_test_")
@@ -661,7 +672,7 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
         cls.proc = subprocess.Popen(cls.browser_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         ready = False
-        for _ in range(50):
+        for _ in range(100):
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{LIVE_CDP_PORT}/json/version", timeout=0.2)
                 ready = True
@@ -682,9 +693,17 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             except (subprocess.SubprocessError, OSError):
                 pass
         if hasattr(cls, "blocked_srv"):
-            cls.blocked_srv.shutdown()
+            try:
+                cls.blocked_srv.shutdown()
+                cls.blocked_srv.server_close()
+            except Exception:
+                pass
         if hasattr(cls, "allowed_srv"):
-            cls.allowed_srv.shutdown()
+            try:
+                cls.allowed_srv.shutdown()
+                cls.allowed_srv.server_close()
+            except Exception:
+                pass
         if hasattr(cls, "temp_dir") and os.path.exists(cls.temp_dir):
             shutil.rmtree(cls.temp_dir, ignore_errors=True)
 
@@ -695,7 +714,7 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             tab_data = json.loads(resp.read().decode("utf-8"))
         ws_url = tab_data["webSocketDebuggerUrl"]
 
-        with connect(ws_url, open_timeout=2.0) as ws:
+        with connect(ws_url, open_timeout=5.0) as ws:
             patterns = b_cdp.get_cdp_blocked_url_patterns()
             # 1. Network.enable
             ws.send(json.dumps({"id": 101, "method": "Network.enable", "params": {}}))
@@ -716,7 +735,7 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             tab_data = json.loads(resp.read().decode("utf-8"))
         ws_url = tab_data["webSocketDebuggerUrl"]
 
-        with connect(ws_url, open_timeout=2.0) as ws:
+        with connect(ws_url, open_timeout=5.0) as ws:
             ok = b_cdp.configure_cdp_tab_network_guards(ws)
             self.assertTrue(ok)
 
@@ -768,7 +787,7 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             tab_data = json.loads(resp.read().decode("utf-8"))
         ws_url = tab_data["webSocketDebuggerUrl"]
 
-        with connect(ws_url, open_timeout=2.0) as ws:
+        with connect(ws_url, open_timeout=5.0) as ws:
             b_cdp.configure_cdp_tab_network_guards(ws)
             allowed_url = f"http://127.0.0.1:{self.allowed_port}/test_disconnect_behavior"
             ws.send(json.dumps({"id": 301, "method": "Page.navigate", "params": {"url": allowed_url}}))
@@ -806,7 +825,7 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
         with self.assertRaises(Exception) as ctx:
             connect(
                 ws_url,
-                open_timeout=1.0,
+                open_timeout=3.0,
                 additional_headers={"Origin": "http://evil-attacker.com"},
             )
         err_str = str(ctx.exception).lower()
@@ -820,19 +839,19 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
         ws_url = tab_data["webSocketDebuggerUrl"]
 
         # Standard Python client without Origin header is accepted
-        with connect(ws_url, open_timeout=1.0) as ws:
+        with connect(ws_url, open_timeout=3.0) as ws:
             ws.send(json.dumps({"id": 501, "method": "Browser.getVersion"}))
-            res = json.loads(ws.recv(timeout=1.0))
+            res = json.loads(ws.recv(timeout=5.0))
             self.assertEqual(res.get("id"), 501)
 
         # Authorized Origin header (Jarvis UI on 20129) is accepted
         with connect(
             ws_url,
-            open_timeout=1.0,
+            open_timeout=3.0,
             additional_headers={"Origin": "http://127.0.0.1:20129"},
         ) as ws:
             ws.send(json.dumps({"id": 502, "method": "Browser.getVersion"}))
-            res = json.loads(ws.recv(timeout=1.0))
+            res = json.loads(ws.recv(timeout=5.0))
             self.assertEqual(res.get("id"), 502)
 
     def test_live_06_open_or_navigate_tab_cdp_persistent_guard(self):

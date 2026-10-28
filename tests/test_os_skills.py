@@ -77,8 +77,11 @@ def test_system_vitals():
 
 def test_clipboard_assistant():
     print("\n6. Testing clipboard assistant (copy & read)...")
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().reset_turn()
     original = SkillRegistry.execute("read_clipboard")
 
+    TurnTaintTracker.get_instance().reset_turn()
     test_msg = "JARVIS 2.0 PROTOCOL VERIFIED // OMNIROUTE NEURAL LINK"
     copy_res = SkillRegistry.execute("copy_to_clipboard", text=test_msg)
     assert "Successfully copied" in copy_res

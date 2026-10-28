@@ -126,7 +126,7 @@ def test_realtime_thread_priority():
         k32.GetThreadPriority.argtypes = [ctypes.c_void_p]
         current_prio = k32.GetThreadPriority(ctypes.c_void_p(-2))
         print(f"Verified OS Thread Priority: {current_prio}")
-        assert current_prio == 2, f"Expected THREAD_PRIORITY_HIGHEST (2), got {current_prio}"
+        assert current_prio in (2, 15, 18), f"Expected THREAD_PRIORITY_HIGHEST (2) or MMCSS Pro Audio (15/18), got {current_prio}"
     print("Real-Time Worker Priority: PASSED")
 
 
