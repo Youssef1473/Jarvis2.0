@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import secrets
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -118,7 +119,8 @@ def resolve_safe_photo_path(photo_id: str, photos_dir: Path | None = None) -> Pa
         try:
             from jarvis.skills.photo_manager import PHOTOS_DIR
             base_photos_dir = Path(PHOTOS_DIR).resolve()
-        except Exception:
+        except (ImportError, AttributeError, OSError) as err:
+            logger.debug("Photo base directory resolution fallback: %s", err)
             base_photos_dir = Path("data/photos").resolve()
     else:
         base_photos_dir = Path(photos_dir).resolve()
@@ -129,7 +131,8 @@ def resolve_safe_photo_path(photo_id: str, photos_dir: Path | None = None) -> Pa
     try:
         if not target_path.is_relative_to(base_photos_dir):
             return None
-    except Exception:
+    except (ValueError, TypeError) as err:
+        logger.debug("Photo path boundary containment check notice: %s", err)
         return None
 
     return target_path
@@ -182,7 +185,8 @@ def redact_query_string_bytes(qs: bytes) -> bytes:
         raw_key = part[:eq_pos]
         try:
             decoded_key = unquote_to_bytes(raw_key).decode("utf-8", errors="replace").lower().strip()
-        except Exception:
+        except (UnicodeError, ValueError) as err:
+            logger.debug("Query string key decoding notice: %s", err)
             decoded_key = raw_key.decode("latin1", errors="replace").lower().strip()
 
         if decoded_key in SENSITIVE_QUERY_PARAM_NAMES:
@@ -209,7 +213,8 @@ def redact_query_string_text(text: str) -> str:
         k = m.group(1)
         try:
             decoded_k = unquote(k).lower().strip()
-        except Exception:
+        except (UnicodeError, ValueError) as err:
+            logger.debug("Query string key text decode notice: %s", err)
             decoded_k = k.lower().strip()
         if decoded_k in SENSITIVE_QUERY_PARAM_NAMES:
             return f"{k}=[REDACTED]"
@@ -672,8 +677,8 @@ class WorkstationMetricsCollector:
                         "vram_total_mb": cached.get("vram_total", 4096),
                         "gpu_temp_c": cached.get("temp_c", 0),
                     }
-            except Exception:
-                pass
+            except (AttributeError, KeyError, TypeError) as err:
+                logger.debug("GPU cache inspection notice: %s", err)
             return dict(cls._DEFAULT_GPU_METRICS)
 
         try:
@@ -713,11 +718,12 @@ class WorkstationMetricsCollector:
             if cls._nvml_initialized and cls._nvml_module is not None:
                 try:
                     cls._nvml_module.nvmlShutdown()
-                except Exception:
-                    pass
-                cls._nvml_initialized = False
-                cls._device_handle = None
-                cls._nvml_module = None
+                except Exception as err:  # noqa: BLE001 - Driver-level cleanup boundary must not block host teardown
+                    logger.debug("NVML driver shutdown notice: %s", err)
+                finally:
+                    cls._nvml_initialized = False
+                    cls._device_handle = None
+                    cls._nvml_module = None
 
     @staticmethod
     def sample_metrics_sync(orchestrator: Any = None) -> dict[str, Any]:
@@ -747,7 +753,8 @@ class WorkstationMetricsCollector:
             if hasattr(orchestrator, "is_muted") and callable(orchestrator.is_muted):
                 try:
                     is_muted = bool(orchestrator.is_muted())
-                except Exception:
+                except (AttributeError, TypeError, RuntimeError, OSError) as err:
+                    logger.debug("Orchestrator is_muted probe notice: %s", err)
                     is_muted = False
 
             if hasattr(orchestrator, "state"):
@@ -763,14 +770,14 @@ class WorkstationMetricsCollector:
                 if callable(status_provider):
                     try:
                         specialist_status = status_provider()
-                    except Exception:
-                        pass
+                    except (AttributeError, TypeError, RuntimeError) as err:
+                        logger.debug("Specialist status probe notice: %s", err)
                 lat_getter = getattr(b, "get_latencies", None)
                 if callable(lat_getter):
                     try:
                         latencies = lat_getter()
-                    except Exception:
-                        pass
+                    except (AttributeError, TypeError, RuntimeError) as err:
+                        logger.debug("Provider latencies probe notice: %s", err)
                 if hasattr(b, "memory"):
                     try:
                         if hasattr(b.memory, "get_all_memory_nodes"):
@@ -779,16 +786,16 @@ class WorkstationMetricsCollector:
                         else:
                             facts = b.memory.get_all_facts()
                             memory_label = f"{len(facts)} FACTS STORED"
-                    except Exception:
-                        pass
+                    except (AttributeError, TypeError, RuntimeError, OSError, sqlite3.Error) as err:
+                        logger.debug("Memory nodes probe notice: %s", err)
 
         timer_count = 0
         try:
             from jarvis.skills.timers import _active_timers, _timer_lock
             with _timer_lock:
                 timer_count = len(_active_timers)
-        except Exception:
-            pass
+        except (ImportError, AttributeError, RuntimeError) as err:
+            logger.debug("Active timers registry probe notice: %s", err)
 
         latency_percentiles = {}
         p99_history = []
@@ -974,7 +981,11 @@ class TelemetryConnectionManager:
         for ws in list(self._clients.keys()):
             try:
                 await ws.send_text(message_str)
-            except Exception:
+            except (WebSocketDisconnect, RuntimeError, OSError) as err:
+                logger.debug("WebSocket client disconnected during direct broadcast: %s", err)
+                dead.append(ws)
+            except Exception as e:  # noqa: BLE001 - Keep connection pool robust against client socket faults
+                logger.debug("Unexpected error during direct broadcast to client: %s", e)
                 dead.append(ws)
         for ws in dead:
             await self.disconnect(ws)
@@ -2140,10 +2151,15 @@ class JarvisUIService:
             return
 
         message = json.dumps(payload, separators=(",", ":"))
+        coro = self.telemetry_manager.broadcast_direct(message)
         try:
-            asyncio.run_coroutine_threadsafe(self.telemetry_manager.broadcast_direct(message), self._loop)
-        except Exception:
-            pass
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
+        except RuntimeError as e:
+            coro.close()
+            logger.debug("Failed scheduling broadcast_direct on loop: %s", e)
+        except Exception as e:  # noqa: BLE001 - Guard UI thread against scheduling anomalies
+            coro.close()
+            logger.debug("Unexpected error scheduling broadcast_direct: %s", e)
 
     def broadcast_state(self, state: str):
         """Broadcasts voice state change ('idle', 'listening', 'thinking', 'speaking')."""
@@ -2166,8 +2182,10 @@ class JarvisUIService:
         if self._loop and self.telemetry_manager.client_count:
             try:
                 self._loop.call_soon_threadsafe(self.telemetry_manager.broadcast_telemetry, base)
-            except Exception:
-                pass
+            except RuntimeError as e:
+                logger.debug("Failed scheduling broadcast_telemetry on closed loop: %s", e)
+            except Exception as e:  # noqa: BLE001 - Guard UI thread against scheduling anomalies
+                logger.debug("Unexpected error scheduling broadcast_telemetry: %s", e)
 
     def broadcast_audio_level(self, level: float):
         """Broadcasts audio reactivity level (0.0 to 1.0)."""
@@ -2177,13 +2195,15 @@ class JarvisUIService:
         """Thread-safe broadcast of 68-byte DSP binary frame to connected HUD clients."""
         if not self.telemetry_manager.client_count or not self._loop:
             return
+        coro = self.telemetry_manager.broadcast_binary(dsp_frame)
         try:
-            asyncio.run_coroutine_threadsafe(
-                self.telemetry_manager.broadcast_binary(dsp_frame),
-                self._loop
-            )
-        except Exception:
-            pass
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
+        except RuntimeError as e:
+            coro.close()
+            logger.debug("Failed scheduling broadcast_binary on loop: %s", e)
+        except Exception as e:  # noqa: BLE001 - Guard UI thread against scheduling anomalies
+            coro.close()
+            logger.debug("Unexpected error scheduling broadcast_binary: %s", e)
 
     def start(self):
         """Starts the Uvicorn server in a background daemon thread with continuous live telemetry streaming."""
@@ -2203,8 +2223,8 @@ class JarvisUIService:
             # Prime CPU counter baseline
             try:
                 psutil.cpu_percent(interval=None)
-            except Exception:
-                pass
+            except (AttributeError, OSError) as err:
+                logger.debug("CPU baseline query notice: %s", err)
 
             while self._server and not self._server.should_exit:
                 try:

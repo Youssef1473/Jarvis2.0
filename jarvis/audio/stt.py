@@ -259,10 +259,10 @@ class SpeechToText:
                 condition_on_previous_text=False,
                 initial_prompt=self.initial_prompt,
                 vad_filter=self.vad_filter,
-                vad_parameters=dict(
-                    min_silence_duration_ms=300,
-                    speech_pad_ms=200,
-                ),
+                vad_parameters={
+                    "min_silence_duration_ms": 300,
+                    "speech_pad_ms": 200,
+                },
             )
             segment_list = list(segments)
             text = " ".join([segment.text for segment in segment_list]).strip()
@@ -284,10 +284,10 @@ class SpeechToText:
                     condition_on_previous_text=False,
                     initial_prompt=self.initial_prompt,
                     vad_filter=self.vad_filter,
-                    vad_parameters=dict(
-                        min_silence_duration_ms=300,
-                        speech_pad_ms=200,
-                    ),
+                    vad_parameters={
+                        "min_silence_duration_ms": 300,
+                        "speech_pad_ms": 200,
+                    },
                 )
                 segment_list = list(segments)
                 text = " ".join([segment.text for segment in segment_list]).strip()

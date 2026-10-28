@@ -887,7 +887,6 @@ def take_desktop_screenshot(filename: str = "") -> str:
     try:
         from PIL import ImageGrab
         img = None
-        last_err = None
         for attempt in range(3):
             try:
                 _ensure_desktop_access()
@@ -895,13 +894,13 @@ def take_desktop_screenshot(filename: str = "") -> str:
                 if img:
                     break
             except Exception as e1:
-                last_err = e1
+                logger.debug('Primary screen grab notice: %s', e1)
                 try:
                     img = ImageGrab.grab(all_screens=False)
                     if img:
                         break
                 except Exception as e2:
-                    last_err = e2
+                    logger.debug("Screen grab retry error: %s", e2)
                     time.sleep(0.05)
 
         if img is None:

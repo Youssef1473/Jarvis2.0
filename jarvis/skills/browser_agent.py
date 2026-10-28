@@ -323,7 +323,6 @@ def get_tech_news_headlines(count: int = 5) -> str:
                 item_data = requests.get(f"https://hacker-news.firebaseio.com/v0/item/{item_id}.json", timeout=3).json()
                 title = item_data.get("title", "")
                 score = item_data.get("score", 0)
-                url = item_data.get("url", "")
                 stories.append(f"{rank}. {title} ({score} points)")
             except Exception:
                 pass

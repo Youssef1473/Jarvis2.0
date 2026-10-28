@@ -35,7 +35,7 @@ class ResourceScope(enum.Flag):
 class EnvironmentEpochTracker:
     """Thread-safe monotonic counter tracking environment resource mutations."""
 
-    _epochs: dict[ResourceScope, int] = {scope: 0 for scope in ResourceScope}
+    _epochs: dict[ResourceScope, int] = dict.fromkeys(ResourceScope, 0)
     _lock = threading.Lock()
 
     @classmethod

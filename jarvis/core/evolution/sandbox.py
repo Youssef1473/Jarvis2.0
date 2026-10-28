@@ -551,7 +551,7 @@ class SkillSandbox:
                 if snap_meta.exists():
                     shutil.copy2(snap_meta, target_meta)
                     try:
-                        with open(target_meta, "r", encoding="utf-8") as f:
+                        with open(target_meta, encoding="utf-8") as f:
                             meta_data = json.load(f)
                         for t_name, t_meta in meta_data.get("tools", {}).items():
                             proxy_fn = _create_sandboxed_tool_proxy(clean_name, t_name, t_meta)
@@ -1030,7 +1030,7 @@ except Exception as e:
                 return f"Error: Custom skill '{clean_name}' does not exist on disk."
 
             try:
-                with open(meta_file, "r", encoding="utf-8") as f:
+                with open(meta_file, encoding="utf-8") as f:
                     meta_data = json.load(f)
             except Exception as e:
                 return f"Error reading skill sidecar: {e}"
@@ -1117,7 +1117,7 @@ except Exception as e:
                         return f"Security Violation: Output from tool '{tool_name}' exceeded 1MB ceiling; rejected."
 
                     try:
-                        with open(result_file, "r", encoding="utf-8") as f:
+                        with open(result_file, encoding="utf-8") as f:
                             res_data = json.load(f)
                     except (json.JSONDecodeError, UnicodeDecodeError) as decode_err:
                         return f"Security Violation: Child response payload is not valid JSON: {decode_err}"

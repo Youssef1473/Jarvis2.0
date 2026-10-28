@@ -15,7 +15,7 @@ from typing import Any
 logger = logging.getLogger("Jarvis.Cognition.EVI")
 
 
-class CognitiveState(str, Enum):
+class CognitiveState(str, Enum):  # noqa: UP042
     DEEP_FLOW = "DEEP_FLOW"
     ACTIVE_DEBUGGING = "ACTIVE_DEBUGGING"
     EXPLORATORY_RESEARCH = "EXPLORATORY_RESEARCH"
@@ -23,7 +23,7 @@ class CognitiveState(str, Enum):
     FATIGUED_DRIFT = "FATIGUED_DRIFT"
 
 
-class DeliveryModality(str, Enum):
+class DeliveryModality(str, Enum):  # noqa: UP042
     SUPPRESS = "SUPPRESS"
     SILENT_ACT = "SILENT_ACT"
     HUD_PULSE = "HUD_PULSE"

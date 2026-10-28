@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from jarvis.core.memory.document_vault import DocumentVaultMixin
 from jarvis.core.memory.facts_manager import FactsManagerMixin

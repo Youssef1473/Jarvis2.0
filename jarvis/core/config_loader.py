@@ -23,7 +23,7 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
     if not target_yaml.exists():
         raise FileNotFoundError(f"Configuration file not found at: {target_yaml}")
 
-    with open(target_yaml, "r", encoding="utf-8") as f:
+    with open(target_yaml, encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
 
     # Augment with base directory for absolute path resolution
