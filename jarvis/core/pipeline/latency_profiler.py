@@ -38,22 +38,29 @@ class TurnTrace:
         token_anchor = self.llm_first_token_ns or stt_anchor
         tts_anchor = self.tts_first_chunk_ns or token_anchor
 
-        return {
-            "stt_ms": _delta_ms(base, self.stt_final_ns),
-            "routing_ms": _delta_ms(stt_anchor, self.route_complete_ns),
-            "ttft_ms": _delta_ms(stt_anchor, self.llm_first_token_ns),
-            "tts_synth_ms": _delta_ms(token_anchor, self.tts_first_chunk_ns),
-            "dsp_ipc_ms": _delta_ms(tts_anchor, self.audio_first_frame_ns),
-            "total_ttfa_ms": _delta_ms(base, self.audio_first_frame_ns),
-        }
+        res: dict[str, float] = {}
+        if self.stt_final_ns > 0:
+            res["stt_ms"] = _delta_ms(base, self.stt_final_ns)
+        if self.route_complete_ns > 0:
+            res["routing_ms"] = _delta_ms(stt_anchor, self.route_complete_ns)
+        if self.llm_first_token_ns > 0:
+            res["ttft_ms"] = _delta_ms(stt_anchor, self.llm_first_token_ns)
+        if self.tts_first_chunk_ns > 0:
+            res["tts_synth_ms"] = _delta_ms(token_anchor, self.tts_first_chunk_ns)
+        if self.audio_first_frame_ns > 0:
+            res["dsp_ipc_ms"] = _delta_ms(tts_anchor, self.audio_first_frame_ns)
+            res["total_ttfa_ms"] = _delta_ms(base, self.audio_first_frame_ns)
+        return res
 
 
 class PipelineLatencyProfiler:
     """Bounded rolling histogram profiler for P50/P95/P99 real-time telemetry."""
 
-    def __init__(self, window_size: int = 128) -> None:
+    def __init__(self, window_size: int = 128, history_limit: int = 60) -> None:
         self._window_size = max(8, int(window_size))
+        self._history_limit = max(5, int(history_limit))
         self._history: deque[dict[str, float]] = deque(maxlen=self._window_size)
+        self._p99_history: deque[dict[str, Any]] = deque(maxlen=self._history_limit)
         self._active_turns: dict[str, TurnTrace] = {}
 
     def begin_turn(self, turn_id: str) -> TurnTrace:
@@ -76,12 +83,34 @@ class PipelineLatencyProfiler:
         trace = self._active_turns.pop(turn_id, None)
         if trace is None:
             return {}
-        if trace.audio_first_frame_ns == 0:
+        if trace.audio_first_frame_ns == 0 and trace.tts_first_chunk_ns > 0:
             trace.audio_first_frame_ns = time.perf_counter_ns()
         metrics = trace.stage_durations_ms()
         if metrics:
             self._history.append(metrics)
+            self._record_p99_snapshot(turn_id=turn_id)
         return metrics
+
+    def _record_p99_snapshot(
+        self,
+        turn_id: str | None = None,
+        timestamp: float | None = None,
+    ) -> dict[str, Any] | None:
+        percentiles = self.get_percentiles()
+        if not percentiles:
+            return None
+        ts = round(timestamp if timestamp is not None else time.time(), 3)
+        snapshot = {
+            "ts": ts,
+            "turn_id": turn_id or "",
+            "stages": {stage: data["p99"] for stage, data in percentiles.items() if "p99" in data},
+        }
+        self._p99_history.append(snapshot)
+        return snapshot
+
+    def get_p99_history(self) -> list[dict[str, Any]]:
+        """Returns chronologically ordered, bounded list of historical rolling P99 snapshots."""
+        return list(self._p99_history)
 
     def get_percentiles(self) -> dict[str, dict[str, float]]:
         """Returns P50, P95, and P99 in ms for each pipeline stage."""
