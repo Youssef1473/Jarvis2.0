@@ -9,13 +9,13 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import Enum
 from typing import Any
 
 logger = logging.getLogger("Jarvis.Cognition.EVI")
 
 
-class CognitiveState(StrEnum):
+class CognitiveState(str, Enum):  # noqa: UP042
     DEEP_FLOW = "DEEP_FLOW"
     ACTIVE_DEBUGGING = "ACTIVE_DEBUGGING"
     EXPLORATORY_RESEARCH = "EXPLORATORY_RESEARCH"
@@ -23,7 +23,7 @@ class CognitiveState(StrEnum):
     FATIGUED_DRIFT = "FATIGUED_DRIFT"
 
 
-class DeliveryModality(StrEnum):
+class DeliveryModality(str, Enum):  # noqa: UP042
     SUPPRESS = "SUPPRESS"
     SILENT_ACT = "SILENT_ACT"
     HUD_PULSE = "HUD_PULSE"

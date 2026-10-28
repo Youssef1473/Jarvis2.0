@@ -4,60 +4,58 @@
 **Host Environment:** Windows 11 x64 | Intel Core i5-12500H | NVIDIA RTX 3050 Laptop GPU (4GB VRAM) | Python 3.12.10  
 **Protected Base on `main`:** Commit [`da4f89e`](https://github.com/Youssef1473/Jarvis2.0/commit/da4f89e) (Merge pull request #3: Phase 5 historical rolling P99 latency telemetry)  
 **Active Feature Branch:** `feat/code-quality-exception-hardening`  
-**Verification Baseline:** Full fast parallel test suite: **1,409 passed, 22 skipped, 156 subtests passed in 99.61s (Exit code: 0)**  
+**Pull Request:** [PR #4 — Option B Code Quality Modernization and Targeted Exception Hardening](https://github.com/Youssef1473/Jarvis2.0/pull/4)  
+**Verification Baseline:** Full fast parallel test suite: **1,412 passed, 22 skipped, 156 subtests passed in 101.85s (Exit code: 0)**  
 **Lint Baseline:** Total violations reduced from **1,206 to 1,160** (46 net errors eliminated); scoped modernization rules (`UP,C4,F841,I,RUF022`) are **100% clean (0 errors)**.
 
 ---
 
-## 1. Executive Summary & Batch Milestones
+## 1. Executive Summary & Review Remediation
 
-Option B has been executed in full across all four sequential batches without modifying `main` or merging the PR:
+Option B has been executed in full across all four sequential batches, followed by targeted remediation of all 4 PR #4 review findings without modifying `main` or merging the PR:
 
-1. **Batch 1 — Repository Hygiene & Empirical Baseline:**
-   - Verified root `.gitignore` contains `/*.exe` and `dsh-latest-windows-x64.exe` is ignored via `git check-ignore -v`.
-   - Verified `tests/test_p0_action_bound_authorization.py` exists and passes (35/35 passed).
-   - Captured empirical baseline: Ruff linter reported 1,206 errors (dominated by legacy `BLE001` and `S110` in untouched files).
-   - Captured full parallel fast test baseline: 1,403 passed, 22 skipped in 141.00s.
+1. **Remediation 1 — Coroutine Cleanup Test Verification:**
+   - In `tests/test_exception_hardening.py`, both direct and binary broadcast tests now register a mock client to avoid the early-return path (`client_count > 0`).
+   - Mocked loop scheduling captures the exact coroutine passed to `asyncio.run_coroutine_threadsafe`.
+   - Empirically verified `mock_run.assert_called_once()`, `inspect.getcoroutinestate(captured_coro) == inspect.CORO_CLOSED`, and zero unawaited `RuntimeWarning` emissions.
 
-2. **Batch 2 — Scoped Ruff Modernization Across `jarvis/`:**
-   - Modernized type annotations and built-ins (`UP015`, `UP035`, `UP042`, `UP022`).
-   - Simplified collection literals and comprehensions (`C408`, `C414`, `C420`).
-   - Cleaned dead unused local variables (`F841`) across 7 files while preserving side effects.
-   - Verified with `python tools/lint.py check --select UP,C4,F841,I,RUF022 jarvis/`: **All checks passed!**
+2. **Remediation 2 — Realistic Exception Handling in Metrics Collection:**
+   - In `jarvis/ui/server.py`, added module-level `import sqlite3`.
+   - Expanded `sample_metrics_sync` memory probe to catch `(AttributeError, TypeError, RuntimeError, OSError, sqlite3.Error)` with debug logging.
+   - Added regression test `test_sample_metrics_sync_sqlite_database_failure_does_not_abort_telemetry` injecting `sqlite3.OperationalError("database is locked")`, verifying remaining telemetry is fully populated and uncorrupted.
 
-3. **Batch 3 — Targeted Exception Hardening & Regression Suite:**
-   - Hardened `jarvis/ui/server.py`:
-     - Bounded metrics probes (`WorkstationMetricsCollector.sample_metrics_sync`) to prevent crash loops when audio or specialist models fail.
-     - Closed coroutines explicitly (`coro.close()`) in `JarvisUIService.broadcast_direct` and `broadcast_binary` on `RuntimeError` / `Exception` during event loop shutdown, preventing Python 3.12 coroutine leak warnings.
-     - Cleaned dead WebSocket connections on socket disconnects (`OSError`, `WebSocketDisconnect`, `RuntimeError`) during direct broadcast.
-     - Restricted photo path resolution to typed `(ImportError, AttributeError, OSError)` and `(ValueError, TypeError)` with structured debug logging.
-   - Added focused regression test suite in `tests/test_exception_hardening.py` (6 tests).
+3. **Remediation 3 — Unconditional NVML State Reset:**
+   - In `WorkstationMetricsCollector.shutdown_nvml()`, wrapped handle cleanup in a `finally` block to unconditionally reset `_nvml_initialized = False`, `_device_handle = None`, and `_nvml_module = None`.
+   - Caught `Exception as err` (with `# noqa: BLE001` and explanatory docstring) to prevent vendor-specific driver exceptions from escaping.
+   - Added regression test `test_shutdown_nvml_always_resets_state_even_on_vendor_exception`.
 
-4. **Batch 4 — Full System Verification & PR Readiness:**
-   - Ran all targeted test suites, full fast parallel test suite, AST-Grep invariant scans, and git cleanliness checks.
-   - All suites passed with zero failures.
+4. **Remediation 4 — StrEnum Reversion & Compatibility Contract:**
+   - Reverted `CognitiveState` and `DeliveryModality` in `jarvis/core/cognition/proactive_evi.py` from `StrEnum` back to `(str, Enum)` with `# noqa: UP042`.
+   - Preserves exact historical `str()` representation (`"CognitiveState.DEEP_FLOW"`), avoiding unsafe behavioral differences.
+   - Added regression test `test_cognitive_state_and_delivery_modality_enum_contract` verifying `str()`, `.value`, equality, and format contracts.
 
 ---
 
 ## 2. Test Verification Evidence
 
-### Targeted Regression & Security Suites
-- `tests/test_exception_hardening.py`: **6 passed in 0.28s (Exit code: 0)**
+### Targeted Regression & Hardening Suites
+- `tests/test_exception_hardening.py`: **9 passed in 0.30s (Exit code: 0)**
+- `tests/test_ui_server.py`: **1 passed in 2.09s (Exit code: 0)**
+- `tests/test_shutdown_lifecycle.py`: **7 passed in 6.70s (Exit code: 0)**
+- `tests/test_telemetry_connection_manager.py`: **3 passed in 0.37s (Exit code: 0)**
+- `tests/test_proactive_evi.py`: **9 passed in 0.07s (Exit code: 0)**
+- `tests/test_cognitive_twin_pipeline.py`: **7 passed in 6.55s (Exit code: 0)**
 - `tests/test_p0_action_bound_authorization.py`: **35 passed in 1.40s (Exit code: 0)**
 - `tests/test_browser_cdp.py`: **18 passed in 3.75s (Exit code: 0)**
 - `tests/test_browser_network_boundaries.py`: **29 passed in 5.88s (Exit code: 0)**
 - `tests/test_security_boundaries.py`: **94 passed in 1.71s (Exit code: 0)**
 - `tests/test_phase5_p99_telemetry.py`: **9 passed in 0.41s (Exit code: 0)**
-- `tests/test_window_hook_daemon.py`: **4 passed in 0.22s (Exit code: 0)**
-- `tests/test_ui_server.py`: **1 passed in 2.13s (Exit code: 0)**
-- `tests/test_shutdown_lifecycle.py`: **7 passed in 6.95s (Exit code: 0)**
-- `tests/test_telemetry_connection_manager.py`: **3 passed in 0.39s (Exit code: 0)**
 
 ### Full Fast Parallel Suite
 ```powershell
 python tools/run_fast_tests.py --fast -w 4
 ```
-**Result: 1,409 passed, 22 skipped, 156 subtests passed in 99.61s (Exit code: 0)**
+**Result: 1,412 passed, 22 skipped, 156 subtests passed in 101.85s (Exit code: 0)**
 
 ### Static & AST Structural Diagnostics
 ```powershell
@@ -71,45 +69,29 @@ python tools/diagnostics.py scan jarvis tools
 ## 3. Working Tree & PR Manifest
 
 ### Status & Git Diff Summary
-- `git status --short`:
-  - 20 modified files in `jarvis/`
-  - 1 new test file: `tests/test_exception_hardening.py`
-  - 1 updated handoff file: `handoff.md`
-
-```text
- jarvis/audio/stt.py                    | 16 +++----
- jarvis/audio/tts.py                    |  2 -
- jarvis/context/flow_state_mirror.py    |  2 +-
- jarvis/core/antigravity_bridge.py      |  4 --
- jarvis/core/cognition/proactive_evi.py |  6 +--
- jarvis/core/config_loader.py           |  2 +-
- jarvis/core/evolution/sandbox.py       |  6 +--
- jarvis/core/github_bridge.py           |  3 +-
- jarvis/core/mcp_manager.py             |  2 +-
- jarvis/core/memory/__init__.py         |  2 +-
- jarvis/core/memory/obsidian_sync.py    |  2 +-
- jarvis/skills/ast_code_surgeon.py      |  6 +--
- jarvis/skills/browser_agent.py         |  1 -
- jarvis/skills/chrome_devtools.py       |  1 -
- jarvis/skills/dev_shell.py             |  8 ++--
- jarvis/skills/hybrid_actuator.py       |  2 +-
- jarvis/skills/os_control.py            |  5 +--
- jarvis/skills/photo_manager.py         |  1 -
- jarvis/skills/self_evolution.py        |  4 +-
- jarvis/ui/server.py                    | 80 +++++++++++++++++++++-------------
- tests/test_exception_hardening.py      | 139 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 21 files changed, 220 insertions(+), 74 deletions(-)
-```
+- `git status --short`: clean after commit.
+- Files modified in remediation:
+  - `jarvis/core/cognition/proactive_evi.py`
+  - `jarvis/ui/server.py`
+  - `tests/test_exception_hardening.py`
+  - `handoff.md`
 
 ---
 
 ## 4. Next Steps for Next Session / Developer
 
-1. **Review Diff & PR:**
-   Inspect the working tree diff and PR on GitHub for `feat/code-quality-exception-hardening`.
-2. **Monitor Remote CI:**
-   Confirm remote GitHub Actions run for `feat/code-quality-exception-hardening` succeeds.
-3. **Merge Gate Protocol:**
-   Once verified green, merge PR into `main` and synchronize local `main`.
-4. **Transition to Option C:**
-   Begin Option C (Windows AppContainer isolation and capability sandbox) planning and threat modeling.
+1. **Re-check Remote CI for PR #4:**
+   ```powershell
+   gh pr checks 4
+   ```
+2. **Merge PR #4 after remote check is green:**
+   ```powershell
+   gh pr merge 4 --merge --delete-branch
+   ```
+3. **Synchronize Local `main`:**
+   ```powershell
+   git switch main
+   git pull --ff-only origin main
+   ```
+4. **Advance to Option C:**
+   Begin Option C (Windows AppContainer isolation and capability sandbox) design and implementation.

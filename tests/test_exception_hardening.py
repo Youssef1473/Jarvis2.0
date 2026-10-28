@@ -1,18 +1,25 @@
 """Focused regression tests for Option B targeted exception hardening.
 
 Verifies:
-1. Safe exception handling in WorkstationMetricsCollector vitals probes under failure injection.
-2. Closed-loop coroutine cleanup (coro.close()) when loop scheduling fails in JarvisUIService.
-3. Dead WebSocket cleanup in TelemetryConnectionManager on disconnect/socket errors.
-4. Subscriber callback failure isolation in WinEventHookDaemon.
-5. Path safety and error containment in photo resolution.
+1. Safe exception handling in WorkstationMetricsCollector vitals probes under realistic failure injection (including sqlite3.Error).
+2. Closed-loop coroutine cleanup (coro.close()) when loop scheduling fails in JarvisUIService for direct and binary broadcasts.
+3. Unconditional state reset in WorkstationMetricsCollector.shutdown_nvml() even under unexpected vendor exceptions.
+4. Dead WebSocket cleanup in TelemetryConnectionManager on disconnect/socket errors.
+5. Subscriber callback failure isolation in WinEventHookDaemon.
+6. Path safety and error containment in photo resolution.
+7. Explicit string representation, value, and equality contracts for CognitiveState and DeliveryModality.
 """
 from __future__ import annotations
 
 import asyncio
+import inspect
+import sqlite3
 import unittest
+import warnings
+from typing import Any
 from unittest.mock import MagicMock, patch
 
+from jarvis.core.cognition.proactive_evi import CognitiveState, DeliveryModality
 from jarvis.ui.server import (
     JarvisUIService,
     TelemetryConnectionManager,
@@ -47,7 +54,7 @@ class TestTargetedExceptionHardening(unittest.IsolatedAsyncioTestCase):
     def test_sample_metrics_sync_resilient_to_probe_exceptions(self) -> None:
         """Verifies orchestrator probe errors are caught safely with observable logging."""
         mock_orch = MagicMock()
-        mock_orch.is_muted.side_effect = RuntimeError("Audio device busy")
+        mock_orch.is_muted.side_effect = OSError("Audio endpoint device not found")
         mock_orch.state = "thinking"
 
         mock_brain = MagicMock()
@@ -65,18 +72,76 @@ class TestTargetedExceptionHardening(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics["state"], "thinking")
         self.assertEqual(metrics["latencies"], {"ollama": 0.0, "groq": 0.0, "gemini": 0.0})
 
+    def test_sample_metrics_sync_sqlite_database_failure_does_not_abort_telemetry(self) -> None:
+        """Verifies database failures (sqlite3.OperationalError) in memory probe do not fail telemetry collection."""
+        mock_orch = MagicMock()
+        mock_orch.state = "idle"
+        mock_brain = MagicMock()
+        mock_brain.memory.get_all_memory_nodes.side_effect = sqlite3.OperationalError("database is locked")
+        mock_brain.provider = "hybrid"
+        mock_orch.brain = mock_brain
+
+        metrics = WorkstationMetricsCollector.sample_metrics_sync(mock_orch)
+        self.assertIn("c", metrics)
+        self.assertIn("rp", metrics)
+        self.assertIn("gp", metrics)
+        self.assertEqual(metrics["state"], "idle")
+        self.assertEqual(metrics["memory_label"], "TIER 2 (ACTIVE)")
+
+    def test_shutdown_nvml_always_resets_state_even_on_vendor_exception(self) -> None:
+        """Verifies shutdown_nvml resets all internal handles even if driver raises custom vendor exception."""
+        class MockVendorNVMLError(Exception):
+            pass
+
+        mock_module = MagicMock()
+        mock_module.nvmlShutdown.side_effect = MockVendorNVMLError("NVML communication broken")
+
+        with WorkstationMetricsCollector._nvml_lock:
+            WorkstationMetricsCollector._nvml_initialized = True
+            WorkstationMetricsCollector._device_handle = MagicMock()
+            WorkstationMetricsCollector._nvml_module = mock_module
+
+        # Must catch exception, log it, and unconditionally reset fields in finally block
+        WorkstationMetricsCollector.shutdown_nvml()
+
+        with WorkstationMetricsCollector._nvml_lock:
+            self.assertFalse(WorkstationMetricsCollector._nvml_initialized)
+            self.assertIsNone(WorkstationMetricsCollector._device_handle)
+            self.assertIsNone(WorkstationMetricsCollector._nvml_module)
+
     def test_broadcast_direct_coroutine_closed_on_loop_failure(self) -> None:
         """Verifies created coroutines are closed (coro.close()) if loop scheduling raises RuntimeError."""
         service = JarvisUIService(host="127.0.0.1", port=20199)
-        # Mock loop whose run_coroutine_threadsafe raises RuntimeError ("Event loop is closed")
         mock_loop = MagicMock()
         mock_loop.is_closed.return_value = True
-
         service._loop = mock_loop
 
-        with patch("asyncio.run_coroutine_threadsafe", side_effect=RuntimeError("Event loop is closed")):
-            # Must catch RuntimeError, close coroutine, and not leak unawaited coroutine warnings
-            service.broadcast({"type": "ping"})
+        # Register dummy client to ensure client_count > 0 and avoid early return
+        dummy_ws = MagicMock()
+        service.telemetry_manager._clients[dummy_ws] = asyncio.Queue()
+
+        captured_coro: Any = None
+
+        def fake_run_coroutine_threadsafe(coro: Any, loop: Any) -> Any:
+            nonlocal captured_coro
+            captured_coro = coro
+            raise RuntimeError("Event loop is closed")
+
+        with warnings.catch_warnings(record=True) as recorded_warnings:
+            warnings.simplefilter("always")
+            with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coroutine_threadsafe) as mock_run:
+                service.broadcast({"type": "ping"})
+
+            mock_run.assert_called_once()
+            self.assertIsNotNone(captured_coro)
+            # Verify the coroutine was closed by the exception handler
+            self.assertEqual(inspect.getcoroutinestate(captured_coro), inspect.CORO_CLOSED)
+
+            # Ensure zero unawaited coroutine runtime warnings
+            unawaited_warnings = [
+                w for w in recorded_warnings if issubclass(w.category, RuntimeWarning) and "was never awaited" in str(w.message)
+            ]
+            self.assertEqual(len(unawaited_warnings), 0)
 
     def test_broadcast_binary_coroutine_closed_on_loop_failure(self) -> None:
         """Verifies binary frame coroutines are closed if loop scheduling fails."""
@@ -86,8 +151,26 @@ class TestTargetedExceptionHardening(unittest.IsolatedAsyncioTestCase):
         dummy_ws = MagicMock()
         service.telemetry_manager._clients[dummy_ws] = asyncio.Queue()
 
-        with patch("asyncio.run_coroutine_threadsafe", side_effect=RuntimeError("Event loop is closed")):
-            service.broadcast_dsp_frame(b"\x4A" * 68)
+        captured_coro: Any = None
+
+        def fake_run_coroutine_threadsafe(coro: Any, loop: Any) -> Any:
+            nonlocal captured_coro
+            captured_coro = coro
+            raise RuntimeError("Event loop is closed")
+
+        with warnings.catch_warnings(record=True) as recorded_warnings:
+            warnings.simplefilter("always")
+            with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coroutine_threadsafe) as mock_run:
+                service.broadcast_dsp_frame(b"\x4A" * 68)
+
+            mock_run.assert_called_once()
+            self.assertIsNotNone(captured_coro)
+            self.assertEqual(inspect.getcoroutinestate(captured_coro), inspect.CORO_CLOSED)
+
+            unawaited_warnings = [
+                w for w in recorded_warnings if issubclass(w.category, RuntimeWarning) and "was never awaited" in str(w.message)
+            ]
+            self.assertEqual(len(unawaited_warnings), 0)
 
     async def test_broadcast_direct_cleans_dead_client_on_socket_error(self) -> None:
         """Verifies dead clients are removed from subscriber pool when send_text raises OSError."""
@@ -140,6 +223,18 @@ class TestTargetedExceptionHardening(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(resolve_safe_photo_path("../../etc/passwd"))
         self.assertIsNone(resolve_safe_photo_path("..\\..\\Windows\\System32\\cmd.exe"))
         self.assertIsNone(resolve_safe_photo_path(""))
+
+    def test_cognitive_state_and_delivery_modality_enum_contract(self) -> None:
+        """Verifies exact string representation, .value, format, and equality contracts for CognitiveState and DeliveryModality."""
+        self.assertEqual(str(CognitiveState.DEEP_FLOW), "CognitiveState.DEEP_FLOW")
+        self.assertEqual(f"{CognitiveState.DEEP_FLOW}", "CognitiveState.DEEP_FLOW")
+        self.assertEqual(CognitiveState.DEEP_FLOW.value, "DEEP_FLOW")
+        self.assertEqual(CognitiveState.DEEP_FLOW, "DEEP_FLOW")
+
+        self.assertEqual(str(DeliveryModality.VOICE), "DeliveryModality.VOICE")
+        self.assertEqual(f"{DeliveryModality.VOICE}", "DeliveryModality.VOICE")
+        self.assertEqual(DeliveryModality.VOICE.value, "VOICE")
+        self.assertEqual(DeliveryModality.VOICE, "VOICE")
 
 
 if __name__ == "__main__":

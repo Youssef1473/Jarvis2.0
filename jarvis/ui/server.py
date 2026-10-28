@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import secrets
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -717,11 +718,12 @@ class WorkstationMetricsCollector:
             if cls._nvml_initialized and cls._nvml_module is not None:
                 try:
                     cls._nvml_module.nvmlShutdown()
-                except (AttributeError, RuntimeError, OSError) as err:
+                except Exception as err:  # noqa: BLE001 - Driver-level cleanup boundary must not block host teardown
                     logger.debug("NVML driver shutdown notice: %s", err)
-                cls._nvml_initialized = False
-                cls._device_handle = None
-                cls._nvml_module = None
+                finally:
+                    cls._nvml_initialized = False
+                    cls._device_handle = None
+                    cls._nvml_module = None
 
     @staticmethod
     def sample_metrics_sync(orchestrator: Any = None) -> dict[str, Any]:
@@ -751,7 +753,7 @@ class WorkstationMetricsCollector:
             if hasattr(orchestrator, "is_muted") and callable(orchestrator.is_muted):
                 try:
                     is_muted = bool(orchestrator.is_muted())
-                except (AttributeError, TypeError, RuntimeError) as err:
+                except (AttributeError, TypeError, RuntimeError, OSError) as err:
                     logger.debug("Orchestrator is_muted probe notice: %s", err)
                     is_muted = False
 
@@ -784,7 +786,7 @@ class WorkstationMetricsCollector:
                         else:
                             facts = b.memory.get_all_facts()
                             memory_label = f"{len(facts)} FACTS STORED"
-                    except (AttributeError, TypeError, RuntimeError) as err:
+                    except (AttributeError, TypeError, RuntimeError, OSError, sqlite3.Error) as err:
                         logger.debug("Memory nodes probe notice: %s", err)
 
         timer_count = 0
