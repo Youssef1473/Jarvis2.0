@@ -791,19 +791,31 @@ class WorkstationMetricsCollector:
             pass
 
         latency_percentiles = {}
+        p99_history = []
+        profiler = None
         if orchestrator is not None and hasattr(orchestrator, "brain"):
             b = orchestrator.brain
             if hasattr(b, "latency_profiler") and b.latency_profiler:
-                try:
-                    latency_percentiles = b.latency_profiler.get_percentiles()
-                except Exception:
-                    latency_percentiles = {}
-        if not latency_percentiles:
+                profiler = b.latency_profiler
+        if profiler is None and orchestrator is not None and hasattr(orchestrator, "latency_profiler") and orchestrator.latency_profiler:
+            profiler = orchestrator.latency_profiler
+        if profiler is None:
             try:
                 from jarvis.skills.diagnostics import get_global_latency_profiler
-                latency_percentiles = get_global_latency_profiler().get_percentiles()
+                profiler = get_global_latency_profiler()
+            except Exception:
+                profiler = None
+
+        if profiler is not None:
+            try:
+                latency_percentiles = profiler.get_percentiles()
             except Exception:
                 latency_percentiles = {}
+            try:
+                if hasattr(profiler, "get_p99_history"):
+                    p99_history = profiler.get_p99_history()
+            except Exception:
+                p99_history = []
 
         return {
             # Single-character keys required by Council Telemetry Directive
@@ -847,6 +859,8 @@ class WorkstationMetricsCollector:
             "timestamp": time.strftime("%H:%M:%S"),
             "latency_percentiles": latency_percentiles,
             "lp": latency_percentiles,
+            "p99_history": p99_history,
+            "p99_h": p99_history,
         }
 
 
@@ -938,6 +952,8 @@ class TelemetryConnectionManager:
             "gpu": raw_data.get("gpu", raw_data.get("gpu_name", "RTX 3050")),
             "timestamp": raw_data.get("timestamp", time.strftime("%H:%M:%S")),
             "latency_percentiles": raw_data.get("latency_percentiles", raw_data.get("lp", {})),
+            "p99_history": raw_data.get("p99_history", raw_data.get("p99_h", [])),
+            "p99_h": raw_data.get("p99_h", raw_data.get("p99_history", [])),
         }
         minified_str = json.dumps(payload, separators=(",", ":"))
 

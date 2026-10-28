@@ -27,4 +27,4 @@
 2. [x] **Arena Competitive Optimization Framework:** Self-contained tournament state machine, 2,160 strategy permutations, Windows CLI execution, and 27 unit tests under `.agents/skills/arena/`.
 3. [x] **Reproducible CI Environment & Test Stabilization:** Installed Playwright Chromium browser binary in CI workflow, mocked external HTTP/egress interactions in unit test suites, and hermetically isolated worker turn state across `pytest-xdist` runners.
 4. [x] **Full Regression Baseline:** 1295+ unit tests passing with zero failures, zero errors, and clean isolation under `tools/run_fast_tests.py --fast`.
-5. [ ] **Continuous Real-Time Telemetry:** Extend HUD graphs with historical rolling P99 trendlines.
+5. [x] **Continuous Real-Time Telemetry:** Implemented historical rolling P99 latency snapshots in `PipelineLatencyProfiler`, serialized through `WorkstationMetricsCollector` and `TelemetryConnectionManager`, with holographic canvas trendlines, dynamic Y-axis scaling, and disconnected/empty state handling in `hud.html`.

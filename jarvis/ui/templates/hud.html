@@ -1753,6 +1753,30 @@
           <span class="telemetry-label">INFERENCE SPEED</span>
           <span class="thermal-badge" id="latencyBadge" style="border-color: var(--holo-cyan); color: var(--holo-cyan); background: rgba(0, 240, 255, 0.1);">OLLAMA: --ms | GROQ: --ms</span>
         </div>
+        <div class="telemetry-row" style="flex-direction: column; align-items: stretch; gap: 6px; margin-top: 4px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+            <span class="telemetry-label" style="letter-spacing: 0.5px;">HISTORICAL P99 TRENDLINE</span>
+            <span id="p99TtfaBadge" class="thermal-badge" style="font-size: 0.68rem; padding: 1px 6px; border-color: var(--holo-cyan); color: var(--holo-cyan);">TTFA: --ms</span>
+          </div>
+          <div style="position: relative; width: 100%; height: 90px; background: rgba(0,0,0,0.3); border: 1px solid rgba(0,240,255,0.15); border-radius: 4px; overflow: hidden;">
+            <canvas id="p99LatencyCanvas" width="310" height="90" style="width: 100%; height: 100%; display: block;"></canvas>
+            <div id="p99EmptyState" style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; color: var(--text-dim); letter-spacing: 0.5px;">
+              AWAITING TURNS // NO SAMPLES
+            </div>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; color: var(--text-dim); padding: 0 2px;">
+            <span style="display: flex; align-items: center; gap: 4px;">
+              <span style="width: 6px; height: 6px; border-radius: 50%; background: #00f0ff; display: inline-block;"></span> TTFA
+            </span>
+            <span style="display: flex; align-items: center; gap: 4px;">
+              <span style="width: 6px; height: 6px; border-radius: 50%; background: #00e199; display: inline-block;"></span> TTFT
+            </span>
+            <span style="display: flex; align-items: center; gap: 4px;">
+              <span style="width: 6px; height: 6px; border-radius: 50%; background: #ffaa00; display: inline-block;"></span> STT
+            </span>
+            <span id="p99TimeRangeLabel" style="color: var(--text-dim);">LAST 60 TURNS</span>
+          </div>
+        </div>
 
         <div class="telemetry-section-header">// AGENT MEMORY & INTAKE</div>
         <div class="telemetry-row">
@@ -2126,6 +2150,10 @@
       domRefs.modelTierVal = document.getElementById('modelTierVal');
       domRefs.activeModelVal = document.getElementById('activeModelVal');
       domRefs.latencyBadge = document.getElementById('latencyBadge');
+      domRefs.p99LatencyCanvas = document.getElementById('p99LatencyCanvas');
+      domRefs.p99EmptyState = document.getElementById('p99EmptyState');
+      domRefs.p99TtfaBadge = document.getElementById('p99TtfaBadge');
+      domRefs.p99TimeRangeLabel = document.getElementById('p99TimeRangeLabel');
       domRefs.memoryCountVal = document.getElementById('memoryCountVal');
       domRefs.activeTimersVal = document.getElementById('activeTimersVal');
       domRefs.telemetryStagedVal = document.getElementById('telemetryStagedVal');
@@ -2696,6 +2724,155 @@ void main() {
       }
     }
 
+    // Historical P99 Latency Telemetry Renderer
+    let latestP99History = [];
+
+    function renderP99LatencyTrend(history, isDisconnected = false) {
+      if (!domRefs.p99LatencyCanvas) return;
+      const canvas = domRefs.p99LatencyCanvas;
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+
+      ctx.clearRect(0, 0, w, h);
+
+      if (isDisconnected) {
+        if (domRefs.p99EmptyState) {
+          domRefs.p99EmptyState.textContent = "OFFLINE // DISCONNECTED";
+          domRefs.p99EmptyState.style.display = "flex";
+          domRefs.p99EmptyState.style.color = "var(--holo-crimson)";
+        }
+        return;
+      }
+
+      if (!history || history.length === 0) {
+        if (domRefs.p99EmptyState) {
+          domRefs.p99EmptyState.textContent = "AWAITING TURNS // NO SAMPLES";
+          domRefs.p99EmptyState.style.display = "flex";
+          domRefs.p99EmptyState.style.color = "var(--text-dim)";
+        }
+        if (domRefs.p99TtfaBadge) {
+          domRefs.p99TtfaBadge.textContent = "TTFA: --ms";
+        }
+        return;
+      }
+
+      if (domRefs.p99EmptyState) {
+        domRefs.p99EmptyState.style.display = "none";
+      }
+
+      const latest = history[history.length - 1];
+      const latestTtfa = (latest && latest.stages && latest.stages.total_ttfa_ms) ? latest.stages.total_ttfa_ms : null;
+      if (domRefs.p99TtfaBadge) {
+        domRefs.p99TtfaBadge.textContent = latestTtfa ? `TTFA: ${Math.round(latestTtfa)}ms` : "TTFA: --ms";
+      }
+
+      if (domRefs.p99TimeRangeLabel) {
+        domRefs.p99TimeRangeLabel.textContent = `LAST ${history.length} TURNS`;
+      }
+
+      let maxVal = 200;
+      for (const item of history) {
+        if (!item.stages) continue;
+        for (const k of ["total_ttfa_ms", "ttft_ms", "stt_ms"]) {
+          const val = item.stages[k];
+          if (typeof val === "number" && val > maxVal) {
+            maxVal = val;
+          }
+        }
+      }
+      maxVal = Math.ceil(maxVal / 50) * 50;
+
+      const padTop = 10;
+      const padBottom = 16;
+      const padLeft = 32;
+      const padRight = 8;
+      const plotW = w - padLeft - padRight;
+      const plotH = h - padTop - padBottom;
+
+      // Draw horizontal grid lines & Y labels
+      ctx.strokeStyle = "rgba(0, 240, 255, 0.1)";
+      ctx.lineWidth = 1;
+      ctx.fillStyle = "rgba(122, 146, 163, 0.7)";
+      ctx.font = "8px 'JetBrains Mono', monospace";
+      ctx.textAlign = "right";
+
+      const gridSteps = 3;
+      for (let i = 0; i <= gridSteps; i++) {
+        const yVal = Math.round(maxVal * (1 - i / gridSteps));
+        const y = padTop + (plotH * (i / gridSteps));
+        ctx.beginPath();
+        ctx.moveTo(padLeft, y);
+        ctx.lineTo(w - padRight, y);
+        ctx.stroke();
+        ctx.fillText(`${yVal}m`, padLeft - 3, y + 3);
+      }
+
+      // X-axis baseline
+      ctx.strokeStyle = "rgba(0, 240, 255, 0.2)";
+      ctx.beginPath();
+      ctx.moveTo(padLeft, padTop + plotH);
+      ctx.lineTo(w - padRight, padTop + plotH);
+      ctx.stroke();
+
+      const stagesConfig = [
+        { key: "total_ttfa_ms", color: "#00f0ff", width: 2 },
+        { key: "ttft_ms", color: "#00e199", width: 1.5 },
+        { key: "stt_ms", color: "#ffaa00", width: 1.5 },
+      ];
+
+      const n = history.length;
+      const xStep = n > 1 ? plotW / (n - 1) : plotW;
+
+      stagesConfig.forEach(cfg => {
+        ctx.strokeStyle = cfg.color;
+        ctx.fillStyle = cfg.color;
+        ctx.lineWidth = cfg.width;
+
+        let inSegment = false;
+        ctx.beginPath();
+
+        for (let i = 0; i < n; i++) {
+          const item = history[i];
+          const val = item && item.stages ? item.stages[cfg.key] : null;
+
+          if (typeof val !== "number" || val <= 0) {
+            if (inSegment) {
+              ctx.stroke();
+              inSegment = false;
+            }
+            continue;
+          }
+
+          const x = n > 1 ? padLeft + i * xStep : padLeft + plotW / 2;
+          const y = padTop + plotH * (1 - Math.min(1, val / maxVal));
+
+          if (!inSegment) {
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            inSegment = true;
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+        if (inSegment) {
+          ctx.stroke();
+        }
+
+        for (let i = 0; i < n; i++) {
+          const item = history[i];
+          const val = item && item.stages ? item.stages[cfg.key] : null;
+          if (typeof val !== "number" || val <= 0) continue;
+          const x = n > 1 ? padLeft + i * xStep : padLeft + plotW / 2;
+          const y = padTop + plotH * (1 - Math.min(1, val / maxVal));
+
+          ctx.beginPath();
+          ctx.arc(x, y, 2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+    }
+
     // Layout Mode & Docked Stark Pill Switcher (UPGRADE 4)
     function toggleDockedMode() {
       const isDocked = document.body.classList.toggle('mode-docked');
@@ -2778,6 +2955,7 @@ void main() {
         if (domRefs.socketStatusText) {
           domRefs.socketStatusText.textContent = "NEURAL LINK ACTIVE";
         }
+        renderP99LatencyTrend(latestP99History, false);
       };
 
       ws.onmessage = (event) => {
@@ -2807,6 +2985,7 @@ void main() {
         if (domRefs.socketStatusText) {
           domRefs.socketStatusText.textContent = "DISCONNECTED // RECONNECTING";
         }
+        renderP99LatencyTrend(latestP99History, true);
         scheduleWsReconnect();
       };
 
@@ -3013,12 +3192,18 @@ void main() {
         updateHUDState(stateVal);
       }
 
-      // 7. Latencies
+      // 7. Latencies & Historical P99 Trendline
       if (data.latencies && domRefs.latencyBadge) {
         const l = data.latencies;
         const oMs = l.ollama ? `${Math.round(l.ollama)}ms` : '--';
         const gMs = l.groq ? `${Math.round(l.groq)}ms` : '--';
         domRefs.latencyBadge.textContent = `OLLAMA: ${oMs} | GROQ: ${gMs}`;
+      }
+
+      const p99Hist = data.p99_history || data.p99_h;
+      if (p99Hist !== undefined) {
+        latestP99History = Array.isArray(p99Hist) ? p99Hist : [];
+        renderP99LatencyTrend(latestP99History, false);
       }
 
       // 8. Memory Label
