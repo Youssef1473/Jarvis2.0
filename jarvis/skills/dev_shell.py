@@ -194,7 +194,7 @@ def read_file(file_path: str, start_line: int = 1, line_count: int = 1000) -> st
     if not target.exists() or not target.is_file():
         return f"File does not exist: {target}"
     try:
-        with open(target, "r", encoding="utf-8", errors="replace") as f:
+        with open(target, encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()
 
         total = len(all_lines)
@@ -237,7 +237,7 @@ def read_multiple_files(
             remaining_chars -= len(section)
             continue
         try:
-            with open(target, "r", encoding="utf-8", errors="replace") as f:
+            with open(target, encoding="utf-8", errors="replace") as f:
                 lines = []
                 truncated = False
                 for line in f:
@@ -308,7 +308,7 @@ def patch_file(file_path: str, target_snippet: str, replacement_snippet: str) ->
         return f"File does not exist: {target}"
 
     try:
-        with open(target, "r", encoding="utf-8", errors="replace") as f:
+        with open(target, encoding="utf-8", errors="replace") as f:
             full_content = f.read()
 
         count = full_content.count(target_snippet)
@@ -367,7 +367,7 @@ def search_codebase(query: str, folder_path: str = ".", file_pattern: str = "*",
             if p.suffix.lower() not in text_suffixes or p.stat().st_size > 2_000_000:
                 continue
             try:
-                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                with open(p, encoding="utf-8", errors="replace") as f:
                     for line_num, line in enumerate(f, 1):
                         if pattern_re.search(line):
                             results.append(f"{relative}:{line_num}: {line.strip()[:180]}")

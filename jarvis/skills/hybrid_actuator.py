@@ -334,7 +334,7 @@ def type_into_web_element_semantic(
             if not target:
                 return f"Could not locate an accessible input element matching '{target_name}' in tab '{target_tab.get('title')}', Sir."
 
-            report = actuate_with_verification(ws, target, text_to_type=text, click=True, cancel_token=cancel_token)
+            actuate_with_verification(ws, target, text_to_type=text, click=True, cancel_token=cancel_token)
             return f"Successfully typed text into accessible field '{target.name}' [{target.role}] at {target.center_x, target.center_y} with closed-loop verification, Sir."
 
     except Exception as err:

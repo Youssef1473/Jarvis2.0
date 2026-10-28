@@ -255,7 +255,6 @@ class TextToSpeech:
                 import onnxruntime as rt
                 rt.set_default_logger_severity(3)
                 from kokoro_onnx import Kokoro
-                t0 = time.time()
                 opts = rt.SessionOptions()
                 opts.intra_op_num_threads = self.cpu_threads
                 opts.inter_op_num_threads = 1
@@ -310,7 +309,6 @@ class TextToSpeech:
                     sess = rt.InferenceSession(self.kokoro_model_path, sess_options=opts, providers=["CPUExecutionProvider"])
 
                 self._kokoro = Kokoro.from_session(sess, self.kokoro_voices_path)
-                active_prov = sess.get_providers()[0] if hasattr(sess, "get_providers") else "Unknown"
 
                 # Wrap Kokoro voice lookup methods to seamlessly handle custom blended profiles
                 orig_create = self._kokoro.create

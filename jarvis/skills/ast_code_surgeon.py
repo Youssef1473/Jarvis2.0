@@ -92,7 +92,7 @@ def localize_ast_fault_node(file_path: str, target_line: int) -> dict[str, Any]:
         return {"status": "error", "error": f"File '{file_path}' does not exist"}
 
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             source = f.read()
         lines = source.splitlines()
     except Exception as e:
@@ -149,7 +149,7 @@ def localize_ast_fault_node(file_path: str, target_line: int) -> dict[str, Any]:
     _, _, best_start, best_end, best_node = candidates[0]
 
     node_source = "\n".join(lines[best_start - 1 : best_end])
-    local_symbols = sorted(list(set(n.id for n in ast.walk(best_node) if isinstance(n, ast.Name))))
+    local_symbols = sorted({n.id for n in ast.walk(best_node) if isinstance(n, ast.Name)})
 
     return {
         "status": "ok",
@@ -236,7 +236,7 @@ def apply_and_verify_surgical_patch(
 
     # 2. Snapshot original file content in memory
     try:
-        with open(abs_path, "r", encoding="utf-8") as f:
+        with open(abs_path, encoding="utf-8") as f:
             orig_content = f.read()
     except Exception as e:
         return {"status": "error", "error": f"Failed to read original file '{file_path}': {e}", "rolled_back": False}

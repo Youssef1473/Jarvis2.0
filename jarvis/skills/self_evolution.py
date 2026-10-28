@@ -119,7 +119,7 @@ def delete_custom_skill(skill_name: str, user_approved: bool = False) -> str:
         meta_file = CUSTOM_SKILLS_DIR / f"{clean_name}.meta.json"
         if meta_file.exists():
             try:
-                with open(meta_file, "r", encoding="utf-8") as f:
+                with open(meta_file, encoding="utf-8") as f:
                     meta_data = json.load(f)
                 for t_name in meta_data.get("tools", {}).keys():
                     SkillRegistry.unregister(t_name)
@@ -181,7 +181,7 @@ def init_custom_skills(force: bool = False) -> list[str]:
             continue
 
         try:
-            with open(meta_file, "r", encoding="utf-8") as f:
+            with open(meta_file, encoding="utf-8") as f:
                 meta_data = json.load(f)
 
             code_bytes = file_path.read_bytes()

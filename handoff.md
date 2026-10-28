@@ -1,137 +1,115 @@
-# Session Handoff: Jarvis 2.0 — Phase 5 Historical P99 Latency Telemetry
+# Session Handoff: Jarvis 2.0 — Option B Code Quality Modernization & Hardening
 
 **Date:** 2026-10-28  
 **Host Environment:** Windows 11 x64 | Intel Core i5-12500H | NVIDIA RTX 3050 Laptop GPU (4GB VRAM) | Python 3.12.10  
-**Protected Base on `main`:** Commit [`8226957`](https://github.com/Youssef1473/Jarvis2.0/commit/8226957) (PR #2 Merged: Phase 4 deep authorization path and sandbox audit)  
-**Active Feature Branch:** `feat/phase5-historical-p99-telemetry`  
-**Latest Commit on Branch:** [`a294bc8`](https://github.com/Youssef1473/Jarvis2.0/commit/a294bc8): `feat(telemetry): Phase 5 historical rolling P99 latency trendlines`  
-**Pull Request:** [PR #3 — Phase 5 Historical P99 Telemetry](https://github.com/Youssef1473/Jarvis2.0/pull/3)  
-**Verification Baseline:** Full fast parallel test suite: **1,403 passed, 22 skipped, 1 warning, 156 subtests in 108.89s (Exit code: 0)**
+**Protected Base on `main`:** Commit [`da4f89e`](https://github.com/Youssef1473/Jarvis2.0/commit/da4f89e) (Merge pull request #3: Phase 5 historical rolling P99 latency telemetry)  
+**Active Feature Branch:** `feat/code-quality-exception-hardening`  
+**Verification Baseline:** Full fast parallel test suite: **1,409 passed, 22 skipped, 156 subtests passed in 99.61s (Exit code: 0)**  
+**Lint Baseline:** Total violations reduced from **1,206 to 1,160** (46 net errors eliminated); scoped modernization rules (`UP,C4,F841,I,RUF022`) are **100% clean (0 errors)**.
 
 ---
 
-## 1. Executive Summary & Session Achievements
+## 1. Executive Summary & Batch Milestones
 
-1. **Governance & Merge Gate Enacted (PR #2 Merged):**
-   - Verified active GitHub ruleset on `main`. Remote CI run [`40744176977`](https://github.com/Youssef1473/Jarvis2.0/actions/runs/40744176977) passed cleanly in 5m56s.
-   - Merged PR #2 into `main` at commit `8226957` and deleted remote feature branch.
-   - Synchronized local `main` with origin.
-2. **Phase 5: Historical Rolling P99 Latency Telemetry:**
-   - Completed Roadmap P2 item 5 (**Continuous Real-Time Telemetry**).
-   - Designed, implemented, and verified bounded historical sequence tracking of rolling P99 latency snapshots.
-   - Distinguishes current turn aggregate from historical sequence of rolling P99 measurements over time.
-   - Ensured missing/omitted pipeline stages are excluded rather than misrepresented as zero-latency measurements.
-   - Updated Holographic Web HUD (`hud.html`) with `<canvas id="p99LatencyCanvas">`, multi-stage Stark design tokens (Holo Cyan for TTFA, Arc Emerald for TTFT, Stark Amber for STT), dynamic Y-axis auto-scaling, horizontal millisecond gridlines, and production-grade empty and disconnected states.
-   - Created PR #3 with full regression test coverage (`tests/test_phase5_p99_telemetry.py`).
+Option B has been executed in full across all four sequential batches without modifying `main` or merging the PR:
 
----
+1. **Batch 1 — Repository Hygiene & Empirical Baseline:**
+   - Verified root `.gitignore` contains `/*.exe` and `dsh-latest-windows-x64.exe` is ignored via `git check-ignore -v`.
+   - Verified `tests/test_p0_action_bound_authorization.py` exists and passes (35/35 passed).
+   - Captured empirical baseline: Ruff linter reported 1,206 errors (dominated by legacy `BLE001` and `S110` in untouched files).
+   - Captured full parallel fast test baseline: 1,403 passed, 22 skipped in 141.00s.
 
-## 2. Architectural Implementations (Phase 5)
+2. **Batch 2 — Scoped Ruff Modernization Across `jarvis/`:**
+   - Modernized type annotations and built-ins (`UP015`, `UP035`, `UP042`, `UP022`).
+   - Simplified collection literals and comprehensions (`C408`, `C414`, `C420`).
+   - Cleaned dead unused local variables (`F841`) across 7 files while preserving side effects.
+   - Verified with `python tools/lint.py check --select UP,C4,F841,I,RUF022 jarvis/`: **All checks passed!**
 
-### 1. Nanosecond Latency Profiler Historical Snapshots
-- **Module:** [`jarvis/core/pipeline/latency_profiler.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/core/pipeline/latency_profiler.py)
-- **Changes:**
-  - Added bounded `history_limit` FIFO snapshots stored in `_p99_history: deque[dict[str, Any]]`.
-  - Every completed turn automatically records a timestamped snapshot `{ "ts": float, "turn_id": str, "stages": dict[str, float] }`.
-  - `TurnTrace.stage_durations_ms()` now conditionally populates stage keys, preventing non-executed stages (e.g. reflex without speech output) from distorting percentiles or plotting artificial 0ms points.
-  - Added `get_p99_history()` returning chronologically ordered snapshots.
+3. **Batch 3 — Targeted Exception Hardening & Regression Suite:**
+   - Hardened `jarvis/ui/server.py`:
+     - Bounded metrics probes (`WorkstationMetricsCollector.sample_metrics_sync`) to prevent crash loops when audio or specialist models fail.
+     - Closed coroutines explicitly (`coro.close()`) in `JarvisUIService.broadcast_direct` and `broadcast_binary` on `RuntimeError` / `Exception` during event loop shutdown, preventing Python 3.12 coroutine leak warnings.
+     - Cleaned dead WebSocket connections on socket disconnects (`OSError`, `WebSocketDisconnect`, `RuntimeError`) during direct broadcast.
+     - Restricted photo path resolution to typed `(ImportError, AttributeError, OSError)` and `(ValueError, TypeError)` with structured debug logging.
+   - Added focused regression test suite in `tests/test_exception_hardening.py` (6 tests).
 
-### 2. Telemetry Serialization & WebSocket Pipeline
-- **Module:** [`jarvis/ui/server.py`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/ui/server.py)
-- **Changes:**
-  - `WorkstationMetricsCollector.sample_metrics_sync()` extracts `p99_history` from the active brain or orchestrator profiler and attaches `"p99_history"` / `"p99_h"`.
-  - `TelemetryConnectionManager.broadcast_telemetry()` forwards `p99_history` / `p99_h` in minified WebSocket frames.
-
-### 3. Holographic HUD Canvas & Dynamic Trendlines
-- **Module:** [`jarvis/ui/templates/hud.html`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/jarvis/ui/templates/hud.html)
-- **Changes:**
-  - Inserted `<canvas id="p99LatencyCanvas">` with overlay `<div id="p99EmptyState">` and `<span id="p99TtfaBadge">` in the Cognitive Router & Latency card.
-  - Implemented `renderP99LatencyTrend(history, isDisconnected)`:
-    - Auto-scales Y-axis dynamically based on maximum observed latency (ceiling to next 50ms).
-    - Renders horizontal gridlines with millisecond labels and baseline.
-    - Connects points with continuous lines per stage, cleanly breaking line segments when stage measurements are missing.
-    - Displays `"AWAITING TURNS // NO SAMPLES"` when history is empty.
-    - Displays `"OFFLINE // DISCONNECTED"` when WebSocket disconnects.
-    - Automatically recovers and repopulates the graph on reconnect.
+4. **Batch 4 — Full System Verification & PR Readiness:**
+   - Ran all targeted test suites, full fast parallel test suite, AST-Grep invariant scans, and git cleanliness checks.
+   - All suites passed with zero failures.
 
 ---
 
-## 3. Test Verification Evidence
+## 2. Test Verification Evidence
 
-### Targeted Phase 5 Suite (`tests/test_phase5_p99_telemetry.py`)
-```powershell
-python tools/run_fast_tests.py tests/test_phase5_p99_telemetry.py
-```
-**Result: 9 passed in 0.33s (Exit code: 0)**
-- `test_p99_history_empty_initially`
-- `test_p99_history_records_snapshot_on_complete_turn`
-- `test_p99_history_enforces_bounded_capacity`
-- `test_p99_history_preserves_chronological_order`
-- `test_distinguish_rolling_window_from_historical_sequence`
-- `test_missing_stage_data_not_represented_as_zero`
-- `test_workstation_metrics_collector_extracts_p99_history`
-- `test_telemetry_connection_manager_broadcast_forwards_p99_history`
-- `test_hud_template_contains_p99_elements_and_logic`
-
-### Related Subsystem Suites
-- `tests/test_telemetry_connection_manager.py`: **3 passed in 0.38s (Exit code: 0)**
-- `tests/test_ui_server.py`: **1 passed in 2.03s (Exit code: 0)**
-- `tests/test_ui_enhancements.py`: **2 passed in 0.80s (Exit code: 0)**
-- `tests/test_phase9_shm_and_profiler.py`: **6 passed in 0.17s (Exit code: 0)**
-- `tests/test_phase4_deep_audit.py`: **28 passed in 0.58s (Exit code: 0)**
+### Targeted Regression & Security Suites
+- `tests/test_exception_hardening.py`: **6 passed in 0.28s (Exit code: 0)**
+- `tests/test_p0_action_bound_authorization.py`: **35 passed in 1.40s (Exit code: 0)**
+- `tests/test_browser_cdp.py`: **18 passed in 3.75s (Exit code: 0)**
+- `tests/test_browser_network_boundaries.py`: **29 passed in 5.88s (Exit code: 0)**
+- `tests/test_security_boundaries.py`: **94 passed in 1.71s (Exit code: 0)**
+- `tests/test_phase5_p99_telemetry.py`: **9 passed in 0.41s (Exit code: 0)**
+- `tests/test_window_hook_daemon.py`: **4 passed in 0.22s (Exit code: 0)**
+- `tests/test_ui_server.py`: **1 passed in 2.13s (Exit code: 0)**
+- `tests/test_shutdown_lifecycle.py`: **7 passed in 6.95s (Exit code: 0)**
+- `tests/test_telemetry_connection_manager.py`: **3 passed in 0.39s (Exit code: 0)**
 
 ### Full Fast Parallel Suite
 ```powershell
 python tools/run_fast_tests.py --fast -w 4
 ```
-**Result: 1,403 passed, 22 skipped, 1 warning, 156 subtests in 108.89s (Exit code: 0)**
+**Result: 1,409 passed, 22 skipped, 156 subtests passed in 99.61s (Exit code: 0)**
 
-### Static Diagnostics Gate
+### Static & AST Structural Diagnostics
 ```powershell
-python tools/lint.py check jarvis/core/pipeline/latency_profiler.py tests/test_phase5_p99_telemetry.py
+python tools/lint.py check --select UP,C4,F841,I,RUF022 jarvis/
 python tools/diagnostics.py scan jarvis tools
 ```
-**Result: Clean, 0 errors, 0 violations.**
+**Result: Clean, 0 errors, 0 AST-grep invariant violations.**
 
 ---
 
-## 4. Current Git State & PR Manifest
+## 3. Working Tree & PR Manifest
 
-### Status
-- `git status --short`: `M handoff.md`
-- `git log -3 --oneline`:
-  - `a294bc8` `feat(telemetry): Phase 5 historical rolling P99 latency trendlines`
-  - `8226957` `Merge pull request #2 from Youssef1473/feat/phase4-deep-authorization-sandbox-audit`
-  - `52009c2` `docs: update handoff with Phase 4 audit completions and PR 2 status`
+### Status & Git Diff Summary
+- `git status --short`:
+  - 20 modified files in `jarvis/`
+  - 1 new test file: `tests/test_exception_hardening.py`
+  - 1 updated handoff file: `handoff.md`
 
-### Committed File Manifest (Diff vs `main` across PR #3)
 ```text
- ROADMAP.md                               |   2 +-
- jarvis/core/pipeline/latency_profiler.py |  49 ++++++--
- jarvis/ui/server.py                      |  28 ++++-
- jarvis/ui/templates/hud.html             | 187 ++++++++++++++++++++++++++++++-
- tests/test_phase5_p99_telemetry.py       | 262 +++++++++++++++++++++++++++++++++++++++++++
- 5 files changed, 510 insertions(+), 18 deletions(-)
+ jarvis/audio/stt.py                    | 16 +++----
+ jarvis/audio/tts.py                    |  2 -
+ jarvis/context/flow_state_mirror.py    |  2 +-
+ jarvis/core/antigravity_bridge.py      |  4 --
+ jarvis/core/cognition/proactive_evi.py |  6 +--
+ jarvis/core/config_loader.py           |  2 +-
+ jarvis/core/evolution/sandbox.py       |  6 +--
+ jarvis/core/github_bridge.py           |  3 +-
+ jarvis/core/mcp_manager.py             |  2 +-
+ jarvis/core/memory/__init__.py         |  2 +-
+ jarvis/core/memory/obsidian_sync.py    |  2 +-
+ jarvis/skills/ast_code_surgeon.py      |  6 +--
+ jarvis/skills/browser_agent.py         |  1 -
+ jarvis/skills/chrome_devtools.py       |  1 -
+ jarvis/skills/dev_shell.py             |  8 ++--
+ jarvis/skills/hybrid_actuator.py       |  2 +-
+ jarvis/skills/os_control.py            |  5 +--
+ jarvis/skills/photo_manager.py         |  1 -
+ jarvis/skills/self_evolution.py        |  4 +-
+ jarvis/ui/server.py                    | 80 +++++++++++++++++++++-------------
+ tests/test_exception_hardening.py      | 139 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 21 files changed, 220 insertions(+), 74 deletions(-)
 ```
 
 ---
 
-## 5. Next Steps for Next Session / Developer
+## 4. Next Steps for Next Session / Developer
 
-1. **Verify Remote CI Completion:**
-   Inspect PR checks for commit `a294bc8`:
-   ```powershell
-   gh pr checks 3
-   ```
-2. **Merge PR #3:**
-   Once check `Fast Parallel Test Suite` confirms green:
-   ```powershell
-   gh pr merge 3 --merge --delete-branch
-   ```
-3. **Synchronize Local `main`:**
-   ```powershell
-   git switch main
-   git pull --ff-only origin main
-   ```
-4. **Advance Roadmap:**
-   Transition to approved next milestone (e.g. Option B: Code quality & exception hardening in [`code_quality_and_hygiene_plan.md`](file:///C:/Users/Youssef/Projects/Jarvis_2.0/docs/plans/code_quality_and_hygiene_plan.md)).
+1. **Review Diff & PR:**
+   Inspect the working tree diff and PR on GitHub for `feat/code-quality-exception-hardening`.
+2. **Monitor Remote CI:**
+   Confirm remote GitHub Actions run for `feat/code-quality-exception-hardening` succeeds.
+3. **Merge Gate Protocol:**
+   Once verified green, merge PR into `main` and synchronize local `main`.
+4. **Transition to Option C:**
+   Begin Option C (Windows AppContainer isolation and capability sandbox) planning and threat modeling.

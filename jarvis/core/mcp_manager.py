@@ -758,7 +758,7 @@ class MCPManager:
             logger.debug("MCP config file '%s' does not exist.", self.config_path)
             return {}
         try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
+            with open(self.config_path, encoding="utf-8") as f:
                 data = json.load(f)
                 return data.get("mcpServers", {})
         except Exception as e:

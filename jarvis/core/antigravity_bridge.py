@@ -842,8 +842,6 @@ class AntigravityDaemon:
                 return None
 
             timed_out = False
-            timeout_reason = ""
-            stop_watchdog = threading.Event()
             # Sir directive: zero time restrictions on LLM reasoning and tasks. Run to natural completion.
 
             chunker = TwoGearProsodicChunker() if sentence_callback else None
@@ -861,7 +859,6 @@ class AntigravityDaemon:
                         logger.info("Antigravity turn stream aborted mid-turn by global cancel signal.")
                         self.stop()
                         break
-                    last_activity_time = time.perf_counter()
                     line_str = line.strip()
                     if not line_str:
                         continue
@@ -1910,7 +1907,6 @@ class AntigravityBridge:
             try:
                 # Read NDJSON lines in real time
                 for line in AntigravityDaemon._iter_unbuffered_lines(proc):
-                    last_activity_time = time.perf_counter()
                     line_str = line.strip()
                     if not line_str:
                         continue

@@ -647,7 +647,7 @@ class ObsidianContextSyncEngine:
 
         # Read content and compute SHA-256
         try:
-            with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+            with open(full_path, encoding="utf-8", errors="replace") as f:
                 content = f.read()
         except Exception as e:
             logger.warning("Could not read note '%s': %s", rel_path, e)

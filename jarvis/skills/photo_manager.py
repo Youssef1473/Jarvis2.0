@@ -131,7 +131,6 @@ def _process_and_save_image_stream(stream: io.BytesIO) -> dict[str, Any]:
     stream.seek(0)
     with Image.open(stream) as test_img:
         test_img.verify()
-        detected_format = test_img.format or "JPEG"
 
     stream.seek(0)
     with Image.open(stream) as img:

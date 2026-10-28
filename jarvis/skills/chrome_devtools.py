@@ -175,7 +175,6 @@ def audit_webpage_performance(url: str = "http://127.0.0.1:20129") -> str:
 
             # CWV Evaluation
             ttfb = timing.get('ttfbMs', 0)
-            dom_comp = timing.get('domCompleteMs', 0)
             if ttfb > 800:
                 lines.append("  *Warning: TTFB exceeds Google 800ms 'Good' threshold.*")
             if dom_nodes > 1500:
