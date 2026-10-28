@@ -177,26 +177,39 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
 
             vec_ok = False
             vec_ver = None
+            vec_err = None
             try:
                 import sqlite_vec
                 conn.enable_load_extension(True)
                 sqlite_vec.load(conn)
                 vec_ver = cur.execute("SELECT vec_version();").fetchone()[0]
                 vec_ok = True
-            except Exception:
+            except Exception as ve:
                 vec_ok = False
+                vec_err = str(ve)
 
             conn.close()
 
             is_intact = integrity == [("ok",)] and quick == [("ok",)]
+            if not is_intact:
+                subsystem_status = "FAIL"
+            elif not vec_ok:
+                subsystem_status = "DEGRADED"
+            else:
+                subsystem_status = "OK"
+
             report["subsystems"]["memory_db"] = {
-                "status": "OK" if is_intact else "FAIL",
+                "status": subsystem_status,
                 "journal_mode": mode.upper(),
                 "integrity_check": "PASSED" if is_intact else "CORRUPT",
                 "table_count": tables,
                 "sqlite_vec": f"v{vec_ver}" if vec_ok else "UNAVAILABLE",
+                "vector_search": "OPERATIONAL" if vec_ok else "DEGRADED_LEXICAL_FALLBACK",
             }
-            if not is_intact:
+            if vec_err:
+                report["subsystems"]["memory_db"]["vector_error"] = vec_err
+
+            if subsystem_status != "OK" and report["status"] != "FAIL":
                 report["status"] = "DEGRADED"
     except Exception as e:
         report["subsystems"]["memory_db"] = {"status": "FAIL", "error": str(e)}
@@ -326,9 +339,14 @@ def format_health_report(report: dict[str, Any]) -> str:
 
     # SQLite Memory DB
     db = subs.get("memory_db", {})
-    if db.get("status") == "OK":
+    db_status = db.get("status")
+    if db_status == "OK":
         lines.append(
             f"  [MEMORY DATABASE] : PRISTINE (WAL Mode | Integrity: {db.get('integrity_check')} | {db.get('table_count')} Tables | sqlite-vec: {db.get('sqlite_vec')})"
+        )
+    elif db_status == "DEGRADED":
+        lines.append(
+            f"  [MEMORY DATABASE] : DEGRADED (WAL Mode | Integrity: {db.get('integrity_check')} | sqlite-vec: {db.get('sqlite_vec')} - lexical BM25 fallback active)"
         )
     else:
         lines.append(f"  [MEMORY DATABASE] : WARNING ({db.get('error', 'Integrity issue')})")
@@ -390,8 +408,10 @@ def format_spoken_summary(report: dict[str, Any]) -> str:
             issues.append("GPU thermal or VRAM notice")
         if skills.get("status") != "OK":
             issues.append("skills registry validation notice")
-        if db.get("status") != "OK":
+        if db.get("status") == "FAIL":
             issues.append("memory database integrity alert")
+        elif db.get("status") == "DEGRADED":
+            issues.append("memory vector search degradation (operating on lexical BM25)")
         detail = ", ".join(issues) if issues else "minor telemetry warnings"
         return f"System diagnostics indicate {detail}, Sir. All technical diagnostics have been logged."
 

@@ -110,7 +110,7 @@ class DocumentVaultMixin:
                 blob = sqlite_vec.serialize_float32(vec)
                 cursor.execute("INSERT OR REPLACE INTO documents_vec(doc_id, embedding) VALUES (?, ?)", (doc_id, blob))
             except Exception as e:
-                logger.debug("sqlite-vec document indexing notice: %s", e)
+                logger.warning("sqlite-vec document indexing failed (%s); continuing without vector index.", e)
 
             conn.commit()
             return doc_id
@@ -185,7 +185,7 @@ class DocumentVaultMixin:
                         results.sort(key=lambda x: x["relevance_score"], reverse=True)
                         return results[:top_k]
         except Exception as e:
-            logger.debug("sqlite-vec documents KNN search fallback: %s", e)
+            logger.warning("sqlite-vec documents KNN search failed (%s); falling back to lexical TF-IDF/BM25.", e)
 
         # In-Memory TF-IDF Fallback
         with self._get_ro_connection() as conn:
@@ -311,7 +311,7 @@ class DocumentVaultMixin:
                     results.sort(key=lambda x: x["relevance_score"], reverse=True)
                     return results[:top_k]
         except Exception as e:
-            logger.debug("Async sqlite-vec documents KNN search fallback: %s", e)
+            logger.warning("Async sqlite-vec documents KNN search failed (%s); falling back to lexical TF-IDF/BM25.", e)
 
         return await asyncio.to_thread(self.semantic_search_documents, query, top_k, min_score)
 

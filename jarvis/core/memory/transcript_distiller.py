@@ -122,7 +122,7 @@ class TranscriptDistiller:
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
         except Exception as e:
-            logger.debug("sqlite-vec load notice in TranscriptDistiller: %s", e)
+            logger.warning("TranscriptDistiller: sqlite_vec extension unavailable (%s); semantic clustering degraded.", e)
         return conn
 
     def get_last_distilled_id(self) -> int:

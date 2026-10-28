@@ -50,6 +50,31 @@ class VectorMemoryPool:
         self._pool_lock = threading.Lock()
         self._created_conns: list[sqlite3.Connection] = []
         self._is_torn_down = False
+        self._vector_extension_loaded: bool = False
+        self._vector_load_error: str | None = None
+        try:
+            import sqlite_vec
+            probe = sqlite3.connect(":memory:")
+            try:
+                probe.enable_load_extension(True)
+                sqlite_vec.load(probe)
+                self._vector_extension_loaded = True
+                self._vector_load_error = None
+            finally:
+                probe.close()
+        except Exception as e:
+            self._vector_extension_loaded = False
+            self._vector_load_error = str(e)
+
+    @property
+    def is_vector_extension_loaded(self) -> bool:
+        """Returns True if sqlite_vec was successfully loaded in pool connections."""
+        return self._vector_extension_loaded
+
+    @property
+    def vector_load_error(self) -> str | None:
+        """Returns the last load error if sqlite_vec failed, else None."""
+        return self._vector_load_error
 
     def _get_queue(self) -> asyncio.Queue[sqlite3.Connection]:
         if self._pool is None:
@@ -81,8 +106,12 @@ class VectorMemoryPool:
             import sqlite_vec
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
+            self._vector_extension_loaded = True
+            self._vector_load_error = None
         except Exception as e:
-            logger.debug("sqlite_vec load in RO connection: %s", e)
+            self._vector_extension_loaded = False
+            self._vector_load_error = str(e)
+            logger.warning("VectorMemoryPool: sqlite_vec load failed (%s); pool operating in degraded mode.", e)
 
         # Elite SQLite optimizations for vector workloads
         conn.execute("PRAGMA journal_mode = WAL;")
@@ -283,6 +312,31 @@ class ReadOnlyConnectionPool:
     def __init__(self, default_db_path: Path | str | None = None):
         self.default_db_path = Path(default_db_path or DEFAULT_DB_PATH)
         self._local = threading.local()
+        self._vector_extension_loaded: bool = False
+        self._vector_load_error: str | None = None
+        try:
+            import sqlite_vec
+            probe = sqlite3.connect(":memory:")
+            try:
+                probe.enable_load_extension(True)
+                sqlite_vec.load(probe)
+                self._vector_extension_loaded = True
+                self._vector_load_error = None
+            finally:
+                probe.close()
+        except Exception as e:
+            self._vector_extension_loaded = False
+            self._vector_load_error = str(e)
+
+    @property
+    def is_vector_extension_loaded(self) -> bool:
+        """Returns True if sqlite_vec was successfully loaded in connection pool."""
+        return self._vector_extension_loaded
+
+    @property
+    def vector_load_error(self) -> str | None:
+        """Returns the last load error if sqlite_vec failed, else None."""
+        return self._vector_load_error
 
     @classmethod
     def get_instance(cls, default_db_path: Path | str | None = None) -> ReadOnlyConnectionPool:
@@ -314,8 +368,12 @@ class ReadOnlyConnectionPool:
             import sqlite_vec
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
-        except Exception:
-            pass
+            self._vector_extension_loaded = True
+            self._vector_load_error = None
+        except Exception as e:
+            self._vector_extension_loaded = False
+            self._vector_load_error = str(e)
+            logger.warning("ReadOnlyConnectionPool: sqlite_vec load failed (%s); pool operating in degraded mode.", e)
         return conn
 
     @contextlib.contextmanager

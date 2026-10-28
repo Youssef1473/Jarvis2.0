@@ -47,7 +47,7 @@ class FactsManagerMixin:
                             blob = sqlite_vec.serialize_float32(vec)
                             cursor.execute("INSERT OR REPLACE INTO facts_vec(fact_id, embedding) VALUES (?, ?)", (fact_id, blob))
                     except Exception as e:
-                        logger.debug("sqlite-vec fact indexing notice: %s", e)
+                        logger.warning("sqlite-vec fact indexing failed (%s); continuing without vector index.", e)
 
                     conn.commit()
                 break
@@ -209,7 +209,7 @@ class FactsManagerMixin:
                         results.sort(key=lambda x: x["relevance_score"], reverse=True)
                         return results[:top_k]
         except Exception as e:
-            logger.debug("sqlite-vec KNN search fallback: %s", e)
+            logger.warning("sqlite-vec KNN search failed (%s); falling back to lexical TF-IDF/BM25.", e)
 
         # 2. In-Memory TF-IDF Fallback
         facts = self.get_all_facts()

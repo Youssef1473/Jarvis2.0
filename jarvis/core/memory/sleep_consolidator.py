@@ -212,7 +212,7 @@ class SleepPhaseConsolidator:
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
         except Exception as e:
-            logger.debug("sqlite-vec load in consolidator: %s", e)
+            logger.warning("SleepPhaseConsolidator: sqlite_vec extension unavailable (%s); vector clustering degraded.", e)
         return conn
 
     def _open_interruptible_connection(
