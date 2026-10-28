@@ -30,6 +30,7 @@ from unittest import mock
 from jarvis.core.evolution.appcontainer import (
     CAPABILITY_SID_MAP,
     AppContainerConfig,
+    AppContainerProcessLauncher,
     AppContainerProfileManager,
     AppContainerSecurityError,
 )
@@ -88,13 +89,15 @@ class TestAppContainerProfileLifecycle(unittest.TestCase):
         unique_name = f"Jarvis_Test_Profile_{os.getpid()}_{time.time_ns()}"
         cfg = AppContainerConfig(profile_name=unique_name, auto_cleanup_profile=False)
 
-        p_sid1, sid_str1 = AppContainerProfileManager.get_or_create_profile(cfg)
+        p_sid1, sid_str1, is_new1 = AppContainerProfileManager.get_or_create_profile(cfg)
+        self.assertTrue(is_new1)
         try:
             self.assertGreater(p_sid1, 0)
             self.assertTrue(sid_str1.startswith("S-1-15-2-"))
 
             # Reuse: attempting to create existing profile must derive identical SID
-            p_sid2, sid_str2 = AppContainerProfileManager.get_or_create_profile(cfg)
+            p_sid2, sid_str2, is_new2 = AppContainerProfileManager.get_or_create_profile(cfg)
+            self.assertFalse(is_new2)
             try:
                 self.assertEqual(sid_str1, sid_str2)
             finally:
@@ -105,6 +108,34 @@ class TestAppContainerProfileLifecycle(unittest.TestCase):
             self.assertTrue(deleted)
 
     @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_existing_profile_reuse_does_not_delete_shared_profile(self):
+        """Reusing an existing profile sets is_new_profile=False and preserves it after child exit."""
+        shared_name = f"Jarvis_Shared_{os.getpid()}_{time.time_ns()}"
+        base_cfg = AppContainerConfig(profile_name=shared_name, auto_cleanup_profile=False)
+        p_sid, sid_str, is_new = AppContainerProfileManager.get_or_create_profile(base_cfg)
+        self.assertTrue(is_new)
+        AppContainerProfileManager.free_sid(p_sid)
+
+        try:
+            # Run child process with auto_cleanup_profile=True pointing to existing profile
+            child_cfg = AppContainerConfig(profile_name=shared_name, auto_cleanup_profile=True)
+            handle = AppContainerProcessLauncher.spawn_suspended_appcontainer(
+                command=[sys.executable, "-c", "import sys; sys.exit(0)"],
+                config=child_cfg,
+            )
+            self.assertFalse(handle.is_new_profile)
+            handle.resume()
+            handle.cleanup()
+
+            # Profile must STILL exist because child process was not its creator
+            p_sid_reuse, sid_reuse, is_new_reuse = AppContainerProfileManager.get_or_create_profile(base_cfg)
+            self.assertFalse(is_new_reuse)
+            self.assertEqual(sid_str, sid_reuse)
+            AppContainerProfileManager.free_sid(p_sid_reuse)
+        finally:
+            AppContainerProfileManager.delete_profile(shared_name)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
     def test_dedicated_working_directory_isolation(self):
         """Dedicated scratch directory is granted access for AppContainer SID and cleanly revoked."""
         temp_dir = tempfile.mkdtemp(prefix="jarvis_acl_test_")
@@ -112,7 +143,7 @@ class TestAppContainerProfileLifecycle(unittest.TestCase):
         unique_name = f"Jarvis_Test_ACL_{os.getpid()}_{time.time_ns()}"
         cfg = AppContainerConfig(profile_name=unique_name)
 
-        p_sid, sid_str = AppContainerProfileManager.get_or_create_profile(cfg)
+        p_sid, sid_str, _is_new = AppContainerProfileManager.get_or_create_profile(cfg)
         try:
             # Grant access to temp directory
             granted = AppContainerProfileManager.grant_path_access(test_path, sid_str)
@@ -125,6 +156,26 @@ class TestAppContainerProfileLifecycle(unittest.TestCase):
             AppContainerProfileManager.free_sid(p_sid)
             AppContainerProfileManager.delete_profile(unique_name)
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_runtime_access_scoped_grant_and_cleanup(self):
+        """Preflight check passes and ensure_runtime_access grants are scoped and cleanly tracked."""
+        ok, msg = AppContainerProfileManager.preflight_runtime_check()
+        self.assertTrue(ok, f"Preflight runtime check failed: {msg}")
+        self.assertIn("verified", msg.lower())
+
+        unique_name = f"Jarvis_Runtime_{os.getpid()}_{time.time_ns()}"
+        cfg = AppContainerConfig(profile_name=unique_name, auto_cleanup_profile=True)
+        p_sid, sid_str, _is_new = AppContainerProfileManager.get_or_create_profile(cfg)
+        try:
+            granted = AppContainerProfileManager.ensure_runtime_access(sid_str)
+            self.assertIsInstance(granted, list)
+            for p in granted:
+                self.assertTrue(p.exists())
+                AppContainerProfileManager.revoke_path_access(p, sid_str)
+        finally:
+            AppContainerProfileManager.free_sid(p_sid)
+            AppContainerProfileManager.delete_profile(unique_name)
 
 
 class TestAppContainerFailClosedSecurity(unittest.TestCase):
@@ -176,6 +227,24 @@ class TestAppContainerFailClosedSecurity(unittest.TestCase):
             self.assertIsNone(proc_mgr.proc)
             self.assertIsNone(proc_mgr.h_job)
 
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_acl_grant_failure_rollback_previous_grants(self):
+        """If a path grant fails during setup, all previously granted paths are revoked in rollback."""
+        temp_dir1 = tempfile.mkdtemp(prefix="jarvis_rollback_1_")
+        path1 = Path(temp_dir1)
+        invalid_path = Path("Z:\\NonExistent_Drive\\Invalid_Dir_Path")
+        cfg = AppContainerConfig(
+            profile_name=f"Jarvis_Rollback_{os.getpid()}_{time.time_ns()}",
+            grant_paths=[path1, invalid_path],
+            auto_cleanup_profile=True,
+        )
+        with self.assertRaises(AppContainerSecurityError):
+            AppContainerProcessLauncher.spawn_suspended_appcontainer(
+                command=[sys.executable, "-c", "print(1)"],
+                config=cfg,
+            )
+        shutil.rmtree(temp_dir1, ignore_errors=True)
+
     def test_legacy_sandbox_preservation(self):
         """use_appcontainer=False preserves existing Win32 Job Object execution path."""
         res = run_sandboxed_batch(
@@ -226,14 +295,23 @@ try:
     Path(r'{user_home_target}').write_text('forbidden_leak', encoding='utf-8')
     sys.stderr.write('SECURITY_VIOLATION: Ungranted write succeeded!\\n')
     sys.exit(20)
-except PermissionError:
-    # Kernel correctly blocked write
-    print('KERNEL_CONTAINMENT_VERIFIED: PermissionError observed')
-    sys.exit(0)
-except Exception as e:
-    # Any other access error (e.g., OSError 13) also proves blocked access
-    print(f'KERNEL_CONTAINMENT_VERIFIED: Access denied with {{type(e).__name__}}')
-    sys.exit(0)
+except PermissionError as pe:
+    # Strictly require expected Windows access-denied error code (winerror 5 or errno 13)
+    winerr = getattr(pe, 'winerror', None)
+    if winerr in (5, None) or pe.errno == 13:
+        print('KERNEL_CONTAINMENT_VERIFIED: PermissionError observed')
+        sys.exit(0)
+    else:
+        sys.stderr.write(f'UNEXPECTED_PERMISSION_ERROR: winerror={{winerr}}, errno={{pe.errno}}\\n')
+        sys.exit(21)
+except OSError as oe:
+    winerr = getattr(oe, 'winerror', None)
+    if winerr == 5 or oe.errno == 13:
+        print(f'KERNEL_CONTAINMENT_VERIFIED: Access denied with winerror={{winerr}}')
+        sys.exit(0)
+    else:
+        sys.stderr.write(f'UNEXPECTED_OS_ERROR: winerror={{winerr}}, errno={{oe.errno}}\\n')
+        sys.exit(22)
 """
         try:
             res = run_sandboxed_batch(
@@ -257,6 +335,104 @@ except Exception as e:
             shutil.rmtree(scratch_dir, ignore_errors=True)
             if user_home_target.exists():
                 user_home_target.unlink(missing_ok=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_cwd_outside_approved_grant_list_never_receives_acl_grant(self):
+        """Passing cwd to spawn_suspended_appcontainer must NOT append it to config.grant_paths."""
+        unapproved_cwd = tempfile.mkdtemp(prefix="jarvis_unapproved_cwd_")
+        scratch_dir = tempfile.mkdtemp(prefix="jarvis_scratch_")
+        unique_name = f"Jarvis_Cwd_Test_{os.getpid()}_{time.time_ns()}"
+        cfg = AppContainerConfig(
+            profile_name=unique_name,
+            grant_paths=[Path(scratch_dir)],
+            auto_cleanup_profile=True,
+        )
+        try:
+            handle = AppContainerProcessLauncher.spawn_suspended_appcontainer(
+                command=[sys.executable, "-c", "import sys; sys.exit(0)"],
+                cwd=unapproved_cwd,
+                config=cfg,
+            )
+            try:
+                self.assertNotIn(unapproved_cwd, cfg.grant_paths)
+                self.assertNotIn(Path(unapproved_cwd), cfg.grant_paths)
+                self.assertEqual(len(cfg.grant_paths), 1)
+                self.assertEqual(Path(cfg.grant_paths[0]).resolve(), Path(scratch_dir).resolve())
+            finally:
+                handle.resume()
+                handle.cleanup()
+        finally:
+            shutil.rmtree(unapproved_cwd, ignore_errors=True)
+            shutil.rmtree(scratch_dir, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_attribute_list_backing_lifetimes_and_single_cleanup(self):
+        """Attribute list is deleted in launcher finally block; handle cleanup avoids double-free."""
+        cfg = AppContainerConfig(
+            profile_name=f"Jarvis_Attr_{os.getpid()}_{time.time_ns()}",
+            auto_cleanup_profile=True,
+        )
+        handle = AppContainerProcessLauncher.spawn_suspended_appcontainer(
+            command=[sys.executable, "-c", "import sys; sys.exit(0)"],
+            config=cfg,
+        )
+        try:
+            self.assertIsNone(handle.attr_buf)
+            self.assertTrue(handle.resume())
+        finally:
+            handle.cleanup()
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_all_standard_handles_valid_with_stdin_only_pipe_and_devnull(self):
+        """When stdin is PIPE and stdout/stderr are unredirected/DEVNULL, all standard handles are valid."""
+        cfg = AppContainerConfig(
+            profile_name=f"Jarvis_StdH_{os.getpid()}_{time.time_ns()}",
+            auto_cleanup_profile=True,
+        )
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-c", "import sys; data = sys.stdin.read(); sys.exit(0 if data == 'ok' else 1)"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            use_appcontainer=True,
+            appcontainer_config=cfg,
+        )
+        proc_mgr.start()
+        self.assertIsNotNone(proc_mgr.proc)
+        _stdout, _stderr = proc_mgr.proc.communicate(input="ok", timeout=5.0)
+        self.assertEqual(proc_mgr.proc.returncode, 0)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_communicate_input_none_sends_eof_and_large_input_no_deadlock(self):
+        """communicate(None) sends EOF without hang; large input (>128KB) avoids pipe deadlocks."""
+        cfg = AppContainerConfig(
+            profile_name=f"Jarvis_Comm_{os.getpid()}_{time.time_ns()}",
+            auto_cleanup_profile=True,
+        )
+        # Part A: sys.stdin.read() with communicate(None) must immediately observe EOF
+        res_eof = run_sandboxed_batch(
+            [sys.executable, "-c", "import sys; txt = sys.stdin.read(); print(f'EOF_READ_LEN:{len(txt)}')"],
+            input=None,
+            capture_output=True,
+            timeout=5.0,
+            use_appcontainer=True,
+            appcontainer_config=cfg,
+        )
+        self.assertEqual(res_eof.returncode, 0)
+        self.assertIn("EOF_READ_LEN:0", res_eof.stdout)
+
+        # Part B: 128KB payload roundtrip without pipe buffer deadlock
+        large_payload = "A" * 131072
+        res_large = run_sandboxed_batch(
+            [sys.executable, "-c", "import sys; data = sys.stdin.read(); print(f'RECEIVED:{len(data)}')"],
+            input=large_payload,
+            capture_output=True,
+            timeout=10.0,
+            use_appcontainer=True,
+            appcontainer_config=cfg,
+        )
+        self.assertEqual(res_large.returncode, 0)
+        self.assertIn(f"RECEIVED:{len(large_payload)}", res_large.stdout)
 
     @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
     def test_timeout_and_termination_in_appcontainer(self):

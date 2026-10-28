@@ -57,6 +57,15 @@ ERROR_INSUFFICIENT_BUFFER = 122
 S_OK = 0
 STILL_ACTIVE = 259
 WAIT_TIMEOUT = 258
+WAIT_FAILED = 0xFFFFFFFF
+
+# File Access and Creation constants
+GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
+FILE_SHARE_READ = 0x00000001
+FILE_SHARE_WRITE = 0x00000002
+OPEN_EXISTING = 3
+FILE_ATTRIBUTE_NORMAL = 0x00000080
 
 # Known Well-Known AppContainer Capability SIDs
 CAPABILITY_SID_MAP: dict[str, str] = {
@@ -140,6 +149,17 @@ def _declare_prototypes() -> None:
 
     kernel32.CloseHandle.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
 
     kernel32.TerminateProcess.restype = wintypes.BOOL
     kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
@@ -277,6 +297,32 @@ def create_pipe_pair(inherit_read: bool = False, inherit_write: bool = False) ->
     return int(h_read.value), int(h_write.value)
 
 
+def _open_nul_handle(access: int) -> int:
+    """Opens an inheritable Win32 file handle to \\\\.\\NUL with requested access flags."""
+    if kernel32 is None:
+        raise AppContainerSecurityError("Win32 kernel32 is unavailable.")
+
+    sa = SECURITY_ATTRIBUTES()
+    sa.nLength = ctypes.sizeof(SECURITY_ATTRIBUTES)
+    sa.lpSecurityDescriptor = None
+    sa.bInheritHandle = True
+
+    h = kernel32.CreateFileW(
+        r"\\.\NUL",
+        wintypes.DWORD(access),
+        wintypes.DWORD(FILE_SHARE_READ | FILE_SHARE_WRITE),
+        ctypes.byref(sa),
+        wintypes.DWORD(OPEN_EXISTING),
+        wintypes.DWORD(FILE_ATTRIBUTE_NORMAL),
+        None,
+    )
+    if h in (None, 0, -1, ctypes.c_void_p(-1).value, 18446744073709551615):
+        last_err = ctypes.get_last_error()
+        raise AppContainerSecurityError(f"CreateFileW on \\\\.\\NUL failed with WinError {last_err}")
+
+    return int(h)
+
+
 @dataclass
 class AppContainerConfig:
     """Explicit configuration parameters for AppContainer isolation."""
@@ -297,6 +343,10 @@ class AppContainerConfig:
             self.profile_name = f"{self.profile_name[:25]}_{h}"
 
 
+# Module-level cache for runtime AppContainer access verification
+_RUNTIME_ACCESS_VERIFIED: bool | None = None
+
+
 class AppContainerProfileManager:
     """Manages creation, reuse, SID resolution, ACL assignment, and deletion of AppContainer profiles."""
 
@@ -308,8 +358,8 @@ class AppContainerProfileManager:
         return bool(userenv and advapi32 and kernel32 and hasattr(userenv, "CreateAppContainerProfile"))
 
     @classmethod
-    def get_or_create_profile(cls, config: AppContainerConfig) -> tuple[int, str]:
-        """Creates or reuses an AppContainer profile, returning (p_sid_handle, sid_string).
+    def get_or_create_profile(cls, config: AppContainerConfig) -> tuple[int, str, bool]:
+        """Creates or reuses an AppContainer profile, returning (p_sid_handle, sid_string, is_new_profile).
 
         Fails closed on any error.
         """
@@ -334,6 +384,7 @@ class AppContainerProfileManager:
 
         # 0x800700B7 = HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)
         hr_u = hr & 0xFFFFFFFF
+        is_new_profile = False
         if hr_u == HRESULT_ERROR_ALREADY_EXISTS or hr == -2147024713:
             logger.debug("AppContainer profile '%s' already exists; deriving SID", config.profile_name)
             derive_hr = userenv.DeriveAppContainerSidFromAppContainerName(
@@ -346,12 +397,15 @@ class AppContainerProfileManager:
                     f"Failed to derive SID for existing AppContainer profile '{config.profile_name}': "
                     f"hr=0x{derive_hr & 0xFFFFFFFF:08X}, last_err={last_err}"
                 )
+            is_new_profile = False
         elif hr != S_OK or not appcontainer_sid.value:
             last_err = ctypes.get_last_error()
             raise AppContainerSecurityError(
                 f"CreateAppContainerProfile failed for '{config.profile_name}': "
                 f"hr=0x{hr_u:08X}, last_err={last_err}"
             )
+        else:
+            is_new_profile = True
 
         sid_str_w = wintypes.LPWSTR()
         if not advapi32.ConvertSidToStringSidW(appcontainer_sid, ctypes.byref(sid_str_w)):
@@ -362,7 +416,57 @@ class AppContainerProfileManager:
 
         sid_str = str(sid_str_w.value)
         kernel32.LocalFree(sid_str_w)
-        return int(appcontainer_sid.value), sid_str
+        return int(appcontainer_sid.value), sid_str, is_new_profile
+
+    @classmethod
+    def preflight_runtime_check(cls) -> tuple[bool, str]:
+        """Verifies that native Windows AppContainer isolation is fully functional on the host.
+
+        Performs an end-to-end dry-run: profile creation, SID conversion, and profile deletion.
+        """
+        if not cls.is_supported():
+            return False, "Host environment does not support Win32 AppContainer isolation APIs."
+        import secrets
+        probe_name = f"J_PREFLIGHT_{os.getpid()}_{secrets.token_hex(4)}"
+        probe_cfg = AppContainerConfig(profile_name=probe_name, auto_cleanup_profile=False)
+        try:
+            p_sid, sid_str, _is_new = cls.get_or_create_profile(probe_cfg)
+            cls.free_sid(p_sid)
+            cls.delete_profile(probe_name)
+            return True, f"AppContainer runtime isolation verified (SID: {sid_str[:16]}...)"
+        except (OSError, RuntimeError, AppContainerSecurityError) as exc:
+            return False, f"AppContainer preflight probe failed: {exc}"
+
+    @classmethod
+    def has_runtime_access(cls) -> bool:
+        """Returns True if the Python runtime directory is already accessible to AppContainers."""
+        global _RUNTIME_ACCESS_VERIFIED
+        if _RUNTIME_ACCESS_VERIFIED is not None:
+            return _RUNTIME_ACCESS_VERIFIED
+        try:
+            p = str(Path(sys.prefix).resolve())
+            res = subprocess.run(["icacls", p], capture_output=True, text=True, check=False)
+            _RUNTIME_ACCESS_VERIFIED = "ALL APPLICATION PACKAGES" in res.stdout or "S-1-15-2-1" in res.stdout
+        except (OSError, ValueError):
+            _RUNTIME_ACCESS_VERIFIED = False
+        return bool(_RUNTIME_ACCESS_VERIFIED)
+
+    @classmethod
+    def ensure_runtime_access(cls, sid_str: str) -> list[Path]:
+        """Ensures minimal scoped read-only access (OI)(CI)(RX) to Python runtime directories.
+
+        Returns list of newly granted paths so they can be tracked and revoked upon cleanup.
+        """
+        runtime_paths: list[Path] = []
+        for prefix in (sys.base_prefix, sys.prefix):
+            p = Path(prefix).resolve()
+            if (
+                p.exists()
+                and p not in runtime_paths
+                and cls.grant_path_access(p, sid_str, access_mode="(OI)(CI)(RX)", recursive=False)
+            ):
+                runtime_paths.append(p)
+        return runtime_paths
 
     @staticmethod
     def free_sid(p_sid: int | None) -> None:
@@ -442,9 +546,11 @@ class AppContainerProcessHandle:
         tid: int,
         p_sid: int,
         sid_str: str,
-        attr_buf: Any,
         capability_sids: list[int],
         config: AppContainerConfig,
+        runtime_grants: list[Path] | None = None,
+        is_new_profile: bool = True,
+        attr_buf: Any = None,
     ) -> None:
         self.h_process = h_process
         self.h_thread = h_thread
@@ -452,9 +558,11 @@ class AppContainerProcessHandle:
         self.tid = tid
         self.p_sid = p_sid
         self.sid_str = sid_str
-        self.attr_buf = attr_buf
         self.capability_sids = capability_sids
         self.config = config
+        self.runtime_grants = runtime_grants or []
+        self.is_new_profile = is_new_profile
+        self.attr_buf = attr_buf
         self._cleaned_up = False
 
     def resume(self) -> bool:
@@ -495,7 +603,12 @@ class AppContainerProcessHandle:
                     logger.debug("LocalFree capability SID notice: %s", err)
         self.capability_sids.clear()
 
-        # Revoke path access from granted paths
+        # Revoke runtime grants
+        for path in self.runtime_grants:
+            AppContainerProfileManager.revoke_path_access(path, self.sid_str)
+        self.runtime_grants.clear()
+
+        # Revoke path access from explicitly granted paths
         for path in self.config.grant_paths:
             AppContainerProfileManager.revoke_path_access(path, self.sid_str)
 
@@ -508,12 +621,18 @@ class AppContainerProcessHandle:
 
         if self.h_process and kernel32:
             try:
+                kernel32.TerminateProcess(wintypes.HANDLE(self.h_process), 1)
+                kernel32.WaitForSingleObject(wintypes.HANDLE(self.h_process), 1000)
+            except (OSError, ValueError, AttributeError) as err:
+                logger.debug("TerminateProcess on cleanup notice: %s", err)
+            try:
                 kernel32.CloseHandle(wintypes.HANDLE(self.h_process))
             except (OSError, ValueError, AttributeError) as err:
                 logger.debug("CloseHandle h_process notice: %s", err)
             self.h_process = 0
 
-        if self.config.auto_cleanup_profile:
+        # Only delete profile if auto_cleanup_profile is enabled AND this process created it
+        if self.config.auto_cleanup_profile and self.is_new_profile:
             AppContainerProfileManager.delete_profile(self.config.profile_name)
 
 
@@ -575,27 +694,55 @@ class AppContainerProcessWrapper:
             res = kernel32.WaitForSingleObject(wintypes.HANDLE(self._h_process), wintypes.DWORD(ms))
             if res == WAIT_TIMEOUT:
                 raise subprocess.TimeoutExpired(self._handle_obj.config.profile_name, timeout)
+            if res == WAIT_FAILED:
+                last_err = ctypes.get_last_error()
+                raise RuntimeError(f"WaitForSingleObject failed: WinError {last_err}")
         self.poll()
-        return self.returncode if self.returncode is not None else 0
+        if self.returncode is None:
+            raise RuntimeError(f"Process wait completed for PID {self.pid} but exit code is unavailable.")
+        return self.returncode
 
     def communicate(
         self,
         input: str | bytes | None = None,
         timeout: float | None = None,
     ) -> tuple[str | bytes, str | bytes]:
-        """Sends input to child stdin and drains stdout and stderr pipes."""
-        if input is not None and self._stdin_write and kernel32:
+        """Sends input to child stdin and drains stdout and stderr pipes without deadlocks."""
+        raw_input: bytes | None = None
+        if input is not None:
             raw_input = input.encode(self._encoding, errors=self._errors) if isinstance(input, str) else input
-            written = wintypes.DWORD(0)
-            kernel32.WriteFile(
-                wintypes.HANDLE(self._stdin_write),
-                raw_input,
-                len(raw_input),
-                ctypes.byref(written),
-                None,
-            )
-            kernel32.CloseHandle(wintypes.HANDLE(self._stdin_write))
-            self._stdin_write = None
+
+        def _write_stdin() -> None:
+            if not self._stdin_write or not kernel32:
+                return
+            try:
+                if raw_input:
+                    offset = 0
+                    total = len(raw_input)
+                    while offset < total:
+                        chunk_len = min(65536, total - offset)
+                        chunk = raw_input[offset : offset + chunk_len]
+                        written = wintypes.DWORD(0)
+                        ok = kernel32.WriteFile(
+                            wintypes.HANDLE(self._stdin_write),
+                            chunk,
+                            chunk_len,
+                            ctypes.byref(written),
+                            None,
+                        )
+                        if not ok or written.value == 0:
+                            break
+                        offset += written.value
+            finally:
+                try:
+                    kernel32.CloseHandle(wintypes.HANDLE(self._stdin_write))
+                except (OSError, ValueError, AttributeError) as err:
+                    logger.debug("CloseHandle _stdin_write notice: %s", err)
+                self._stdin_write = None
+
+        t_in = threading.Thread(target=_write_stdin) if self._stdin_write else None
+        if t_in:
+            t_in.start()
 
         out_bytes = bytearray()
         err_bytes = bytearray()
@@ -619,8 +766,14 @@ class AppContainerProcessWrapper:
         if t_err:
             t_err.start()
 
-        self.wait(timeout=timeout)
+        try:
+            self.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.terminate()
+            raise
 
+        if t_in:
+            t_in.join(timeout=1.0)
         if t_out:
             t_out.join(timeout=1.0)
             self._stdout_read = None
@@ -636,7 +789,11 @@ class AppContainerProcessWrapper:
         """Terminates the process and job tree."""
         if self._h_job:
             from jarvis.skills.job_object_sandbox import terminate_and_close_job
-            terminate_and_close_job(self._h_job)
+            try:
+                terminate_and_close_job(self._h_job)
+            except (OSError, ValueError, RuntimeError) as err:
+                logger.debug("terminate_and_close_job notice: %s", err)
+            self._h_job = None
         self._handle_obj.terminate(1)
         self.returncode = 1
 
@@ -651,6 +808,7 @@ class AppContainerProcessWrapper:
 
     def close(self) -> None:
         """Releases underlying AppContainer resources."""
+        self.terminate()
         if self._stdin_write and kernel32:
             try:
                 kernel32.CloseHandle(wintypes.HANDLE(self._stdin_write))
@@ -699,20 +857,33 @@ class AppContainerProcessLauncher:
             config = AppContainerConfig(profile_name=f"Jarvis_Sandbox_{os.getpid()}_{id(command)}")
 
         # 1. Resolve Profile SID
-        p_sid, sid_str = AppContainerProfileManager.get_or_create_profile(config)
+        p_sid, sid_str, is_new_profile = AppContainerProfileManager.get_or_create_profile(config)
 
-        # 2. Grant explicit access to required directories
-        if cwd and cwd not in config.grant_paths:
-            config.grant_paths.append(cwd)
+        # 2. Grant explicit access to approved directories with atomic rollback
+        # Note: cwd is NEVER automatically added; only explicitly approved grant_paths are granted.
+        applied_grants: list[Path] = []
+        runtime_grants: list[Path] = []
+        try:
+            for path in config.grant_paths:
+                p = Path(path).resolve()
+                if not p.exists():
+                    raise AppContainerSecurityError(f"Granted path does not exist: '{p}'")
+                if not AppContainerProfileManager.grant_path_access(p, sid_str, access_mode="(OI)(CI)(F)"):
+                    raise AppContainerSecurityError(f"Failed to grant AppContainer SID access to target directory: '{p}'")
+                applied_grants.append(p)
 
-        for path in config.grant_paths:
-            if not AppContainerProfileManager.grant_path_access(path, sid_str):
-                AppContainerProfileManager.free_sid(p_sid)
-                if config.auto_cleanup_profile:
-                    AppContainerProfileManager.delete_profile(config.profile_name)
-                raise AppContainerSecurityError(
-                    f"Failed to grant AppContainer SID access to target directory: '{path}'"
-                )
+            # Ensure minimal scoped runtime access for AppContainer SID if not already accessible
+            if not AppContainerProfileManager.has_runtime_access():
+                runtime_grants = AppContainerProfileManager.ensure_runtime_access(sid_str)
+        except Exception:
+            for p in applied_grants:
+                AppContainerProfileManager.revoke_path_access(p, sid_str)
+            for p in runtime_grants:
+                AppContainerProfileManager.revoke_path_access(p, sid_str)
+            AppContainerProfileManager.free_sid(p_sid)
+            if config.auto_cleanup_profile and is_new_profile:
+                AppContainerProfileManager.delete_profile(config.profile_name)
+            raise
 
         # 3. Resolve Capability SIDs
         capability_sids: list[int] = []
@@ -740,125 +911,148 @@ class AppContainerProcessLauncher:
             sec_caps.CapabilityCount = 0
         sec_caps.Reserved = 0
 
-        # 4. Prepare Attribute List (SecurityCapabilities + HandleList if std handles provided)
+        # 4. Standard handles invariant: when STARTF_USESTDHANDLES is active, ensure all three
+        # handles (stdin, stdout, stderr) hold valid handles. Provide inheritable \\.\NUL device handles
+        # for any unredirected or DEVNULL streams.
+        opened_nul_handles: list[int] = []
         handles_to_inherit: list[wintypes.HANDLE] = []
-        if stdin_handle:
-            handles_to_inherit.append(wintypes.HANDLE(stdin_handle))
-        if stdout_handle:
-            handles_to_inherit.append(wintypes.HANDLE(stdout_handle))
-        if stderr_handle:
-            handles_to_inherit.append(wintypes.HANDLE(stderr_handle))
+        use_std_handles = any(h is not None for h in (stdin_handle, stdout_handle, stderr_handle))
 
-        attr_count = 1 + (1 if handles_to_inherit else 0)
-        attr_size = ctypes.c_size_t(0)
-        kernel32.InitializeProcThreadAttributeList(None, attr_count, 0, ctypes.byref(attr_size))
-        attr_buf = ctypes.create_string_buffer(attr_size.value)
-        if not kernel32.InitializeProcThreadAttributeList(attr_buf, attr_count, 0, ctypes.byref(attr_size)):
-            last_err = ctypes.get_last_error()
-            cls._cleanup_pre_spawn(p_sid, capability_sids, config, sid_str)
-            raise AppContainerSecurityError(f"InitializeProcThreadAttributeList failed: error {last_err}")
+        final_stdin = stdin_handle
+        final_stdout = stdout_handle
+        final_stderr = stderr_handle
 
-        # Update Security Capabilities attribute
-        if not kernel32.UpdateProcThreadAttribute(
-            attr_buf,
-            0,
-            PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-            ctypes.byref(sec_caps),
-            ctypes.sizeof(sec_caps),
-            None,
-            None,
-        ):
-            last_err = ctypes.get_last_error()
-            kernel32.DeleteProcThreadAttributeList(attr_buf)
-            cls._cleanup_pre_spawn(p_sid, capability_sids, config, sid_str)
-            raise AppContainerSecurityError(f"UpdateProcThreadAttribute (Capabilities) failed: error {last_err}")
+        if use_std_handles:
+            if final_stdin is None:
+                final_stdin = _open_nul_handle(GENERIC_READ)
+                opened_nul_handles.append(final_stdin)
+            if final_stdout is None:
+                final_stdout = _open_nul_handle(GENERIC_WRITE)
+                opened_nul_handles.append(final_stdout)
+            if final_stderr is None:
+                final_stderr = _open_nul_handle(GENERIC_WRITE)
+                opened_nul_handles.append(final_stderr)
 
-        # Update Handle List attribute (restricts inheritance strictly to these handles)
-        if handles_to_inherit:
-            handle_array = (wintypes.HANDLE * len(handles_to_inherit))(*handles_to_inherit)
+            handles_to_inherit = [
+                wintypes.HANDLE(final_stdin),
+                wintypes.HANDLE(final_stdout),
+                wintypes.HANDLE(final_stderr),
+            ]
+
+        attr_buf = None
+        handle_array = None
+        try:
+            attr_count = 1 + (1 if handles_to_inherit else 0)
+            attr_size = ctypes.c_size_t(0)
+            kernel32.InitializeProcThreadAttributeList(None, attr_count, 0, ctypes.byref(attr_size))
+            attr_buf = ctypes.create_string_buffer(attr_size.value)
+            if not kernel32.InitializeProcThreadAttributeList(attr_buf, attr_count, 0, ctypes.byref(attr_size)):
+                last_err = ctypes.get_last_error()
+                cls._cleanup_pre_spawn(p_sid, capability_sids, config, sid_str, runtime_grants, is_new_profile)
+                raise AppContainerSecurityError(f"InitializeProcThreadAttributeList failed: error {last_err}")
+
             if not kernel32.UpdateProcThreadAttribute(
                 attr_buf,
                 0,
-                PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                handle_array,
-                ctypes.sizeof(handle_array),
+                PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+                ctypes.byref(sec_caps),
+                ctypes.sizeof(sec_caps),
                 None,
                 None,
             ):
                 last_err = ctypes.get_last_error()
-                kernel32.DeleteProcThreadAttributeList(attr_buf)
-                cls._cleanup_pre_spawn(p_sid, capability_sids, config, sid_str)
-                raise AppContainerSecurityError(f"UpdateProcThreadAttribute (HandleList) failed: error {last_err}")
+                cls._cleanup_pre_spawn(p_sid, capability_sids, config, sid_str, runtime_grants, is_new_profile)
+                raise AppContainerSecurityError(f"UpdateProcThreadAttribute (Capabilities) failed: error {last_err}")
 
-        # 5. Build STARTUPINFOEXW and PROCESS_INFORMATION
-        si_ex = STARTUPINFOEXW()
-        si_ex.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
-        if handles_to_inherit:
-            si_ex.StartupInfo.dwFlags |= STARTF_USESTDHANDLES
-            if stdin_handle:
-                si_ex.StartupInfo.hStdInput = wintypes.HANDLE(stdin_handle)
-            if stdout_handle:
-                si_ex.StartupInfo.hStdOutput = wintypes.HANDLE(stdout_handle)
-            if stderr_handle:
-                si_ex.StartupInfo.hStdError = wintypes.HANDLE(stderr_handle)
+            if handles_to_inherit:
+                handle_array = (wintypes.HANDLE * len(handles_to_inherit))(*handles_to_inherit)
+                if not kernel32.UpdateProcThreadAttribute(
+                    attr_buf,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                    handle_array,
+                    ctypes.sizeof(handle_array),
+                    None,
+                    None,
+                ):
+                    last_err = ctypes.get_last_error()
+                    cls._cleanup_pre_spawn(p_sid, capability_sids, config, sid_str, runtime_grants, is_new_profile)
+                    raise AppContainerSecurityError(f"UpdateProcThreadAttribute (HandleList) failed: error {last_err}")
 
-        si_ex.lpAttributeList = ctypes.cast(attr_buf, ctypes.c_void_p)
-        pi = PROCESS_INFORMATION()
+            si_ex = STARTUPINFOEXW()
+            si_ex.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
+            if use_std_handles:
+                si_ex.StartupInfo.dwFlags |= STARTF_USESTDHANDLES
+                si_ex.StartupInfo.hStdInput = wintypes.HANDLE(final_stdin)
+                si_ex.StartupInfo.hStdOutput = wintypes.HANDLE(final_stdout)
+                si_ex.StartupInfo.hStdError = wintypes.HANDLE(final_stderr)
 
-        flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW
-        inherit_handles = bool(handles_to_inherit)
+            si_ex.lpAttributeList = ctypes.cast(attr_buf, ctypes.c_void_p)
+            pi = PROCESS_INFORMATION()
 
-        # Build command-line string
-        cmd_str = subprocess.list2cmdline(command)
-        cwd_w = wintypes.LPCWSTR(str(cwd)) if cwd else None
+            flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW
+            inherit_handles = bool(handles_to_inherit)
 
-        # Build environment block if provided
-        env_block = None
-        env_buf = None
-        if env is not None:
-            flags |= CREATE_UNICODE_ENVIRONMENT
-            env_copy = dict(env)
-            # Windows AppContainer loader requires LOCALAPPDATA to resolve package state
-            if "LOCALAPPDATA" not in env_copy and "LOCALAPPDATA" in os.environ:
-                env_copy["LOCALAPPDATA"] = os.environ["LOCALAPPDATA"]
-            sorted_entries = sorted(
-                [f"{k}={v}" for k, v in env_copy.items()],
-                key=lambda s: s.split("=", 1)[0].upper(),
+            cmd_str = subprocess.list2cmdline(command)
+            cwd_w = wintypes.LPCWSTR(str(cwd)) if cwd else None
+
+            env_block = None
+            env_buf = None
+            if env is not None:
+                flags |= CREATE_UNICODE_ENVIRONMENT
+                env_copy = dict(env)
+                if "LOCALAPPDATA" not in env_copy and "LOCALAPPDATA" in os.environ:
+                    env_copy["LOCALAPPDATA"] = os.environ["LOCALAPPDATA"]
+                sorted_entries = sorted(
+                    [f"{k}={v}" for k, v in env_copy.items()],
+                    key=lambda s: s.split("=", 1)[0].upper(),
+                )
+                env_str = "\0".join(sorted_entries) + "\0\0"
+                env_buf = ctypes.create_unicode_buffer(env_str)
+                env_block = ctypes.cast(env_buf, ctypes.c_void_p)
+
+            cp_ok = kernel32.CreateProcessW(
+                None,
+                wintypes.LPWSTR(cmd_str),
+                None,
+                None,
+                inherit_handles,
+                flags,
+                env_block,
+                cwd_w,
+                ctypes.byref(si_ex.StartupInfo),
+                ctypes.byref(pi),
             )
-            env_str = "\0".join(sorted_entries) + "\0\0"
-            env_buf = ctypes.create_unicode_buffer(env_str)
-            env_block = ctypes.cast(env_buf, ctypes.c_void_p)
 
-        cp_ok = kernel32.CreateProcessW(
-            None,
-            wintypes.LPWSTR(cmd_str),
-            None,
-            None,
-            inherit_handles,
-            flags,
-            env_block,
-            cwd_w,
-            ctypes.byref(si_ex.StartupInfo),
-            ctypes.byref(pi),
-        )
+            if not cp_ok:
+                last_err = ctypes.get_last_error()
+                cls._cleanup_pre_spawn(p_sid, capability_sids, config, sid_str, runtime_grants, is_new_profile)
+                raise AppContainerSecurityError(f"CreateProcessW in AppContainer failed: WinError {last_err}")
 
-        if not cp_ok:
-            last_err = ctypes.get_last_error()
-            kernel32.DeleteProcThreadAttributeList(attr_buf)
-            cls._cleanup_pre_spawn(p_sid, capability_sids, config, sid_str)
-            raise AppContainerSecurityError(f"CreateProcessW in AppContainer failed: WinError {last_err}")
-
-        return AppContainerProcessHandle(
-            h_process=int(pi.hProcess),
-            h_thread=int(pi.hThread),
-            pid=int(pi.dwProcessId),
-            tid=int(pi.dwThreadId),
-            p_sid=p_sid,
-            sid_str=sid_str,
-            attr_buf=attr_buf,
-            capability_sids=capability_sids,
-            config=config,
-        )
+            return AppContainerProcessHandle(
+                h_process=int(pi.hProcess),
+                h_thread=int(pi.hThread),
+                pid=int(pi.dwProcessId),
+                tid=int(pi.dwThreadId),
+                p_sid=p_sid,
+                sid_str=sid_str,
+                capability_sids=capability_sids,
+                config=config,
+                runtime_grants=runtime_grants,
+                is_new_profile=is_new_profile,
+            )
+        finally:
+            if attr_buf and kernel32:
+                try:
+                    kernel32.DeleteProcThreadAttributeList(attr_buf)
+                except (OSError, ValueError, AttributeError) as err:
+                    logger.debug("DeleteProcThreadAttributeList notice: %s", err)
+            for h_nul in opened_nul_handles:
+                if h_nul and kernel32:
+                    try:
+                        kernel32.CloseHandle(wintypes.HANDLE(h_nul))
+                    except (OSError, ValueError, AttributeError) as err:
+                        logger.debug("CloseHandle NUL notice: %s", err)
 
     @classmethod
     def _cleanup_pre_spawn(
@@ -867,6 +1061,8 @@ class AppContainerProcessLauncher:
         capability_sids: list[int],
         config: AppContainerConfig,
         sid_str: str,
+        runtime_grants: list[Path] | None = None,
+        is_new_profile: bool = True,
     ) -> None:
         """Cleans up SIDs, profile, and ACLs if process creation aborts prior to spawn."""
         AppContainerProfileManager.free_sid(p_sid)
@@ -876,7 +1072,10 @@ class AppContainerProcessLauncher:
                     kernel32.LocalFree(ctypes.c_void_p(cap_sid))
                 except (OSError, ValueError, AttributeError) as err:
                     logger.debug("LocalFree capability SID notice: %s", err)
+        if runtime_grants:
+            for path in runtime_grants:
+                AppContainerProfileManager.revoke_path_access(path, sid_str)
         for path in config.grant_paths:
             AppContainerProfileManager.revoke_path_access(path, sid_str)
-        if config.auto_cleanup_profile:
+        if config.auto_cleanup_profile and is_new_profile:
             AppContainerProfileManager.delete_profile(config.profile_name)

@@ -1,64 +1,73 @@
-# Session Handoff: Jarvis 2.0 — Option C Windows AppContainer Isolation & Capability Sandbox
+# Session Handoff: Jarvis 2.0 — PR #5 AppContainer Security Review Remediation
 
 **Date:** 2026-10-28  
 **Host Environment:** Windows 11 x64 | Intel Core i5-12500H | NVIDIA RTX 3050 Laptop GPU (4GB VRAM) | Python 3.12.10  
 **Protected Base on `main`:** Commit [`88b491c`](https://github.com/Youssef1473/Jarvis2.0/commit/88b491c) (Merge pull request #4: Option B code quality modernization and exception hardening)  
 **Active Feature Branch:** `feat/appcontainer-capability-sandbox`  
-**Target Pull Request:** Option C — Windows AppContainer Isolation and Capability Sandbox against `main`  
-**Verification Baseline:**
-- `tests/test_appcontainer_sandbox.py`: **12 passed in 1.50s (Exit code: 0)**
-- `tests/test_job_object_sandbox.py`: **6 passed in 2.31s (Exit code: 0)**
-- `tests/test_job_object_sandbox_hardening.py`: **32 passed, 13 skipped in 7.70s (Exit code: 0)**
-- `tests/test_self_evolution_sandbox.py`: **35 passed in 11.61s (Exit code: 0)**
-- `tests/test_p0_action_bound_authorization.py`: **35 passed in 1.38s (Exit code: 0)**
-- `tests/test_security_boundaries.py`: **94 passed in 2.82s (Exit code: 0)**
-- `tests/test_exception_hardening.py`: **9 passed in 0.30s (Exit code: 0)**
-- Static diagnostics (`UP,C4,F841,I,RUF022` across `jarvis/`): **100% clean (0 errors)**
-- AST invariant scanner (`tools/diagnostics.py scan jarvis tools`): **Clean (0 errors)**
+**Target Pull Request:** [PR #5 — Windows AppContainer Isolation and Capability Sandbox](https://github.com/Youssef1473/Jarvis2.0/pull/5)  
+**Remediation Commit:** Prepared for push to `feat/appcontainer-capability-sandbox` (do NOT merge PR #5, do NOT touch `main`)  
 
 ---
 
-## 1. Architectural Summary & Deliverables
+## 1. Remediation Summary (PR #5 Review Findings)
 
-Option C introduces production-grade, kernel-enforced Windows AppContainer capability sandboxing into Jarvis 2.0 as an opt-in, defense-in-depth isolation boundary around untrusted child processes and self-synthesized custom skills.
+All 7 security and architectural review items have been resolved and empirically verified with new regression tests:
 
-### Core Deliverables
+1. **Explicit Grants Only (Fix 1):**
+   - Removed implicit automatic appending of arbitrary `cwd` to `config.grant_paths` in `AppContainerProcessLauncher.spawn_suspended_appcontainer`.
+   - Access grants are restricted strictly to explicitly approved directories (such as the ephemeral per-run scratch directory), ensuring directory access cannot silently expand to the repository or user profile.
+   - Verified via `test_cwd_outside_approved_grant_list_never_receives_acl_grant`.
 
-1. **Win32 AppContainer Subsystem (`jarvis/core/evolution/appcontainer.py`):**
-   - Native 64-bit Win32 bindings for `userenv.dll`, `advapi32.dll`, and `kernel32.dll` with explicit prototypes (`CreateAppContainerProfile`, `DeriveAppContainerSidFromAppContainerName`, `DeleteAppContainerProfile`, `ConvertSidToStringSidW`, `ConvertStringSidToSidW`, `FreeSid`, `InitializeProcThreadAttributeList`, `UpdateProcThreadAttribute`, `DeleteProcThreadAttributeList`).
-   - `AppContainerConfig`: dataclass configuring profile names (bounded to <= 45 chars to prevent `E_INVALIDARG 0x80070057`), display name, description, explicit capability lists, grant paths, and auto-cleanup.
-   - `AppContainerProfileManager`: manages profile creation, derivation of existing profiles on collision, profile deletion, and scoped directory ACL management via `icacls`.
-   - `AppContainerProcessLauncher`: sets up `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` and `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, builds sorted wide-character environment blocks with `CREATE_UNICODE_ENVIRONMENT` and `%LOCALAPPDATA%` virtualized package resolution, and spawns processes suspended (`CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW`).
-   - `AppContainerProcessWrapper`: Popen-compatible interface implementing `poll()`, `wait()`, `communicate()`, `terminate()`, `kill()`, and `close()`.
-   - `create_pipe_pair()`: creates anonymous Win32 pipe pairs with explicit inheritance flags (`HANDLE_FLAG_INHERIT`).
+2. **Strict Kernel Denial Assertion (Fix 2):**
+   - Hardened `test_live_windows_containment_denied_access` in `tests/test_appcontainer_sandbox.py`.
+   - Removed generic `except Exception:` catcher. Strictly checks `PermissionError` (with `winerror in (5, None)` or `errno == 13`) or `OSError` with `winerror == 5`. Any unexpected error aborts with non-zero exit code.
+   - Proves that allowed scratch writes succeed, forbidden user home writes fail with kernel access denial, and forbidden files never exist on host.
 
-2. **Canonical Sandbox Integration (`jarvis/skills/job_object_sandbox.py`):**
-   - Added `use_appcontainer: bool = False` and `appcontainer_config: Any = None` to `SandboxedProcess` and `run_sandboxed_batch`.
-   - Strict `CREATE_SUSPENDED` ordering: AppContainer child process is spawned suspended, assigned to the Win32 Job Object (with memory limits, CPU affinity, priority, and `KILL_ON_JOB_CLOSE`), and resumed via `ResumeThread` only after successful assignment.
-   - Fail-closed guarantee: any failure in container creation, Job Object creation, or process assignment immediately kills the suspended child (`TerminateProcess`), releases handles and SIDs, and raises `RuntimeError` (never falls back to uncontained execution).
-   - Safe handle restriction: inherits strictly piped standard I/O handles (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`), closing child pipe ends in the parent immediately after spawn.
+3. **Attribute-List Lifetime and RAII Cleanup (Fix 3):**
+   - Kept `SECURITY_CAPABILITIES`, `cap_structs`, and `handle_array` alive in scope until `DeleteProcThreadAttributeList` is called.
+   - Attribute list cleanup is executed immediately inside a `finally:` block in `spawn_suspended_appcontainer` following `CreateProcessW` return (on both success and failure paths), completely eliminating double cleanup in `AppContainerProcessHandle`.
+   - Verified via `test_attribute_list_backing_lifetimes_and_single_cleanup`.
 
-3. **Self-Evolution Custom Skill Sandbox (`jarvis/core/evolution/sandbox.py`):**
-   - Added `use_appcontainer: bool = False` parameter to `SkillSandbox.execute_sandboxed_custom_skill`.
-   - Ephemeral scratch staging: stages `isolated_runner.py` and the target custom skill script directly into the dedicated AppContainer scratch directory (`run_scratch`), granting ACLs only to `run_scratch` and keeping the host codebase untouched.
-   - Automatic teardown: releases the AppContainer profile and deletes the ephemeral scratch folder on completion.
+4. **All Standard Handles Valid Under `STARTF_USESTDHANDLES` (Fix 4):**
+   - Enforced Windows NT invariant: when `STARTF_USESTDHANDLES` is active, all three handles (`hStdInput`, `hStdOutput`, `hStdError`) must be valid.
+   - Unredirected or `DEVNULL` streams are populated with inheritable Win32 `\\.\NUL` device handles opened via `CreateFileW(r"\\.\NUL", ...)`.
+   - Parent closes its end of `\\.\NUL` handles immediately after `CreateProcessW` in `finally:`, and child inherits valid handles.
+   - Verified via `test_all_standard_handles_valid_with_stdin_only_pipe_and_devnull`.
 
-4. **Comprehensive Regression Test Suite (`tests/test_appcontainer_sandbox.py`):**
-   - 12 automated unit and integration tests covering least-privilege defaults, capability SID resolution, profile reuse, fail-closed security, attribute list lifecycle, non-Windows rejection, legacy sandbox preservation, dedicated directory ACL isolation, live Windows NT kernel containment verification, timeout termination, piped standard I/O communication, and dynamic custom skill execution.
+5. **Scoped Runtime Access & Preflight Validation (Fix 5):**
+   - Implemented `AppContainerProfileManager.has_runtime_access()` and `ensure_runtime_access()` to grant minimal read-only permissions `(OI)(CI)(RX)` scoped strictly to the AppContainer SID (`*sid_str`), tracking grants and revoking them during cleanup.
+   - Added `preflight_runtime_check() -> tuple[bool, str]` validating end-to-end profile creation, SID resolution, and deletion.
+   - Cleaned up any stale developer ACEs from Python runtime paths.
+   - Verified via `test_runtime_access_scoped_grant_and_cleanup`.
+
+6. **Native Pipe Lifecycle & Deadlock Prevention (Fix 6):**
+   - In `AppContainerProcessWrapper.communicate()`: closes `_stdin_write` when `input=None` to ensure EOF is immediately signaled to the child process.
+   - In `communicate(input=...)`: writes stdin in a dedicated background thread `t_in` in chunks up to 64KB, completely eliminating pipe buffer deadlocks with large inputs.
+   - In `wait()`: raises `RuntimeError` on `WAIT_FAILED` with `ctypes.get_last_error()`, and raises `RuntimeError` if process wait finishes with no returncode.
+   - Verified via `test_communicate_input_none_sends_eof_and_large_input_no_deadlock`.
+
+7. **Atomic Setup Rollback & Profile Ownership (Fix 7):**
+   - `get_or_create_profile` returns `tuple[int, str, bool]` with `is_new_profile` (`True` if freshly created, `False` on reuse collision `0x800700B7`).
+   - If any path grant fails during setup, all previously applied grants in that run are revoked, the SID is freed, and newly created profiles are cleaned up.
+   - `AppContainerProcessHandle.cleanup()` only deletes profiles if `self.config.auto_cleanup_profile and self.is_new_profile`, preserving shared or reused profiles.
+   - Defensively handled `mock.patch("subprocess.Popen")` in `SandboxedProcess.terminate_tree` via `type(self.proc).__name__ == "AppContainerProcessWrapper"`.
+   - Verified via `test_acl_grant_failure_rollback_previous_grants` and `test_existing_profile_reuse_does_not_delete_shared_profile`.
 
 ---
 
-## 2. Security Invariants Verified
+## 2. Empirical Verification Results
 
-| Invariant | Implementation Mechanism | Observable Evidence |
+| Suite / Check | Command | Result |
 | :--- | :--- | :--- |
-| **Least Privilege Defaults** | `AppContainerConfig.capabilities` defaults to `[]` | Zero network, zero device, zero credential access by default. Tested in `test_appcontainer_config_least_privilege_defaults`. |
-| **Zero Spawn-Before-Assign Window** | Process created with `CREATE_SUSPENDED`, assigned to Job Object, resumed via `ResumeThread` | Proves child cannot spawn grandchildren outside the Job Object. |
-| **Fail-Closed Security Gate** | Profile or Job Object assignment errors terminate child via `TerminateProcess` and raise `RuntimeError` | Tested via mock injection in `test_fail_closed_on_profile_failure` and `test_fail_closed_on_job_assignment_failure`. |
-| **Non-Inheriting Parent Isolation** | `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` restricts handle inheritance strictly to stdio pipes | Parent process handles are not inherited by untrusted child. |
-| **NT Kernel Containment** | AppContainer SID denies access to all ungranted filesystem locations | Tested in `test_live_windows_containment_denied_access`: write to granted scratch succeeds; write to user home fails with kernel `PermissionError`. |
-| **Profile Name Bounding** | Automatically bounded to <= 45 characters with SHA256 suffix | Prevents Windows `0x80070057` (`E_INVALIDARG`) on long profile names. |
-| **Unicode Environment Resolution** | `CREATE_UNICODE_ENVIRONMENT` + case-insensitive sorted entries + `LOCALAPPDATA` | Enables AppContainer process loader to initialize virtual package state without `WinError 203`. |
+| **AppContainer Test Suite** | `python tools/run_fast_tests.py tests/test_appcontainer_sandbox.py` | **19 passed in 31.44s (Exit code: 0)** |
+| **Job Object Sandbox Suite** | `python tools/run_fast_tests.py tests/test_job_object_sandbox.py` | **6 passed in 2.62s (Exit code: 0)** |
+| **Self-Evolution Sandbox Suite** | `python tools/run_fast_tests.py tests/test_self_evolution_sandbox.py` | **35 passed in 13.18s (Exit code: 0)** |
+| **Process Containment Suite** | `python tools/run_fast_tests.py tests/test_oneshot_process_containment.py` | **23 passed in 0.85s (Exit code: 0)** |
+| **Multi-LLM Responsiveness Suite** | `python tools/run_fast_tests.py tests/test_multi_llm_responsiveness.py` | **15 passed in 2.23s (Exit code: 0)** |
+| **Security Boundaries Suite** | `python tools/run_fast_tests.py tests/test_security_boundaries.py` | **94 passed in 4.02s (Exit code: 0)** |
+| **Lint Rules (UP, C4, F841, I, RUF022)** | `python tools/lint.py check --select UP,C4,F841,I,RUF022 jarvis/` | **All checks passed (Exit code: 0)** |
+| **AST Invariant Scanner** | `python tools/diagnostics.py scan jarvis tools` | **Clean (Exit code: 0)** |
+| **Git Diff Whitespace Check** | `git diff --check` | **Clean (Exit code: 0)** |
 
 ---
 
@@ -67,28 +76,28 @@ Option C introduces production-grade, kernel-enforced Windows AppContainer capab
 ### `git status --short`
 ```text
  M handoff.md
- M jarvis/core/evolution/sandbox.py
+ M jarvis/core/evolution/appcontainer.py
  M jarvis/skills/job_object_sandbox.py
-?? jarvis/core/evolution/appcontainer.py
-?? tests/test_appcontainer_sandbox.py
+ M tests/test_appcontainer_sandbox.py
 ```
 
 ### `git diff --stat`
 ```text
- jarvis/core/evolution/sandbox.py    |  47 ++++++++---
- jarvis/skills/job_object_sandbox.py | 158 +++++++++++++++++++++++++++++++++++-
- 2 files changed, 193 insertions(+), 12 deletions(-)
+ handoff.md                            |  94 +++---
+ jarvis/core/evolution/appcontainer.py | 496 ++++++++++++++++++++++++----------
+ jarvis/skills/job_object_sandbox.py   |   2 +-
+ tests/test_appcontainer_sandbox.py    | 198 +++++++++++++-
+ 4 files changed, 576 insertions(+), 202 deletions(-)
 ```
 
 ---
 
-## 4. Instructions for PR Submission
+## 4. Next Step: Push to Remote Feature Branch
 
-To push and open PR #5 against `main` (do NOT merge or touch `main`):
+To push the remediation commit to the open PR branch without touching `main`:
 
 ```powershell
-git add jarvis/core/evolution/appcontainer.py jarvis/core/evolution/sandbox.py jarvis/skills/job_object_sandbox.py tests/test_appcontainer_sandbox.py handoff.md
-git commit -m "feat(security): Option C Windows AppContainer isolation and capability sandbox"
+git add jarvis/core/evolution/appcontainer.py jarvis/skills/job_object_sandbox.py tests/test_appcontainer_sandbox.py handoff.md
+git commit -m "fix(security): remediate PR #5 AppContainer isolation review findings"
 git push origin feat/appcontainer-capability-sandbox
-gh pr create --base main --head feat/appcontainer-capability-sandbox --title "feat(security): Option C Windows AppContainer Isolation and Capability Sandbox" --body "## Summary`n`nImplements Option C: Windows AppContainer capability isolation and sandboxing as an explicitly selectable layer around Jarvis 2.0's Win32 Job Object sandbox.`n`n### Key Capabilities`n- Least-privilege defaults: empty capability set (no network, devices, or credentials).`n- CREATE_SUSPENDED spawn with Win32 Job Object assignment before resumption.`n- Scoped directory ACLs via AppContainer SID without touching parent directories.`n- Handle list restrictions via PROC_THREAD_ATTRIBUTE_HANDLE_LIST.`n- Fail-closed policy on profile or assignment failure.`n- Live kernel containment verified: ungranted user paths blocked with PermissionError.`n`n### Verification`n- 12 new targeted tests in tests/test_appcontainer_sandbox.py passing (100%).`n- Full fast test suite passing.`n- 0 lint or AST invariant violations."
 ```

@@ -755,7 +755,7 @@ class SandboxedProcess:
                 success = False
 
         if self.proc is not None:
-            if hasattr(self.proc, "close") and not isinstance(self.proc, subprocess.Popen):
+            if type(self.proc).__name__ == "AppContainerProcessWrapper":
                 try:
                     self.proc.close()
                 except Exception as e:
