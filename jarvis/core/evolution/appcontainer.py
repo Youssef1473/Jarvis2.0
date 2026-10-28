@@ -343,8 +343,8 @@ class AppContainerConfig:
             self.profile_name = f"{self.profile_name[:25]}_{h}"
 
 
-# Module-level cache for runtime AppContainer access verification
-_RUNTIME_ACCESS_VERIFIED: bool | None = None
+# Cache for directories with well-known AppContainer package ACEs
+_WELL_KNOWN_PACKAGE_ACE_CACHE: dict[str, bool] = {}
 
 
 class AppContainerProfileManager:
@@ -419,10 +419,98 @@ class AppContainerProfileManager:
         return int(appcontainer_sid.value), sid_str, is_new_profile
 
     @classmethod
+    def get_required_runtime_paths(cls) -> list[Path]:
+        """Returns unique resolved paths required for Python interpreter runtime."""
+        paths: list[Path] = []
+        for prefix in (sys.base_prefix, sys.prefix):
+            if prefix:
+                try:
+                    p = Path(prefix).resolve()
+                    if p.exists() and p not in paths:
+                        paths.append(p)
+                except (OSError, ValueError):
+                    pass
+        return paths
+
+    @staticmethod
+    def has_path_access(path: str | Path, sid_str: str) -> bool:
+        """Returns True if the specified path already has an explicit ACE granting access to sid_str."""
+        try:
+            p = Path(path).resolve()
+            if not p.exists():
+                return False
+            res = subprocess.run(["icacls", str(p)], capture_output=True, text=True, check=False)
+            return sid_str in res.stdout
+        except (OSError, ValueError):
+            return False
+
+    @classmethod
+    def has_runtime_path_access(cls, path: str | Path, sid_str: str | None = None) -> bool:
+        """Checks whether a single runtime path has AppContainer access (via ALL APPLICATION PACKAGES or specific SID)."""
+        try:
+            p = Path(path).resolve()
+            if not p.exists():
+                return False
+            p_str = str(p)
+            has_well_known = _WELL_KNOWN_PACKAGE_ACE_CACHE.get(p_str)
+            if has_well_known is None:
+                res = subprocess.run(["icacls", p_str], capture_output=True, text=True, check=False)
+                out = res.stdout
+                has_well_known = "ALL APPLICATION PACKAGES" in out or "S-1-15-2-1" in out
+                _WELL_KNOWN_PACKAGE_ACE_CACHE[p_str] = has_well_known
+                if has_well_known:
+                    return True
+                if sid_str and sid_str in out:
+                    return True
+                return False
+            if has_well_known:
+                return True
+            if sid_str:
+                return cls.has_path_access(p, sid_str)
+            return False
+        except (OSError, ValueError):
+            return False
+
+    @classmethod
+    def has_runtime_access(cls, sid_str: str | None = None) -> bool:
+        """Returns True only if EVERY required Python runtime path is accessible to AppContainers."""
+        required = cls.get_required_runtime_paths()
+        if not required:
+            return False
+        return all(cls.has_runtime_path_access(p, sid_str) for p in required)
+
+    @classmethod
+    def ensure_runtime_access(cls, sid_str: str) -> list[Path]:
+        """Ensures minimal scoped read-only access (OI)(CI)(RX) to all required Python runtime directories.
+
+        Validates each required path individually, granting scoped access to sid_str only if needed.
+        Returns list of newly granted paths so they can be tracked and revoked upon cleanup.
+        Fails closed (raises AppContainerSecurityError) if any required runtime location cannot be granted or verified.
+        """
+        newly_granted: list[Path] = []
+        required_paths = cls.get_required_runtime_paths()
+        for p in required_paths:
+            if cls.has_runtime_path_access(p, sid_str):
+                continue
+            # Grant minimal read-only access scoped strictly to sid_str (non-recursive for fast inheritance)
+            ok = cls.grant_path_access(p, sid_str, access_mode="(OI)(CI)(RX)", recursive=False)
+            if not ok:
+                for granted_p in newly_granted:
+                    cls.revoke_path_access(granted_p, sid_str)
+                raise AppContainerSecurityError(f"Failed to grant required AppContainer runtime access to: '{p}'")
+            newly_granted.append(p)
+            if not cls.has_runtime_path_access(p, sid_str):
+                for granted_p in newly_granted:
+                    cls.revoke_path_access(granted_p, sid_str)
+                raise AppContainerSecurityError(f"Runtime access verification failed after grant on: '{p}'")
+        return newly_granted
+
+    @classmethod
     def preflight_runtime_check(cls) -> tuple[bool, str]:
         """Verifies that native Windows AppContainer isolation is fully functional on the host.
 
-        Performs an end-to-end dry-run: profile creation, SID conversion, and profile deletion.
+        Performs an end-to-end dry-run: profile creation, SID conversion, runtime accessibility validation
+        for all required prefixes, and profile deletion.
         """
         if not cls.is_supported():
             return False, "Host environment does not support Win32 AppContainer isolation APIs."
@@ -431,42 +519,17 @@ class AppContainerProfileManager:
         probe_cfg = AppContainerConfig(profile_name=probe_name, auto_cleanup_profile=False)
         try:
             p_sid, sid_str, _is_new = cls.get_or_create_profile(probe_cfg)
-            cls.free_sid(p_sid)
-            cls.delete_profile(probe_name)
+            runtime_grants: list[Path] = []
+            try:
+                runtime_grants = cls.ensure_runtime_access(sid_str)
+            finally:
+                for rg in runtime_grants:
+                    cls.revoke_path_access(rg, sid_str)
+                cls.free_sid(p_sid)
+                cls.delete_profile(probe_name)
             return True, f"AppContainer runtime isolation verified (SID: {sid_str[:16]}...)"
         except (OSError, RuntimeError, AppContainerSecurityError) as exc:
             return False, f"AppContainer preflight probe failed: {exc}"
-
-    @classmethod
-    def has_runtime_access(cls) -> bool:
-        """Returns True if the Python runtime directory is already accessible to AppContainers."""
-        global _RUNTIME_ACCESS_VERIFIED
-        if _RUNTIME_ACCESS_VERIFIED is not None:
-            return _RUNTIME_ACCESS_VERIFIED
-        try:
-            p = str(Path(sys.prefix).resolve())
-            res = subprocess.run(["icacls", p], capture_output=True, text=True, check=False)
-            _RUNTIME_ACCESS_VERIFIED = "ALL APPLICATION PACKAGES" in res.stdout or "S-1-15-2-1" in res.stdout
-        except (OSError, ValueError):
-            _RUNTIME_ACCESS_VERIFIED = False
-        return bool(_RUNTIME_ACCESS_VERIFIED)
-
-    @classmethod
-    def ensure_runtime_access(cls, sid_str: str) -> list[Path]:
-        """Ensures minimal scoped read-only access (OI)(CI)(RX) to Python runtime directories.
-
-        Returns list of newly granted paths so they can be tracked and revoked upon cleanup.
-        """
-        runtime_paths: list[Path] = []
-        for prefix in (sys.base_prefix, sys.prefix):
-            p = Path(prefix).resolve()
-            if (
-                p.exists()
-                and p not in runtime_paths
-                and cls.grant_path_access(p, sid_str, access_mode="(OI)(CI)(RX)", recursive=False)
-            ):
-                runtime_paths.append(p)
-        return runtime_paths
 
     @staticmethod
     def free_sid(p_sid: int | None) -> None:
@@ -548,6 +611,7 @@ class AppContainerProcessHandle:
         sid_str: str,
         capability_sids: list[int],
         config: AppContainerConfig,
+        applied_grants: list[Path] | None = None,
         runtime_grants: list[Path] | None = None,
         is_new_profile: bool = True,
         attr_buf: Any = None,
@@ -560,6 +624,7 @@ class AppContainerProcessHandle:
         self.sid_str = sid_str
         self.capability_sids = capability_sids
         self.config = config
+        self.applied_grants = applied_grants or []
         self.runtime_grants = runtime_grants or []
         self.is_new_profile = is_new_profile
         self.attr_buf = attr_buf
@@ -603,14 +668,15 @@ class AppContainerProcessHandle:
                     logger.debug("LocalFree capability SID notice: %s", err)
         self.capability_sids.clear()
 
-        # Revoke runtime grants
+        # Revoke only runtime grants introduced by this invocation
         for path in self.runtime_grants:
             AppContainerProfileManager.revoke_path_access(path, self.sid_str)
         self.runtime_grants.clear()
 
-        # Revoke path access from explicitly granted paths
-        for path in self.config.grant_paths:
+        # Revoke only user path grants introduced by this invocation
+        for path in self.applied_grants:
             AppContainerProfileManager.revoke_path_access(path, self.sid_str)
+        self.applied_grants.clear()
 
         if self.h_thread and kernel32:
             try:
@@ -712,7 +778,10 @@ class AppContainerProcessWrapper:
         if input is not None:
             raw_input = input.encode(self._encoding, errors=self._errors) if isinstance(input, str) else input
 
+        stdin_exception: Exception | None = None
+
         def _write_stdin() -> None:
+            nonlocal stdin_exception
             if not self._stdin_write or not kernel32:
                 return
             try:
@@ -730,9 +799,25 @@ class AppContainerProcessWrapper:
                             ctypes.byref(written),
                             None,
                         )
-                        if not ok or written.value == 0:
+                        if not ok:
+                            last_err = ctypes.get_last_error()
+                            # 109 = ERROR_BROKEN_PIPE, 232 = ERROR_NO_DATA
+                            # Child closed stdin or exited early; preserve standard broken pipe semantics
+                            if last_err in (109, 232):
+                                break
+                            stdin_exception = RuntimeError(
+                                f"WriteFile to AppContainer stdin failed: WinError {last_err} "
+                                f"(wrote {offset}/{total} bytes)"
+                            )
+                            break
+                        if written.value == 0:
+                            stdin_exception = RuntimeError(
+                                f"WriteFile to AppContainer stdin wrote 0 bytes at offset {offset}/{total}"
+                            )
                             break
                         offset += written.value
+            except Exception as e:
+                stdin_exception = e
             finally:
                 try:
                     kernel32.CloseHandle(wintypes.HANDLE(self._stdin_write))
@@ -780,6 +865,9 @@ class AppContainerProcessWrapper:
         if t_err:
             t_err.join(timeout=1.0)
             self._stderr_read = None
+
+        if stdin_exception is not None:
+            raise stdin_exception
 
         if self._text:
             return out_bytes.decode(self._encoding, errors=self._errors), err_bytes.decode(self._encoding, errors=self._errors)
@@ -861,6 +949,7 @@ class AppContainerProcessLauncher:
 
         # 2. Grant explicit access to approved directories with atomic rollback
         # Note: cwd is NEVER automatically added; only explicitly approved grant_paths are granted.
+        # Pre-existing grants on reused profiles are preserved.
         applied_grants: list[Path] = []
         runtime_grants: list[Path] = []
         try:
@@ -868,44 +957,57 @@ class AppContainerProcessLauncher:
                 p = Path(path).resolve()
                 if not p.exists():
                     raise AppContainerSecurityError(f"Granted path does not exist: '{p}'")
-                if not AppContainerProfileManager.grant_path_access(p, sid_str, access_mode="(OI)(CI)(F)"):
-                    raise AppContainerSecurityError(f"Failed to grant AppContainer SID access to target directory: '{p}'")
-                applied_grants.append(p)
+                if not AppContainerProfileManager.has_path_access(p, sid_str):
+                    if not AppContainerProfileManager.grant_path_access(p, sid_str, access_mode="(OI)(CI)(F)"):
+                        raise AppContainerSecurityError(f"Failed to grant AppContainer SID access to target directory: '{p}'")
+                    applied_grants.append(p)
 
-            # Ensure minimal scoped runtime access for AppContainer SID if not already accessible
-            if not AppContainerProfileManager.has_runtime_access():
-                runtime_grants = AppContainerProfileManager.ensure_runtime_access(sid_str)
+            # Ensure minimal scoped runtime access for AppContainer SID
+            runtime_grants = AppContainerProfileManager.ensure_runtime_access(sid_str)
         except Exception:
-            for p in applied_grants:
-                AppContainerProfileManager.revoke_path_access(p, sid_str)
-            for p in runtime_grants:
-                AppContainerProfileManager.revoke_path_access(p, sid_str)
-            AppContainerProfileManager.free_sid(p_sid)
-            if config.auto_cleanup_profile and is_new_profile:
-                AppContainerProfileManager.delete_profile(config.profile_name)
+            cls._cleanup_pre_spawn(
+                p_sid=p_sid,
+                capability_sids=[],
+                config=config,
+                sid_str=sid_str,
+                applied_grants=applied_grants,
+                runtime_grants=runtime_grants,
+                is_new_profile=is_new_profile,
+            )
             raise
 
-        # 3. Resolve Capability SIDs
+        # 3. Resolve Capability SIDs - fail closed immediately on invalid capability
         capability_sids: list[int] = []
-        cap_array = None
+        cap_structs = None
         if config.capabilities:
             cap_structs = (SID_AND_ATTRIBUTES * len(config.capabilities))()
             for idx, cap_name in enumerate(config.capabilities):
                 cap_sid_str = CAPABILITY_SID_MAP.get(cap_name, cap_name)
                 cap_sid = ctypes.c_void_p()
-                if advapi32.ConvertStringSidToSidW(wintypes.LPCWSTR(cap_sid_str), ctypes.byref(cap_sid)):
-                    cap_structs[idx].Sid = cap_sid.value
-                    cap_structs[idx].Attributes = 0x00000004  # SE_GROUP_ENABLED
-                    capability_sids.append(int(cap_sid.value))
-                else:
-                    logger.warning("Unrecognized capability SID string: '%s'", cap_sid_str)
-            cap_array = cap_structs
+                if not advapi32.ConvertStringSidToSidW(wintypes.LPCWSTR(cap_sid_str), ctypes.byref(cap_sid)) or not cap_sid.value:
+                    last_err = ctypes.get_last_error()
+                    cls._cleanup_pre_spawn(
+                        p_sid=p_sid,
+                        capability_sids=capability_sids,
+                        config=config,
+                        sid_str=sid_str,
+                        applied_grants=applied_grants,
+                        runtime_grants=runtime_grants,
+                        is_new_profile=is_new_profile,
+                    )
+                    raise AppContainerSecurityError(
+                        f"Invalid or unresolvable capability '{cap_name}' (SID string '{cap_sid_str}'): "
+                        f"ConvertStringSidToSidW failed with WinError {last_err}"
+                    )
+                cap_structs[idx].Sid = cap_sid.value
+                cap_structs[idx].Attributes = 0x00000004  # SE_GROUP_ENABLED
+                capability_sids.append(int(cap_sid.value))
 
         sec_caps = SECURITY_CAPABILITIES()
         sec_caps.AppContainerSid = ctypes.c_void_p(p_sid)
-        if cap_array is not None:
-            sec_caps.Capabilities = ctypes.cast(cap_array, ctypes.POINTER(SID_AND_ATTRIBUTES))
-            sec_caps.CapabilityCount = len(config.capabilities)
+        if cap_structs is not None:
+            sec_caps.Capabilities = ctypes.cast(cap_structs, ctypes.POINTER(SID_AND_ATTRIBUTES))
+            sec_caps.CapabilityCount = len(capability_sids)
         else:
             sec_caps.Capabilities = None
             sec_caps.CapabilityCount = 0
@@ -940,7 +1042,9 @@ class AppContainerProcessLauncher:
             ]
 
         attr_buf = None
+        attr_list_initialized = False
         handle_array = None
+        spawned_handle = None
         try:
             attr_count = 1 + (1 if handles_to_inherit else 0)
             attr_size = ctypes.c_size_t(0)
@@ -948,8 +1052,8 @@ class AppContainerProcessLauncher:
             attr_buf = ctypes.create_string_buffer(attr_size.value)
             if not kernel32.InitializeProcThreadAttributeList(attr_buf, attr_count, 0, ctypes.byref(attr_size)):
                 last_err = ctypes.get_last_error()
-                cls._cleanup_pre_spawn(p_sid, capability_sids, config, sid_str, runtime_grants, is_new_profile)
                 raise AppContainerSecurityError(f"InitializeProcThreadAttributeList failed: error {last_err}")
+            attr_list_initialized = True
 
             if not kernel32.UpdateProcThreadAttribute(
                 attr_buf,
@@ -961,7 +1065,6 @@ class AppContainerProcessLauncher:
                 None,
             ):
                 last_err = ctypes.get_last_error()
-                cls._cleanup_pre_spawn(p_sid, capability_sids, config, sid_str, runtime_grants, is_new_profile)
                 raise AppContainerSecurityError(f"UpdateProcThreadAttribute (Capabilities) failed: error {last_err}")
 
             if handles_to_inherit:
@@ -976,7 +1079,6 @@ class AppContainerProcessLauncher:
                     None,
                 ):
                     last_err = ctypes.get_last_error()
-                    cls._cleanup_pre_spawn(p_sid, capability_sids, config, sid_str, runtime_grants, is_new_profile)
                     raise AppContainerSecurityError(f"UpdateProcThreadAttribute (HandleList) failed: error {last_err}")
 
             si_ex = STARTUPINFOEXW()
@@ -1026,10 +1128,9 @@ class AppContainerProcessLauncher:
 
             if not cp_ok:
                 last_err = ctypes.get_last_error()
-                cls._cleanup_pre_spawn(p_sid, capability_sids, config, sid_str, runtime_grants, is_new_profile)
                 raise AppContainerSecurityError(f"CreateProcessW in AppContainer failed: WinError {last_err}")
 
-            return AppContainerProcessHandle(
+            spawned_handle = AppContainerProcessHandle(
                 h_process=int(pi.hProcess),
                 h_thread=int(pi.hThread),
                 pid=int(pi.dwProcessId),
@@ -1038,21 +1139,36 @@ class AppContainerProcessLauncher:
                 sid_str=sid_str,
                 capability_sids=capability_sids,
                 config=config,
+                applied_grants=applied_grants,
                 runtime_grants=runtime_grants,
                 is_new_profile=is_new_profile,
             )
+            return spawned_handle
         finally:
-            if attr_buf and kernel32:
+            if attr_list_initialized and attr_buf and kernel32:
                 try:
                     kernel32.DeleteProcThreadAttributeList(attr_buf)
                 except (OSError, ValueError, AttributeError) as err:
                     logger.debug("DeleteProcThreadAttributeList notice: %s", err)
+                attr_list_initialized = False
+
             for h_nul in opened_nul_handles:
                 if h_nul and kernel32:
                     try:
                         kernel32.CloseHandle(wintypes.HANDLE(h_nul))
                     except (OSError, ValueError, AttributeError) as err:
                         logger.debug("CloseHandle NUL notice: %s", err)
+
+            if spawned_handle is None:
+                cls._cleanup_pre_spawn(
+                    p_sid=p_sid,
+                    capability_sids=capability_sids,
+                    config=config,
+                    sid_str=sid_str,
+                    applied_grants=applied_grants,
+                    runtime_grants=runtime_grants,
+                    is_new_profile=is_new_profile,
+                )
 
     @classmethod
     def _cleanup_pre_spawn(
@@ -1061,10 +1177,14 @@ class AppContainerProcessLauncher:
         capability_sids: list[int],
         config: AppContainerConfig,
         sid_str: str,
+        applied_grants: list[Path] | None = None,
         runtime_grants: list[Path] | None = None,
         is_new_profile: bool = True,
     ) -> None:
-        """Cleans up SIDs, profile, and ACLs if process creation aborts prior to spawn."""
+        """Cleans up SIDs, profile, and ACLs if process creation aborts prior to spawn.
+
+        Must only be invoked AFTER DeleteProcThreadAttributeList has run (or if attribute list was never initialized).
+        """
         AppContainerProfileManager.free_sid(p_sid)
         if kernel32:
             for cap_sid in capability_sids:
@@ -1075,7 +1195,8 @@ class AppContainerProcessLauncher:
         if runtime_grants:
             for path in runtime_grants:
                 AppContainerProfileManager.revoke_path_access(path, sid_str)
-        for path in config.grant_paths:
-            AppContainerProfileManager.revoke_path_access(path, sid_str)
+        if applied_grants:
+            for path in applied_grants:
+                AppContainerProfileManager.revoke_path_access(path, sid_str)
         if config.auto_cleanup_profile and is_new_profile:
             AppContainerProfileManager.delete_profile(config.profile_name)

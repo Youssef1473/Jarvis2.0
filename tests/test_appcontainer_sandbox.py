@@ -296,18 +296,18 @@ try:
     sys.stderr.write('SECURITY_VIOLATION: Ungranted write succeeded!\\n')
     sys.exit(20)
 except PermissionError as pe:
-    # Strictly require expected Windows access-denied error code (winerror 5 or errno 13)
+    # Strictly require expected Windows access-denied error code (winerror 5, or errno 13 when winerror is None)
     winerr = getattr(pe, 'winerror', None)
-    if winerr in (5, None) or pe.errno == 13:
-        print('KERNEL_CONTAINMENT_VERIFIED: PermissionError observed')
+    if winerr == 5 or (winerr is None and pe.errno == 13):
+        print('KERNEL_CONTAINMENT_VERIFIED: Access denied with winerror=5')
         sys.exit(0)
     else:
         sys.stderr.write(f'UNEXPECTED_PERMISSION_ERROR: winerror={{winerr}}, errno={{pe.errno}}\\n')
         sys.exit(21)
 except OSError as oe:
     winerr = getattr(oe, 'winerror', None)
-    if winerr == 5 or oe.errno == 13:
-        print(f'KERNEL_CONTAINMENT_VERIFIED: Access denied with winerror={{winerr}}')
+    if winerr == 5 or (winerr is None and oe.errno == 13):
+        print(f'KERNEL_CONTAINMENT_VERIFIED: Access denied with winerror=5')
         sys.exit(0)
     else:
         sys.stderr.write(f'UNEXPECTED_OS_ERROR: winerror={{winerr}}, errno={{oe.errno}}\\n')
@@ -496,6 +496,350 @@ def {skill_name}(x: int = 5, y: int = 7) -> int:
             self.assertEqual(out, 54)
         finally:
             SkillSandbox.rollback_snapshot(skill_name, None)
+
+
+class TestAppContainerAttributeListLifecycle(unittest.TestCase):
+    """Verifies attribute list initialization, mutation, disposal ordering, and fault injection."""
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_failed_second_stage_init_does_not_delete_list(self):
+        """Failed second-stage InitializeProcThreadAttributeList skips delete and cleans up SIDs/profile."""
+        from jarvis.core.evolution import appcontainer
+        orig_init = appcontainer.kernel32.InitializeProcThreadAttributeList
+        orig_del = appcontainer.kernel32.DeleteProcThreadAttributeList
+
+        init_count = 0
+        def mock_init(buf, count, flags, size_ptr):
+            nonlocal init_count
+            init_count += 1
+            if init_count == 2:
+                return 0
+            return orig_init(buf, count, flags, size_ptr)
+
+        delete_called = []
+        def mock_del(buf):
+            delete_called.append(True)
+            return orig_del(buf)
+
+        cfg = AppContainerConfig(profile_name=f"J_Fault1_{os.getpid()}_{time.time_ns()}")
+        with mock.patch.object(appcontainer.kernel32, "InitializeProcThreadAttributeList", side_effect=mock_init), \
+             mock.patch.object(appcontainer.kernel32, "DeleteProcThreadAttributeList", side_effect=mock_del):
+            with self.assertRaises(AppContainerSecurityError):
+                AppContainerProcessLauncher.spawn_suspended_appcontainer([sys.executable, "-c", "pass"], config=cfg)
+        self.assertEqual(len(delete_called), 0, "DeleteProcThreadAttributeList called on uninitialized buffer!")
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_failed_capabilities_update_deletes_list_before_sid_cleanup(self):
+        """Failed UpdateProcThreadAttribute deletes attribute list before freeing referenced SIDs."""
+        from jarvis.core.evolution import appcontainer
+        orig_del = appcontainer.kernel32.DeleteProcThreadAttributeList
+        orig_cleanup = AppContainerProcessLauncher._cleanup_pre_spawn
+
+        events: list[str] = []
+        def mock_del(buf):
+            events.append("delete_attr_list")
+            return orig_del(buf)
+
+        def mock_cleanup(*args, **kwargs):
+            events.append("cleanup_pre_spawn")
+            return orig_cleanup(*args, **kwargs)
+
+        cfg = AppContainerConfig(profile_name=f"J_Fault2_{os.getpid()}_{time.time_ns()}")
+        with mock.patch.object(appcontainer.kernel32, "UpdateProcThreadAttribute", return_value=0), \
+             mock.patch.object(appcontainer.kernel32, "DeleteProcThreadAttributeList", side_effect=mock_del), \
+             mock.patch.object(AppContainerProcessLauncher, "_cleanup_pre_spawn", side_effect=mock_cleanup):
+            with self.assertRaises(AppContainerSecurityError):
+                AppContainerProcessLauncher.spawn_suspended_appcontainer([sys.executable, "-c", "pass"], config=cfg)
+        self.assertEqual(events, ["delete_attr_list", "cleanup_pre_spawn"])
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_failed_handle_list_update_deletes_list_before_sid_cleanup(self):
+        """Failed UpdateProcThreadAttribute for handle list deletes attribute list before SID cleanup."""
+        from jarvis.core.evolution import appcontainer
+        orig_update = appcontainer.kernel32.UpdateProcThreadAttribute
+        orig_del = appcontainer.kernel32.DeleteProcThreadAttributeList
+        orig_cleanup = AppContainerProcessLauncher._cleanup_pre_spawn
+
+        events: list[str] = []
+        def mock_update(attr_list, flags, attr, lp_value, cb_size, prev, ret_size):
+            if attr == appcontainer.PROC_THREAD_ATTRIBUTE_HANDLE_LIST:
+                return 0
+            return orig_update(attr_list, flags, attr, lp_value, cb_size, prev, ret_size)
+
+        def mock_del(buf):
+            events.append("delete_attr_list")
+            return orig_del(buf)
+
+        def mock_cleanup(*args, **kwargs):
+            events.append("cleanup_pre_spawn")
+            return orig_cleanup(*args, **kwargs)
+
+        cfg = AppContainerConfig(profile_name=f"J_Fault3_{os.getpid()}_{time.time_ns()}")
+        with mock.patch.object(appcontainer.kernel32, "UpdateProcThreadAttribute", side_effect=mock_update), \
+             mock.patch.object(appcontainer.kernel32, "DeleteProcThreadAttributeList", side_effect=mock_del), \
+             mock.patch.object(AppContainerProcessLauncher, "_cleanup_pre_spawn", side_effect=mock_cleanup):
+            with self.assertRaises(AppContainerSecurityError):
+                AppContainerProcessLauncher.spawn_suspended_appcontainer(
+                    [sys.executable, "-c", "pass"],
+                    stdin_handle=123,
+                    config=cfg,
+                )
+        self.assertEqual(events, ["delete_attr_list", "cleanup_pre_spawn"])
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_failed_create_process_deletes_list_before_sid_cleanup(self):
+        """Failed CreateProcessW deletes attribute list before freeing SIDs and cleaning profile."""
+        from jarvis.core.evolution import appcontainer
+        orig_del = appcontainer.kernel32.DeleteProcThreadAttributeList
+        orig_cleanup = AppContainerProcessLauncher._cleanup_pre_spawn
+
+        events: list[str] = []
+        def mock_del(buf):
+            events.append("delete_attr_list")
+            return orig_del(buf)
+
+        def mock_cleanup(*args, **kwargs):
+            events.append("cleanup_pre_spawn")
+            return orig_cleanup(*args, **kwargs)
+
+        cfg = AppContainerConfig(profile_name=f"J_Fault4_{os.getpid()}_{time.time_ns()}")
+        with mock.patch.object(appcontainer.kernel32, "CreateProcessW", return_value=0), \
+             mock.patch.object(appcontainer.kernel32, "DeleteProcThreadAttributeList", side_effect=mock_del), \
+             mock.patch.object(AppContainerProcessLauncher, "_cleanup_pre_spawn", side_effect=mock_cleanup):
+            with self.assertRaises(AppContainerSecurityError):
+                AppContainerProcessLauncher.spawn_suspended_appcontainer([sys.executable, "-c", "pass"], config=cfg)
+        self.assertEqual(events, ["delete_attr_list", "cleanup_pre_spawn"])
+
+
+class TestAppContainerACLOwnership(unittest.TestCase):
+    """Verifies ownership-aware ACL management for reused profiles and directory grants."""
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_reused_profile_preserves_preexisting_acl_grants(self):
+        """Reusing a profile with an existing ACL must preserve the ACL after the child process exits."""
+        temp_dir = tempfile.mkdtemp(prefix="jarvis_acl_reuse_")
+        target_path = Path(temp_dir).resolve()
+        shared_name = f"Jarvis_ReuseACL_{os.getpid()}_{time.time_ns()}"
+        base_cfg = AppContainerConfig(profile_name=shared_name, auto_cleanup_profile=False)
+
+        # 1. Create base profile and initial ACL grant
+        p_sid, sid_str, is_new = AppContainerProfileManager.get_or_create_profile(base_cfg)
+        self.assertTrue(is_new)
+        AppContainerProfileManager.free_sid(p_sid)
+
+        try:
+            # Explicitly grant access to target directory
+            granted = AppContainerProfileManager.grant_path_access(target_path, sid_str)
+            self.assertTrue(granted)
+            self.assertTrue(AppContainerProfileManager.has_path_access(target_path, sid_str))
+
+            # 2. Spawn second invocation reusing that profile and path
+            child_cfg = AppContainerConfig(
+                profile_name=shared_name,
+                grant_paths=[target_path],
+                auto_cleanup_profile=True,
+            )
+            handle = AppContainerProcessLauncher.spawn_suspended_appcontainer(
+                command=[sys.executable, "-c", "import sys; sys.exit(0)"],
+                config=child_cfg,
+            )
+            self.assertFalse(handle.is_new_profile)
+            self.assertNotIn(target_path, handle.applied_grants)
+            handle.resume()
+
+            # 3. Clean up the second invocation
+            handle.cleanup()
+
+            # 4. Verify the original ACL remains on target_path and profile is still valid
+            self.assertTrue(
+                AppContainerProfileManager.has_path_access(target_path, sid_str),
+                "Pre-existing ACL was prematurely removed during child cleanup!",
+            )
+            p_reuse, _, is_new_reuse = AppContainerProfileManager.get_or_create_profile(base_cfg)
+            self.assertFalse(is_new_reuse)
+            AppContainerProfileManager.free_sid(p_reuse)
+        finally:
+            # 5. Clean up base profile and revoke ACL
+            AppContainerProfileManager.revoke_path_access(target_path, sid_str)
+            AppContainerProfileManager.delete_profile(shared_name)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_temporary_profile_revokes_own_acl_grants(self):
+        """Temporary invocation revokes all newly introduced ACLs and deletes its profile on cleanup."""
+        temp_dir = tempfile.mkdtemp(prefix="jarvis_acl_temp_")
+        target_path = Path(temp_dir).resolve()
+        temp_name = f"Jarvis_TempACL_{os.getpid()}_{time.time_ns()}"
+        cfg = AppContainerConfig(
+            profile_name=temp_name,
+            grant_paths=[target_path],
+            auto_cleanup_profile=True,
+        )
+
+        handle = AppContainerProcessLauncher.spawn_suspended_appcontainer(
+            command=[sys.executable, "-c", "import sys; sys.exit(0)"],
+            config=cfg,
+        )
+        self.assertTrue(handle.is_new_profile)
+        self.assertIn(target_path, handle.applied_grants)
+        sid_str = handle.sid_str
+
+        self.assertTrue(AppContainerProfileManager.has_path_access(target_path, sid_str))
+        handle.resume()
+        handle.cleanup()
+
+        self.assertFalse(
+            AppContainerProfileManager.has_path_access(target_path, sid_str),
+            "ACL was not revoked upon temporary profile cleanup!",
+        )
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+class TestAppContainerRuntimeAccess(unittest.TestCase):
+    """Verifies multi-prefix Python runtime access detection, validation, and rollback."""
+
+    def test_required_runtime_paths_includes_both_prefixes(self):
+        """get_required_runtime_paths resolves and includes both sys.base_prefix and sys.prefix."""
+        d1 = tempfile.mkdtemp(prefix="jarvis_base_prefix_")
+        d2 = tempfile.mkdtemp(prefix="jarvis_prefix_")
+        try:
+            with mock.patch("sys.base_prefix", d1), mock.patch("sys.prefix", d2):
+                paths = AppContainerProfileManager.get_required_runtime_paths()
+                self.assertIn(Path(d1).resolve(), paths)
+                self.assertIn(Path(d2).resolve(), paths)
+        finally:
+            shutil.rmtree(d1, ignore_errors=True)
+            shutil.rmtree(d2, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_ensure_runtime_access_fails_closed_if_one_prefix_denied(self):
+        """If one prefix is accessible but another prefix fails grant, ensure_runtime_access fails closed."""
+        d1 = Path(tempfile.mkdtemp()).resolve()
+        d2 = Path(tempfile.mkdtemp()).resolve()
+        try:
+            with mock.patch.object(AppContainerProfileManager, "get_required_runtime_paths", return_value=[d1, d2]), \
+                 mock.patch.object(AppContainerProfileManager, "has_runtime_path_access", side_effect=[True, False]), \
+                 mock.patch.object(AppContainerProfileManager, "grant_path_access", return_value=False):
+                with self.assertRaises(AppContainerSecurityError) as ctx:
+                    AppContainerProfileManager.ensure_runtime_access("S-1-15-2-1234")
+                self.assertIn(str(d2), str(ctx.exception))
+        finally:
+            shutil.rmtree(d1, ignore_errors=True)
+            shutil.rmtree(d2, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_ensure_runtime_access_rolls_back_grants_on_failure(self):
+        """If setup fails after granting one path, that granted path is rolled back immediately."""
+        d1 = Path(tempfile.mkdtemp()).resolve()
+        d2 = Path(tempfile.mkdtemp()).resolve()
+        try:
+            with mock.patch.object(AppContainerProfileManager, "get_required_runtime_paths", return_value=[d1, d2]), \
+                 mock.patch.object(AppContainerProfileManager, "has_runtime_path_access", side_effect=[False, True, False]), \
+                 mock.patch.object(AppContainerProfileManager, "grant_path_access", side_effect=[True, False]), \
+                 mock.patch.object(AppContainerProfileManager, "revoke_path_access") as mock_revoke:
+                with self.assertRaises(AppContainerSecurityError):
+                    AppContainerProfileManager.ensure_runtime_access("S-1-15-2-1234")
+                mock_revoke.assert_called_once_with(d1, "S-1-15-2-1234")
+        finally:
+            shutil.rmtree(d1, ignore_errors=True)
+            shutil.rmtree(d2, ignore_errors=True)
+
+
+class TestAppContainerCapabilities(unittest.TestCase):
+    """Verifies capability parsing, resolution, and fail-closed validation."""
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_valid_capability_resolves_and_launches(self):
+        """Valid capability name resolves to SID and launches successfully."""
+        cfg = AppContainerConfig(
+            profile_name=f"J_CapV_{os.getpid()}_{time.time_ns()}",
+            capabilities=["internetClient"],
+            auto_cleanup_profile=True,
+        )
+        handle = AppContainerProcessLauncher.spawn_suspended_appcontainer(
+            command=[sys.executable, "-c", "import sys; sys.exit(0)"],
+            config=cfg,
+        )
+        try:
+            self.assertEqual(len(handle.capability_sids), 1)
+            self.assertTrue(handle.resume())
+        finally:
+            handle.cleanup()
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_invalid_capability_fails_closed_before_spawn_and_rolls_back(self):
+        """Invalid capability name fails closed with AppContainerSecurityError before CreateProcessW."""
+        cfg = AppContainerConfig(
+            profile_name=f"J_CapInv_{os.getpid()}_{time.time_ns()}",
+            capabilities=["completely_invalid_capability_xyz_999"],
+            auto_cleanup_profile=True,
+        )
+        with self.assertRaises(AppContainerSecurityError) as ctx:
+            AppContainerProcessLauncher.spawn_suspended_appcontainer(
+                command=[sys.executable, "-c", "import sys; sys.exit(0)"],
+                config=cfg,
+            )
+        self.assertIn("completely_invalid_capability_xyz_999", str(ctx.exception))
+
+
+class TestAppContainerCommunicator(unittest.TestCase):
+    """Verifies stdin/stdout/stderr pipe communication, error propagation, and EOF semantics."""
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_communicate_partial_write_surfaces_error(self):
+        """When WriteFile reports 0 bytes written, communicate raises RuntimeError."""
+        from jarvis.core.evolution import appcontainer
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-c", "import sys; sys.stdin.read()"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            use_appcontainer=True,
+        )
+        proc_mgr.start()
+        try:
+            def mock_write(h, buf, n, written_ptr, ov):
+                written_ptr._obj.value = 0
+                return 1
+
+            with mock.patch.object(appcontainer.kernel32, "WriteFile", side_effect=mock_write):
+                with self.assertRaises(RuntimeError) as ctx:
+                    proc_mgr.proc.communicate(input="test payload", timeout=2.0)
+                self.assertIn("wrote 0 bytes", str(ctx.exception))
+        finally:
+            proc_mgr.terminate_tree()
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_communicate_failed_write_surfaces_error(self):
+        """When WriteFile fails with an unexpected WinError, communicate raises RuntimeError."""
+        from jarvis.core.evolution import appcontainer
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-c", "import sys; sys.stdin.read()"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            use_appcontainer=True,
+        )
+        proc_mgr.start()
+        try:
+            with mock.patch.object(appcontainer.kernel32, "WriteFile", return_value=0), \
+                 mock.patch("ctypes.get_last_error", return_value=6):
+                with self.assertRaises(RuntimeError) as ctx:
+                    proc_mgr.proc.communicate(input="test payload", timeout=2.0)
+                self.assertIn("WinError 6", str(ctx.exception))
+        finally:
+            proc_mgr.terminate_tree()
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_communicate_child_closes_stdin_early_preserves_broken_pipe(self):
+        """When child closes stdin early, communicate handles broken pipe cleanly without error."""
+        res = run_sandboxed_batch(
+            [sys.executable, "-c", "import sys; sys.exit(0)"],
+            input="excess payload data " * 5000,
+            capture_output=True,
+            use_appcontainer=True,
+        )
+        self.assertEqual(res.returncode, 0)
 
 
 if __name__ == "__main__":
