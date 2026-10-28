@@ -433,16 +433,55 @@ class AppContainerProfileManager:
         return paths
 
     @staticmethod
-    def has_path_access(path: str | Path, sid_str: str) -> bool:
-        """Returns True if the specified path already has an explicit ACE granting access to sid_str."""
+    def check_effective_path_access(
+        path: str | Path,
+        sid_str: str,
+        require_write: bool = True,
+    ) -> tuple[str, str | None]:
+        """Inspects effective permissions for sid_str on path via icacls.
+
+        Returns (status, details):
+          - "NONE": No explicit ACE exists for this SID.
+          - "DENIED": An explicit DENY ACE exists for this SID.
+          - "SUFFICIENT": An existing ALLOW ACE provides adequate permissions.
+          - "INADEQUATE": An existing ALLOW ACE provides insufficient permissions (e.g. read-only when write needed).
+        """
+        import re
+
+        p = Path(path).resolve()
+        if not p.exists():
+            return "NONE", None
         try:
-            p = Path(path).resolve()
-            if not p.exists():
-                return False
             res = subprocess.run(["icacls", str(p)], capture_output=True, text=True, check=False)
-            return sid_str in res.stdout
+            pattern = rf"{re.escape(sid_str)}:([^\r\n]+)"
+            matches = [m.strip() for m in re.findall(pattern, res.stdout)]
+            if not matches:
+                return "NONE", None
+
+            # Explicit DENY check: any DENY or (N) for this SID blocks access
+            for m in matches:
+                if "(DENY)" in m or "(N)" in m:
+                    return "DENIED", m
+
+            has_full = any("(F)" in m or "(M)" in m for m in matches)
+            has_read = any("(RX)" in m or "(R)" in m or "(F)" in m or "(M)" in m for m in matches)
+
+            if require_write:
+                if has_full:
+                    return "SUFFICIENT", ", ".join(matches)
+                return "INADEQUATE", ", ".join(matches)
+            else:
+                if has_read:
+                    return "SUFFICIENT", ", ".join(matches)
+                return "INADEQUATE", ", ".join(matches)
         except (OSError, ValueError):
-            return False
+            return "NONE", None
+
+    @classmethod
+    def has_path_access(cls, path: str | Path, sid_str: str, require_write: bool = True) -> bool:
+        """Returns True if the specified path already has an explicit ALLOW ACE with sufficient permissions."""
+        status, _ = cls.check_effective_path_access(path, sid_str, require_write=require_write)
+        return status == "SUFFICIENT"
 
     @classmethod
     def has_runtime_path_access(cls, path: str | Path, sid_str: str | None = None) -> bool:
@@ -460,13 +499,13 @@ class AppContainerProfileManager:
                 _WELL_KNOWN_PACKAGE_ACE_CACHE[p_str] = has_well_known
                 if has_well_known:
                     return True
-                if sid_str and sid_str in out:
-                    return True
+                if sid_str:
+                    return cls.has_path_access(p, sid_str, require_write=False)
                 return False
             if has_well_known:
                 return True
             if sid_str:
-                return cls.has_path_access(p, sid_str)
+                return cls.has_path_access(p, sid_str, require_write=False)
             return False
         except (OSError, ValueError):
             return False
@@ -492,6 +531,16 @@ class AppContainerProfileManager:
         for p in required_paths:
             if cls.has_runtime_path_access(p, sid_str):
                 continue
+
+            status, perms = cls.check_effective_path_access(p, sid_str, require_write=False)
+            if status == "DENIED":
+                for granted_p in newly_granted:
+                    cls.revoke_path_access(granted_p, sid_str)
+                raise AppContainerSecurityError(
+                    f"Runtime directory '{p}' has an explicit pre-existing DENY ACE for SID '{sid_str}' ({perms}); "
+                    f"fail-closed policy aborts launch."
+                )
+
             # Grant minimal read-only access scoped strictly to sid_str (non-recursive for fast inheritance)
             ok = cls.grant_path_access(p, sid_str, access_mode="(OI)(CI)(RX)", recursive=False)
             if not ok:
@@ -957,7 +1006,22 @@ class AppContainerProcessLauncher:
                 p = Path(path).resolve()
                 if not p.exists():
                     raise AppContainerSecurityError(f"Granted path does not exist: '{p}'")
-                if not AppContainerProfileManager.has_path_access(p, sid_str):
+
+                status, perms = AppContainerProfileManager.check_effective_path_access(p, sid_str, require_write=True)
+                if status == "DENIED":
+                    raise AppContainerSecurityError(
+                        f"Target path '{p}' has an explicit pre-existing DENY ACE for SID '{sid_str}' ({perms}); "
+                        f"cannot safely establish AppContainer write boundary without modifying security descriptor."
+                    )
+                elif status == "INADEQUATE":
+                    raise AppContainerSecurityError(
+                        f"Target path '{p}' has pre-existing insufficient permissions for SID '{sid_str}' "
+                        f"(requires Full/Write '(F)' or '(M)', found '{perms}'); "
+                        f"failing closed to preserve existing ACL integrity."
+                    )
+                elif status == "SUFFICIENT":
+                    logger.debug("Path '%s' already has sufficient pre-existing access for SID '%s' (%s); preserving existing ACE", p, sid_str, perms)
+                else:  # status == "NONE"
                     if not AppContainerProfileManager.grant_path_access(p, sid_str, access_mode="(OI)(CI)(F)"):
                         raise AppContainerSecurityError(f"Failed to grant AppContainer SID access to target directory: '{p}'")
                     applied_grants.append(p)

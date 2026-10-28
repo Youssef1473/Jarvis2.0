@@ -442,16 +442,40 @@ except OSError as oe:
             auto_cleanup_profile=True,
         )
 
-        t0 = time.monotonic()
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            use_appcontainer=True,
+            appcontainer_config=cfg,
+        )
+
+        # Phase 1 & 2: Setup, process creation, Job Object assignment, and resumption
+        t_setup_start = time.monotonic()
+        proc_mgr.start()
+        setup_elapsed = time.monotonic() - t_setup_start
+        self.assertIsNotNone(proc_mgr.proc)
+        self.assertIsNotNone(proc_mgr.h_job)
+
+        # Phase 3: Execution timeout and prompt teardown
+        t_timeout_start = time.monotonic()
         with self.assertRaises(subprocess.TimeoutExpired):
-            run_sandboxed_batch(
-                [sys.executable, "-c", "import time; time.sleep(30)"],
-                timeout=0.5,
-                use_appcontainer=True,
-                appcontainer_config=cfg,
-            )
-        elapsed = time.monotonic() - t0
-        self.assertLess(elapsed, 4.0, "AppContainer timeout did not terminate in bounded time!")
+            proc_mgr.proc.communicate(timeout=0.5)
+        timeout_elapsed = time.monotonic() - t_timeout_start
+
+        # Directly verify bounded termination from after successful startup (< 3.0s for 0.5s timeout)
+        self.assertLess(
+            timeout_elapsed,
+            3.0,
+            f"AppContainer timeout did not terminate promptly! (timeout duration: {timeout_elapsed:.3f}s, setup duration: {setup_elapsed:.3f}s)",
+        )
+
+        # Verify child is terminated promptly
+        self.assertIsNotNone(proc_mgr.proc.poll())
+        self.assertEqual(proc_mgr.proc.returncode, 1)
+
+        # Final cleanup - handles and Job Object cleaned up once
+        proc_mgr.terminate_tree()
+        self.assertIsNone(proc_mgr.h_job)
+        self.assertTrue(proc_mgr._closed)
 
     @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
     def test_sandboxed_batch_stdin_stdout_pipeline(self):
@@ -693,6 +717,58 @@ class TestAppContainerACLOwnership(unittest.TestCase):
             "ACL was not revoked upon temporary profile cleanup!",
         )
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_preexisting_inadequate_readonly_ace_fails_closed(self):
+        """Pre-existing read-only ACE for AppContainer SID on write target fails closed to preserve ACL integrity."""
+        temp_dir = tempfile.mkdtemp(prefix="jarvis_inadequate_")
+        target_path = Path(temp_dir).resolve()
+        shared_name = f"J_Inad_{os.getpid()}_{time.time_ns()}"
+        cfg = AppContainerConfig(profile_name=shared_name, auto_cleanup_profile=False)
+        p_sid, sid_str, _ = AppContainerProfileManager.get_or_create_profile(cfg)
+        AppContainerProfileManager.free_sid(p_sid)
+
+        try:
+            # Explicitly grant read-only (RX) permissions to simulate existing inadequate ACE
+            subprocess.run(["icacls", str(target_path), "/grant", f"*{sid_str}:(OI)(CI)(RX)"], check=True, capture_output=True)
+            child_cfg = AppContainerConfig(
+                profile_name=shared_name,
+                grant_paths=[target_path],
+                auto_cleanup_profile=False,
+            )
+            with self.assertRaises(AppContainerSecurityError) as ctx:
+                AppContainerProcessLauncher.spawn_suspended_appcontainer([sys.executable, "-c", "pass"], config=child_cfg)
+            self.assertIn("insufficient permissions", str(ctx.exception))
+        finally:
+            AppContainerProfileManager.revoke_path_access(target_path, sid_str)
+            AppContainerProfileManager.delete_profile(shared_name)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_preexisting_deny_ace_fails_closed(self):
+        """Pre-existing explicit DENY ACE for AppContainer SID aborts launch and fails closed."""
+        temp_dir = tempfile.mkdtemp(prefix="jarvis_deny_")
+        target_path = Path(temp_dir).resolve()
+        shared_name = f"J_Deny_{os.getpid()}_{time.time_ns()}"
+        cfg = AppContainerConfig(profile_name=shared_name, auto_cleanup_profile=False)
+        p_sid, sid_str, _ = AppContainerProfileManager.get_or_create_profile(cfg)
+        AppContainerProfileManager.free_sid(p_sid)
+
+        try:
+            # Explicitly add DENY ACE
+            subprocess.run(["icacls", str(target_path), "/deny", f"*{sid_str}:(OI)(CI)(W)"], check=True, capture_output=True)
+            child_cfg = AppContainerConfig(
+                profile_name=shared_name,
+                grant_paths=[target_path],
+                auto_cleanup_profile=False,
+            )
+            with self.assertRaises(AppContainerSecurityError) as ctx:
+                AppContainerProcessLauncher.spawn_suspended_appcontainer([sys.executable, "-c", "pass"], config=child_cfg)
+            self.assertIn("DENY ACE", str(ctx.exception))
+        finally:
+            AppContainerProfileManager.revoke_path_access(target_path, sid_str)
+            AppContainerProfileManager.delete_profile(shared_name)
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 class TestAppContainerRuntimeAccess(unittest.TestCase):

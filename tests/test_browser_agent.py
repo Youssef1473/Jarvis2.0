@@ -502,9 +502,11 @@ class TestBrowserAgentLiveChromiumSSRF(unittest.TestCase):
             # Trigger popup navigation to prohibited RFC 1918 destination (10.0.0.1)
             page.click("#popup-prohibited")
 
-            # Allow event loop to process popup creation and routing
+            # Deterministic wait for context route handler to intercept prohibited navigation
             import time
-            time.sleep(0.5)
+            deadline = time.monotonic() + 5.0
+            while violation_ref[0] is None and time.monotonic() < deadline:
+                page.wait_for_timeout(50)
 
             # Assert SSRF guard caught the prohibited initial navigation
             self.assertIsNotNone(
