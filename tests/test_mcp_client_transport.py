@@ -4,17 +4,26 @@ import subprocess
 import sys
 import time
 import unittest
-from io import BytesIO
 from unittest.mock import MagicMock, patch
 
+import psutil
+
 from jarvis.core.mcp_manager import (
+    MCP_PROTOCOL_VERSION,
     MCPClientSession,
     MCPManager,
     register_discovered_mcp_tools,
-    MCP_PROTOCOL_VERSION,
 )
-from jarvis.core.security_boundaries import TurnTaintTracker, SecurityBoundaryViolation
-from jarvis.skills.base import SkillRegistry
+from jarvis.core.security_boundaries import (
+    DualKeyApprovalManager,
+    SecurityBoundaryViolation,
+    TurnTaintTracker,
+)
+from jarvis.skills.base import (
+    ExecutionCapability,
+    SkillRegistry,
+    _active_orchestrator_scope,
+)
 
 
 class TestMCPClientHTTPTransport(unittest.TestCase):
@@ -153,8 +162,6 @@ class TestMCPClientStdioTransport(unittest.TestCase):
             session.close()
 
     def test_stdio_assignment_failure_kills_child_fail_closed(self):
-        import psutil
-        from unittest.mock import patch
 
         spawned_pids = []
         real_popen = subprocess.Popen
@@ -187,8 +194,6 @@ class TestMCPClientStdioTransport(unittest.TestCase):
         self.assertFalse(psutil.pid_exists(pid), f"MCP child PID {pid} survived failed Job Object assignment!")
 
     def test_stdio_resume_failure_kills_child_and_cleans_handle(self):
-        import psutil
-        from unittest.mock import patch
 
         spawned_pids = []
         real_popen = subprocess.Popen
@@ -221,8 +226,6 @@ class TestMCPClientStdioTransport(unittest.TestCase):
         self.assertFalse(psutil.pid_exists(pid), f"MCP child PID {pid} survived failed resume!")
 
     def test_stdio_suspended_creation_flags_on_windows(self):
-        from unittest.mock import patch
-        import subprocess
 
         called_flags = []
         real_popen = subprocess.Popen
@@ -241,7 +244,7 @@ class TestMCPClientStdioTransport(unittest.TestCase):
             with patch("subprocess.Popen", side_effect=tracked_popen):
                 try:
                     session.initialize(timeout=1.0)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
             self.assertTrue(len(called_flags) > 0)
             # CREATE_SUSPENDED is 0x4
@@ -330,7 +333,7 @@ class TestMCPManager(unittest.TestCase):
 
             # Check that GITHUB_TOKEN environment variable was expanded
             calls = mock_connect.call_args_list
-            github_call = [c for c in calls if c[0][0] == "github"][0]
+            github_call = next(c for c in calls if c[0][0] == "github")
             passed_env = github_call[1].get("env", {})
             self.assertEqual(passed_env.get("GITHUB_PERSONAL_ACCESS_TOKEN"), "ghp_mocktoken123")
 
@@ -366,6 +369,155 @@ class TestMCPManager(unittest.TestCase):
         self.assertIn("PATH", called_env)
 
         session.close()
+
+
+class TestMCPConsequentialToolAuthorization(unittest.TestCase):
+    """Proves authorization invariants, risk classification, capability gating, and taint propagation for MCP tools."""
+
+    def setUp(self):
+        self.tracker = TurnTaintTracker.get_instance()
+        self.tracker.reset_turn()
+        self.approval_mgr = DualKeyApprovalManager.get_instance()
+        self.approval_mgr.reset()
+
+    def tearDown(self):
+        self.tracker.reset_turn()
+        self.approval_mgr.reset()
+
+    def test_chrome_devtools_consequential_tool_metadata_and_risk(self):
+        """Consequential code-execution tools are registered with risk_level=2, UI tools with risk_level=1."""
+        session = MagicMock(spec=MCPClientSession)
+        session.name = "chrome_devtools"
+        session.list_tools.return_value = [
+            {"name": "evaluate_script", "description": "Executes JavaScript in page"},
+            {"name": "click", "description": "Clicks an element"},
+            {"name": "navigate_page", "description": "Navigates to URL"},
+            {"name": "list_pages", "description": "Lists open pages"},
+        ]
+
+        registered = register_discovered_mcp_tools(session)
+        self.addCleanup(lambda: [SkillRegistry.unregister(r) for r in registered])
+
+        # evaluate_script executes arbitrary JS in browser: classified as risk_level=2 (Critical)
+        meta_eval = SkillRegistry.get_metadata("mcp_chrome_devtools_evaluate_script")
+        self.assertEqual(meta_eval.origin, "mcp")
+        self.assertEqual(meta_eval.risk_level, 2)
+        self.assertFalse(meta_eval.read_only)
+        self.assertTrue(meta_eval.external_ingestion)
+
+        # click and navigate_page: classified as risk_level=1 (Elevated/mutating)
+        meta_click = SkillRegistry.get_metadata("mcp_chrome_devtools_click")
+        self.assertEqual(meta_click.origin, "mcp")
+        self.assertEqual(meta_click.risk_level, 1)
+
+    def test_consequential_browser_action_blocked_on_untainted_turn(self):
+        """Priority 1.3 and 1.6: A consequential browser action (risk_level=2) cannot run merely because turn is untainted."""
+        session = MagicMock(spec=MCPClientSession)
+        session.name = "chrome_devtools"
+        session.list_tools.return_value = [
+            {"name": "evaluate_script", "description": "Executes JavaScript in page"}
+        ]
+        registered = register_discovered_mcp_tools(session)
+        t_name = registered[0]
+        self.addCleanup(lambda: SkillRegistry.unregister(t_name))
+
+        # Fresh untainted turn
+        self.tracker.reset_turn()
+        self.assertFalse(self.tracker.is_tainted)
+
+        # Direct execution must be blocked fail-closed by Critical Authorization Gate
+        with self.assertRaises(SecurityBoundaryViolation) as ctx:
+            SkillRegistry.execute(t_name, script="window.location = 'https://evil.com'")
+        self.assertIn("Critical Authorization Gate", str(ctx.exception))
+        # Underlying MCP handler must NOT have been called
+        self.assertFalse(session.call_tool.called)
+
+    def test_execute_with_status_cannot_bypass_authorization(self):
+        """Priority 1.2 and 1.6: execute_with_status returns security_violation and does not dispatch underlying handler."""
+        session = MagicMock(spec=MCPClientSession)
+        session.name = "chrome_devtools"
+        session.list_tools.return_value = [
+            {"name": "evaluate_script", "description": "Executes JavaScript in page"}
+        ]
+        registered = register_discovered_mcp_tools(session)
+        t_name = registered[0]
+        self.addCleanup(lambda: SkillRegistry.unregister(t_name))
+
+        self.tracker.reset_turn()
+        res = SkillRegistry.execute_with_status(t_name, script="document.cookie")
+        self.assertFalse(res.success)
+        self.assertEqual(res.error_type, "security_violation")
+        self.assertIn("Critical Authorization Gate", str(res.error_message))
+        self.assertFalse(session.call_tool.called)
+
+    def test_orchestrator_capability_authorizes_exact_bound_action_without_reuse(self):
+        """Priority 1.4: Orchestrator-issued ExecutionCapability authorizes only bound action and cannot be reused."""
+        session = MagicMock(spec=MCPClientSession)
+        session.name = "chrome_devtools"
+        session.list_tools.return_value = [
+            {"name": "evaluate_script", "description": "Executes JavaScript in page"}
+        ]
+        session.call_tool.return_value = {"result": "page_title"}
+        registered = register_discovered_mcp_tools(session)
+        t_name = registered[0]
+        self.addCleanup(lambda: SkillRegistry.unregister(t_name))
+
+        self.tracker.reset_turn()
+        # Legitimate orchestrator authorization
+        cap = ExecutionCapability.create(t_name, {"script": "document.title"}, turn_id=self.tracker.get_current_turn_id())
+        token = _active_orchestrator_scope.set(cap)
+        try:
+            res = SkillRegistry.execute(t_name, script="document.title")
+            self.assertEqual(res, {"result": "page_title"})
+            self.assertTrue(cap.is_consumed)
+            self.assertEqual(session.call_tool.call_count, 1)
+        finally:
+            _active_orchestrator_scope.reset(token)
+
+        # Attempting to replay / reuse consumed capability must fail closed
+        token2 = _active_orchestrator_scope.set(cap)
+        try:
+            with self.assertRaises(SecurityBoundaryViolation):
+                SkillRegistry.execute(t_name, script="document.title")
+            # Handler was NOT invoked a second time
+            self.assertEqual(session.call_tool.call_count, 1)
+        finally:
+            _active_orchestrator_scope.reset(token2)
+
+    def test_tainted_turn_enforces_dual_key_approval_on_consequential_action(self):
+        """Priority 1.5 and 1.6: Once tainted, Level-1 and Level-2 tools fail closed unless authorized by human grant."""
+        session = MagicMock(spec=MCPClientSession)
+        session.name = "chrome_devtools"
+        session.list_tools.return_value = [
+            {"name": "click", "description": "Clicks an element"}
+        ]
+        session.call_tool.return_value = {"status": "clicked"}
+        registered = register_discovered_mcp_tools(session)
+        t_name = registered[0]
+        self.addCleanup(lambda: SkillRegistry.unregister(t_name))
+
+        # Fresh turn
+        self.tracker.reset_turn()
+        # Ingest external untrusted data
+        self.tracker.record_ingestion("external_web_scrape", {"data": "untrusted payload"})
+        self.assertTrue(self.tracker.is_tainted)
+
+        # Direct execution of click (risk_level=1) on tainted turn is blocked
+        with self.assertRaises(SecurityBoundaryViolation) as ctx:
+            SkillRegistry.execute(t_name, selector="#submit-button")
+        self.assertIn("Dual-Key Safety Gate", str(ctx.exception))
+        self.assertFalse(session.call_tool.called)
+
+        # When human approval is granted and orchestrator issues capability, execution succeeds
+        self.approval_mgr.grant_approval(t_name, {"selector": "#submit-button"})
+        cap = ExecutionCapability.create(t_name, {"selector": "#submit-button"}, turn_id=self.tracker.get_current_turn_id())
+        token = _active_orchestrator_scope.set(cap)
+        try:
+            res = SkillRegistry.execute(t_name, selector="#submit-button")
+            self.assertEqual(res, {"status": "clicked"})
+            self.assertEqual(session.call_tool.call_count, 1)
+        finally:
+            _active_orchestrator_scope.reset(token)
 
 
 if __name__ == "__main__":

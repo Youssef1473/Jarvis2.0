@@ -528,6 +528,13 @@ def register_discovered_mcp_tools(session: MCPClientSession) -> list[str]:
         registered_name = f"mcp_{session.name}_{clean_tool_name}"
         desc = tool_spec.get("description", f"External MCP tool '{raw_name}' from server '{session.name}'.")
 
+        # Consequential code/script execution tools fail closed to risk_level=2 (Critical)
+        is_code_exec = any(
+            term in clean_tool_name
+            for term in ("evaluate_script", "execute_script", "eval_script", "exec_command", "execute_command", "run_command")
+        )
+        tool_risk = 2 if is_code_exec else 1
+
         # Closure generator binding session and tool name
         def _build_handler(sess: MCPClientSession, t_name: str, reg_name: str, doc_desc: str):
             def _handler(**kwargs):
@@ -540,11 +547,11 @@ def register_discovered_mcp_tools(session: MCPClientSession) -> list[str]:
             return _handler
 
         handler_fn = _build_handler(session, raw_name, registered_name, desc)
-        # Register with risk_level=1 (tainting & gated) and external_ingestion=True
-        SkillRegistry.register(name=registered_name, description=desc, risk_level=1, external_ingestion=True)(handler_fn)
+        # Register with risk_level=tool_risk (tainting & gated), origin="mcp", and external_ingestion=True
+        SkillRegistry.register(name=registered_name, description=desc, risk_level=tool_risk, origin="mcp", external_ingestion=True)(handler_fn)
         TurnTaintTracker.get_instance().register_ingestion_tool(registered_name)
         registered_names.append(registered_name)
-        logger.info("Registered dynamic MCP skill: %s (risk_level=1)", registered_name)
+        logger.info("Registered dynamic MCP skill: %s (risk_level=%d)", registered_name, tool_risk)
 
     return registered_names
 
