@@ -18,6 +18,13 @@ FORBIDDEN_MACRO_SKILLS: set[str] = {
     "delete_file",
     "send_email_external",
     "release_file_lock",
+    "execute_browser_javascript",
+    "create_or_update_custom_skill",
+    "delete_custom_skill",
+    "run_background_task",
+    "run_job_sandboxed_process",
+    "compile_workflow_reflex",
+    "execute_workflow_reflex",
 }
 
 
@@ -76,6 +83,16 @@ def compile_workflow_reflex(
             return {"status": "error", "reason": f"Step {idx} is missing 'skill_name'"}
         if skill in FORBIDDEN_MACRO_SKILLS:
             return {"status": "rejected", "reason": f"Skill '{skill}' is forbidden in compiled reflexes."}
+
+        meta = SkillRegistry.get_metadata(skill)
+        if meta is None:
+            return {"status": "rejected", "reason": f"Skill '{skill}' is not registered in SkillRegistry."}
+
+        if getattr(meta, "risk_level", 1) >= 2 or getattr(meta, "origin", "builtin") == "mcp":
+            return {
+                "status": "rejected",
+                "reason": f"Skill '{skill}' (risk_level={meta.risk_level}, origin={getattr(meta, 'origin', 'builtin')}) is forbidden in compiled reflexes.",
+            }
 
         validated_steps.append({
             "step_index": idx,
@@ -136,34 +153,71 @@ def execute_workflow_reflex(
     t0 = time.perf_counter()
     step_results: list[dict[str, Any]] = []
 
+    from jarvis.core.cancellation import (
+        get_current_tool_cancellation_token,
+        get_global_cancellation_token,
+    )
+    initial_cancel_token = get_current_tool_cancellation_token()
+    initial_barge_token = get_global_cancellation_token()
+
     for step in steps:
+        # Check cancellation before dispatching each step
+        tool_token = get_current_tool_cancellation_token() or initial_cancel_token
+        is_cancelled = (
+            (tool_token is not None and tool_token.is_cancelled)
+            or initial_barge_token.is_cancelled
+        )
+        if is_cancelled:
+            _record_macro_outcome(db_path, macro_name, success=False)
+            return {
+                "status": "cancelled",
+                "macro_name": macro_name,
+                "failed_step": step["step_index"],
+                "reason": "Macro execution preempted by cancellation or voice barge-in.",
+                "completed_steps": step_results,
+            }
+
         skill_name = step["skill_name"]
         static_args = step.get("static_args", {})
         expected_post = step.get("expected_post_condition", {})
 
-        tool = SkillRegistry.get_tool(skill_name)
-        if not tool:
+        # Defense-in-depth: Re-verify against direct DB injection or modified skill metadata
+        if skill_name in FORBIDDEN_MACRO_SKILLS:
             _record_macro_outcome(db_path, macro_name, success=False)
             return {
-                "status": "failed",
+                "status": "security_denied",
                 "macro_name": macro_name,
                 "failed_step": step["step_index"],
-                "reason": f"Tool '{skill_name}' not found in registry",
+                "reason": f"Skill '{skill_name}' is forbidden in compiled reflexes.",
                 "completed_steps": step_results,
             }
 
-        try:
-            res = tool(**static_args)
-            step_results.append({"step": step["step_index"], "skill": skill_name, "result": res})
-        except Exception as err:
+        meta = SkillRegistry.get_metadata(skill_name)
+        if meta is not None and (getattr(meta, "risk_level", 1) >= 2 or getattr(meta, "origin", "builtin") == "mcp"):
             _record_macro_outcome(db_path, macro_name, success=False)
             return {
-                "status": "failed",
+                "status": "security_denied",
                 "macro_name": macro_name,
                 "failed_step": step["step_index"],
-                "reason": f"Execution error in '{skill_name}': {err}",
+                "reason": f"Skill '{skill_name}' (risk_level={meta.risk_level}) is forbidden in compiled reflexes.",
                 "completed_steps": step_results,
             }
+
+        # Physical execution strictly routed via SkillRegistry.execute_with_status
+        skill_res = SkillRegistry.execute_with_status(skill_name, **static_args)
+        if not skill_res.success:
+            _record_macro_outcome(db_path, macro_name, success=False)
+            status_val = "security_denied" if skill_res.error_type == "security_violation" else "failed"
+            return {
+                "status": status_val,
+                "macro_name": macro_name,
+                "failed_step": step["step_index"],
+                "reason": skill_res.error_message or f"Execution error in '{skill_name}': {skill_res.result}",
+                "completed_steps": step_results,
+            }
+
+        res = skill_res.result
+        step_results.append({"step": step["step_index"], "skill": skill_name, "result": res})
 
         # Verify physical post-condition if specified
         if expected_post:
