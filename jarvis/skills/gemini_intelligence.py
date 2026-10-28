@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
 
@@ -18,11 +18,11 @@ logger = logging.getLogger("Jarvis.Skills.GeminiIntelligence")
 GEMINI_DOCS_ENDPOINT = "https://gemini-api-docs-mcp.dev"
 REQUEST_TIMEOUT_SEC = 8.0
 
-_DOCS_SEARCH_CACHE: Dict[str, Any] = {}
-_DOCS_CHUNK_CACHE: Dict[str, str] = {}
+_DOCS_SEARCH_CACHE: dict[str, Any] = {}
+_DOCS_CHUNK_CACHE: dict[str, str] = {}
 
 
-def _call_gemini_docs_mcp(method_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+def _call_gemini_docs_mcp(method_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Sends a JSON-RPC 2.0 call to the Gemini docs MCP endpoint."""
     payload = {
         "jsonrpc": "2.0",

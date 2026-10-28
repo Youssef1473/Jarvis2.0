@@ -9,11 +9,11 @@ from __future__ import annotations
 import ctypes
 import logging
 import multiprocessing as mp
-import numpy as np
 import os
 import sys
 import time
-from typing import Optional
+
+import numpy as np
 
 from jarvis.audio.shm_transport import DEFAULT_RING_NAME, ShmAudioRingTransport
 
@@ -140,9 +140,9 @@ class AudioDSPProcessClient:
     def __init__(self, shm_name: str = DEFAULT_SHM_NAME, event_name: str = DEFAULT_BARGE_IN_EVENT):
         self.shm_name = shm_name
         self.event_name = event_name
-        self.transport: Optional[ShmAudioRingTransport] = None
+        self.transport: ShmAudioRingTransport | None = None
         self.barge_in_h = None
-        self.process: Optional[mp.Process] = None
+        self.process: mp.Process | None = None
         self.shutdown_event = mp.Event()
 
     def start(self) -> bool:

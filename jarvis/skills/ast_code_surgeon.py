@@ -12,9 +12,7 @@ import os
 import re
 import sys
 import tempfile
-import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
 
@@ -24,7 +22,7 @@ _FRAME_REGEX = re.compile(r'File "([^"]+)", line (\d+)(?:, in (\w+))?')
 _EXC_REGEX = re.compile(r'^([A-Z][a-zA-Z0-9_]*(?:Error|Exception|Warning|Interrupt|Fault|Exit)): (.*)$')
 
 
-def parse_traceback_frames(traceback_text: str, workspace_root: Optional[str] = None) -> Dict[str, Any]:
+def parse_traceback_frames(traceback_text: str, workspace_root: str | None = None) -> dict[str, Any]:
     """Parses python traceback text and isolates workspace frames, filtering standard libraries."""
     if not traceback_text:
         return {"frames": [], "exception_type": "", "exception_message": "", "innermost_frame": None}
@@ -47,7 +45,7 @@ def parse_traceback_frames(traceback_text: str, workspace_root: Optional[str] = 
                 exc_msg = parts[1]
                 break
 
-    frames: List[Dict[str, Any]] = []
+    frames: list[dict[str, Any]] = []
     ws_real = os.path.realpath(os.path.abspath(workspace_root)) if workspace_root else None
 
     for match in _FRAME_REGEX.finditer(traceback_text):
@@ -88,7 +86,7 @@ def parse_traceback_frames(traceback_text: str, workspace_root: Optional[str] = 
     }
 
 
-def localize_ast_fault_node(file_path: str, target_line: int) -> Dict[str, Any]:
+def localize_ast_fault_node(file_path: str, target_line: int) -> dict[str, Any]:
     """Isolates the innermost AST FunctionDef, AsyncFunctionDef, or ClassDef node spanning target_line."""
     if not os.path.isfile(file_path):
         return {"status": "error", "error": f"File '{file_path}' does not exist"}
@@ -172,7 +170,7 @@ def localize_ast_fault_node(file_path: str, target_line: int) -> Dict[str, Any]:
     risk_level=0,
     read_only=True,
 )
-def diagnose_test_failure_ast(traceback_output: str, workspace_root: str = ".") -> Dict[str, Any]:
+def diagnose_test_failure_ast(traceback_output: str, workspace_root: str = ".") -> dict[str, Any]:
     """Diagnoses a test failure traceback and pinpoints the AST code node to surgical precision."""
     parsed = parse_traceback_frames(traceback_output, workspace_root=workspace_root)
     innermost = parsed.get("innermost_frame")
@@ -217,9 +215,9 @@ def apply_and_verify_surgical_patch(
     replacement_code: str,
     target_test_module: str,
     workspace_root: str = ".",
-    regression_test_modules: Optional[List[str]] = None,
+    regression_test_modules: list[str] | None = None,
     timeout_sec: float = 5.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Applies candidate replacement code and verifies tests in a Win32 Job Object sandbox with automatic rollback."""
     # 1. Pre-validate syntax in memory in <0.1ms
     try:

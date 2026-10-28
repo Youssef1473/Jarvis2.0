@@ -2,21 +2,22 @@
 Leverages authenticated Google Antigravity CLI sessions to tap into Google AI Pro
 (Gemini 3.8 Flash High/Medium/Low, Claude Sonnet 4.6, Claude Opus 4.6, and staged Gemini 4 Argon) with zero API keys.
 """
-from collections import OrderedDict
 import codecs
 import contextlib
 import hashlib
 import json
 import logging
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
+from collections import OrderedDict
+from collections.abc import Callable, Generator
+from pathlib import Path
+from typing import Any
 
 from jarvis.audio.prosodic_chunker import TwoGearProsodicChunker
 from jarvis.core.stream_tool_parser import NonceGuardedStreamParser, ParsedToolCall
@@ -37,18 +38,18 @@ class AntigravityDaemon:
 
     _registry_lock = threading.RLock()
 
-    def __init__(self, agy_path: str, default_model: str, default_effort: Optional[str] = None):
+    def __init__(self, agy_path: str, default_model: str, default_effort: str | None = None):
         self.agy_path = agy_path
         self.default_model = default_model
         self.default_effort = default_effort
-        self.current_model: Optional[str] = None
-        self.current_effort: Optional[str] = None
-        self.proc: Optional[subprocess.Popen] = None
-        self._job_handle: Optional[int] = None
+        self.current_model: str | None = None
+        self.current_effort: str | None = None
+        self.proc: subprocess.Popen | None = None
+        self._job_handle: int | None = None
         self._generation: int = 0
         self._lifecycle_lock = threading.RLock()
         self.lock = threading.Lock()
-        self.conversation_id: Optional[str] = None
+        self.conversation_id: str | None = None
         self.runtime_workspace = Path("data/agy_runtime_workspace").resolve()
         self.runtime_workspace.mkdir(parents=True, exist_ok=True)
 
@@ -90,7 +91,7 @@ class AntigravityDaemon:
                 return False
 
     @staticmethod
-    def _parse_registry(raw_text: str) -> Optional[Dict[str, Any]]:
+    def _parse_registry(raw_text: str) -> dict[str, Any] | None:
         """Parses raw text from .agy_lock into a normalized versioned registry dict.
         Returns None if text cannot be safely parsed into a valid lease structure.
         """
@@ -101,7 +102,7 @@ class AntigravityDaemon:
             if isinstance(data, dict):
                 # 1. Versioned multi-lease format: {"version": 1, "leases": {"101": {...}}}
                 if data.get("version") == 1 and isinstance(data.get("leases"), dict):
-                    normalized_leases: Dict[str, Any] = {}
+                    normalized_leases: dict[str, Any] = {}
                     for k, v in data["leases"].items():
                         if isinstance(v, dict) and "pid" in v:
                             try:
@@ -248,7 +249,7 @@ class AntigravityDaemon:
                         pass
 
     @classmethod
-    def _write_registry_atomic(cls, workspace: Path, registry: Dict[str, Any], pid_for_tmp: int) -> bool:
+    def _write_registry_atomic(cls, workspace: Path, registry: dict[str, Any], pid_for_tmp: int) -> bool:
         """Atomically persists registry to data/agy_runtime_workspace/.agy_lock via atomic rename."""
         lock_file = workspace / ".agy_lock"
         tmp_lock = workspace / f".agy_lock.tmp.{pid_for_tmp}.{time.time_ns()}"
@@ -277,7 +278,7 @@ class AntigravityDaemon:
                     return False
 
                 lock_file = self.runtime_workspace / ".agy_lock"
-                registry: Dict[str, Any] = {"version": 1, "leases": {}}
+                registry: dict[str, Any] = {"version": 1, "leases": {}}
                 if lock_file.exists():
                     try:
                         raw_text = lock_file.read_text(encoding="utf-8").strip()
@@ -439,8 +440,8 @@ class AntigravityDaemon:
     def _iter_unbuffered_lines(
         cls,
         proc: subprocess.Popen,
-        timeout: Optional[float] = None,
-        initial_epoch: Optional[int] = None,
+        timeout: float | None = None,
+        initial_epoch: int | None = None,
     ) -> Generator[str, None, None]:
         """Yields lines from proc.stdout with unbuffered OS reads if available, or readline fallback."""
         is_windows = sys.platform == "win32"
@@ -461,6 +462,7 @@ class AntigravityDaemon:
         if is_windows and pipe_handle is not None:
             import ctypes
             from ctypes import wintypes
+
             from jarvis.core.cancellation import GLOBAL_EPOCH_STATE
             kernel32 = ctypes.windll.kernel32
             avail_bytes = wintypes.DWORD()
@@ -555,7 +557,7 @@ class AntigravityDaemon:
         except Exception:
             pass
 
-    def start(self, model: str, effort: Optional[str] = None) -> bool:
+    def start(self, model: str, effort: str | None = None) -> bool:
         """Spawns persistent worker process with --input-format stream-json contained in a Win32 Job Object."""
         with self._lifecycle_lock:
             self.stop()
@@ -803,12 +805,12 @@ class AntigravityDaemon:
         self,
         prompt: str,
         model: str,
-        effort: Optional[str] = None,
-        sentence_callback: Optional[Callable[[str], None]] = None,
+        effort: str | None = None,
+        sentence_callback: Callable[[str], None] | None = None,
         timeout: float = 90.0,
-        turn_nonce: Optional[str] = None,
-        on_tool_call: Optional[Callable[[Any], None]] = None,
-    ) -> Optional[Dict[str, Any]]:
+        turn_nonce: str | None = None,
+        on_tool_call: Callable[[Any], None] | None = None,
+    ) -> dict[str, Any] | None:
         """Executes query turn against the persistent worker. Returns response dict or None on failure."""
         with self.lock:
             # Re-spawn if dead or configuration changed
@@ -818,9 +820,9 @@ class AntigravityDaemon:
                     return None
 
             t_start = time.perf_counter()
-            accumulated_text: List[str] = []
+            accumulated_text: list[str] = []
             speech_buffer = ""
-            final_result_data: Dict[str, Any] = {}
+            final_result_data: dict[str, Any] = {}
 
             # Wrap in stream-json user message schema
             msg = {
@@ -846,7 +848,7 @@ class AntigravityDaemon:
 
             chunker = TwoGearProsodicChunker() if sentence_callback else None
             tool_parser = NonceGuardedStreamParser(turn_nonce=turn_nonce) if turn_nonce else None
-            parsed_tools: List[ParsedToolCall] = []
+            parsed_tools: list[ParsedToolCall] = []
 
             from jarvis.core.cancellation import GLOBAL_EPOCH_STATE
             initial_epoch = int(GLOBAL_EPOCH_STATE.barge_in_epoch)
@@ -957,7 +959,7 @@ class AntigravityBridge:
     """
 
     # Comprehensive catalog of Antigravity models and convenient shorthand aliases
-    MODEL_CATALOG: Dict[str, str] = {
+    MODEL_CATALOG: dict[str, str] = {
         # Gemini 3.8 Flash Tier (Primary Active Engine - High, Medium, Low Reasoning)
         "gemini-3.8-flash": "gemini-3.8-flash-high",
         "gemini-3.8-flash-high": "gemini-3.8-flash-high",
@@ -1027,21 +1029,21 @@ class AntigravityBridge:
 
     DEFAULT_MODEL = "gemini-3.8-flash-medium"
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: dict[str, Any] | None = None):
         self.config = config or {}
         llm_cfg = self.config.get("llm", {})
         self.agy_path = self._find_agy_executable()
         self.configured_model = llm_cfg.get("antigravity_model", self.DEFAULT_MODEL)
         self.effort = llm_cfg.get("antigravity_effort", "high")
         self.last_latency_ms: float = 0.0
-        self.last_conversation_id: Optional[str] = None
+        self.last_conversation_id: str | None = None
         self.use_daemon: bool = llm_cfg.get("antigravity_use_daemon", True)
 
         self.max_warm_daemons: int = 2
         self._pool_lock = threading.Lock()
         self._cancellation_generation: int = 0
-        self._daemon_pool: OrderedDict[Tuple[str, str], AntigravityDaemon] = OrderedDict()
-        self._active_daemon: Optional[AntigravityDaemon] = None
+        self._daemon_pool: OrderedDict[tuple[str, str], AntigravityDaemon] = OrderedDict()
+        self._active_daemon: AntigravityDaemon | None = None
         self._active_oneshot_sandboxes: set[Any] = set()
         self._claude_exhausted_until: float = 0.0
         self._claude_exhaustion_reason: str = ""
@@ -1064,7 +1066,7 @@ class AntigravityBridge:
             logger.warning("Antigravity CLI ('agy') executable not found in PATH or standard directories.")
 
     @property
-    def daemon(self) -> Optional[AntigravityDaemon]:
+    def daemon(self) -> AntigravityDaemon | None:
         """Returns the active daemon instance for backward compatibility."""
         if self._active_daemon:
             return self._active_daemon
@@ -1073,7 +1075,7 @@ class AntigravityBridge:
         return None
 
     @daemon.setter
-    def daemon(self, value: Optional[AntigravityDaemon]) -> None:
+    def daemon(self, value: AntigravityDaemon | None) -> None:
         self._active_daemon = value
         if value:
             m = value.current_model or value.default_model or self.configured_model
@@ -1082,7 +1084,7 @@ class AntigravityBridge:
         else:
             self._daemon_pool.clear()
 
-    def get_or_spawn_daemon(self, model: str, effort: Optional[str] = None) -> Optional[AntigravityDaemon]:
+    def get_or_spawn_daemon(self, model: str, effort: str | None = None) -> AntigravityDaemon | None:
         """Retrieves an existing warm daemon or evicts LRU to spawn a new one (max 2 slots)."""
         if not self.use_daemon or not self.agy_path:
             return None
@@ -1192,7 +1194,7 @@ class AntigravityBridge:
         )
         return any(k in err for k in keywords)
 
-    def is_task_complex(self, prompt: str, task_mode: Optional[str] = None) -> bool:
+    def is_task_complex(self, prompt: str, task_mode: str | None = None) -> bool:
         """Evaluates whether an engineering, code, or analytical task requires high reasoning
         (Gemini 3.8 Flash High) versus standard/moderate reasoning (Gemini 3.8 Flash Medium).
 
@@ -1297,7 +1299,7 @@ class AntigravityBridge:
     def __del__(self):
         self.stop()
 
-    def _find_agy_executable(self) -> Optional[str]:
+    def _find_agy_executable(self) -> str | None:
         """Locates the agy CLI binary across PATH and standard installation paths."""
         # 1. System PATH
         found = shutil.which("agy") or shutil.which("agy.exe")
@@ -1331,7 +1333,7 @@ class AntigravityBridge:
         # Direct pass-through if exact match
         return model_name.strip() if model_name else self.DEFAULT_MODEL
 
-    def list_models(self) -> List[str]:
+    def list_models(self) -> list[str]:
         """Returns unique list of canonical models supported by the bridge."""
         seen = set()
         models = []
@@ -1341,7 +1343,7 @@ class AntigravityBridge:
                 models.append(v)
         return models
 
-    def get_candidate_cascade(self, model: str, prompt: str = "") -> List[str]:
+    def get_candidate_cascade(self, model: str, prompt: str = "") -> list[str]:
         """Builds a priority fallback cascade within the Google AI Pro fleet.
         If Claude Sonnet is selected and token-exhausted or in fallback, dynamically
         prioritizes Gemini 3.8 Flash High vs Flash Medium based on task complexity.
@@ -1379,7 +1381,7 @@ class AntigravityBridge:
         return ordered
 
     @staticmethod
-    def _matches_any_keyword(text: str, keywords: List[str]) -> bool:
+    def _matches_any_keyword(text: str, keywords: list[str]) -> bool:
         """Matches whole words or exact phrases against lowercase text."""
         for kw in keywords:
             if " " in kw or kw.endswith(" "):
@@ -1390,7 +1392,7 @@ class AntigravityBridge:
                     return True
         return False
 
-    def classify_prompt_tier(self, prompt: str, task_mode: Optional[str] = None) -> str:
+    def classify_prompt_tier(self, prompt: str, task_mode: str | None = None) -> str:
         """Determines optimal Google AI Pro model tier based on semantic intent, structural context,
         and latency constraints.
 
@@ -1475,7 +1477,7 @@ class AntigravityBridge:
             return "claude-sonnet-4-6"
         return "gemini-3.8-flash-medium"
 
-    def _build_local_fallback_response(self, prompt: str, model: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def _build_local_fallback_response(self, prompt: str, model: str | None = None) -> dict[str, Any] | None:
         """Answers a narrowly deterministic prompt when the model fleet is quota-exhausted."""
         text = (prompt or "").strip()
         if not text:
@@ -1532,15 +1534,15 @@ class AntigravityBridge:
     def generate_response(
         self,
         prompt: str,
-        model: Optional[str] = None,
+        model: str | None = None,
         system_instruction: str = "",
-        sentence_callback: Optional[Callable[[str], None]] = None,
+        sentence_callback: Callable[[str], None] | None = None,
         timeout: float = 90.0,
-        conversation_id: Optional[str] = None,
-        candidates: Optional[List[str]] = None,
-        turn_nonce: Optional[str] = None,
-        on_tool_call: Optional[Callable[[Any], None]] = None,
-    ) -> Dict[str, Any]:
+        conversation_id: str | None = None,
+        candidates: list[str] | None = None,
+        turn_nonce: str | None = None,
+        on_tool_call: Callable[[Any], None] | None = None,
+    ) -> dict[str, Any]:
         """Generates an LLM response using the authenticated Antigravity CLI.
         Supports automatic cascading pool failover within the Google AI Pro fleet.
         """
@@ -1730,8 +1732,8 @@ class AntigravityBridge:
         prompt: str,
         model: str,
         timeout: float = 90.0,
-        conversation_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        conversation_id: str | None = None,
+    ) -> dict[str, Any]:
         effort = None
         if "-high" in model:
             effort = "high"
@@ -1824,8 +1826,8 @@ class AntigravityBridge:
         model: str,
         sentence_callback: Callable[[str], None],
         timeout: float = 90.0,
-        conversation_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        conversation_id: str | None = None,
+    ) -> dict[str, Any]:
         """Executes query with --output-format stream-json, extracting text deltas
         and firing sentence_callback upon clause/sentence completions.
         """
@@ -1855,7 +1857,7 @@ class AntigravityBridge:
         t_start = time.perf_counter()
         accumulated_text = []
         speech_buffer = ""
-        final_result_data: Dict[str, Any] = {}
+        final_result_data: dict[str, Any] = {}
         sandboxed = None
         proc = None
 
@@ -2000,7 +2002,7 @@ class AntigravityBridge:
                     pass
 
     @staticmethod
-    def _extract_speech_chunk(buffer: str) -> Tuple[Optional[str], str]:
+    def _extract_speech_chunk(buffer: str) -> tuple[str | None, str]:
         """Extracts the next complete spoken sentence or natural clause from buffer."""
         m_term = re.search(r'(?<!\d)(?<!\b[A-Za-z])[.!?\n]+(?!\d)(\s+|$)', buffer)
         m_clause = re.search(r'(?:[,;—]|(?<!\d):(?!\d))(\s+|$)', buffer)

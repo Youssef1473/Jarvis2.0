@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
 from jarvis.skills.job_object_sandbox import run_sandboxed_batch
@@ -684,7 +684,7 @@ def query_codebase_graph(query: str, mode: str = "query") -> str:
         return f"Graph query error: {e}"
 
 
-def _find_ast_grep() -> Optional[Path]:
+def _find_ast_grep() -> Path | None:
     """Locates ast-grep executable across python environment, PATH, and parent workspace."""
     ast_grep_bin = Path(sys.executable).parent / "ast-grep.exe"
     if ast_grep_bin.exists():
@@ -701,7 +701,7 @@ def _find_ast_grep() -> Optional[Path]:
     return None
 
 
-def _find_ruff() -> Optional[Path]:
+def _find_ruff() -> Path | None:
     """Locates ruff executable across python environment, PATH, and parent workspace."""
     ruff_bin = Path(sys.executable).parent / "ruff.exe"
     if ruff_bin.exists():
@@ -719,7 +719,7 @@ def _find_ruff() -> Optional[Path]:
     name="ast_search_codebase",
     description="Performs ultra-fast structural AST searches across the codebase using ast-grep. Matches syntax patterns (e.g. 'def $FUNC($$$ARGS): $$$BODY', '$OBJ.method($$$ARGS)') across Python, JavaScript, or JSON in <15ms."
 )
-def ast_search_codebase(pattern: str, path: str = ".", lang: Optional[str] = None, max_lines: int = 60) -> str:
+def ast_search_codebase(pattern: str, path: str = ".", lang: str | None = None, max_lines: int = 60) -> str:
     """Performs structural AST pattern searching using ast-grep."""
     try:
         resolved_path = _resolve_workspace_path(path) if path and path != "." else WORKSPACE_DIR
@@ -779,7 +779,7 @@ def ast_search_codebase(pattern: str, path: str = ".", lang: Optional[str] = Non
     risk_level=0,
     read_only=True,
 )
-def check_code_diagnostics(target_path: str = ".", select: Optional[str] = None, max_lines: int = 50, **kwargs: Any) -> str:
+def check_code_diagnostics(target_path: str = ".", select: str | None = None, max_lines: int = 50, **kwargs: Any) -> str:
     """Runs Ruff static analysis and diagnostics on target files or directories."""
     # Reject model-supplied mutation flags outright
     if kwargs.get("fix") or kwargs.get("_fix"):

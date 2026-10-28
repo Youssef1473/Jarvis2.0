@@ -37,6 +37,10 @@ htmlcov/
 data/models/
 *.onnx
 
+# Standalone desktop binaries & external shells
+/*.exe
+
+
 # Browser debug runtime profiles & cache
 data/browser_debug_profile/
 

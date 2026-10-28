@@ -1,24 +1,26 @@
 """Hardware Thermal, Battery & System Watchdog Sentinel for Jarvis 2.0."""
-import os
-import time
 import logging
-import threading
+import os
 import subprocess
-from typing import Dict, Any, Optional, List
+import threading
+import time
+from typing import Any
+
 import psutil
+
 from jarvis.skills.base import SkillRegistry
 from jarvis.skills.os_control import get_raw_battery_info
 
 logger = logging.getLogger("Jarvis.Watchdog")
 
-_watchdog_thread: Optional[threading.Thread] = None
+_watchdog_thread: threading.Thread | None = None
 _stop_event = threading.Event()
 _watchdog_lock = threading.Lock()
 _watchdog_active = False
 
 # Hysteresis & cooldown tracking (prevent repetitive audio spam)
 _ALERT_COOLDOWN_SECONDS = 600.0  # 10 minutes
-_last_alerts: Dict[str, float] = {
+_last_alerts: dict[str, float] = {
     "battery": 0.0,
     "cpu": 0.0,
     "ram": 0.0,
@@ -50,7 +52,7 @@ def _speak_watchdog_alert(alert_message: str):
         logger.warning(f"Watchdog speech notice: {e}")
 
 
-def _query_gpu_telemetry() -> Optional[Dict[str, Any]]:
+def _query_gpu_telemetry() -> dict[str, Any] | None:
     """Reads GPU temperature and VRAM in <0.1ms via nvml.dll with nvidia-smi fallback."""
     try:
         from jarvis.skills.nvml_dxgi_vram_arbiter import audit_vram_and_thermal_budget
@@ -86,7 +88,7 @@ def _query_gpu_telemetry() -> Optional[Dict[str, Any]]:
     return None
 
 
-def _evaluate_system_health() -> List[str]:
+def _evaluate_system_health() -> list[str]:
     """Inspects all hardware telemetry and returns active warning messages."""
     global _consecutive_high_cpu
     warnings = []

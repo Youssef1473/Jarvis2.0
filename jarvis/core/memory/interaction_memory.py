@@ -7,7 +7,8 @@ import os
 import re
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 from jarvis.core.memory.vector_engine import (
     sanitize_fts5_query,
@@ -20,7 +21,7 @@ logger = logging.getLogger("Jarvis.Memory.InteractionMemory")
 class InteractionMemoryMixin:
     """Provides interaction turn recording, auto-learning heuristics, and episodic reflection."""
 
-    def log_interaction(self, user_input: str, jarvis_reply: str, tool_calls: Optional[str] = None):
+    def log_interaction(self, user_input: str, jarvis_reply: str, tool_calls: str | None = None):
         """Logs a conversation turn."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -30,7 +31,7 @@ class InteractionMemoryMixin:
             """, (user_input, jarvis_reply, tool_calls or ""))
             conn.commit()
 
-    def get_recent_interactions(self, limit: int = 8) -> List[Dict[str, Any]]:
+    def get_recent_interactions(self, limit: int = 8) -> list[dict[str, Any]]:
         """Retrieves the most recent N interaction turns in chronological order."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
@@ -43,7 +44,7 @@ class InteractionMemoryMixin:
             rows = cursor.fetchall()
             return [dict(r) for r in reversed(rows)]
 
-    def search_interactions(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def search_interactions(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         """Searches past conversation logs by keyword or phrase using FTS5 BM25 with LIKE fallback."""
         sanitized = sanitize_fts5_query(query)
         if sanitized:
@@ -90,7 +91,7 @@ class InteractionMemoryMixin:
             cursor.execute(sql, tuple(params))
             return [dict(r) for r in cursor.fetchall()]
 
-    def semantic_search_interactions(self, query: str, top_k: int = 5, min_score: float = 0.10) -> List[Dict[str, Any]]:
+    def semantic_search_interactions(self, query: str, top_k: int = 5, min_score: float = 0.10) -> list[dict[str, Any]]:
         """Searches past conversation history using semantic vector similarity."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
@@ -127,9 +128,9 @@ class InteractionMemoryMixin:
         self,
         user_text: str,
         reply_text: str,
-        groq_api_key: Optional[str] = None,
+        groq_api_key: str | None = None,
         provider: str = "groq",
-        extractor_fn: Optional[Callable[[str, str], List[Dict[str, Any]]]] = None,
+        extractor_fn: Callable[[str, str], list[dict[str, Any]]] | None = None,
     ):
         """Asynchronously analyzes user utterances and interactions to extract and persist
         user preferences, habits, active technical topics, and facts across sessions."""
@@ -148,7 +149,7 @@ class InteractionMemoryMixin:
 
         def _extract():
             try:
-                items: List[Dict[str, Any]] = []
+                items: list[dict[str, Any]] = []
                 if extractor_fn is not None:
                     try:
                         extracted = extractor_fn(user_text, reply_text)
@@ -247,7 +248,7 @@ class InteractionMemoryMixin:
 
         threading.Thread(target=_extract, daemon=True).start()
 
-    def get_context_summary(self, query: Optional[str] = None) -> str:
+    def get_context_summary(self, query: str | None = None) -> str:
         """Generates a structured, categorized summary of remembered facts for the LLM prompt.
         If a query is provided, semantically prioritizes matched knowledge at the top."""
         if not query:
@@ -335,12 +336,12 @@ class InteractionMemoryMixin:
     def recall_episodic_lessons(
         self,
         query: str,
-        tool_name: Optional[str] = None,
+        tool_name: str | None = None,
         top_k: int = 3,
         min_sim: float = 0.55,
         max_l2_distance: float = 0.90,
         k_rrf: int = 60,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Recalls relevant episodic lessons using Hybrid RRF search (FTS5 BM25 + sqlite-vec KNN)."""
         if not query:
             return []
@@ -398,8 +399,8 @@ class InteractionMemoryMixin:
         except Exception as e:
             logger.debug(f"sqlite-vec lessons KNN search fallback: {e}")
 
-        scores: Dict[int, float] = {}
-        lesson_map: Dict[int, Dict[str, Any]] = {}
+        scores: dict[int, float] = {}
+        lesson_map: dict[int, dict[str, Any]] = {}
 
         for rank, item in enumerate(fts_matches, start=1):
             l_id = item["id"]
@@ -422,10 +423,10 @@ class InteractionMemoryMixin:
 
     def consolidate_sleep_phase(
         self,
-        is_user_active_fn: Optional[Callable[[], bool]] = None,
+        is_user_active_fn: Callable[[], bool] | None = None,
         batch_size: int = 20,
-        extractor_fn: Optional[Callable[[str], Dict[str, Any]]] = None,
-    ) -> Dict[str, Any]:
+        extractor_fn: Callable[[str], dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         """Executes zero-contention sleep-phase memory consolidation on WAL snapshot."""
         from .sleep_consolidator import SleepPhaseConsolidator
         consolidator = SleepPhaseConsolidator(str(self.db_path), self.vector_engine)
@@ -438,9 +439,9 @@ class InteractionMemoryMixin:
     def distill_transcripts(
         self,
         max_turns: int = 25,
-        is_user_active_fn: Optional[Callable[[], bool]] = None,
-        extractor_fn: Optional[Callable[[str], Dict[str, Any]]] = None,
-    ) -> Dict[str, Any]:
+        is_user_active_fn: Callable[[], bool] | None = None,
+        extractor_fn: Callable[[str], dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         """Harvests unprocessed dialogue turns, scrubs credentials, and distills traits via LLM."""
         from .transcript_distiller import TranscriptDistiller
         distiller = TranscriptDistiller(str(self.db_path), self.vector_engine, self.llm_config, memory_manager=self)

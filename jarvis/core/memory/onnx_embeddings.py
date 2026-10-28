@@ -10,12 +10,10 @@ import asyncio
 import hashlib
 import logging
 import math
-import os
-from pathlib import Path
 import re
-import sys
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -32,19 +30,19 @@ DEFAULT_MODEL_DIR = Path("data/models/embeddings/bge-small-en-v1.5")
 class OnnxEmbeddingEngine:
     """Production CPU INT8 ONNX embedding engine with native 384-dim representation."""
 
-    _instance: Optional[OnnxEmbeddingEngine] = None
+    _instance: OnnxEmbeddingEngine | None = None
     _lock = threading.Lock()
 
-    def __init__(self, model_dir: Optional[Path] = None, dim: int = DEFAULT_EMBEDDING_DIM) -> None:
+    def __init__(self, model_dir: Path | None = None, dim: int = DEFAULT_EMBEDDING_DIM) -> None:
         self.model_dir = Path(model_dir) if model_dir else DEFAULT_MODEL_DIR
         self.dim = dim
-        self._session: Optional[Any] = None
-        self._tokenizer: Optional[Any] = None
+        self._session: Any | None = None
+        self._tokenizer: Any | None = None
         self._initialized = False
         self._init_lock = threading.Lock()
 
         # Semantic aliases for offline fallback
-        self._synonyms: Dict[str, List[str]] = {
+        self._synonyms: dict[str, list[str]] = {
             "editor": ["ide", "vscode", "code", "programming", "sublime", "pycharm", "cursor", "neovim", "vim"],
             "ide": ["editor", "vscode", "code", "development", "programming"],
             "code": ["programming", "script", "developer", "ide", "editor", "software"],
@@ -68,7 +66,7 @@ class OnnxEmbeddingEngine:
         }
 
     @classmethod
-    def get_instance(cls, model_dir: Optional[Path] = None, dim: int = DEFAULT_EMBEDDING_DIM) -> OnnxEmbeddingEngine:
+    def get_instance(cls, model_dir: Path | None = None, dim: int = DEFAULT_EMBEDDING_DIM) -> OnnxEmbeddingEngine:
         """Returns thread-safe singleton instance."""
         if cls._instance is None:
             with cls._lock:
@@ -143,7 +141,7 @@ class OnnxEmbeddingEngine:
         """Returns backend identifier string for schema_meta tracking."""
         return "onnx-bge-small" if self.is_available() else "offline-fallback"
 
-    def fallback_dense_vectorize(self, text: str, dim: Optional[int] = None) -> List[float]:
+    def fallback_dense_vectorize(self, text: str, dim: int | None = None) -> list[float]:
         """Calculates deterministic L2-normalized float vector for offline fallback."""
         target_dim = dim or self.dim
         if not text:
@@ -171,7 +169,7 @@ class OnnxEmbeddingEngine:
         norm = math.sqrt(sum(v * v for v in vec))
         return [v / norm for v in vec] if norm > 0 else vec
 
-    def embed(self, text: str, is_query: bool = False, dim: Optional[int] = None) -> List[float]:
+    def embed(self, text: str, is_query: bool = False, dim: int | None = None) -> list[float]:
         """Generates L2-normalized 384-dim embedding vector.
 
         Mandatory Constraint 4: Prepends asymmetric query prefix when is_query=True.
@@ -211,21 +209,21 @@ class OnnxEmbeddingEngine:
             logger.debug("ONNX inference exception (%s), falling back to lexical hash.", e)
             return self.fallback_dense_vectorize(text, dim=target_dim)
 
-    def embed_query(self, query: str, dim: Optional[int] = None) -> List[float]:
+    def embed_query(self, query: str, dim: int | None = None) -> list[float]:
         """Convenience method for embedding search queries with asymmetric prefix."""
         return self.embed(query, is_query=True, dim=dim)
 
-    def embed_document(self, doc_text: str, dim: Optional[int] = None) -> List[float]:
+    def embed_document(self, doc_text: str, dim: int | None = None) -> list[float]:
         """Convenience method for embedding stored facts/documents without query prefix."""
         return self.embed(doc_text, is_query=False, dim=dim)
 
     def embed_batch(
         self,
-        texts: List[str],
+        texts: list[str],
         batch_size: int = 64,
         is_query: bool = False,
-        dim: Optional[int] = None,
-    ) -> List[List[float]]:
+        dim: int | None = None,
+    ) -> list[list[float]]:
         """Mandatory Constraint 3: Batch encoding using tokenizer.encode_batch().
 
         Enables re-indexing 1,000+ chunks in a single transaction under 500ms.
@@ -237,7 +235,7 @@ class OnnxEmbeddingEngine:
         if not self._try_load_model():
             return [self.fallback_dense_vectorize(t, dim=target_dim) for t in texts]
 
-        results: List[List[float]] = []
+        results: list[list[float]] = []
         for i in range(0, len(texts), batch_size):
             chunk = texts[i : i + batch_size]
             prepared_chunk = [f"{BGE_QUERY_PREFIX}{t}" if is_query else t for t in chunk]
@@ -278,24 +276,24 @@ class OnnxEmbeddingEngine:
 
         return results
 
-    async def embed_async(self, text: str, is_query: bool = False, dim: Optional[int] = None) -> List[float]:
+    async def embed_async(self, text: str, is_query: bool = False, dim: int | None = None) -> list[float]:
         """Runs embedding inference inside asyncio.to_thread so main event loop is never blocked."""
         return await asyncio.to_thread(self.embed, text, is_query, dim)
 
     async def embed_batch_async(
         self,
-        texts: List[str],
+        texts: list[str],
         batch_size: int = 64,
         is_query: bool = False,
-        dim: Optional[int] = None,
-    ) -> List[List[float]]:
+        dim: int | None = None,
+    ) -> list[list[float]]:
         """Runs batch embedding inference inside asyncio.to_thread so main event loop is never blocked."""
         return await asyncio.to_thread(self.embed_batch, texts, batch_size, is_query, dim)
 
-    async def embed_query_async(self, query: str, dim: Optional[int] = None) -> List[float]:
+    async def embed_query_async(self, query: str, dim: int | None = None) -> list[float]:
         """Runs query embedding inference asynchronously."""
         return await self.embed_async(query, is_query=True, dim=dim)
 
-    async def embed_document_async(self, doc_text: str, dim: Optional[int] = None) -> List[float]:
+    async def embed_document_async(self, doc_text: str, dim: int | None = None) -> list[float]:
         """Runs document embedding inference asynchronously."""
         return await self.embed_async(doc_text, is_query=False, dim=dim)

@@ -3,27 +3,27 @@ Monitors calendar appointments, task deadlines, battery status, unread emails,
 and delivers autonomous morning standup briefings without requiring wake-words.
 """
 import asyncio
-from collections import deque
 import ctypes
-from ctypes import wintypes
 import datetime
 import logging
-from pathlib import Path
 import sys
 import threading
 import time
-from typing import Dict, Any, Set, Optional, Deque, Tuple, Callable
+from collections import deque
+from collections.abc import Callable
+from ctypes import wintypes
+from pathlib import Path
+from typing import Any
 
-from jarvis.context.flow_state_mirror import FlowStateSnapshot, FlowStateMirror
+from jarvis.context.flow_state_mirror import FlowStateMirror, FlowStateSnapshot
 from jarvis.core.cognition.cadence_tracker import MotorCadenceTracker
 from jarvis.core.cognition.habit_graph import TemporalHabitGraph
 from jarvis.core.cognition.proactive_evi import (
-    CognitiveTwinEngine,
-    TelemetrySlice,
     CognitiveState,
+    CognitiveTwinEngine,
     DeliveryModality,
+    TelemetrySlice,
 )
-
 
 logger = logging.getLogger("Jarvis.Heartbeat")
 
@@ -66,10 +66,10 @@ class JarvisHeartbeat:
     def __init__(
         self,
         orchestrator: Any = None,
-        config: Optional[Dict[str, Any]] = None,
-        flow_mirror: Optional[Any] = None,
-        tts_engine: Optional[Any] = None,
-        ast_diagnoser: Optional[Callable[[FlowStateSnapshot], Dict[str, Any]]] = None,
+        config: dict[str, Any] | None = None,
+        flow_mirror: Any | None = None,
+        tts_engine: Any | None = None,
+        ast_diagnoser: Callable[[FlowStateSnapshot], dict[str, Any]] | None = None,
         poll_interval_sec: float = 1.0,
     ):
         # Support alternative signature JarvisHeartbeat(flow_mirror, tts_engine, ast_diagnoser, poll_interval_sec)
@@ -121,7 +121,7 @@ class JarvisHeartbeat:
         self._running = False
         self._stop_event = getattr(self, '_stop_event', threading.Event())
         self._stop_event.set()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
 
         # Deduplication & Circadian Tracking State
         self._last_alerted_cmd_ts: int = 0
@@ -137,16 +137,16 @@ class JarvisHeartbeat:
             stored_alerted = ""
             if self.orchestrator and hasattr(self.orchestrator, "memory") and self.orchestrator.memory:
                 stored_alerted = self.orchestrator.memory.get_fact(f"alerted_events_{today_str}") or ""
-            self._alerted_event_ids: Set[int] = {int(x) for x in stored_alerted.split(",") if x.strip().isdigit()}
+            self._alerted_event_ids: set[int] = {int(x) for x in stored_alerted.split(",") if x.strip().isdigit()}
         except Exception:
-            self._alerted_event_ids: Set[int] = set()
-        self._alerted_task_ids: Set[int] = set()
+            self._alerted_event_ids: set[int] = set()
+        self._alerted_task_ids: set[int] = set()
 
         # Cooldown timestamps
         self._last_battery_alert = 0.0
         self._last_break_reminder = time.time()
         self._last_email_check = 0.0
-        self._last_unread_email_count: Optional[int] = None
+        self._last_unread_email_count: int | None = None
 
         # Session metrics
         self._session_start_time = time.time()
@@ -165,11 +165,11 @@ class JarvisHeartbeat:
         self._briefing_delivered_today = (last_briefing_date == today_str)
 
         # Ambient WinEventHook Daemon & Background dHash Screen Monitor (Phase P2)
-        self.window_hook_daemon: Optional[Any] = None
-        self.dhash_monitor: Optional[Any] = None
+        self.window_hook_daemon: Any | None = None
+        self.dhash_monitor: Any | None = None
 
         # Motor Cadence Tracker (Argon Dimension 1)
-        self.cadence_tracker: Optional[MotorCadenceTracker] = None
+        self.cadence_tracker: MotorCadenceTracker | None = None
         if sys.platform == "win32":
             try:
                 self.cadence_tracker = MotorCadenceTracker()
@@ -177,19 +177,19 @@ class JarvisHeartbeat:
                 logger.debug("MotorCadenceTracker initialization notice: %s", e)
 
         # Window Switch vs Title Change Tracking (Requirement 2)
-        self._window_switches: Deque[float] = deque(maxlen=300)
-        self._last_hwnd: Optional[int] = None
+        self._window_switches: deque[float] = deque(maxlen=300)
+        self._last_hwnd: int | None = None
 
         # Dwell-time IDE Focus Tracking (Requirement 2)
-        self._focus_intervals: Deque[Tuple[float, float, bool]] = deque(maxlen=300)
+        self._focus_intervals: deque[tuple[float, float, bool]] = deque(maxlen=300)
         self._current_window_start: float = time.time()
         self._current_window_is_ide: bool = False
 
         # Decaying Active Debug Signals (120s TTL - Requirement 3)
-        self._debug_signals: Deque[float] = deque(maxlen=200)
+        self._debug_signals: deque[float] = deque(maxlen=200)
 
         # Cognitive State Tracking
-        self._last_cognitive_state: Optional[CognitiveState] = None
+        self._last_cognitive_state: CognitiveState | None = None
 
         # Temporal Habit Graph (Argon Dimension 1.3)
         db_path = "data/jarvis_memory.db"
@@ -279,7 +279,7 @@ class JarvisHeartbeat:
         t_lower = title.lower()
         return any(p in t_lower for p in cls.IDE_DETECTION_PATTERNS)
 
-    def record_debug_signal(self, timestamp: Optional[float] = None) -> None:
+    def record_debug_signal(self, timestamp: float | None = None) -> None:
         """Records an observed active debugging signal (test failure, debugger window, stack trace)."""
         ts = timestamp if timestamp is not None else time.time()
         self._debug_signals.append(ts)
@@ -655,7 +655,7 @@ class JarvisHeartbeat:
         self._consecutive_fail_count += 1
 
         # 1. Generate fast AST diff diagnosis off the main loop if available
-        diagnosis_payload: Dict[str, Any] = {
+        diagnosis_payload: dict[str, Any] = {
             "cmd": snap.last_terminal_cmd or "unknown",
             "exit_code": snap.last_exit_code,
             "active_file": snap.active_file_path,
@@ -1000,7 +1000,7 @@ class JarvisHeartbeat:
         except Exception as e:
             logger.debug(f"Could not persist alerted event id {eid}: {e}")
 
-    def _parse_time(self, timestr: str, created_at: Optional[str] = None) -> Optional[datetime.datetime]:
+    def _parse_time(self, timestr: str, created_at: str | None = None) -> datetime.datetime | None:
         """Parses various date/time formats into a datetime object."""
         timestr = timestr.strip()
         now = datetime.datetime.now()

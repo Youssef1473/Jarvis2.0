@@ -5,18 +5,18 @@ into SQLite episodic memory (data/jarvis_memory.db) operating under WAL mode.
 Provides incremental delta tracking (mtime + SHA-256) and thread-isolated execution
 to guarantee zero audio micro-stutters or lockups on the CUDA voice pipeline.
 """
-from dataclasses import dataclass, field
 import hashlib
 import json
 import logging
 import os
-from pathlib import Path
 import queue
 import re
 import sqlite3
 import threading
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from jarvis.core.memory import sanitize_fts5_query
 
@@ -31,9 +31,9 @@ class ObsidianChunk:
     breadcrumb: str
     content: str
     chunk_index: int
-    tags: List[str] = field(default_factory=list)
-    wiki_links: List[str] = field(default_factory=list)
-    frontmatter: Dict[str, Any] = field(default_factory=dict)
+    tags: list[str] = field(default_factory=list)
+    wiki_links: list[str] = field(default_factory=list)
+    frontmatter: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -55,7 +55,7 @@ class ObsidianNoteParser:
     HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 
     @classmethod
-    def parse_frontmatter(cls, content: str) -> Tuple[Dict[str, Any], str]:
+    def parse_frontmatter(cls, content: str) -> tuple[dict[str, Any], str]:
         """Separates YAML frontmatter from Markdown body, returning parsed dict and clean body."""
         match = cls.FRONTMATTER_PATTERN.match(content)
         if not match:
@@ -64,7 +64,7 @@ class ObsidianNoteParser:
         raw_yaml = match.group(1).strip()
         body = content[match.end():]
 
-        parsed: Dict[str, Any] = {}
+        parsed: dict[str, Any] = {}
         # 1. Attempt PyYAML parsing
         try:
             import yaml
@@ -97,9 +97,9 @@ class ObsidianNoteParser:
         return parsed, body
 
     @classmethod
-    def extract_wiki_links(cls, content: str) -> List[str]:
+    def extract_wiki_links(cls, content: str) -> list[str]:
         """Extracts unique referenced wiki-link targets (e.g. [[Target Note|Alias]] -> Target Note)."""
-        links: Set[str] = set()
+        links: set[str] = set()
         for m in cls.WIKILINK_PATTERN.finditer(content):
             target = m.group(1).strip()
             if target:
@@ -107,10 +107,10 @@ class ObsidianNoteParser:
         return sorted(links)
 
     @classmethod
-    def extract_inline_tags(cls, content: str) -> List[str]:
+    def extract_inline_tags(cls, content: str) -> list[str]:
         """Extracts inline hash tags (e.g. #architecture #audio) excluding markdown headings."""
         tag_pattern = re.compile(r"(?:^|\s)#([a-zA-Z0-9_\-\/]+)\b")
-        tags: Set[str] = set()
+        tags: set[str] = set()
         for m in tag_pattern.finditer(content):
             tag = m.group(1).strip()
             # Guard against hex colors or pure numbers
@@ -124,21 +124,21 @@ class ObsidianNoteParser:
         rel_path: str,
         content: str,
         max_chunk_chars: int = 1200,
-    ) -> List[ObsidianChunk]:
+    ) -> list[ObsidianChunk]:
         """Parses and chunks a note hierarchically by Markdown headings into structured units."""
         frontmatter, body = cls.parse_frontmatter(content)
         note_title = frontmatter.get("title") or Path(rel_path).stem
         global_tags = list(frontmatter.get("tags", []))
         global_links = cls.extract_wiki_links(body)
 
-        chunks: List[ObsidianChunk] = []
+        chunks: list[ObsidianChunk] = []
         lines = body.splitlines(keepends=True)
 
         current_heading = "Overview"
-        current_lines: List[str] = []
+        current_lines: list[str] = []
         chunk_idx = 0
 
-        def _flush_section(heading: str, sec_lines: List[str]):
+        def _flush_section(heading: str, sec_lines: list[str]):
             nonlocal chunk_idx
             sec_text = "".join(sec_lines).strip()
             if not sec_text:
@@ -165,7 +165,7 @@ class ObsidianNoteParser:
 
             # Sub-split long section by paragraphs
             paragraphs = re.split(r"\n\s*\n", sec_text)
-            current_sub: List[str] = []
+            current_sub: list[str] = []
             current_len = 0
 
             for p in paragraphs:
@@ -232,7 +232,7 @@ class ObsidianContextSyncEngine:
     def __init__(
         self,
         vault_path: Path | str,
-        db_path: Optional[Path | str] = None,
+        db_path: Path | str | None = None,
         sync_interval: float = 15.0,
         batch_size: int = 50,
         max_chunk_chars: int = 1200,
@@ -247,19 +247,19 @@ class ObsidianContextSyncEngine:
         self.max_chunk_chars = int(max_chunk_chars)
 
         # In-memory fast delta cache: rel_path -> (mtime, sha256)
-        self._stat_cache: Dict[str, Tuple[float, str]] = {}
+        self._stat_cache: dict[str, tuple[float, str]] = {}
         self._cache_lock = threading.Lock()
 
         # WAL-safeguarded asynchronous database queue
-        self._db_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(maxsize=1000)
+        self._db_queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=1000)
 
         # Thread isolation & lifecycle primitives
         self._stop_event = threading.Event()
         self._sync_trigger = threading.Event()
         self._is_running = False
 
-        self._db_thread: Optional[threading.Thread] = None
-        self._scan_thread: Optional[threading.Thread] = None
+        self._db_thread: threading.Thread | None = None
+        self._scan_thread: threading.Thread | None = None
 
     def start(self):
         """Launches the dedicated database writer thread and background scanner thread."""
@@ -416,7 +416,7 @@ class ObsidianContextSyncEngine:
         self._init_db_schema(conn)
         self._load_persisted_state(conn)
 
-        batch_ops: List[Dict[str, Any]] = []
+        batch_ops: list[dict[str, Any]] = []
 
         def _flush_batch():
             nonlocal batch_ops
@@ -430,7 +430,7 @@ class ObsidianContextSyncEngine:
                             f_path = op["file_path"]
                             f_hash = op["file_hash"]
                             mtime = op["mtime"]
-                            chunks: List[ObsidianChunk] = op["chunks"]
+                            chunks: list[ObsidianChunk] = op["chunks"]
 
                             # Delete existing chunks for this note
                             conn.execute("DELETE FROM obsidian_chunks WHERE file_path = ?", (f_path,))
@@ -522,7 +522,7 @@ class ObsidianContextSyncEngine:
         if not self.vault_path.exists() or not self.vault_path.is_dir():
             return stats
 
-        discovered_rel_paths: Set[str] = set()
+        discovered_rel_paths: set[str] = set()
 
         # 1. Fast recursive filesystem traversal using os.scandir
         def _scan_dir(current_dir: Path):
@@ -594,7 +594,7 @@ class ObsidianContextSyncEngine:
                         f_path = op["file_path"]
                         f_hash = op["file_hash"]
                         mtime = op["mtime"]
-                        chunks: List[ObsidianChunk] = op["chunks"]
+                        chunks: list[ObsidianChunk] = op["chunks"]
 
                         conn.execute("DELETE FROM obsidian_chunks WHERE file_path = ?", (f_path,))
                         insert_rows = [
@@ -686,8 +686,8 @@ class ObsidianContextSyncEngine:
         self,
         query: str,
         limit: int = 5,
-        tag_filter: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        tag_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Queries Obsidian episodic context chunks using FTS5 BM25 ranking with keyword hit-density fallback."""
         sanitized = sanitize_fts5_query(query)
         if sanitized:
@@ -701,7 +701,7 @@ class ObsidianContextSyncEngine:
                         JOIN obsidian_chunks c ON fts.rowid = c.id
                         WHERE obsidian_chunks_fts MATCH ?
                     """
-                    params: List[Any] = [sanitized]
+                    params: list[Any] = [sanitized]
                     if tag_filter:
                         sql += " AND c.tags LIKE ?"
                         params.append(f"%{tag_filter}%")
@@ -740,8 +740,8 @@ class ObsidianContextSyncEngine:
                 return []
 
             sql = "SELECT id, file_path, note_title, breadcrumb, content, tags, wiki_links FROM obsidian_chunks"
-            params: List[Any] = []
-            conditions: List[str] = []
+            params: list[Any] = []
+            conditions: list[str] = []
 
             if tag_filter:
                 conditions.append("tags LIKE ?")

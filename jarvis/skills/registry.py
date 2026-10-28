@@ -1,14 +1,14 @@
 """Re-exports for SkillRegistry and speculative metadata types."""
 from jarvis.skills.base import (
-    SkillRegistry,
-    SkillMetadata,
-    SpeculationForbiddenError,
     ResourceScope,
+    SkillMetadata,
+    SkillRegistry,
+    SpeculationForbiddenError,
 )
 
 __all__ = [
-    "SkillRegistry",
-    "SkillMetadata",
-    "SpeculationForbiddenError",
     "ResourceScope",
+    "SkillMetadata",
+    "SkillRegistry",
+    "SpeculationForbiddenError",
 ]

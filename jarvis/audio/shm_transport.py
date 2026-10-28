@@ -42,10 +42,9 @@ would need explicit barriers.
 """
 from __future__ import annotations
 
-from multiprocessing import shared_memory
 import sys
 import threading
-from typing import Dict
+from multiprocessing import shared_memory
 
 import numpy as np
 
@@ -119,7 +118,7 @@ class ShmAudioRingTransport:
         name: str = DEFAULT_RING_NAME,
         capacity_samples: int = 24000 * 10,
         sample_rate: int = 24000,
-    ) -> "ShmAudioRingTransport":
+    ) -> ShmAudioRingTransport:
         """Creates the ring, or attaches if another party (TTS producer or DSP client) already did.
 
         Both ends call this, so startup order does not matter and neither side
@@ -151,7 +150,7 @@ class ShmAudioRingTransport:
         return int(self._hdr[_EPOCH])
 
     @property
-    def stats(self) -> Dict[str, int]:
+    def stats(self) -> dict[str, int]:
         """Consumer-side counters: overrun resyncs and samples dropped by barge-in."""
         return {"overruns": self._overruns, "barge_in_dropped": self._barge_in_dropped}
 
@@ -224,8 +223,7 @@ class ShmAudioRingTransport:
                 # Producer lapped the consumer: skip forward, keep some headroom.
                 self._overruns += 1
                 read_idx = max(write_idx, claim_idx) - cap + self._guard
-                if read_idx > write_idx:
-                    read_idx = write_idx
+                read_idx = min(read_idx, write_idx)
 
             unread = write_idx - read_idx
             if unread <= 0:

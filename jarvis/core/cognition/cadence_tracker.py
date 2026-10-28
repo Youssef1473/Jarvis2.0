@@ -9,14 +9,14 @@ Only timestamps and boolean backspace indicators (vkCode == 0x08) are recorded.
 """
 from __future__ import annotations
 
-from collections import deque
 import ctypes
-from ctypes import wintypes
 import logging
 import sys
 import threading
 import time
-from typing import Any, Deque, Optional, Set, Tuple
+from collections import deque
+from ctypes import wintypes
+from typing import Any
 
 from jarvis.core.win32_affinity import (
     MASK_ECORE_BACKGROUND,
@@ -79,16 +79,16 @@ class MotorCadenceTracker:
     def __init__(self, window_seconds: float = 60.0) -> None:
         self.window_seconds = window_seconds
         # Rolling deque of (timestamp, is_backspace)
-        self._events: Deque[Tuple[float, bool]] = deque(maxlen=4000)
+        self._events: deque[tuple[float, bool]] = deque(maxlen=4000)
         # Set of currently depressed virtual key codes (for auto-repeat filtering)
-        self._held_keys: Set[int] = set()
+        self._held_keys: set[int] = set()
 
         self._running = False
-        self._thread: Optional[threading.Thread] = None
-        self._thread_id: Optional[int] = None
+        self._thread: threading.Thread | None = None
+        self._thread_id: int | None = None
         self._hook = None
         # Persistent reference to C callback preventing Python GC collection
-        self._hook_proc: Optional[Any] = None
+        self._hook_proc: Any | None = None
 
     def start(self) -> bool:
         """Starts the low-level keyboard hook thread."""
@@ -136,12 +136,12 @@ class MotorCadenceTracker:
         self._hook_proc = None
         logger.info("MotorCadenceTracker cleanly terminated.")
 
-    def record_keystroke(self, is_backspace: bool = False, timestamp: Optional[float] = None) -> None:
+    def record_keystroke(self, is_backspace: bool = False, timestamp: float | None = None) -> None:
         """Directly registers a keystroke event (used for testing or synthetic simulation)."""
         ts = timestamp if timestamp is not None else time.time()
         self._events.append((ts, is_backspace))
 
-    def get_cadence(self, window_seconds: Optional[float] = None) -> Tuple[float, float]:
+    def get_cadence(self, window_seconds: float | None = None) -> tuple[float, float]:
         """Calculates current (KPM, backspace_ratio) over the specified rolling time window.
 
         Returns:

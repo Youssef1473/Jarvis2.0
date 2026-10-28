@@ -13,7 +13,6 @@ Provides dual-cadence phrase emission and speculative clause chunking for neural
 from __future__ import annotations
 
 import re
-from typing import List, Optional
 
 _MD_STRIP_RE = re.compile(r"[*_`#~>|]+")
 _SNAKE_CASE_RE = re.compile(r"\b([a-z0-9]+)_([a-z0-9_]+)\b")
@@ -73,13 +72,13 @@ class TwoGearProsodicChunker:
         """Returns True if the internal buffer contains no text."""
         return len(self._buffer.strip()) == 0
 
-    def feed(self, text_delta: str) -> List[str]:
+    def feed(self, text_delta: str) -> list[str]:
         """Ingests a text delta from the LLM stream and yields ready prosodic chunks."""
         if not text_delta:
             return []
 
         self._buffer += text_delta
-        out: List[str] = []
+        out: list[str] = []
 
         while True:
             pattern = _GEAR1_SPLIT_RE if self._chunks_emitted == 0 else _GEAR2_SPLIT_RE
@@ -104,14 +103,14 @@ class TwoGearProsodicChunker:
 
         return out
 
-    def feed_tokens(self, tokens: List[str]) -> List[str]:
+    def feed_tokens(self, tokens: list[str]) -> list[str]:
         """Feeds a sequence of tokens iteratively."""
-        chunks: List[str] = []
+        chunks: list[str] = []
         for token in tokens:
             chunks.extend(self.feed(token))
         return chunks
 
-    def flush(self) -> List[str]:
+    def flush(self) -> list[str]:
         """Flushes and yields any remaining text at stream conclusion."""
         rem = self._buffer.strip()
         self.reset()
@@ -165,13 +164,13 @@ class StreamingSentenceChunker:
         """Returns True if the internal buffer contains no text."""
         return len(self._buffer.strip()) == 0
 
-    def feed(self, token: str) -> List[str]:
+    def feed(self, token: str) -> list[str]:
         """Ingests a token from the LLM stream and yields completed synthesis chunks."""
         if not token:
             return []
 
         self._buffer += token
-        emitted: List[str] = []
+        emitted: list[str] = []
 
         while True:
             chunk = self._try_extract_chunk()
@@ -184,14 +183,14 @@ class StreamingSentenceChunker:
 
         return emitted
 
-    def feed_tokens(self, tokens: List[str]) -> List[str]:
+    def feed_tokens(self, tokens: list[str]) -> list[str]:
         """Helper to feed an iterable of tokens sequentially."""
-        chunks: List[str] = []
+        chunks: list[str] = []
         for token in tokens:
             chunks.extend(self.feed(token))
         return chunks
 
-    def flush(self) -> List[str]:
+    def flush(self) -> list[str]:
         """Flushes and yields any remaining text in the buffer when the LLM stream ends."""
         remaining = self._buffer.strip()
         self._buffer = ""
@@ -201,7 +200,7 @@ class StreamingSentenceChunker:
         clean_chunk = self._clean_phoneme_segment(remaining)
         return [clean_chunk] if clean_chunk else []
 
-    def _try_extract_chunk(self) -> Optional[str]:
+    def _try_extract_chunk(self) -> str | None:
         """Scans the internal buffer for the earliest valid clause or sentence boundary."""
         buf = self._buffer
         n = len(buf)
@@ -314,7 +313,7 @@ class StreamingSentenceChunker:
 
 
 __all__ = [
-    "sanitize_clause_for_ear",
-    "TwoGearProsodicChunker",
     "StreamingSentenceChunker",
+    "TwoGearProsodicChunker",
+    "sanitize_clause_for_ear",
 ]

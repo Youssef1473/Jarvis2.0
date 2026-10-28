@@ -8,14 +8,14 @@ import subprocess
 import sys
 import tracemalloc
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Diagnostics")
 
 
-def _find_pyspy() -> Optional[str]:
+def _find_pyspy() -> str | None:
     """Locates py-spy binary in .venv or system PATH."""
     # Check parent workspace .venv
     venv_pyspy = Path(__file__).resolve().parent.parent.parent / ".venv" / "Scripts" / "py-spy.exe"
@@ -36,7 +36,7 @@ def _find_pyspy() -> Optional[str]:
     name="profile_runtime",
     description="Profiles Jarvis's live runtime using py-spy zero-overhead sampling. Inspects active worker threads (TTS Kokoro, audio playback, brain inference), detects deadlocks or lock contention, and reports telemetry."
 )
-def profile_runtime(mode: str = "dump", target_pid: Optional[int] = None) -> str:
+def profile_runtime(mode: str = "dump", target_pid: int | None = None) -> str:
     """Runs out-of-process sampling profiler on Jarvis's Python process.
     
     Args:
@@ -47,7 +47,7 @@ def profile_runtime(mode: str = "dump", target_pid: Optional[int] = None) -> str
     pid = target_pid or os.getpid()
     pyspy_exe = _find_pyspy()
     if not pyspy_exe:
-        return f"Diagnostic profiler unavailable: py-spy was not found in the virtual environment, Sir."
+        return "Diagnostic profiler unavailable: py-spy was not found in the virtual environment, Sir."
 
     clean_mode = (mode or "dump").strip().lower()
     cmd = [pyspy_exe, "dump", "--pid", str(pid)]
@@ -175,7 +175,11 @@ def get_pipeline_latency_stats() -> str:
 )
 def jarvis_doctor(verbose: bool = True) -> str:
     """Executes full operational health check and returns synthesized diagnostic telemetry."""
-    from jarvis.core.health_check import run_system_health_check, format_health_report, format_spoken_summary
+    from jarvis.core.health_check import (
+        format_health_report,
+        format_spoken_summary,
+        run_system_health_check,
+    )
     report = run_system_health_check()
     if not verbose:
         return format_spoken_summary(report)

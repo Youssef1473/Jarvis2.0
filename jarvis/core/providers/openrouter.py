@@ -10,7 +10,8 @@ import logging
 import os
 import re
 import time
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 try:
     from openai import OpenAI
@@ -24,7 +25,7 @@ logger = logging.getLogger("Jarvis.Provider.OpenRouter")
 
 
 # Free model candidates confirmed in OpenRouter's public model catalog.
-OPENROUTER_FREE_MODELS: List[str] = [
+OPENROUTER_FREE_MODELS: list[str] = [
     "nvidia/nemotron-3.5-super-vl:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "cohere/north-mini-code:free",
@@ -33,7 +34,7 @@ OPENROUTER_FREE_MODELS: List[str] = [
     "google/gemma-4-31b-it:free",
 ]
 
-BACKUP_FREE_MODELS: List[str] = [
+BACKUP_FREE_MODELS: list[str] = [
     "liquid/lfm-2.5-2.6b:free",
     "nvidia/nemotron-3.5-lightning:free",
     "google/gemma-4-26b-a4b-it:free",
@@ -46,11 +47,11 @@ class OpenRouterProvider(BaseProvider):
     def __init__(
         self,
         model: str = "nvidia/nemotron-3.5-super-vl:free",
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         base_url: str = "https://openrouter.ai/api/v1",
         temperature: float = 0.2,
-        candidate_models: Optional[List[str]] = None,
-        config: Optional[Dict[str, Any]] = None,
+        candidate_models: list[str] | None = None,
+        config: dict[str, Any] | None = None,
     ):
         super().__init__(name="openrouter", model=model, config=config)
         self.api_key = (
@@ -65,9 +66,9 @@ class OpenRouterProvider(BaseProvider):
             m for m in BACKUP_FREE_MODELS if m not in base_candidates and m != model
         ]
 
-        self.client: Optional[OpenAI] = None
+        self.client: OpenAI | None = None
         if self.api_key:
-            client_kwargs: Dict[str, Any] = {
+            client_kwargs: dict[str, Any] = {
                 "base_url": self.base_url,
                 "api_key": self.api_key,
                 "default_headers": {
@@ -103,10 +104,10 @@ class OpenRouterProvider(BaseProvider):
 
     def generate_turn(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        system_instruction: Optional[str] = None,
-        sentence_callback: Optional[Callable[[str], None]] = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        system_instruction: str | None = None,
+        sentence_callback: Callable[[str], None] | None = None,
         timeout: float = 35.0,
     ) -> LLMResponse:
         """Executes one generation turn, trying later free candidates after a model error."""
@@ -135,8 +136,8 @@ class OpenRouterProvider(BaseProvider):
         last_error = None
 
         for candidate in self.candidate_models:
-            tool_calls_map: Dict[int, Dict[str, Any]] = {}
-            content_chunks: List[str] = []
+            tool_calls_map: dict[int, dict[str, Any]] = {}
+            content_chunks: list[str] = []
             chunker = StreamingSentenceChunker() if sentence_callback else None
 
             try:
@@ -189,7 +190,7 @@ class OpenRouterProvider(BaseProvider):
                 full_text = "".join(content_chunks).strip()
 
                 # Parse structured tool calls
-                final_tool_calls: List[ToolCall] = []
+                final_tool_calls: list[ToolCall] = []
                 for tc_data in tool_calls_map.values():
                     fn_name = tc_data["name"]
                     try:
@@ -249,13 +250,13 @@ class OpenRouterProvider(BaseProvider):
 
     def stream_with_hedge(
         self,
-        messages: List[Dict[str, Any]],
-        primary_model: Optional[str] = None,
-        backup_model: Optional[str] = None,
+        messages: list[dict[str, Any]],
+        primary_model: str | None = None,
+        backup_model: str | None = None,
         hedge_delay_s: float = 0.65,
-        sentence_callback: Optional[Callable[[str], None]] = None,
-        system_instruction: Optional[str] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
+        sentence_callback: Callable[[str], None] | None = None,
+        system_instruction: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
         timeout: float = 35.0,
     ) -> LLMResponse:
         """Executes a speculative hedge race between primary_model and backup_model.
@@ -265,6 +266,7 @@ class OpenRouterProvider(BaseProvider):
         """
         import queue
         import threading
+
         from jarvis.audio.prosodic_chunker import TwoGearProsodicChunker
 
         t_start = time.perf_counter()
@@ -325,11 +327,11 @@ class OpenRouterProvider(BaseProvider):
         t_primary = threading.Thread(target=_worker, args=(p_model, "primary", abort_primary), daemon=True)
         t_primary.start()
 
-        winner_tag: Optional[str] = None
+        winner_tag: str | None = None
         winner_model: str = p_model
         backup_started = False
-        t_backup: Optional[threading.Thread] = None
-        accumulated_chunks: List[str] = []
+        t_backup: threading.Thread | None = None
+        accumulated_chunks: list[str] = []
         chunker = TwoGearProsodicChunker() if sentence_callback else None
 
         # Wait for first token up to hedge_delay_s

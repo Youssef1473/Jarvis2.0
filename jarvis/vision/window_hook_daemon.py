@@ -6,11 +6,12 @@ eliminating periodic GetForegroundWindow() polling with 0.00% idle CPU overhead.
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
 import logging
 import sys
 import threading
-from typing import Any, Callable, List, Optional
+from collections.abc import Callable
+from ctypes import wintypes
+from typing import Any
 
 from jarvis.core.win32_affinity import (
     MASK_ECORE_BACKGROUND,
@@ -55,15 +56,15 @@ class WinEventHookDaemon:
     """Manages low-overhead Win32 event hooks for instant window focus and title transitions."""
 
     def __init__(self) -> None:
-        self._listeners: List[Callable[[int, int, str], None]] = []
+        self._listeners: list[Callable[[int, int, str], None]] = []
         self._listener_lock = threading.Lock()
         self._running = False
-        self._thread: Optional[threading.Thread] = None
-        self._hook_thread_id: Optional[int] = None
-        self._hook1: Optional[int] = None
-        self._hook2: Optional[int] = None
+        self._thread: threading.Thread | None = None
+        self._hook_thread_id: int | None = None
+        self._hook1: int | None = None
+        self._hook2: int | None = None
         # Mandatory constraint: persistent reference on self to prevent Python GC collecting C callback
-        self._win_event_proc: Optional[Any] = None
+        self._win_event_proc: Any | None = None
 
     def add_listener(self, callback: Callable[[int, int, str], None]) -> None:
         """Registers a callback(hwnd, event_id, window_title) for window transitions."""
@@ -87,8 +88,8 @@ class WinEventHookDaemon:
                 buf = ctypes.create_unicode_buffer(length + 1)
                 ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
                 return buf.value.strip()
-        except Exception:
-            pass
+        except (OSError, ValueError) as err:
+            logger.debug("GetWindowTextW query notice for hwnd %s: %s", hwnd, err)
         return ""
 
     def _event_callback(
@@ -117,7 +118,7 @@ class WinEventHookDaemon:
         for listener in listeners:
             try:
                 listener(hwnd, event, title)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Protect WinEvent pump thread against subscriber callback failures
                 logger.debug("Error in window event listener: %s", e)
 
     def _pump_loop(self) -> None:
@@ -213,8 +214,8 @@ class WinEventHookDaemon:
             try:
                 # Mandatory constraint: Post WM_QUIT (0x0012) to hook thread to cleanly unblock GetMessageW
                 ctypes.windll.user32.PostThreadMessageW(self._hook_thread_id, WM_QUIT, 0, 0)
-            except Exception as e:
-                logger.debug("PostThreadMessageW error: %s", e)
+            except (OSError, AttributeError) as e:
+                logger.debug("PostThreadMessageW notice: %s", e)
 
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=timeout)

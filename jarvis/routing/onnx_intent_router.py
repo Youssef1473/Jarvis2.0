@@ -1,14 +1,13 @@
 """Sub-millisecond ONNX Edge Intent Router and Slot Extractor for Jarvis 2.0."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import logging
 import math
-import os
-from pathlib import Path
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from pathlib import Path
+
 import numpy as np
 
 logger = logging.getLogger("Jarvis.Routing.ONNX")
@@ -31,32 +30,32 @@ class IntentPrediction:
     """Output of the sub-millisecond edge intent classifier and slot extractor."""
     intent: str
     intent_logits: np.ndarray
-    calibrated_probs: Dict[str, float]
+    calibrated_probs: dict[str, float]
     top1_prob: float
     top2_prob: float
     margin: float
     energy: float
-    slots: Dict[str, str]
-    slot_confidences: Dict[str, float]
+    slots: dict[str, str]
+    slot_confidences: dict[str, float]
     latency_ms: float
 
 
 class ONNXIntentRouter:
     """Sub-millisecond encoder router for local edge intent dispatch and slot extraction."""
 
-    _instance: Optional[ONNXIntentRouter] = None
+    _instance: ONNXIntentRouter | None = None
 
     def __init__(
         self,
-        model_path: Optional[Path | str] = None,
+        model_path: Path | str | None = None,
         temperature: float = DEFAULT_TEMPERATURE,
         energy_threshold: float = DEFAULT_ENERGY_THRESHOLD,
     ):
         self.model_path = Path(model_path) if model_path else DEFAULT_MODEL_DIR / "bge_micro_intent.onnx"
         self.temperature = temperature
         self.energy_threshold = energy_threshold
-        self._tool_data_cache: Dict[str, Tuple[frozenset[str], bool, bool, bool, bool, bool, bool]] = {}
-        self._cached_skills: List[str] = []
+        self._tool_data_cache: dict[str, tuple[frozenset[str], bool, bool, bool, bool, bool, bool]] = {}
+        self._cached_skills: list[str] = []
         self._cached_skills_count: int = -1
         self.session = None
         self._init_session()
@@ -84,10 +83,10 @@ class ONNXIntentRouter:
                 logger.debug("ONNX Runtime session init failed: %s; using fast vector projection", e)
                 self.session = None
 
-    def _extract_slots(self, text: str) -> Tuple[Dict[str, str], Dict[str, float]]:
+    def _extract_slots(self, text: str) -> tuple[dict[str, str], dict[str, float]]:
         """Fast regex and heuristic token slot extractor for files, lines, and symbols."""
-        slots: Dict[str, str] = {}
-        confidences: Dict[str, float] = {}
+        slots: dict[str, str] = {}
+        confidences: dict[str, float] = {}
 
         # 1. File path slot
         file_match = RE_FILE.search(text)
@@ -117,7 +116,7 @@ class ONNXIntentRouter:
 
         return slots, confidences
 
-    def route(self, query: str, candidate_skills: Optional[List[str]] = None) -> IntentPrediction:
+    def route(self, query: str, candidate_skills: list[str] | None = None) -> IntentPrediction:
         """Evaluates query and returns intent probabilities, margin, energy, and slots."""
         start_ns = time.monotonic_ns()
         from jarvis.skills.base import SkillRegistry
@@ -146,7 +145,7 @@ class ONNXIntentRouter:
         q_has_search = "search" in query_words
         q_has_test = "test" in query_words
 
-        logits_list: List[float] = []
+        logits_list: list[float] = []
         for s in skills:
             data = self._tool_data_cache.get(s)
             if data is None:

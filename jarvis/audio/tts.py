@@ -1,40 +1,37 @@
 """Text-to-Speech synthesis using Kokoro-82M neural TTS, Windows SAPI5, and Edge-TTS."""
 import asyncio
-import io
 import logging
 import os
 import queue
 import re
-import sys
 import threading
 import time
 from collections import deque
-from typing import Dict, Any, Optional, List, Tuple
-import sounddevice as sd
-import soundfile as sf
+from typing import Any
+
 import numpy as np
+import sounddevice as sd
 import win32com.client
 
+from jarvis.audio.affinity import pin_and_elevate_current_thread
 from jarvis.audio.chunker import StreamingSentenceChunker
 from jarvis.audio.ring_buffer import AudioRingBuffer, apply_cinematic_jarvis_dsp
-from jarvis.audio.affinity import pin_and_elevate_current_thread
 from jarvis.core.win32_affinity import (
-    MASK_PCORE_AUDIO_ISOLATED,
     MASK_PCORE_COMPUTE,
     THREAD_PRIORITY_ABOVE_NORMAL,
-    pin_current_thread_to_mask,
     elevate_audio_thread_mmcss,
+    pin_current_thread_to_mask,
 )
 
 logger = logging.getLogger("Jarvis.TTS")
 
 __all__ = [
-    "TextToSpeech",
-    "StreamingSentenceChunker",
     "AudioRingBuffer",
     "StatefulPolyphaseUpsampler",
-    "create_bettanys_jarvis_voice_vector",
+    "StreamingSentenceChunker",
+    "TextToSpeech",
     "apply_cinematic_jarvis_dsp",
+    "create_bettanys_jarvis_voice_vector",
 ]
 
 
@@ -43,7 +40,7 @@ class StatefulPolyphaseUpsampler:
     streaming 24kHz prosodic chunks to 48kHz WASAPI DMA buffers.
     """
 
-    __slots__ = ("_up", "_down", "_pad_samples", "_tail_24k")
+    __slots__ = ("_down", "_pad_samples", "_tail_24k", "_up")
 
     def __init__(self, up: int = 2, down: int = 1, pad_samples: int = 32) -> None:
         self._up = int(up)
@@ -107,14 +104,14 @@ def _set_thread_realtime_priority(tag: str = "KokoroTTS"):
     pin_and_elevate_current_thread(tag=tag)
 
 
-_CACHED_KOKORO_SESSION: Dict[Tuple[str, str], Any] = {}
+_CACHED_KOKORO_SESSION: dict[tuple[str, str], Any] = {}
 _CACHED_KOKORO_LOCK = threading.Lock()
 
 
 class TextToSpeech:
     """Streams and plays synthesized neural audio with instant interrupt capability and local fallback."""
 
-    VOICE_PROFILES: Dict[str, Any] = {
+    VOICE_PROFILES: dict[str, Any] = {
         "jarvis_bettany": [("bm_fable", 0.50), ("bm_george", 0.30), ("bm_daniel", 0.20)],
         "bettany": [("bm_fable", 0.50), ("bm_george", 0.30), ("bm_daniel", 0.20)],
         "jarvis_classic": [("bm_george", 0.70), ("bm_daniel", 0.30)],
@@ -136,10 +133,10 @@ class TextToSpeech:
     SHUTDOWN_UNCLEAN_FAILED = "UNCLEAN_FAILED"
     SHUTDOWN_TIMEOUT_BLOCKED = "TIMEOUT_BLOCKED"
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         tts_cfg = config.get("tts", {})
         self.engine = tts_cfg.get("engine", "kokoro").lower()
-        self._voice_cache: Dict[str, Any] = {}
+        self._voice_cache: dict[str, Any] = {}
         
         # Kokoro Neural Voice Settings
         self.kokoro_voice = tts_cfg.get("kokoro_voice", "jarvis_bettany")
@@ -169,9 +166,9 @@ class TextToSpeech:
         # Streaming worker state & Speculative Voice Reflex pipeline
         self._sentence_queue: queue.Queue = queue.Queue()
         self._audio_queue: queue.Queue = queue.Queue()
-        self._synth_thread: Optional[threading.Thread] = None
-        self._playback_thread: Optional[threading.Thread] = None
-        self._output_stream: Optional[sd.OutputStream] = None
+        self._synth_thread: threading.Thread | None = None
+        self._playback_thread: threading.Thread | None = None
+        self._output_stream: sd.OutputStream | None = None
         self._stream_active = False
         self._session_word_count = 0
         self._underrun_count: int = 0
@@ -186,7 +183,7 @@ class TextToSpeech:
         # Speculative token chunker & high-throughput lock-free audio ring buffer (120s capacity at up to 48kHz)
         self._chunker = StreamingSentenceChunker()
         self._ring_buffer = AudioRingBuffer(capacity_samples=48000 * 120, ramp_samples=120)
-        self._stream_device: Optional[int] = None
+        self._stream_device: int | None = None
         self._stream_sample_rate: int = 24000
         self._synth_has_started: bool = False
         self._resampler = StatefulPolyphaseUpsampler(up=2, down=1, pad_samples=32)
@@ -208,10 +205,13 @@ class TextToSpeech:
             pass
 
         # Zero-copy shared memory transport (enabled via config or runtime fallback)
-        self._shm_transport: Optional[Any] = None
+        self._shm_transport: Any | None = None
         if tts_cfg.get("use_shm_transport", False):
             try:
-                from jarvis.audio.shm_transport import DEFAULT_RING_NAME, ShmAudioRingTransport
+                from jarvis.audio.shm_transport import (
+                    DEFAULT_RING_NAME,
+                    ShmAudioRingTransport,
+                )
                 # Attach if the DSP client already created the ring, create it otherwise.
                 self._shm_transport = ShmAudioRingTransport.open_or_create(
                     name=tts_cfg.get("shm_name", DEFAULT_RING_NAME),
@@ -275,7 +275,9 @@ class TextToSpeech:
                 # Dynamic VRAM arbiter check for RTX 3050 4GB ceiling if CUDA requested
                 if use_cuda:
                     try:
-                        from jarvis.skills.nvml_dxgi_vram_arbiter import audit_vram_and_thermal_budget
+                        from jarvis.skills.nvml_dxgi_vram_arbiter import (
+                            audit_vram_and_thermal_budget,
+                        )
                         vram_info = audit_vram_and_thermal_budget(reclaim_if_pressured=True)
                         if vram_info.get("status") == "ok":
                             free_mb = vram_info.get("vram_free_mb", 4000.0)
@@ -362,7 +364,7 @@ class TextToSpeech:
         except Exception as e:
             logger.warning(f"Local SAPI5 voice initialization failed: {e}")
 
-    def _resolve_voice(self, voice_name: Optional[str] = None) -> Any:
+    def _resolve_voice(self, voice_name: str | None = None) -> Any:
         """Resolves active voice into a string identifier or normalized blended latent style array."""
         if not self._kokoro:
             return voice_name or self.kokoro_voice
@@ -415,7 +417,7 @@ class TextToSpeech:
         except Exception as e:
             return f"Failed to set speech rate: {e}"
 
-    def get_voice_settings(self) -> Dict[str, Any]:
+    def get_voice_settings(self) -> dict[str, Any]:
         """Returns current TTS engine parameters and active voice profile."""
         return {
             "engine": self.engine,
@@ -429,7 +431,7 @@ class TextToSpeech:
     def is_speaking(self) -> bool:
         return self._is_speaking
 
-    def abort_and_partition_clauses(self) -> Tuple[List[str], List[str]]:
+    def abort_and_partition_clauses(self) -> tuple[list[str], list[str]]:
         """Partitions spoken completed clauses vs unspoken remaining clauses upon barge-in."""
         spoken = list(getattr(self, "_spoken_clauses", []))
         enqueued = list(getattr(self, "_enqueued_clauses", []))
@@ -666,7 +668,10 @@ class TextToSpeech:
                 pass
 
         try:
-            from jarvis.core.cancellation import is_barge_in_active, signal_global_barge_in
+            from jarvis.core.cancellation import (
+                is_barge_in_active,
+                signal_global_barge_in,
+            )
             if not is_barge_in_active():
                 signal_global_barge_in()
         except Exception:
@@ -813,10 +818,7 @@ class TextToSpeech:
                     chunks[-1] = chunks[-1] + " " + current.strip()
                     current = ""
             # Clause punctuation (, ; : —) emits only when clause has substantial breath weight (>= 5 words)
-            elif re.search(r'[,;:—–\n]$', current.strip()) and len(words) >= 5:
-                chunks.append(current.strip())
-                current = ""
-            elif len(words) >= 12:
+            elif re.search(r'[,;:—–\n]$', current.strip()) and len(words) >= 5 or len(words) >= 12:
                 chunks.append(current.strip())
                 current = ""
 
@@ -828,7 +830,7 @@ class TextToSpeech:
 
         return [c for c in chunks if c]
 
-    def _resolve_output_stream_params(self) -> Tuple[Optional[int], int]:
+    def _resolve_output_stream_params(self) -> tuple[int | None, int]:
         """Resolves target audio output device index and native hardware sample rate.
         Prefers Windows WASAPI endpoints at native sample rate (e.g. 48000 Hz) to eliminate
         legacy MME software buffer underruns, aliasing, and PaErrorCode -9997 invalid sample rate crashes.
@@ -968,8 +970,8 @@ class TextToSpeech:
         self._prebuffer_filled = False
         self._synth_has_started = False
         self._session_word_count = 0
-        self._spoken_clauses: List[str] = []
-        self._enqueued_clauses: List[str] = []
+        self._spoken_clauses: list[str] = []
+        self._enqueued_clauses: list[str] = []
 
         if hasattr(self, "_chunker"):
             self._chunker.reset()
@@ -1133,7 +1135,7 @@ class TextToSpeech:
             except Exception as e:
                 logger.error(f"Failed to start streaming SAPI session: {e}")
 
-    def feed_token(self, token: str) -> List[str]:
+    def feed_token(self, token: str) -> list[str]:
         """Streams an incremental LLM token into the speculative chunker.
         Immediately dispatches newly-delimited phoneme clauses to the real-time synthesis queue."""
         if not self._stream_active or self._stop_event.is_set():
@@ -1144,7 +1146,7 @@ class TextToSpeech:
             self.queue_sentence(chunk)
         return emitted_chunks
 
-    def flush_tokens(self) -> List[str]:
+    def flush_tokens(self) -> list[str]:
         """Flushes any remaining text in the speculative chunker into the synthesis queue."""
         if not self._stream_active or self._stop_event.is_set():
             return []

@@ -1,10 +1,10 @@
 """Vector search, tokenization, TF-IDF, and RRF rank fusion algorithms for Jarvis 2.0."""
 from __future__ import annotations
 
-from collections import Counter
 import math
 import re
-from typing import Any, Dict, List, Optional
+from collections import Counter
+from typing import Any
 
 _FTS_STOPWORDS = {
     'what', 'whats', 'who', 'when', 'where', 'why', 'how', 'tell', 'me', 'about',
@@ -20,7 +20,7 @@ _FTS_STOPWORDS = {
 }
 
 
-def sanitize_fts5_query(query: str) -> Optional[str]:
+def sanitize_fts5_query(query: str) -> str | None:
     """Sanitizes raw user query for safe SQLite FTS5 search.
     Removes punctuation/special FTS operators, filters conversational stopwords,
     and returns OR-delimited prefix wildcard terms, e.g. '"weather"* OR "tomorrow"*'.
@@ -50,20 +50,20 @@ def sanitize_memory_taint(text: str) -> str:
 
 
 def fuse_vec_and_fts_rrf(
-    vec_results: List[Dict[str, Any]],
-    fts_results: List[Dict[str, Any]],
+    vec_results: list[dict[str, Any]],
+    fts_results: list[dict[str, Any]],
     k: int = 60,
     max_l2_distance: float = 0.90,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Fuses vector KNN and FTS5 BM25 search results via Reciprocal Rank Fusion (RRF).
 
     Applies calibrated L2 distance gating (max_l2_distance = 0.90, S_cos >= 0.595)
     to eliminate orthogonal noise while retaining semantic synonyms.
     """
-    scores: Dict[Any, float] = {}
-    item_map: Dict[Any, Dict[str, Any]] = {}
+    scores: dict[Any, float] = {}
+    item_map: dict[Any, dict[str, Any]] = {}
 
-    def _get_key(item: Dict[str, Any], default_val: Any) -> Any:
+    def _get_key(item: dict[str, Any], default_val: Any) -> Any:
         if "key" in item:
             return item["key"]
         if "id" in item:
@@ -79,7 +79,7 @@ def fuse_vec_and_fts_rrf(
         item_map[key] = item
 
     # 2. Filter vector results by L2 distance gate
-    filtered_vec: List[Dict[str, Any]] = []
+    filtered_vec: list[dict[str, Any]] = []
     for item in vec_results:
         dist = item.get("distance")
         if dist is None:
@@ -126,7 +126,7 @@ class VectorMemoryEngine:
         "note": ["notes", "memo", "reminder", "scratchpad", "jot"],
     }
 
-    def tokenize(self, text: str) -> List[str]:
+    def tokenize(self, text: str) -> list[str]:
         """Extracts word tokens, semantic aliases, and subword n-grams."""
         if not text:
             return []
@@ -149,7 +149,7 @@ class VectorMemoryEngine:
 
         return tokens
 
-    def vectorize(self, text: str, idf_weights: Optional[Dict[str, float]] = None) -> Dict[str, float]:
+    def vectorize(self, text: str, idf_weights: dict[str, float] | None = None) -> dict[str, float]:
         """Calculates L2-normalized TF-IDF vector for a given text."""
         tokens = self.tokenize(text)
         if not tokens:
@@ -169,7 +169,7 @@ class VectorMemoryEngine:
                 vec[k] /= norm
         return vec
 
-    def compute_idf(self, corpus: List[str]) -> Dict[str, float]:
+    def compute_idf(self, corpus: list[str]) -> dict[str, float]:
         """Computes inverse document frequency across the corpus."""
         n_docs = len(corpus)
         if n_docs == 0:
@@ -186,7 +186,7 @@ class VectorMemoryEngine:
         return idf
 
     @staticmethod
-    def cosine_similarity(vec1: Dict[str, float], vec2: Dict[str, float]) -> float:
+    def cosine_similarity(vec1: dict[str, float], vec2: dict[str, float]) -> float:
         """Computes cosine similarity between two unit-normalized sparse vectors."""
         if not vec1 or not vec2:
             return 0.0
@@ -194,20 +194,26 @@ class VectorMemoryEngine:
             vec1, vec2 = vec2, vec1
         return sum(val * vec2.get(k, 0.0) for k, val in vec1.items())
 
-    def dense_vectorize(self, text: str, dim: Optional[int] = None, is_query: bool = False) -> List[float]:
+    def dense_vectorize(self, text: str, dim: int | None = None, is_query: bool = False) -> list[float]:
         """Calculates deterministic L2-normalized float vector (default native 384-dim) via OnnxEmbeddingEngine."""
-        from jarvis.core.memory.onnx_embeddings import OnnxEmbeddingEngine, DEFAULT_EMBEDDING_DIM
+        from jarvis.core.memory.onnx_embeddings import (
+            DEFAULT_EMBEDDING_DIM,
+            OnnxEmbeddingEngine,
+        )
         target_dim = dim if dim and dim > 0 else DEFAULT_EMBEDDING_DIM
         engine = OnnxEmbeddingEngine.get_instance(dim=target_dim)
         return engine.embed(text, is_query=is_query, dim=target_dim)
 
-    def embed_query(self, query: str, dim: Optional[int] = None) -> List[float]:
+    def embed_query(self, query: str, dim: int | None = None) -> list[float]:
         """Calculates query vector with asymmetric search prefix."""
         return self.dense_vectorize(query, dim=dim, is_query=True)
 
-    def embed_batch(self, texts: List[str], batch_size: int = 64, is_query: bool = False, dim: Optional[int] = None) -> List[List[float]]:
+    def embed_batch(self, texts: list[str], batch_size: int = 64, is_query: bool = False, dim: int | None = None) -> list[list[float]]:
         """Calculates batch embedding vectors using tokenizer.encode_batch()."""
-        from jarvis.core.memory.onnx_embeddings import OnnxEmbeddingEngine, DEFAULT_EMBEDDING_DIM
+        from jarvis.core.memory.onnx_embeddings import (
+            DEFAULT_EMBEDDING_DIM,
+            OnnxEmbeddingEngine,
+        )
         target_dim = dim if dim and dim > 0 else DEFAULT_EMBEDDING_DIM
         engine = OnnxEmbeddingEngine.get_instance(dim=target_dim)
         return engine.embed_batch(texts, batch_size=batch_size, is_query=is_query, dim=target_dim)

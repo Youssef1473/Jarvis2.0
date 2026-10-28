@@ -1,6 +1,6 @@
 """Safety gatekeeper for dangerous tool executions in Jarvis 2.0."""
 import re
-from typing import Dict, Any, Tuple
+from typing import Any
 
 
 class SafetyGate:
@@ -20,7 +20,7 @@ class SafetyGate:
         r"\bdel\s+/[fsq]",
     ]
 
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: dict[str, Any] = None):
         cfg = config or {}
         self.confirm_destructive = cfg.get("safety", {}).get("confirm_destructive", True)
 
@@ -32,7 +32,7 @@ class SafetyGate:
                 return True
         return False
 
-    def check_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Tuple[bool, str]:
+    def check_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> tuple[bool, str]:
         """
         Returns (is_safe, warning_message).
         If is_safe is False, Jarvis must ask for confirmation first.

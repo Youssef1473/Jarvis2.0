@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict, Optional
 from urllib.request import Request, urlopen
 
 from google import genai
@@ -16,7 +15,7 @@ logger = logging.getLogger("Jarvis.Brain.Specialist")
 class SpecialistConsultationMixin:
     """Provides user-requested secondary specialist consultations and availability inspection."""
 
-    def specialist_status(self) -> Dict[str, str]:
+    def specialist_status(self) -> dict[str, str]:
         """Return safe, non-secret availability info for the HUD."""
         llm_cfg = self.config.get("llm", {})
         specialists = llm_cfg.get("specialists", {})

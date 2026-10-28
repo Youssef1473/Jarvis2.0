@@ -1,10 +1,10 @@
 """Voice-controlled media streaming and YouTube playback for Jarvis 2.0."""
+import logging
 import re
 import urllib.parse
 import webbrowser
-import logging
+
 from jarvis.skills.base import SkillRegistry
-from jarvis.skills.os_control import launch_application
 
 logger = logging.getLogger("Jarvis.MediaDJ")
 

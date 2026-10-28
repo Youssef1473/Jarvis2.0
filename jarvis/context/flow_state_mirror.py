@@ -6,16 +6,14 @@ formatting it under the 1KB Tier 1 budget inside quarantined ambient telemetry t
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, field
 import enum
 import html
 import logging
-import os
-from pathlib import Path
 import re
 import threading
 import time
-from typing import Dict, Optional, Tuple
+from dataclasses import dataclass, field
+from pathlib import Path
 
 logger = logging.getLogger("Jarvis.Context.FlowState")
 
@@ -37,7 +35,7 @@ class ResourceScope(enum.Flag):
 class EnvironmentEpochTracker:
     """Thread-safe monotonic counter tracking environment resource mutations."""
 
-    _epochs: Dict[ResourceScope, int] = {scope: 0 for scope in ResourceScope}
+    _epochs: dict[ResourceScope, int] = {scope: 0 for scope in ResourceScope}
     _lock = threading.Lock()
 
     @classmethod
@@ -48,7 +46,9 @@ class EnvironmentEpochTracker:
                     cls._epochs[flag] = cls._epochs.get(flag, 0) + 1
             res = cls._epochs.get(scope, 0)
         try:
-            from jarvis.speculative.engine import EnvironmentEpochTracker as SpecEpochTracker
+            from jarvis.speculative.engine import (
+                EnvironmentEpochTracker as SpecEpochTracker,
+            )
             inst = SpecEpochTracker.get_instance()
             scope_name = getattr(scope, "name", str(scope))
             if "FILESYSTEM" in scope_name:
@@ -76,7 +76,7 @@ class EnvironmentEpochTracker:
             return val
 
     @classmethod
-    def get_snapshot(cls) -> Dict[ResourceScope, int]:
+    def get_snapshot(cls) -> dict[ResourceScope, int]:
         with cls._lock:
             return dict(cls._epochs)
 
@@ -86,7 +86,9 @@ class EnvironmentEpochTracker:
             for flag in ResourceScope:
                 cls._epochs[flag] = 0
         try:
-            from jarvis.speculative.engine import EnvironmentEpochTracker as SpecEpochTracker
+            from jarvis.speculative.engine import (
+                EnvironmentEpochTracker as SpecEpochTracker,
+            )
             SpecEpochTracker.get_instance().reset_instance()
         except Exception:
             pass
@@ -95,17 +97,17 @@ class EnvironmentEpochTracker:
 @dataclass
 class FlowStateSnapshot:
     """Immutable snapshot of Sir's active IDE flow state and terminal telemetry."""
-    active_file_path: Optional[str] = None
-    cursor_line: Optional[int] = None
-    selection_range: Optional[Tuple[int, int]] = None
-    enclosing_ast_symbol: Optional[str] = None
-    last_terminal_cmd: Optional[str] = None
-    last_exit_code: Optional[int] = None
-    stderr_tail: Optional[str] = None
+    active_file_path: str | None = None
+    cursor_line: int | None = None
+    selection_range: tuple[int, int] | None = None
+    enclosing_ast_symbol: str | None = None
+    last_terminal_cmd: str | None = None
+    last_exit_code: int | None = None
+    stderr_tail: str | None = None
     captured_monotonic_ns: int = field(default_factory=time.monotonic_ns)
 
 
-def extract_enclosing_ast_symbol(file_path: str, cursor_line: int, max_lines: int = 40) -> Optional[str]:
+def extract_enclosing_ast_symbol(file_path: str, cursor_line: int, max_lines: int = 40) -> str | None:
     """Extracts function/class signature and body enclosing cursor_line using ast.parse."""
     try:
         path = Path(file_path)
@@ -133,7 +135,7 @@ def extract_enclosing_ast_symbol(file_path: str, cursor_line: int, max_lines: in
         return None
 
 
-def sanitize_ambient_text(text: Optional[str]) -> str:
+def sanitize_ambient_text(text: str | None) -> str:
     """Sanitizes text by stripping injection vectors and escaping XML/HTML entities."""
     if not text:
         return ""
@@ -159,7 +161,10 @@ class VisualPrivacyGuard:
                 return True
 
         try:
-            from jarvis.skills.screen_vision import _get_active_window_details, check_visual_privacy
+            from jarvis.skills.screen_vision import (
+                _get_active_window_details,
+                check_visual_privacy,
+            )
             w_title, w_proc = _get_active_window_details()
             if w_title or w_proc:
                 alert = check_visual_privacy(w_title, w_proc)
@@ -172,7 +177,7 @@ class VisualPrivacyGuard:
 class FlowStateMirror:
     """Manages active developer flow state and formats Tier 1 quarantined telemetry."""
 
-    _instance: Optional[FlowStateMirror] = None
+    _instance: FlowStateMirror | None = None
     _lock = threading.Lock()
 
     def __init__(self):
@@ -188,13 +193,13 @@ class FlowStateMirror:
 
     def update_snapshot(
         self,
-        active_file_path: Optional[str] = None,
-        cursor_line: Optional[int] = None,
-        selection_range: Optional[Tuple[int, int]] = None,
-        last_terminal_cmd: Optional[str] = None,
-        last_exit_code: Optional[int] = None,
-        stderr_tail: Optional[str] = None,
-        enclosing_symbol: Optional[str] = None,
+        active_file_path: str | None = None,
+        cursor_line: int | None = None,
+        selection_range: tuple[int, int] | None = None,
+        last_terminal_cmd: str | None = None,
+        last_exit_code: int | None = None,
+        stderr_tail: str | None = None,
+        enclosing_symbol: str | None = None,
     ) -> FlowStateSnapshot:
         with self._snapshot_lock:
             symbol = enclosing_symbol

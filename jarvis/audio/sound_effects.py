@@ -3,15 +3,14 @@ import math
 import struct
 import wave
 import winsound
-import threading
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any
 
 
 class SoundEffects:
     """Manages audio cues (wake, think, done, alert) with zero external assets required."""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         base_dir = Path(config.get("_base_dir", "."))
         self.sounds_dir = base_dir / config.get("sounds", {}).get("dir", "data/sounds")
         self.enabled = config.get("sounds", {}).get("enabled", True)

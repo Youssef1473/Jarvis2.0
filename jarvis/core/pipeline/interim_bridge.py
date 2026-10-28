@@ -6,12 +6,12 @@ tool-use loops to eliminate awkward dead air while Kokoro-82M synthesizes speech
 import logging
 import threading
 import time
-from typing import Callable, Dict, Optional
+from collections.abc import Callable
 
 logger = logging.getLogger("Jarvis.Pipeline.InterimBridge")
 
 # Bettany status phrases engineered for ear-level TTS delivery (Kokoro-82M)
-_INTERIM_PHRASE_MAP: Dict[str, str] = {
+_INTERIM_PHRASE_MAP: dict[str, str] = {
     "web_search": "Consulting live network archives, Sir.",
     "deep_research": "Synthesizing multi-source technical intelligence, Sir.",
     "inspect_file_locks": "Interrogating Windows kernel handles for file locks, Sir.",
@@ -52,8 +52,8 @@ class InterimSpeechBridge:
 
     def __init__(
         self,
-        speak_fn: Optional[Callable[[str], None]] = None,
-        is_speaking_fn: Optional[Callable[[], bool]] = None,
+        speak_fn: Callable[[str], None] | None = None,
+        is_speaking_fn: Callable[[], bool] | None = None,
         delay_step1_sec: float = 0.75,
         delay_step_n_sec: float = 0.20,
         cooldown_sec: float = 2.8,
@@ -65,7 +65,7 @@ class InterimSpeechBridge:
         self.cooldown_sec = cooldown_sec
 
         self._lock = threading.Lock()
-        self._pending_timer: Optional[threading.Timer] = None
+        self._pending_timer: threading.Timer | None = None
         self._last_speech_time: float = 0.0
         self._spoken_count: int = 0
 

@@ -23,13 +23,13 @@ load it); ``run_job_sandboxed_process`` then returns an error result.
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
 import logging
 import os
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from ctypes import wintypes
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
 
@@ -177,7 +177,7 @@ def _last_error() -> int:
     return int(getter()) if getter else 0
 
 
-def _resolve_safe_affinity_mask(requested_affinity: int = 0xFF00) -> Optional[int]:
+def _resolve_safe_affinity_mask(requested_affinity: int = 0xFF00) -> int | None:
     """Dynamically computes an affinity mask compatible with the host system using 64-bit c_size_t."""
     if kernel32 is None or not requested_affinity:
         return None
@@ -195,7 +195,7 @@ def _resolve_safe_affinity_mask(requested_affinity: int = 0xFF00) -> Optional[in
 # ---------------------------------------------------------------- OS seams
 # Small wrappers around the pieces that touch the OS process model.  Unit tests
 # replace these to exercise the containment logic on any host.
-def _spawn_suspended(command: List[str], cwd: str, env: Optional[Dict[str, str]] = None) -> subprocess.Popen:
+def _spawn_suspended(command: list[str], cwd: str, env: dict[str, str] | None = None) -> subprocess.Popen:
     """Creates the child CREATE_SUSPENDED with piped output; stdin is closed (no interactive hangs)."""
     return subprocess.Popen(
         command,
@@ -230,7 +230,7 @@ def resume_process(proc: subprocess.Popen) -> bool:
 
 
 # ---------------------------------------------------------------- job helpers
-def _active_process_count(h_job) -> Optional[int]:
+def _active_process_count(h_job) -> int | None:
     """Returns JOBOBJECT_BASIC_ACCOUNTING_INFORMATION.ActiveProcesses, or None if the query fails."""
     info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
     ok = kernel32.QueryInformationJobObject(
@@ -304,13 +304,13 @@ def apply_job_ui_restrictions(h_job: Any, ui_flags: int = JOB_OBJECT_UILIMIT_ALL
 
 
 def create_process_job_object(
-    max_memory_mb: Optional[int] = None,
-    max_processes: Optional[int] = None,
+    max_memory_mb: int | None = None,
+    max_processes: int | None = None,
     kill_on_close: bool = True,
     requested_affinity: int = 0,
-    priority_class: Optional[int] = None,
+    priority_class: int | None = None,
     apply_ui_restrictions: bool = False,
-) -> Optional[int]:
+) -> int | None:
     """Creates a Win32 Job Object configured with process/memory limits, affinity, priority, and KILL_ON_JOB_CLOSE."""
     if kernel32 is None:
         return None
@@ -417,20 +417,20 @@ class SandboxedProcess:
     def __init__(
         self,
         command: list[str],
-        cwd: Optional[str] = None,
-        env: Optional[Dict[str, str]] = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
         stdin: Any = subprocess.DEVNULL,
         stdout: Any = subprocess.PIPE,
         stderr: Any = subprocess.PIPE,
         text: bool = True,
-        encoding: Optional[str] = "utf-8",
-        errors: Optional[str] = "replace",
+        encoding: str | None = "utf-8",
+        errors: str | None = "replace",
         close_fds: bool = True,
-        max_memory_mb: Optional[int] = None,
-        max_processes: Optional[int] = None,
+        max_memory_mb: int | None = None,
+        max_processes: int | None = None,
         requested_affinity: int = 0,
         creationflags: int = 0,
-        priority_class: Optional[int] = None,
+        priority_class: int | None = None,
         apply_ui_restrictions: bool = False,
     ) -> None:
         self.command = command
@@ -450,8 +450,8 @@ class SandboxedProcess:
         self.priority_class = priority_class
         self.apply_ui_restrictions = apply_ui_restrictions
 
-        self.proc: Optional[subprocess.Popen] = None
-        self.h_job: Optional[int] = None
+        self.proc: subprocess.Popen | None = None
+        self.h_job: int | None = None
         self._closed: bool = False
 
     def start(self) -> subprocess.Popen:
@@ -464,7 +464,7 @@ class SandboxedProcess:
             if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
                 flags |= subprocess.CREATE_NEW_PROCESS_GROUP
 
-            proc: Optional[subprocess.Popen] = None
+            proc: subprocess.Popen | None = None
             try:
                 proc = subprocess.Popen(
                     self.command,
@@ -535,9 +535,9 @@ class SandboxedProcess:
                 raise RuntimeError("SandboxedProcess: Failed to resume suspended process; execution aborted to fail closed.")
 
             # Attach helper references onto proc
-            setattr(proc, "terminate_tree", self.terminate_tree)
-            setattr(proc, "h_job", self.h_job)
-            setattr(proc, "_sandboxed_process", self)
+            proc.terminate_tree = self.terminate_tree
+            proc.h_job = self.h_job
+            proc._sandboxed_process = self
             return proc
         else:
             # POSIX process-group fallback
@@ -560,9 +560,9 @@ class SandboxedProcess:
                 raise
 
             self.proc = proc
-            setattr(proc, "terminate_tree", self.terminate_tree)
-            setattr(proc, "h_job", None)
-            setattr(proc, "_sandboxed_process", self)
+            proc.terminate_tree = self.terminate_tree
+            proc.h_job = None
+            proc._sandboxed_process = self
             return proc
 
     def terminate_tree(self, exit_code: int = 1) -> bool:
@@ -630,18 +630,18 @@ class SandboxedProcess:
 
 
 def run_sandboxed_batch(
-    command: List[str],
-    input: Optional[str] = None,
-    cwd: Optional[str] = None,
-    env: Optional[Dict[str, str]] = None,
-    timeout: Optional[float] = None,
+    command: list[str],
+    input: str | None = None,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
     text: bool = True,
     encoding: str = "utf-8",
     errors: str = "replace",
     capture_output: bool = True,
     check: bool = False,
-    max_memory_mb: Optional[int] = None,
-    max_processes: Optional[int] = None,
+    max_memory_mb: int | None = None,
+    max_processes: int | None = None,
     requested_affinity: int = 0,
 ) -> subprocess.CompletedProcess:
     """Runs a command with full process-tree Job Object containment (batch execution).
@@ -730,16 +730,16 @@ def _tail(text: str, limit: int) -> str:
     risk_level=1,
 )
 def run_job_sandboxed_process(
-    command: List[str],
-    cwd: Optional[str] = None,
+    command: list[str],
+    cwd: str | None = None,
     max_memory_mb: int = 1536,
     max_processes: int = 16,
     timeout_sec: float = 15.0,
     requested_affinity: int = 0xFF00,
-    cancel_token: Optional[Any] = None,
+    cancel_token: Any | None = None,
     tail_chars: int = 2000,
-    env: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Runs a command inside an isolated Win32 Job Object with verified process-tree cessation.
 
     ``requested_affinity=0`` disables core pinning.  ``cancel_token`` is any object
@@ -765,7 +765,7 @@ def run_job_sandboxed_process(
     if not h_job:
         return {"status": "error", "win32_error": _last_error()}
 
-    proc: Optional[subprocess.Popen] = None
+    proc: subprocess.Popen | None = None
     try:
         ext_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         limit_flags = (

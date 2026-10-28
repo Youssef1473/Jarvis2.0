@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import AsyncGenerator, Optional, Tuple
+from collections.abc import AsyncGenerator
 
 from jarvis.audio.partial_streamer import ShmPartialTokenChannel
 
@@ -16,7 +16,7 @@ logger = logging.getLogger("Jarvis.Audio.SemanticEndpointing")
 class SemanticVADCoordinator:
     """Dynamically modulates VAD trailing silence thresholds based on partial syntax."""
 
-    def __init__(self, channel_name: Optional[str] = None) -> None:
+    def __init__(self, channel_name: str | None = None) -> None:
         self.base_threshold_ms = 500
         self.aggressive_cutoff_ms = 150
         self.contemplation_padding_ms = 850
@@ -24,7 +24,7 @@ class SemanticVADCoordinator:
 
         target_name = channel_name or "JarvisWhisperPartialShm"
         try:
-            self.channel: Optional[ShmPartialTokenChannel] = ShmPartialTokenChannel(
+            self.channel: ShmPartialTokenChannel | None = ShmPartialTokenChannel(
                 name=target_name,
                 create=False,
             )
@@ -82,8 +82,8 @@ class SemanticVADCoordinator:
     async def monitor_utterance(
         self,
         vad_silence_stream: AsyncGenerator[float, None],
-        on_speculative_tripwire: Optional[asyncio.Event] = None,
-    ) -> Tuple[str, bool]:
+        on_speculative_tripwire: asyncio.Event | None = None,
+    ) -> tuple[str, bool]:
         """Monitors acoustic silence and shared memory partial tokens concurrently.
 
         Triggers on_speculative_tripwire the moment the threshold condition is met.

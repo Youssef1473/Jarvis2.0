@@ -2,7 +2,7 @@
 import logging
 import subprocess
 import threading
-from typing import Any, Dict, Tuple
+from typing import Any
 
 logger = logging.getLogger("Jarvis.Services")
 
@@ -34,7 +34,7 @@ class ManagedServiceManager:
     """Tracks spawned services and verified local listeners for shutdown cleanup."""
 
     def __init__(self):
-        self._services: Dict[str, Any] = {}
+        self._services: dict[str, Any] = {}
         self._lock = threading.Lock()
 
     def register(self, name: str, process: Any) -> None:
@@ -43,7 +43,7 @@ class ManagedServiceManager:
             self._services[name] = process
         logger.info("Registered managed service %s (PID %s).", name, process.pid)
 
-    def adopt_local_listener(self, name: str, port: int, identity_tokens: Tuple[str, ...]) -> bool:
+    def adopt_local_listener(self, name: str, port: int, identity_tokens: tuple[str, ...]) -> bool:
         """Adopt a local listener only when its process identity matches the expected service."""
         try:
             import psutil
@@ -72,7 +72,7 @@ class ManagedServiceManager:
     def stop_all(self, timeout_seconds: float = 5.0) -> None:
         """Stop registered services and their child processes, then force-stop stragglers."""
         with self._lock:
-            services: Tuple[Tuple[str, Any], ...] = tuple(self._services.items())
+            services: tuple[tuple[str, Any], ...] = tuple(self._services.items())
             self._services.clear()
 
         for name, process in services:
@@ -124,6 +124,7 @@ class ManagedServiceManager:
         try:
             import os
             import sys
+
             import psutil
             # Safety: Under unit testing, never sweep arbitrary child processes not registered
             # with this manager, preventing inadvertent termination of ephemeral test fixtures/canaries.
@@ -153,6 +154,7 @@ def kill_orphaned_jarvis_processes(exclude_pids=None, dry_run: bool = False):
     """Identifies and terminates any orphaned background processes belonging to Jarvis."""
     import os
     import sys
+
     import psutil
 
     # Safety: Under unit testing or pytest, default to dry-run mode to never terminate live user sessions
@@ -205,10 +207,7 @@ def kill_orphaned_jarvis_processes(exclude_pids=None, dry_run: bool = False):
 
                 is_jarvis_proc = False
                 # 1. Python process running jarvis entry point or modules
-                if "python" in name_str and any(k in cmdline_str for k in ("run.py", "jarvis/")):
-                    is_jarvis_proc = True
-                # 2. Process bound to Jarvis UI port (20129)
-                elif any(k in cmdline_str for k in ("20129", "jarvis-hud")):
+                if "python" in name_str and any(k in cmdline_str for k in ("run.py", "jarvis/")) or any(k in cmdline_str for k in ("20129", "jarvis-hud")):
                     is_jarvis_proc = True
 
                 if is_jarvis_proc:

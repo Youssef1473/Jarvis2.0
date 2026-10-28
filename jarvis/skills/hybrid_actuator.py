@@ -6,12 +6,12 @@ closed-loop verified actuation (See -> Act -> Check) with fallback for opaque ca
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import logging
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
 from jarvis.skills.browser_cdp import is_cdp_available, list_cdp_tabs
@@ -46,7 +46,7 @@ def css_to_physical_screen_point(
     client_origin_x: int = 0,
     client_origin_y: int = 0,
     dpi_scale: float = 1.0,
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     """Transforms CDP CSS layout coordinates to Win32 physical screen pixels."""
     px = client_origin_x + round((cx_css - viewport_x) * dpi_scale)
     py = client_origin_y + round((cy_css - viewport_y) * dpi_scale)
@@ -89,10 +89,10 @@ class SemanticTarget:
 def send_cdp_command(
     ws: Any,
     method: str,
-    params: Optional[Dict[str, Any]] = None,
+    params: dict[str, Any] | None = None,
     cmd_id: int = 1,
     timeout_sec: float = 0.5,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Sends a synchronous JSON-RPC command frame over CDP WebSocket and waits for response."""
     payload = json.dumps({"id": cmd_id, "method": method, "params": params or {}})
     ws.send(payload)
@@ -113,8 +113,8 @@ def send_cdp_command(
 def locate_semantic_target(
     ws: Any,
     target_name: str,
-    role_filter: Optional[str] = None,
-) -> Optional[SemanticTarget]:
+    role_filter: str | None = None,
+) -> SemanticTarget | None:
     """Resolves elements across Shadow DOMs and iframes using CDP's Accessibility Tree.
 
     Computes layout centroid coordinates via DOM.getBoxModel without fragile CSS selectors.
@@ -168,10 +168,10 @@ def locate_semantic_target(
 def actuate_with_verification(
     ws: Any,
     target: SemanticTarget,
-    text_to_type: Optional[str] = None,
+    text_to_type: str | None = None,
     click: bool = True,
-    cancel_token: Optional[Any] = None,
-) -> Dict[str, Any]:
+    cancel_token: Any | None = None,
+) -> dict[str, Any]:
     """Performs closed-loop (See -> Act -> Check) actuation over CDP Input protocol."""
     if cancel_token is not None and hasattr(cancel_token, "raise_if_cancelled"):
         cancel_token.raise_if_cancelled()
@@ -246,7 +246,7 @@ def actuate_with_verification(
     }
 
 
-def _get_active_or_matching_tab(tab_name_or_url: str = "") -> Optional[Dict[str, Any]]:
+def _get_active_or_matching_tab(tab_name_or_url: str = "") -> dict[str, Any] | None:
     """Resolves target browser tab via CDP."""
     if not is_cdp_available():
         return None
@@ -272,7 +272,7 @@ def click_web_element_semantic(
     target_name: str,
     tab_name_or_url: str = "",
     role_filter: str = "",
-    cancel_token: Optional[Any] = None,
+    cancel_token: Any | None = None,
 ) -> str:
     """Locates and clicks an accessible web element via CDP AXTree."""
     if not is_cdp_available():
@@ -312,7 +312,7 @@ def type_into_web_element_semantic(
     target_name: str,
     text: str,
     tab_name_or_url: str = "",
-    cancel_token: Optional[Any] = None,
+    cancel_token: Any | None = None,
 ) -> str:
     """Locates an accessible web input via CDP AXTree and inserts text with verification."""
     if not is_cdp_available():

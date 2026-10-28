@@ -5,8 +5,8 @@ without interfering with the native WASAPI audio playback sink.
 """
 import struct
 from typing import Optional
-import numpy as np
 
+import numpy as np
 
 MAGIC_HEADER_BYTE: int = 0x4A  # ASCII 'J'
 FFT_WINDOW_SIZE: int = 512
@@ -108,7 +108,7 @@ class AudioDspTap:
             cls._instance = AudioDspTap()
         return cls._instance
 
-    def process_and_broadcast(self, pcm_chunk: np.ndarray) -> Optional[bytes]:
+    def process_and_broadcast(self, pcm_chunk: np.ndarray) -> bytes | None:
         """Computes a 68-byte DSP frame and dispatches it to connected UI clients."""
         if not self._enabled or pcm_chunk is None or len(pcm_chunk) == 0:
             return None

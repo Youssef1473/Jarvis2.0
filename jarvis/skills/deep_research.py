@@ -1,15 +1,14 @@
 """Autonomous Multi-Source Deep Web Researcher for Jarvis 2.0."""
-import re
-import time
+import concurrent.futures
 import datetime
-import logging
 import ipaddress
+import logging
+import re
 import urllib.parse
 import urllib.request
-import concurrent.futures
-from pathlib import Path
 from html.parser import HTMLParser
-from typing import List, Dict, Any, Optional
+from pathlib import Path
+from typing import Any
 
 try:
     from ddgs import DDGS
@@ -38,7 +37,7 @@ class _HTMLTextExtractor(HTMLParser):
 
     def __init__(self):
         super().__init__()
-        self.text_parts: List[str] = []
+        self.text_parts: list[str] = []
         self._skip = False
 
     def handle_starttag(self, tag, attrs):
@@ -91,7 +90,7 @@ def _is_safe_url(url: str) -> bool:
         return False
 
 
-def _fetch_page_content(url: str, timeout: float = 4.0) -> Optional[str]:
+def _fetch_page_content(url: str, timeout: float = 4.0) -> str | None:
     """Fetches and extracts clean visible text from a webpage using standard urllib."""
     if not _is_safe_url(url):
         return None
@@ -139,7 +138,7 @@ def deep_research(topic: str, max_sources: int = 3) -> str:
     logger.info(f"Initiating deep research on '{clean_topic}'...")
 
     # Step 1: DuckDuckGo search retrieval
-    search_hits: List[Dict[str, str]] = []
+    search_hits: list[dict[str, str]] = []
     try:
         with DDGS() as ddgs:
             for hit in ddgs.text(clean_topic, max_results=max(3, max_sources * 2)):
@@ -160,7 +159,7 @@ def deep_research(topic: str, max_sources: int = 3) -> str:
     candidate_sources = search_hits[:max_sources]
 
     # Step 2: Concurrent multi-source page scraping
-    extracted_sources: List[Dict[str, Any]] = []
+    extracted_sources: list[dict[str, Any]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(3, len(candidate_sources))) as executor:
         future_to_source = {
             executor.submit(_fetch_page_content, s["url"], 4.5): s
@@ -185,7 +184,7 @@ def deep_research(topic: str, max_sources: int = 3) -> str:
     now_str = datetime.datetime.now().strftime("%B %d, %Y - %I:%M %p")
     report_lines = [
         f"# Deep Intelligence Briefing: {clean_topic.title()}",
-        f"**Compiled by:** Jarvis 2.0 Autonomous Research Sentinel  ",
+        "**Compiled by:** Jarvis 2.0 Autonomous Research Sentinel  ",
         f"**Timestamp:** {now_str}  ",
         f"**Sources Analyzed:** {len(extracted_sources)}\n",
         "## Executive Summary",

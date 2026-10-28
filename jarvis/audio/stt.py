@@ -1,12 +1,13 @@
 """Speech-to-Text transcription module using faster-whisper with CUDA acceleration and CPU fallback."""
-from dataclasses import dataclass
-import os
-import sys
-from pathlib import Path
 import logging
+import os
 import re
+import sys
 import time
-from typing import Dict, Any, Optional, Tuple, List
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 
 from jarvis.audio.affinity import pin_and_elevate_current_thread
@@ -107,7 +108,7 @@ class SpeechToText:
             cleaned = pattern.sub(replacement, cleaned)
         return cleaned.strip()
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         _setup_nvidia_dll_paths()
         stt_cfg = config.get("stt", {})
         self.model_size = stt_cfg.get("model_size", "small")
@@ -138,7 +139,9 @@ class SpeechToText:
         # Dynamic VRAM arbiter check for GPU allocation and compute type adaptation
         if device == "cuda":
             try:
-                from jarvis.skills.nvml_dxgi_vram_arbiter import audit_vram_and_thermal_budget
+                from jarvis.skills.nvml_dxgi_vram_arbiter import (
+                    audit_vram_and_thermal_budget,
+                )
                 vram_info = audit_vram_and_thermal_budget(reclaim_if_pressured=True)
                 if vram_info.get("status") == "ok":
                     free_mb = vram_info.get("vram_free_mb", 4000.0)
@@ -332,7 +335,7 @@ class SpeechToText:
             timestamp=now,
         )
 
-    def transcribe_with_prosody(self, audio_data: np.ndarray, sample_rate: int = 16000) -> Tuple[str, ProsodyMetrics]:
+    def transcribe_with_prosody(self, audio_data: np.ndarray, sample_rate: int = 16000) -> tuple[str, ProsodyMetrics]:
         """Transcribes audio array and returns both the cleaned text and calculated prosody metrics."""
         text = self.transcribe(audio_data, sample_rate=sample_rate)
         return text, self.last_prosody

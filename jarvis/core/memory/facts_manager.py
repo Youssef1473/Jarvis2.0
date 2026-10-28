@@ -5,7 +5,7 @@ import asyncio
 import logging
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from jarvis.core.memory.vector_engine import (
     fuse_vec_and_fts_rrf,
@@ -61,7 +61,7 @@ class FactsManagerMixin:
             self._context_summary_cache = None
         return f"Remembered: '{key}' is '{value}'."
 
-    def get_fact(self, key: str) -> Optional[str]:
+    def get_fact(self, key: str) -> str | None:
         """Retrieves a specific stored fact."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
@@ -94,9 +94,9 @@ class FactsManagerMixin:
 
         return f"Core preference updated: '{clean_key}' is now set to '{clean_val}', Sir."
 
-    def get_user_preferences(self) -> Dict[str, str]:
+    def get_user_preferences(self) -> dict[str, str]:
         """Retrieves all core user preferences as a key-value dictionary."""
-        result: Dict[str, str] = {}
+        result: dict[str, str] = {}
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             try:
@@ -137,7 +137,7 @@ class FactsManagerMixin:
         lines = [f"- {k}: {v}" for k, v in sorted(prefs.items())]
         return "Core User Profile & Preferences (Always adhere to these directives):\n" + "\n".join(lines)
 
-    def search_facts(self, query: str) -> List[Dict[str, str]]:
+    def search_facts(self, query: str) -> list[dict[str, str]]:
         """Searches remembered facts matching a query keyword using FTS5 BM25 with LIKE fallback."""
         sanitized = sanitize_fts5_query(query)
         if sanitized:
@@ -168,14 +168,14 @@ class FactsManagerMixin:
             """, (q, q, q))
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_all_facts(self) -> List[Dict[str, str]]:
+    def get_all_facts(self) -> list[dict[str, str]]:
         """Retrieves all stored facts."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT category, key, value FROM facts ORDER BY category, key")
             return [dict(row) for row in cursor.fetchall()]
 
-    def semantic_search_facts(self, query: str, top_k: int = 5, min_score: float = 0.12) -> List[Dict[str, Any]]:
+    def semantic_search_facts(self, query: str, top_k: int = 5, min_score: float = 0.12) -> list[dict[str, Any]]:
         """Finds stored facts semantically relevant to query using sqlite-vec KNN search with TF-IDF fallback."""
         # 1. Native C sqlite-vec KNN Fast Path (<0.2ms)
         try:
@@ -234,14 +234,14 @@ class FactsManagerMixin:
         scored.sort(key=lambda x: x["relevance_score"], reverse=True)
         return scored[:top_k]
 
-    def hybrid_search_facts(self, query: str, top_k: int = 5, k_rrf: int = 60, max_l2_distance: float = 0.78) -> List[Dict[str, Any]]:
+    def hybrid_search_facts(self, query: str, top_k: int = 5, k_rrf: int = 60, max_l2_distance: float = 0.78) -> list[dict[str, Any]]:
         """Hybrid search combining FTS5 BM25 and sqlite-vec KNN via Reciprocal Rank Fusion (RRF)."""
         fts_results = self.search_facts(query)
         vec_results = self.semantic_search_facts(query, top_k=max(top_k * 2, 10))
         fused = fuse_vec_and_fts_rrf(vec_results, fts_results, k=k_rrf, max_l2_distance=max_l2_distance)
         return fused[:top_k]
 
-    async def search_facts_async(self, query: str) -> List[Dict[str, str]]:
+    async def search_facts_async(self, query: str) -> list[dict[str, str]]:
         """Asynchronously searches remembered facts matching a query keyword using VectorMemoryPool."""
         sanitized = sanitize_fts5_query(query)
         pool = self.get_vector_pool()
@@ -278,7 +278,7 @@ class FactsManagerMixin:
 
     async def semantic_search_facts_async(
         self, query: str, top_k: int = 5, min_score: float = 0.12
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Asynchronously finds stored facts semantically relevant to query using VectorMemoryPool."""
         pool = self.get_vector_pool()
         try:
@@ -321,7 +321,7 @@ class FactsManagerMixin:
 
     async def hybrid_search_facts_async(
         self, query: str, top_k: int = 5, k_rrf: int = 60, max_l2_distance: float = 0.78
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Asynchronously performs hybrid search combining FTS5 BM25 and sqlite-vec KNN via RRF."""
         fts_task = asyncio.create_task(self.search_facts_async(query))
         vec_task = asyncio.create_task(self.semantic_search_facts_async(query, top_k=max(top_k * 2, 10)))
@@ -331,10 +331,10 @@ class FactsManagerMixin:
 
     def get_all_memory_nodes(
         self,
-        category: Optional[str] = None,
-        search: Optional[str] = None,
+        category: str | None = None,
+        search: str | None = None,
         limit: int = 150,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Retrieves structured memory nodes across facts, preferences, documents, and episodic lessons."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()

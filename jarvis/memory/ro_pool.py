@@ -7,15 +7,15 @@ trigger SQLITE_BUSY write locks, or starve the asyncio event loop during duplex 
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import logging
-import os
-from pathlib import Path
 import sqlite3
 import struct
 import threading
-from typing import Any, Callable, Dict, Generator, List, Optional, Union
+from collections.abc import Callable, Generator
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("Jarvis.Memory.ROPool")
 
@@ -46,7 +46,7 @@ class VectorMemoryPool:
             max_workers=self.pool_size,
             thread_name_prefix="Jarvis_RO_MemPool",
         )
-        self._pool: Optional[asyncio.Queue[sqlite3.Connection]] = None
+        self._pool: asyncio.Queue[sqlite3.Connection] | None = None
         self._pool_lock = threading.Lock()
         self._created_conns: list[sqlite3.Connection] = []
         self._is_torn_down = False
@@ -130,10 +130,10 @@ class VectorMemoryPool:
     async def execute_knn_query(
         self,
         table: str,
-        query_vector: Union[List[float], bytes, Any],
+        query_vector: list[float] | bytes | Any,
         limit: int = 5,
-        id_column: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        id_column: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Retrieves a connection and offloads the blocking C-extension vector
 
         traversal to the thread pool, yielding control to the event loop.
@@ -158,10 +158,10 @@ class VectorMemoryPool:
         self,
         conn: sqlite3.Connection,
         table: str,
-        query_vector: Union[List[float], bytes, Any],
+        query_vector: list[float] | bytes | Any,
         limit: int,
-        id_column: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        id_column: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Synchronous workload executed off the main thread."""
         # sqlite-vec requires contiguous float32 byte packing
         if isinstance(query_vector, (bytes, bytearray)):
@@ -209,7 +209,7 @@ class VectorMemoryPool:
 
     async def execute_query(
         self, sql: str, params: tuple = ()
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Executes an arbitrary read-only SQL query in worker thread."""
         conn = await self._acquire_conn()
         try:
@@ -226,7 +226,7 @@ class VectorMemoryPool:
 
     def _sync_query(
         self, conn: sqlite3.Connection, sql: str, params: tuple
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         cursor = conn.execute(sql, params)
         return [dict(row) for row in cursor.fetchall()]
 
@@ -277,15 +277,15 @@ class VectorMemoryPool:
 class ReadOnlyConnectionPool:
     """Thread-local pool of read-only SQLite connections."""
 
-    _instance: Optional[ReadOnlyConnectionPool] = None
+    _instance: ReadOnlyConnectionPool | None = None
     _lock = threading.Lock()
 
-    def __init__(self, default_db_path: Optional[Path | str] = None):
+    def __init__(self, default_db_path: Path | str | None = None):
         self.default_db_path = Path(default_db_path or DEFAULT_DB_PATH)
         self._local = threading.local()
 
     @classmethod
-    def get_instance(cls, default_db_path: Optional[Path | str] = None) -> ReadOnlyConnectionPool:
+    def get_instance(cls, default_db_path: Path | str | None = None) -> ReadOnlyConnectionPool:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = cls(default_db_path)
@@ -319,7 +319,7 @@ class ReadOnlyConnectionPool:
         return conn
 
     @contextlib.contextmanager
-    def connection(self, db_path: Optional[Path | str] = None) -> Generator[sqlite3.Connection, None, None]:
+    def connection(self, db_path: Path | str | None = None) -> Generator[sqlite3.Connection, None, None]:
         target = Path(db_path or self.default_db_path)
         connections: dict[str, sqlite3.Connection] = getattr(self._local, "connections", None)
         if connections is None:
@@ -368,7 +368,7 @@ class ReadOnlyConnectionPool:
                     pass
             connections.clear()
 
-    def close_db(self, db_path: Optional[Path | str] = None) -> None:
+    def close_db(self, db_path: Path | str | None = None) -> None:
         """Closes cached connection for a specific database path on calling thread."""
         connections: dict[str, sqlite3.Connection] = getattr(self._local, "connections", None)
         if connections:
@@ -390,6 +390,6 @@ class ReadOnlyConnectionPool:
                 cls._instance = None
 
 
-def get_ro_connection(db_path: Optional[Path | str] = None):
+def get_ro_connection(db_path: Path | str | None = None):
     """Convenience context manager returning thread-local read-only connection."""
     return ReadOnlyConnectionPool.get_instance().connection(db_path)

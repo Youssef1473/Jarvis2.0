@@ -7,7 +7,8 @@ import json
 import logging
 import re
 import time
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 try:
     from openai import OpenAI
@@ -28,7 +29,7 @@ class OllamaProvider(BaseProvider):
         model: str = "qwen3.5:2b-q4_K_M",
         base_url: str = "http://127.0.0.1:11434/v1",
         temperature: float = 0.2,
-        config: Optional[Dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
     ):
         super().__init__(name="ollama", model=model, config=config)
         self.base_url = base_url
@@ -37,10 +38,10 @@ class OllamaProvider(BaseProvider):
 
     def generate_turn(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        system_instruction: Optional[str] = None,
-        sentence_callback: Optional[Callable[[str], None]] = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        system_instruction: str | None = None,
+        sentence_callback: Callable[[str], None] | None = None,
         timeout: float = 35.0,
     ) -> LLMResponse:
         """Executes a single generation turn against the local Ollama instance."""
@@ -58,8 +59,8 @@ class OllamaProvider(BaseProvider):
                 **({"tool_calls": m["tool_calls"]} if "tool_calls" in m else {}),
             })
 
-        tool_calls_map: Dict[int, Dict[str, Any]] = {}
-        content_chunks: List[str] = []
+        tool_calls_map: dict[int, dict[str, Any]] = {}
+        content_chunks: list[str] = []
         chunker = StreamingSentenceChunker() if sentence_callback else None
 
         try:
@@ -118,7 +119,7 @@ class OllamaProvider(BaseProvider):
         full_text = "".join(content_chunks).strip()
 
         # Parse structured tool calls
-        final_tool_calls: List[ToolCall] = []
+        final_tool_calls: list[ToolCall] = []
         for tc_data in tool_calls_map.values():
             fn_name = tc_data["name"]
             try:

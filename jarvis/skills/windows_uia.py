@@ -8,11 +8,11 @@ with SMTO_ABORTIFHUNG) to prevent thread hangs on frozen applications.
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
 import logging
 import sys
 import warnings
-from typing import Dict, Any, List, Optional
+from ctypes import wintypes
+
 from jarvis.skills.base import SkillRegistry
 
 # Suppress benign pywinauto STA COM mode revert warning on Windows
@@ -67,7 +67,7 @@ def is_hwnd_responsive(hwnd: int, timeout_ms: int = 50) -> bool:
         return True
 
 
-def focus_window_uia(title_query: str) -> Optional[str]:
+def focus_window_uia(title_query: str) -> str | None:
     """Focuses a desktop window using pywinauto UI Automation backend.
 
     Bypasses standard Windows SetForegroundWindow lock by restoring and focusing the UIA element.

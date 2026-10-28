@@ -1,16 +1,16 @@
 """Speculative execution package for Jarvis 2.0."""
 from jarvis.speculative.engine import (
-    SpeculativeExecutionEngine,
-    ValidationSnapshot,
+    ExecutionMetrics,
     FileStatStamp,
     SpeculativeEntry,
-    ExecutionMetrics,
+    SpeculativeExecutionEngine,
+    ValidationSnapshot,
 )
 
 __all__ = [
-    "SpeculativeExecutionEngine",
-    "ValidationSnapshot",
+    "ExecutionMetrics",
     "FileStatStamp",
     "SpeculativeEntry",
-    "ExecutionMetrics",
+    "SpeculativeExecutionEngine",
+    "ValidationSnapshot",
 ]

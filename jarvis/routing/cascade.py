@@ -7,9 +7,9 @@ Implements the 3-Stage Deterministic Routing Policy:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import logging
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any
 
 from jarvis.context.flow_state_mirror import FlowStateMirror
 from jarvis.core.reflex_engine import DynamicReflexEngine
@@ -30,11 +30,11 @@ SPECULATIVE_PREWARM_THRESHOLD = 0.30
 class RoutingDecision:
     """Outcome of the 3-stage cascade evaluation."""
     tier: int
-    skill_name: Optional[str]
-    kwargs: Dict[str, Any] = field(default_factory=dict)
+    skill_name: str | None
+    kwargs: dict[str, Any] = field(default_factory=dict)
     execute_locally: bool = False
-    prediction: Optional[IntentPrediction] = None
-    speculative_keys: List[str] = field(default_factory=list)
+    prediction: IntentPrediction | None = None
+    speculative_keys: list[str] = field(default_factory=list)
 
 
 class RoutingCascade:
@@ -42,15 +42,15 @@ class RoutingCascade:
 
     def __init__(
         self,
-        reflex_engine: Optional[DynamicReflexEngine] = None,
-        intent_router: Optional[ONNXIntentRouter] = None,
-        speculative_engine: Optional[SpeculativeExecutionEngine] = None,
+        reflex_engine: DynamicReflexEngine | None = None,
+        intent_router: ONNXIntentRouter | None = None,
+        speculative_engine: SpeculativeExecutionEngine | None = None,
     ):
         self.reflex_engine = reflex_engine or DynamicReflexEngine()
         self.intent_router = intent_router or ONNXIntentRouter.get_instance()
         self.speculative_engine = speculative_engine or SpeculativeExecutionEngine.get_instance()
 
-    def route_query(self, query: str, candidate_skills: Optional[List[str]] = None) -> RoutingDecision:
+    def route_query(self, query: str, candidate_skills: list[str] | None = None) -> RoutingDecision:
         """Evaluates query through the 3-stage deterministic routing pipeline."""
         # =========================================================================
         # Stage 0: Fast Reflex Engine (<= 0.15ms)
@@ -97,7 +97,7 @@ class RoutingCascade:
         # =========================================================================
         # Stage 2: Cloud LLM Fallback + Speculative Pre-Warm Band (P >= 0.30)
         # =========================================================================
-        speculative_keys: List[str] = []
+        speculative_keys: list[str] = []
         flow_snap = FlowStateMirror.get_instance().get_snapshot()
 
         # Select candidate read-only skills with P(y=k|x) >= 0.30

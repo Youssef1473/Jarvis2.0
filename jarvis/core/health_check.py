@@ -6,13 +6,12 @@ SQLite memory database WAL integrity, GPU VRAM, and AI credentials.
 from __future__ import annotations
 
 import logging
-import os
 import socket
 import sqlite3
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger("Jarvis.HealthCheck")
 
@@ -28,13 +27,13 @@ def test_socket_port(port: int, host: str = "127.0.0.1", timeout: float = 0.15) 
             return False
 
 
-def run_system_health_check(project_root: Optional[Path] = None) -> Dict[str, Any]:
+def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
     """Executes a full physical and operational health check across all Jarvis 2.0 subsystems."""
     root = project_root or Path(__file__).resolve().parent.parent.parent
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
-    report: Dict[str, Any] = {
+    report: dict[str, Any] = {
         "timestamp": time.time(),
         "status": "HEALTHY",
         "subsystems": {},
@@ -56,7 +55,7 @@ def run_system_health_check(project_root: Optional[Path] = None) -> Dict[str, An
         report["subsystems"]["runtime"] = {"status": "WARN", "error": str(e)}
 
     # 2. Audio Capture & Playback Hardware Endpoints
-    audio_data: Dict[str, Any] = {"status": "OK"}
+    audio_data: dict[str, Any] = {"status": "OK"}
     try:
         import sounddevice as sd
         devices = sd.query_devices()
@@ -219,8 +218,8 @@ def run_system_health_check(project_root: Optional[Path] = None) -> Dict[str, An
 
     # 7. Cognitive Router & AI Credentials
     try:
-        from jarvis.core.config_loader import load_config, get_gemini_api_key
         from jarvis.core.cognition import CognitiveRouter
+        from jarvis.core.config_loader import get_gemini_api_key, load_config
         cfg = load_config()
         key = get_gemini_api_key()
         has_key = bool(key and key != "your_gemini_api_key_here")
@@ -240,7 +239,7 @@ def run_system_health_check(project_root: Optional[Path] = None) -> Dict[str, An
         report["subsystems"]["cognition"] = {"status": "WARN", "error": str(e)}
 
     # 8. Skill & Tool Registry Smoke Sweep
-    skills_data: Dict[str, Any] = {
+    skills_data: dict[str, Any] = {
         "status": "OK",
         "total_registered": 0,
         "tested": 0,
@@ -250,9 +249,7 @@ def run_system_health_check(project_root: Optional[Path] = None) -> Dict[str, An
     try:
         from jarvis.skills.base import SkillRegistry
         try:
-            import jarvis.skills.productivity
-            import jarvis.skills.os_control
-            import jarvis.skills.diagnostics
+            pass
         except Exception:
             pass
 
@@ -287,7 +284,7 @@ def run_system_health_check(project_root: Optional[Path] = None) -> Dict[str, An
     return report
 
 
-def format_health_report(report: Dict[str, Any]) -> str:
+def format_health_report(report: dict[str, Any]) -> str:
     """Formats the structured health report into clean, authentic Bettany telemetry."""
     subs = report.get("subsystems", {})
     lines = [
@@ -366,7 +363,7 @@ def format_health_report(report: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_spoken_summary(report: Dict[str, Any]) -> str:
+def format_spoken_summary(report: dict[str, Any]) -> str:
     """Formats the structured health report into an ear-normalized Bettany spoken summary."""
     overall = report.get("status", "HEALTHY")
     subs = report.get("subsystems", {})

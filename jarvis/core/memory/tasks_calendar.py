@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger("Jarvis.Memory.TasksCalendar")
 
@@ -11,7 +11,7 @@ class TasksCalendarMixin:
     """Provides task list operations, calendar event scheduling, and schedule query methods."""
 
     # Tasks & Reminders
-    def add_task(self, description: str, due_date: Optional[str] = None) -> str:
+    def add_task(self, description: str, due_date: str | None = None) -> str:
         """Adds a task or reminder."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -23,7 +23,7 @@ class TasksCalendarMixin:
             task_id = cursor.lastrowid
         return f"Task #{task_id} added: {description}"
 
-    def get_pending_tasks(self) -> List[Dict[str, Any]]:
+    def get_pending_tasks(self) -> list[dict[str, Any]]:
         """Retrieves all incomplete tasks."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
@@ -41,7 +41,7 @@ class TasksCalendarMixin:
             return f"Task #{task_id} not found."
 
     # Calendar Events
-    def add_calendar_event(self, title: str, start_time: str, end_time: Optional[str] = None, location: Optional[str] = None) -> str:
+    def add_calendar_event(self, title: str, start_time: str, end_time: str | None = None, location: str | None = None) -> str:
         """Adds a calendar event with deduplication for identical title and start time."""
         clean_title = title.strip()
         clean_start = start_time.strip()
@@ -71,7 +71,7 @@ class TasksCalendarMixin:
             event_id = cursor.lastrowid
         return f"Event #{event_id} scheduled: '{clean_title}' at {clean_start}" + (f" ({location})" if location else "") + "."
 
-    def get_calendar_events(self, include_cancelled: bool = False) -> List[Dict[str, Any]]:
+    def get_calendar_events(self, include_cancelled: bool = False) -> list[dict[str, Any]]:
         """Retrieves active calendar events."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
@@ -81,7 +81,7 @@ class TasksCalendarMixin:
             cursor.execute(query)
             return [dict(row) for row in cursor.fetchall()]
 
-    def cancel_calendar_event(self, event_id: Any = None, title: Optional[str] = None) -> str:
+    def cancel_calendar_event(self, event_id: Any = None, title: str | None = None) -> str:
         """Marks a calendar event as cancelled by numerical ID or by matching title."""
         # Normalize arguments if event_id is passed as title string or digits
         if event_id is not None:
@@ -130,7 +130,7 @@ class TasksCalendarMixin:
                 return f"Cancelled event '{row['title']}' (#{row['id']}), Sir."
             return "No active calendar events to cancel, Sir."
 
-    def get_saved_calendars(self) -> List[Dict[str, Any]]:
+    def get_saved_calendars(self) -> list[dict[str, Any]]:
         """Retrieves all calendar and schedule documents archived in memory."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()

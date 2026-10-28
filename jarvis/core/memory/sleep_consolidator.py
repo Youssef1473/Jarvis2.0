@@ -8,16 +8,16 @@ upon physical workstation activity (mouse, keyboard, voice).
 from __future__ import annotations
 
 import collections
-import contextlib
 import ctypes
-from ctypes import wintypes
 import hashlib
 import json
 import logging
 import sqlite3
 import sys
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from ctypes import wintypes
+from typing import Any
 
 logger = logging.getLogger("Jarvis.Memory.SleepConsolidator")
 
@@ -76,7 +76,7 @@ def get_win32_idle_seconds() -> float:
 get_system_idle_seconds = get_win32_idle_seconds
 
 
-def check_power_gate(min_battery_pct: int = 60) -> Tuple[bool, str]:
+def check_power_gate(min_battery_pct: int = 60) -> tuple[bool, str]:
     """Checks whether device is on AC power or has sufficient battery percentage."""
     if sys.platform != "win32":
         return True, "Non-windows platform; power gate passed."
@@ -94,7 +94,7 @@ def check_power_gate(min_battery_pct: int = 60) -> Tuple[bool, str]:
     return True, "Power check fallback passed."
 
 
-def check_vram_gate(max_vram_ratio: float = 0.75) -> Tuple[bool, str]:
+def check_vram_gate(max_vram_ratio: float = 0.75) -> tuple[bool, str]:
     """Ensures GPU VRAM pressure is below threshold before beginning consolidation."""
     try:
         from jarvis.skills.nvml_dxgi_vram_arbiter import audit_vram_and_thermal_budget
@@ -114,7 +114,7 @@ def check_hardware_and_idle_gates(
     idle_threshold_sec: float = 300.0,
     min_battery_pct: int = 60,
     max_vram_ratio: float = 0.75,
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Evaluates workstation idle status, power supply status, and GPU VRAM budget."""
     idle_s = get_win32_idle_seconds()
     if idle_s < idle_threshold_sec:
@@ -184,7 +184,7 @@ class SleepPhaseConsolidator:
         self,
         min_battery_pct: int = 60,
         max_vram_ratio: float = 0.75,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Instance helper checking idle, power, and VRAM gates."""
         return check_hardware_and_idle_gates(
             idle_threshold_sec=self.idle_threshold_sec,
@@ -218,7 +218,7 @@ class SleepPhaseConsolidator:
     def _open_interruptible_connection(
         self,
         read_only: bool = False,
-        is_user_active_fn: Optional[Callable[[], bool]] = None,
+        is_user_active_fn: Callable[[], bool] | None = None,
         progress_steps: int = 250,
     ) -> sqlite3.Connection:
         """Opens a SQLite connection registered with a <1.0ms VDBE progress handler abort hook."""
@@ -234,7 +234,7 @@ class SleepPhaseConsolidator:
 
     def discover_redundant_facts_readonly(
         self, distance_threshold: float = 0.70
-    ) -> List[Tuple[Dict[str, Any], Dict[str, Any], float]]:
+    ) -> list[tuple[dict[str, Any], dict[str, Any], float]]:
         """Phase 1: Runs on an isolated WAL read snapshot (?mode=ro).
 
         In SQLite WAL mode, readers NEVER block writers. Finds near-duplicate
@@ -242,7 +242,7 @@ class SleepPhaseConsolidator:
         or where values are textually identical.
         """
         ro_conn = self._connect(read_only=True)
-        redundant_pairs: List[Tuple[Dict[str, Any], Dict[str, Any], float]] = []
+        redundant_pairs: list[tuple[dict[str, Any], dict[str, Any], float]] = []
         try:
             cursor = ro_conn.cursor()
             cursor.execute("SELECT id, category, key, value FROM facts ORDER BY id ASC")
@@ -289,10 +289,10 @@ class SleepPhaseConsolidator:
 
         return redundant_pairs
 
-    def discover_consolidatable_lessons_readonly(self) -> List[Dict[str, Any]]:
+    def discover_consolidatable_lessons_readonly(self) -> list[dict[str, Any]]:
         """Phase 1b: Discovers repeated episodic lessons that can be clustered."""
         ro_conn = self._connect(read_only=True)
-        consolidatable: List[Dict[str, Any]] = []
+        consolidatable: list[dict[str, Any]] = []
         try:
             cursor = ro_conn.cursor()
             cursor.execute("""
@@ -320,8 +320,8 @@ class SleepPhaseConsolidator:
 
     def apply_consolidation_micro_batches(
         self,
-        stale_fact_ids: List[int],
-        is_user_active_fn: Optional[Callable[[], bool]] = None,
+        stale_fact_ids: list[int],
+        is_user_active_fn: Callable[[], bool] | None = None,
         batch_size: int = 20,
     ) -> int:
         """Phase 2: Applies removals/consolidations in <1.5ms micro-transactions."""
@@ -387,8 +387,8 @@ class SleepPhaseConsolidator:
     def run_pass_a_entity_deduplication(
         self,
         conn: sqlite3.Connection,
-        is_user_active_fn: Optional[Callable[[], bool]] = None,
-    ) -> Tuple[int, int]:
+        is_user_active_fn: Callable[[], bool] | None = None,
+    ) -> tuple[int, int]:
         """Pass A: Merges duplicate rows in facts matching normalized (category, key, value)
         and promotes structured subject.predicate facts into active knowledge_edges.
         """
@@ -414,8 +414,8 @@ class SleepPhaseConsolidator:
         cursor.execute("SELECT id, category, key, value FROM facts ORDER BY id ASC")
         rows = cursor.fetchall()
 
-        seen_normalized: Dict[Tuple[str, str, str], int] = {}
-        stale_ids_to_delete: List[int] = []
+        seen_normalized: dict[tuple[str, str, str], int] = {}
+        stale_ids_to_delete: list[int] = []
 
         for r in rows:
             f_id = r["id"]
@@ -468,7 +468,7 @@ class SleepPhaseConsolidator:
     def run_pass_b_workflow_distillation(
         self,
         conn: sqlite3.Connection,
-        is_user_active_fn: Optional[Callable[[], bool]] = None,
+        is_user_active_fn: Callable[[], bool] | None = None,
     ) -> int:
         """Pass B: Scans interactions for contiguous tool sequences (N>=3) repeated >=3 times,
         compiling them into compiled_reflex_macros.
@@ -498,7 +498,7 @@ class SleepPhaseConsolidator:
         except sqlite3.OperationalError:
             return 0
 
-        sequence_counts: Dict[Tuple[str, ...], int] = collections.defaultdict(int)
+        sequence_counts: dict[tuple[str, ...], int] = collections.defaultdict(int)
 
         for r in rows:
             raw_tc = r["tool_calls"]
@@ -563,11 +563,11 @@ class SleepPhaseConsolidator:
 
     def run_sleep_consolidation(
         self,
-        is_user_active_fn: Optional[Callable[[], bool]] = None,
+        is_user_active_fn: Callable[[], bool] | None = None,
         batch_size: int = 20,
-        extractor_fn: Optional[Callable[[str], Dict[str, Any]]] = None,
+        extractor_fn: Callable[[str], dict[str, Any]] | None = None,
         pin_ecores: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Orchestrates full sleep-phase consolidation with snapshot isolation and micro-batching."""
         t0 = time.perf_counter()
 
@@ -693,7 +693,7 @@ class SleepPhaseConsolidator:
     def decay_action_transitions(
         self,
         half_life_days: float = 14.0,
-        is_user_active_fn: Optional[Callable[[], bool]] = None,
+        is_user_active_fn: Callable[[], bool] | None = None,
     ) -> int:
         """Applies 14-day exponential decay to habit graph action transitions during sleep phase."""
         if is_user_active_fn and is_user_active_fn():

@@ -7,14 +7,13 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional
 
 import httpx
 
 logger = logging.getLogger("Jarvis.HTTP2Pool")
 
 _lock = threading.Lock()
-_warm_client: Optional[httpx.Client] = None
+_warm_client: httpx.Client | None = None
 
 
 def _check_h2_installed() -> bool:
@@ -62,4 +61,4 @@ def close_warm_http2_client() -> None:
                 _warm_client = None
 
 
-__all__ = ["get_warm_http2_client", "close_warm_http2_client"]
+__all__ = ["close_warm_http2_client", "get_warm_http2_client"]

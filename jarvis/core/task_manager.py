@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from jarvis.core.safety import SafetyGate
 
@@ -30,7 +30,7 @@ class BackgroundTask:
         name: str,
         process: subprocess.Popen,
         notify_voice: bool = True,
-        job_handle: Optional[Any] = None,
+        job_handle: Any | None = None,
     ):
         self.id = task_id
         self.command = command
@@ -39,9 +39,9 @@ class BackgroundTask:
         self.notify_voice = notify_voice
         self.job_handle = job_handle
         self.start_time = time.time()
-        self.end_time: Optional[float] = None
+        self.end_time: float | None = None
         self.status = "running"  # "running", "completed", "failed", "cancelled"
-        self.exit_code: Optional[int] = None
+        self.exit_code: int | None = None
         self.stdout_lines: collections.deque = collections.deque(maxlen=1000)
         self.stderr_lines: collections.deque = collections.deque(maxlen=1000)
 
@@ -67,7 +67,7 @@ class BackgroundTaskManager:
 
     def __init__(self, orchestrator: Any = None):
         self.orchestrator = orchestrator
-        self._tasks: Dict[str, BackgroundTask] = {}
+        self._tasks: dict[str, BackgroundTask] = {}
         self._task_counter = 0
         self._tasks_lock = threading.Lock()
         self.safety_gate = SafetyGate()
@@ -87,8 +87,8 @@ class BackgroundTaskManager:
         command: str,
         task_name: str = "",
         notify_voice: bool = True,
-        cwd: Optional[str] = None,
-    ) -> Tuple[bool, str, Optional[str]]:
+        cwd: str | None = None,
+    ) -> tuple[bool, str, str | None]:
         """Spawns an asynchronous background task if safe.
         Returns (success, message, task_id).
         """
@@ -294,7 +294,7 @@ class BackgroundTaskManager:
         except Exception as e:
             logger.debug("Failed to deliver verbal notification for task %s: %s", task.id, e)
 
-    def list_tasks(self) -> List[Dict[str, Any]]:
+    def list_tasks(self) -> list[dict[str, Any]]:
         """Returns details for all active and recent background tasks."""
         with self._tasks_lock:
             results = []
@@ -310,7 +310,7 @@ class BackgroundTaskManager:
                 })
             return results
 
-    def get_task_output(self, task_id: str, max_lines: int = 40) -> Optional[str]:
+    def get_task_output(self, task_id: str, max_lines: int = 40) -> str | None:
         """Returns the formatted stdout/stderr output for a specific task."""
         with self._tasks_lock:
             task = self._tasks.get(task_id)
@@ -341,7 +341,9 @@ class BackgroundTaskManager:
                 # Terminate Job Object first to guarantee process-tree death on Windows
                 if task.job_handle:
                     try:
-                        from jarvis.skills.job_object_sandbox import terminate_and_close_job
+                        from jarvis.skills.job_object_sandbox import (
+                            terminate_and_close_job,
+                        )
                         terminate_and_close_job(task.job_handle)
                     except Exception:
                         pass

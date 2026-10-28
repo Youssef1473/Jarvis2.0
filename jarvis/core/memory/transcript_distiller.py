@@ -7,14 +7,13 @@ memory with zero-contention per-item interruption yields (<2ms).
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import re
 import sqlite3
-import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 logger = logging.getLogger("Jarvis.Memory.TranscriptDistiller")
 
@@ -49,7 +48,7 @@ _TRIVIAL_UTTERANCES: frozenset[str] = frozenset({
 
 # Precise secret regexes targeting actual key-value assignments and known token signatures.
 # Bare words like 'auth' or 'token' are NOT matched to avoid discarding developer discussions.
-_SENSITIVE_PATTERNS: List[re.Pattern] = [
+_SENSITIVE_PATTERNS: list[re.Pattern] = [
     # Key-value assignments: api_key = "...", token: '...', password = "..."
     re.compile(
         r"(?:api[_-]?key|secret|password|token|bearer)\s*[:=]\s*['\"]?[A-Za-z0-9_\-\.~+/]{8,}['\"]?",
@@ -95,7 +94,7 @@ class TranscriptDistiller:
         self,
         db_path: str,
         vector_engine: Any = None,
-        llm_config: Optional[Dict[str, Any]] = None,
+        llm_config: dict[str, Any] | None = None,
         memory_manager: Any = None,
     ):
         self.db_path = str(db_path)
@@ -153,7 +152,7 @@ class TranscriptDistiller:
 
     def get_unprocessed_interactions(
         self, limit: int = 25
-    ) -> Tuple[List[Dict[str, Any]], int, bool]:
+    ) -> tuple[list[dict[str, Any]], int, bool]:
         """Fetches new interaction records beyond the last distilled ID.
 
         Returns:
@@ -173,7 +172,7 @@ class TranscriptDistiller:
                 return [], last_id, False
 
             max_id = max(int(r["id"]) for r in rows)
-            meaningful: List[Dict[str, Any]] = []
+            meaningful: list[dict[str, Any]] = []
 
             for r in rows:
                 u_text = (r["user_input"] or "").strip()
@@ -194,7 +193,7 @@ class TranscriptDistiller:
         finally:
             conn.close()
 
-    def format_transcript_block(self, interactions: List[Dict[str, Any]]) -> str:
+    def format_transcript_block(self, interactions: list[dict[str, Any]]) -> str:
         """Formats interactions into a chronological dialogue script."""
         turns = []
         for i, turn in enumerate(interactions, start=1):
@@ -209,9 +208,9 @@ class TranscriptDistiller:
     def extract_traits_and_facts(
         self,
         transcript_text: str,
-        is_user_active_fn: Optional[Callable[[], bool]] = None,
-        extractor_fn: Optional[Callable[[str], Dict[str, Any]]] = None,
-    ) -> Optional[Dict[str, Any]]:
+        is_user_active_fn: Callable[[], bool] | None = None,
+        extractor_fn: Callable[[str], dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
         """Distills multi-turn dialogue into structured traits with pre- and post-LLM secret scrubbing."""
         if not transcript_text.strip():
             return {"core_preferences": [], "knowledge_edges": [], "atomic_facts": []}
@@ -265,7 +264,7 @@ class TranscriptDistiller:
             "Output valid JSON without markdown formatting."
         )
 
-        extracted_data: Optional[Dict[str, Any]] = None
+        extracted_data: dict[str, Any] | None = None
 
         # Try Antigravity Bridge first
         try:
@@ -323,10 +322,10 @@ class TranscriptDistiller:
         return self._validate_and_sanitize_distilled_data(extracted_data)
 
     def _validate_and_sanitize_distilled_data(
-        self, data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, data: dict[str, Any]
+    ) -> dict[str, Any]:
         """Adjustment 2 & 3: Post-extraction validation, credential scrubbing, and canonical key enforcement."""
-        sanitized: Dict[str, Any] = {
+        sanitized: dict[str, Any] = {
             "core_preferences": [],
             "knowledge_edges": [],
             "atomic_facts": [],
@@ -397,10 +396,10 @@ class TranscriptDistiller:
 
     def commit_distilled_knowledge(
         self,
-        distilled_data: Dict[str, Any],
+        distilled_data: dict[str, Any],
         max_interaction_id: int,
-        is_user_active_fn: Optional[Callable[[], bool]] = None,
-    ) -> Dict[str, Any]:
+        is_user_active_fn: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
         """Adjustment 4: Per-item interruption yield (<2ms) and cursor safety during inscription."""
         prefs_inscribed = 0
         edges_inscribed = 0
@@ -492,10 +491,10 @@ class TranscriptDistiller:
 
     def distill_unprocessed_interactions(
         self,
-        is_user_active_fn: Optional[Callable[[], bool]] = None,
+        is_user_active_fn: Callable[[], bool] | None = None,
         max_turns: int = 25,
-        extractor_fn: Optional[Callable[[str], Dict[str, Any]]] = None,
-    ) -> Dict[str, Any]:
+        extractor_fn: Callable[[str], dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         """Orchestrates harvest, secret scrubbing, trait distillation, and dual-crystallization."""
         # 1. Early user activity check
         if is_user_active_fn and is_user_active_fn():

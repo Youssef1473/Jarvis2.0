@@ -1,8 +1,9 @@
 """Global input trigger listener for Jarvis 2.0 (Push-to-Talk via Mouse MB2 or Keyboard)."""
 import logging
 import threading
-import time
-from typing import Callable, Optional, Dict, Any
+from collections.abc import Callable
+from typing import Any
+
 from pynput import keyboard, mouse
 
 logger = logging.getLogger("Jarvis.InputListener")
@@ -65,10 +66,10 @@ class HotkeyListener:
 
     def __init__(
         self,
-        config: Optional[Dict[str, Any]] = None,
-        on_press_callback: Optional[Callable[[], None]] = None,
-        on_release_callback: Optional[Callable[[], None]] = None,
-        on_any_key_callback: Optional[Callable[[], None]] = None,
+        config: dict[str, Any] | None = None,
+        on_press_callback: Callable[[], None] | None = None,
+        on_release_callback: Callable[[], None] | None = None,
+        on_any_key_callback: Callable[[], None] | None = None,
     ):
         self.config = config or {}
         self.on_press_callback = on_press_callback
@@ -92,8 +93,8 @@ class HotkeyListener:
         logger.info(f"Push-to-Talk configured on trigger: {trigger_desc}")
 
         self._is_pressed = False
-        self._keyboard_listener: Optional[keyboard.Listener] = None
-        self._mouse_listener: Optional[mouse.Listener] = None
+        self._keyboard_listener: keyboard.Listener | None = None
+        self._mouse_listener: mouse.Listener | None = None
         self._lock = threading.Lock()
 
     def _on_mouse_click(self, x, y, button, pressed):

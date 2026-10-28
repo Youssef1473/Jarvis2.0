@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, FrozenSet, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger("Jarvis.CognitiveRouter")
 
 # Tools strictly categorized as local OS / device operations suitable for offline 0-token execution
-OS_ACTION_TOOLS: FrozenSet[str] = frozenset({
+OS_ACTION_TOOLS: frozenset[str] = frozenset({
     "launch_application",
     "close_application",
     "adjust_volume",
@@ -42,7 +42,7 @@ OS_ACTION_TOOLS: FrozenSet[str] = frozenset({
 })
 
 # Patterns that indicate self-engineering / self-evolution where the explicit model choice must never be overridden
-SELF_BUILD_TRIGGERS: Tuple[str, ...] = (
+SELF_BUILD_TRIGGERS: tuple[str, ...] = (
     "add feature",
     "create feature",
     "build yourself",
@@ -62,7 +62,7 @@ SELF_BUILD_TRIGGERS: Tuple[str, ...] = (
 )
 
 # Deep reasoning indicators
-DEEP_INDICATORS: Tuple[str, ...] = (
+DEEP_INDICATORS: tuple[str, ...] = (
     "code",
     "python",
     "script",
@@ -106,7 +106,7 @@ DEEP_INDICATORS: Tuple[str, ...] = (
 )
 
 # Fast conversational / reflex indicators
-FAST_INDICATORS: Tuple[str, ...] = (
+FAST_INDICATORS: tuple[str, ...] = (
     "volume",
     "mute",
     "unmute",
@@ -240,7 +240,7 @@ class CognitiveRouter:
 
         return target_model
 
-    def parse_model_switch_command(self, norm_text: str) -> Optional[Tuple[str, Optional[str]]]:
+    def parse_model_switch_command(self, norm_text: str) -> tuple[str, str | None] | None:
         """Detects voice commands instructing Jarvis to change model or provider.
 
         Returns:
@@ -312,7 +312,7 @@ class CognitiveRouter:
     def determine_hybrid_route(
         self,
         user_text: str,
-        active_tool_names: FrozenSet[str],
+        active_tool_names: frozenset[str],
         has_screen_intent: bool,
         active_task_mode: str,
         has_antigravity: bool,

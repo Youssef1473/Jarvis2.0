@@ -11,22 +11,22 @@ Decomposed into focused modular mixins:
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 import threading
+from pathlib import Path
 from typing import Any, Dict, Optional
 
+from jarvis.core.memory.document_vault import DocumentVaultMixin
+from jarvis.core.memory.facts_manager import FactsManagerMixin
+from jarvis.core.memory.interaction_memory import InteractionMemoryMixin
+from jarvis.core.memory.sqlite_base import SingleWriterActor, SqliteBaseMixin
+from jarvis.core.memory.tasks_calendar import TasksCalendarMixin
+from jarvis.core.memory.temporal_graph import TemporalGraphMixin
 from jarvis.core.memory.vector_engine import (
     VectorMemoryEngine,
     fuse_vec_and_fts_rrf,
     sanitize_fts5_query,
     sanitize_memory_taint,
 )
-from jarvis.core.memory.sqlite_base import SingleWriterActor, SqliteBaseMixin
-from jarvis.core.memory.temporal_graph import TemporalGraphMixin
-from jarvis.core.memory.facts_manager import FactsManagerMixin
-from jarvis.core.memory.tasks_calendar import TasksCalendarMixin
-from jarvis.core.memory.document_vault import DocumentVaultMixin
-from jarvis.core.memory.interaction_memory import InteractionMemoryMixin
 
 from .obsidian_sync import (
     ObsidianChunk,
@@ -50,14 +50,14 @@ class MemoryManager(
 ):
     """Stores user preferences, facts, tasks, and conversation history in SQLite with adaptive learning."""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.llm_config = config.get("llm", {})
         memory_config = config.get("memory", {})
         self.background_learning_enabled = bool(memory_config.get("background_learning", False))
         self._learning_lock = threading.Lock()
         self._learning_in_flight = False
         self._context_summary_lock = threading.Lock()
-        self._context_summary_cache: Optional[str] = None
+        self._context_summary_cache: str | None = None
         self._write_lock = threading.RLock()
         base_dir = Path(config.get("_base_dir", "."))
         db_rel_path = memory_config.get("db_path", "data/jarvis_memory.db")
@@ -65,21 +65,21 @@ class MemoryManager(
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.vector_engine = VectorMemoryEngine()
         self._writer_actor = SingleWriterActor(self.db_path)
-        self._ro_vector_pool: Optional[Any] = None
+        self._ro_vector_pool: Any | None = None
         self._ro_pool_lock = threading.Lock()
         self._init_db()
 
 
 __all__ = [
     "MemoryManager",
-    "VectorMemoryEngine",
+    "ObsidianChunk",
+    "ObsidianContextSyncEngine",
+    "ObsidianNoteParser",
     "SingleWriterActor",
     "SleepPhaseConsolidator",
-    "TranscriptDistiller",
-    "ObsidianContextSyncEngine",
-    "ObsidianChunk",
-    "ObsidianNoteParser",
     "SyncStats",
+    "TranscriptDistiller",
+    "VectorMemoryEngine",
     "fuse_vec_and_fts_rrf",
     "sanitize_fts5_query",
     "sanitize_memory_taint",

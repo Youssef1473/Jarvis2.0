@@ -10,7 +10,6 @@ import logging
 import socket
 import threading
 import time
-from typing import Optional
 
 from jarvis.context.flow_state_mirror import FlowStateMirror
 from jarvis.speculative.engine import EnvironmentEpochTracker as SpeculativeEpochTracker
@@ -26,8 +25,8 @@ class FlowStateBridgeListener:
     def __init__(self, port: int = DEFAULT_UDP_PORT):
         self.port = port
         self.running = False
-        self._thread: Optional[threading.Thread] = None
-        self._sock: Optional[socket.socket] = None
+        self._thread: threading.Thread | None = None
+        self._sock: socket.socket | None = None
         self._last_cursor_ts = 0.0
 
     def start(self) -> bool:
@@ -78,7 +77,7 @@ class FlowStateBridgeListener:
                         last_exit_code=payload.get("exit_code"),
                         stderr_tail=payload.get("stderr"),
                     )
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except Exception as e:
                 logger.debug("Error processing bridge packet: %s", e)

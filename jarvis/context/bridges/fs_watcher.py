@@ -8,11 +8,10 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
-from pathlib import Path
 import sys
 import threading
 import time
-from typing import Optional
+from pathlib import Path
 
 from jarvis.context.flow_state_mirror import EnvironmentEpochTracker, ResourceScope
 from jarvis.speculative.engine import EnvironmentEpochTracker as SpeculativeEpochTracker
@@ -38,7 +37,7 @@ class WorkspaceFilesystemWatcher:
     def __init__(self, workspace_root: Path | str = "."):
         self.workspace_root = Path(workspace_root).resolve()
         self.running = False
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
 
     def start(self) -> bool:
         if self.running:

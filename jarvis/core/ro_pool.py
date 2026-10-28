@@ -3,13 +3,13 @@
 Re-exports canonical pool implementations from jarvis.memory.ro_pool.
 """
 from jarvis.memory.ro_pool import (
-    VectorMemoryPool,
     ReadOnlyConnectionPool,
+    VectorMemoryPool,
     get_ro_connection,
 )
 
 __all__ = [
-    "VectorMemoryPool",
     "ReadOnlyConnectionPool",
+    "VectorMemoryPool",
     "get_ro_connection",
 ]

@@ -7,11 +7,12 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 from jarvis.audio.prosodic_chunker import TwoGearProsodicChunker
-from jarvis.core.stream_tool_parser import NonceGuardedStreamParser, ParsedToolCall
+from jarvis.core.stream_tool_parser import NonceGuardedStreamParser
 
 logger = logging.getLogger("Jarvis.GitHubCopilot")
 
@@ -22,7 +23,7 @@ class GitHubCopilotBridge:
     DEFAULT_TIMEOUT_SECONDS = 120.0
     AGENT_NAME = "jarvis-chat"
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: dict[str, Any] | None = None):
         self.config = config or {}
         llm_cfg = self.config.get("llm", {})
         configured_path = llm_cfg.get("github_copilot_path", "").strip()
@@ -42,17 +43,17 @@ class GitHubCopilotBridge:
     def generate_response(
         self,
         prompt: str,
-        model: Optional[str] = None,
+        model: str | None = None,
         system_instruction: str = "",
-        timeout: Optional[float] = None,
-        conversation_id: Optional[str] = None,
-        candidates: Optional[list[str]] = None,
-        sentence_callback: Optional[Any] = None,
-        on_speech_chunk: Optional[Callable[[str], None]] = None,
-        cancel_token: Optional[Any] = None,
-        turn_nonce: Optional[str] = None,
-        on_tool_call: Optional[Callable[[Any], None]] = None,
-    ) -> Dict[str, Any]:
+        timeout: float | None = None,
+        conversation_id: str | None = None,
+        candidates: list[str] | None = None,
+        sentence_callback: Any | None = None,
+        on_speech_chunk: Callable[[str], None] | None = None,
+        cancel_token: Any | None = None,
+        turn_nonce: str | None = None,
+        on_tool_call: Callable[[Any], None] | None = None,
+    ) -> dict[str, Any]:
         del model, conversation_id, candidates
         callback = on_speech_chunk or sentence_callback
 
@@ -179,8 +180,8 @@ class GitHubCopilotBridge:
             }
 
         # Streaming execution via SandboxedProcess
-        sandboxed: Optional[Any] = None
-        proc: Optional[subprocess.Popen] = None
+        sandboxed: Any | None = None
+        proc: subprocess.Popen | None = None
         accumulated_text: list[str] = []
         chunker = TwoGearProsodicChunker()
         tool_parser = NonceGuardedStreamParser(turn_nonce=turn_nonce) if turn_nonce else None

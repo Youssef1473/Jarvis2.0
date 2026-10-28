@@ -8,9 +8,7 @@ import io
 import logging
 import os
 import re
-import sys
 from pathlib import Path
-from typing import Optional, Tuple
 
 from jarvis.skills.base import SkillRegistry
 from jarvis.vision.screen_capture import ScreenPerception
@@ -49,12 +47,12 @@ DEV_PROCESS_NAMES = {
 LOGIN_PATTERN = re.compile(r"\b(log\s*in|sign\s*in|sign\s*on|enter\s*password)\b", re.IGNORECASE)
 
 
-def _get_active_window_details() -> Tuple[str, str]:
+def _get_active_window_details() -> tuple[str, str]:
     """Returns (window_title, process_name) for the currently focused foreground window."""
     try:
+        import psutil
         import win32gui
         import win32process
-        import psutil
         hwnd = win32gui.GetForegroundWindow()
         if not hwnd:
             return ("", "")
@@ -71,7 +69,7 @@ def _get_active_window_details() -> Tuple[str, str]:
         return ("", "")
 
 
-def check_visual_privacy(window_title: str, process_name: str = "") -> Optional[str]:
+def check_visual_privacy(window_title: str, process_name: str = "") -> str | None:
     """Inspects window title and process against sensitive privacy profiles.
     Returns a security warning string if sensitive, or None if safe for capture.
     """
@@ -79,11 +77,7 @@ def check_visual_privacy(window_title: str, process_name: str = "") -> Optional[
     proc_lower = (process_name or "").lower()
 
     is_sensitive = False
-    if proc_lower in SENSITIVE_PROCESS_NAMES:
-        is_sensitive = True
-    elif any(kw in title_lower for kw in SENSITIVE_EXPLICIT_KEYWORDS):
-        is_sensitive = True
-    elif LOGIN_PATTERN.search(title_lower) and proc_lower not in DEV_PROCESS_NAMES:
+    if proc_lower in SENSITIVE_PROCESS_NAMES or any(kw in title_lower for kw in SENSITIVE_EXPLICIT_KEYWORDS) or LOGIN_PATTERN.search(title_lower) and proc_lower not in DEV_PROCESS_NAMES:
         is_sensitive = True
 
     if is_sensitive:
@@ -114,7 +108,7 @@ def _broadcast_screenshot_event():
         logger.debug("Failed to broadcast screenshot event: %s", e)
 
 
-def _save_latest_screenshot(image_bytes: bytes) -> Optional[Path]:
+def _save_latest_screenshot(image_bytes: bytes) -> Path | None:
     """Caches the captured screen frame to data/screenshots/latest_screen.jpg with path confinement."""
     try:
         from jarvis.core.security_boundaries import validate_confined_path
@@ -132,7 +126,7 @@ def _save_latest_screenshot(image_bytes: bytes) -> Optional[Path]:
         return None
 
 
-def _analyze_screen_with_gemini(image_bytes: bytes, query: str) -> Optional[str]:
+def _analyze_screen_with_gemini(image_bytes: bytes, query: str) -> str | None:
     """Sends screen image bytes to Gemini Multimodal Vision API with deadline enforcement."""
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
@@ -207,7 +201,10 @@ def inspect_screen(query: str = "Describe what is currently visible on the scree
 
     # 4. Graceful fallback using active OS window telemetry & UI Automation controls (Tier 2 Semantic UIA)
     try:
-        from jarvis.skills.os_control import get_active_window, list_running_applications
+        from jarvis.skills.os_control import (
+            get_active_window,
+            list_running_applications,
+        )
         active = get_active_window()
         apps = list_running_applications()
 
@@ -307,7 +304,7 @@ def inspect_screen_with_marks(query: str = "Identify interactive elements on the
 )
 def click_marked_element(mark_id: int) -> str:
     """Clicks a marked UI element after verifying target window foreground focus and bounding rect stability."""
-    from jarvis.vision.som_grounding import SetOfMarkAnnotator, MarkRegistry
+    from jarvis.vision.som_grounding import MarkRegistry, SetOfMarkAnnotator
     mark = MarkRegistry.get_mark(mark_id)
     if not mark:
         return f"Mark ID [{mark_id}] was not found in the active mark registry, Sir. Please call inspect_screen_with_marks to refresh element coordinates."

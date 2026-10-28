@@ -2,13 +2,13 @@
 Canonical implementation resides in jarvis.audio.prosodic_chunker.
 """
 from jarvis.audio.prosodic_chunker import (
-    sanitize_clause_for_ear,
-    TwoGearProsodicChunker,
     StreamingSentenceChunker,
+    TwoGearProsodicChunker,
+    sanitize_clause_for_ear,
 )
 
 __all__ = [
-    "sanitize_clause_for_ear",
-    "TwoGearProsodicChunker",
     "StreamingSentenceChunker",
+    "TwoGearProsodicChunker",
+    "sanitize_clause_for_ear",
 ]

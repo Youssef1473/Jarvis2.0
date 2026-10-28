@@ -15,15 +15,19 @@ Key Systems Capabilities:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
 import inspect
 import json
 import logging
 import threading
 import time
-from typing import Any, Awaitable, Callable, Coroutine, Dict, Optional, Tuple, Union
+from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import dataclass, field
+from typing import Any
 
-from jarvis.core.pipeline.interim_bridge import _INTERIM_PHRASE_MAP, DEFAULT_INTERIM_PHRASE
+from jarvis.core.pipeline.interim_bridge import (
+    _INTERIM_PHRASE_MAP,
+    DEFAULT_INTERIM_PHRASE,
+)
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Pipeline.DualTrack")
@@ -35,15 +39,15 @@ class BookmarkSnapshot:
     turn_id: int
     original_query: str
     tool_name: str
-    tool_args: Dict[str, Any]
-    resolved_payload: Optional[Any]
+    tool_args: dict[str, Any]
+    resolved_payload: Any | None
     timestamp: float = field(default_factory=time.monotonic)
 
 
 class MonotonicCancellationToken:
     """Lock-free monotonic cancellation token for sub-millisecond stream abort."""
 
-    __slots__ = ("_epoch", "_cancelled_epoch")
+    __slots__ = ("_cancelled_epoch", "_epoch")
 
     def __init__(self) -> None:
         self._epoch: int = 0
@@ -94,10 +98,10 @@ class DualTrackCoordinator:
 
     def __init__(
         self,
-        tts_enqueue_fn: Optional[Callable[[str, int], Awaitable[None]]] = None,
-        tts_wait_clause_done_fn: Optional[Callable[[], Awaitable[None]]] = None,
-        wasapi_flush_fn: Optional[Callable[[], None]] = None,
-        bookmark_stack: Optional[Any] = None,
+        tts_enqueue_fn: Callable[[str, int], Awaitable[None]] | None = None,
+        tts_wait_clause_done_fn: Callable[[], Awaitable[None]] | None = None,
+        wasapi_flush_fn: Callable[[], None] | None = None,
+        bookmark_stack: Any | None = None,
         filler_threshold_ms: float = 320.0,
         cache_ttl_seconds: float = 60.0,
     ) -> None:
@@ -110,18 +114,16 @@ class DualTrackCoordinator:
 
         self.token_gate = MonotonicCancellationToken()
         # Read-only tool cache: {cache_key: (expiry_monotonic, result)}
-        self._ro_cache: Dict[str, Tuple[float, Any]] = {}
+        self._ro_cache: dict[str, tuple[float, Any]] = {}
         self._cache_lock = threading.Lock()
 
     @staticmethod
     async def _default_tts_enqueue(phrase: str, epoch: int) -> None:
         """Default async no-op for TTS enqueue."""
-        pass
 
     @staticmethod
     async def _default_wait_clause() -> None:
         """Default async no-op for clause completion."""
-        pass
 
     def trigger_barge_in(self) -> None:
         """Invoked by VAD / Hotkey interrupt thread.
@@ -134,7 +136,7 @@ class DualTrackCoordinator:
         except Exception as e:
             logger.debug("WASAPI flush callback notice: %s", e)
 
-    def _get_cached_result(self, key: str) -> Optional[Any]:
+    def _get_cached_result(self, key: str) -> Any | None:
         """Thread-safe retrieval of cached read-only tool results."""
         with self._cache_lock:
             entry = self._ro_cache.get(key)
@@ -175,11 +177,11 @@ class DualTrackCoordinator:
         self,
         user_query: str,
         tool_name: str,
-        tool_args: Dict[str, Any],
-        tool_coro: Union[Coroutine[Any, Any, Any], Callable[..., Any]],
-        milestone_phrase: Optional[str] = None,
-        is_read_only: Optional[bool] = None,
-    ) -> Optional[Any]:
+        tool_args: dict[str, Any],
+        tool_coro: Coroutine[Any, Any, Any] | Callable[..., Any],
+        milestone_phrase: str | None = None,
+        is_read_only: bool | None = None,
+    ) -> Any | None:
         """Executes a tool on Track B while conditionally firing Track A acoustic filler
 
         only if tool execution exceeds `filler_threshold_ms`.
@@ -285,6 +287,6 @@ class DualTrackCoordinator:
 
 __all__ = [
     "BookmarkSnapshot",
-    "MonotonicCancellationToken",
     "DualTrackCoordinator",
+    "MonotonicCancellationToken",
 ]

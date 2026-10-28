@@ -5,12 +5,12 @@ and gates proactive notifications, spoken voice, and HUD pulses using formal dec
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum
 import logging
 import math
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any
 
 logger = logging.getLogger("Jarvis.Cognition.EVI")
 
@@ -46,7 +46,7 @@ class CognitiveTwinEngine:
     """Infers Sir's latent cognitive state and gates proactive actions via EVI."""
 
     # Disruption cost matrix C_interrupt(state, modality)
-    INTERRUPTION_COST: Dict[CognitiveState, Dict[DeliveryModality, float]] = {
+    INTERRUPTION_COST: dict[CognitiveState, dict[DeliveryModality, float]] = {
         CognitiveState.DEEP_FLOW: {
             DeliveryModality.VOICE: 0.92,
             DeliveryModality.HUD_PULSE: 0.18,
@@ -76,7 +76,7 @@ class CognitiveTwinEngine:
 
     def __init__(self) -> None:
         self.state: CognitiveState = CognitiveState.ROUTINE_ADMIN
-        self._interruption_history: List[Tuple[float, bool]] = []  # (timestamp, was_dismissed)
+        self._interruption_history: list[tuple[float, bool]] = []  # (timestamp, was_dismissed)
         self.last_telemetry: TelemetrySlice = TelemetrySlice()
 
     def infer_state(self, t: TelemetrySlice) -> CognitiveState:
@@ -110,7 +110,7 @@ class CognitiveTwinEngine:
         context_relevance: float,
         urgency: float,
         can_act_silently: bool = False,
-    ) -> Tuple[DeliveryModality, float]:
+    ) -> tuple[DeliveryModality, float]:
         """Evaluates EVI(a | c, s) = U_info * P_rel * (1 + gamma * Urgency) - C_interrupt(s, m) - beta * F_fatigue.
 
         Returns:
@@ -138,7 +138,7 @@ class CognitiveTwinEngine:
         now = time.time()
         self._interruption_history.append((now, True))
 
-    def build_persona_telemetry_envelope(self, t: Optional[TelemetrySlice] = None) -> str:
+    def build_persona_telemetry_envelope(self, t: TelemetrySlice | None = None) -> str:
         """Generates the compact <live_telemetry_envelope> injected at the tail of the user message.
         Synchronizes J.A.R.V.I.S.'s cadence, brevity, and Socratic behavior with Sir's live state.
         """
@@ -186,9 +186,9 @@ class CognitiveTwinEngine:
         self,
         utility: float = 0.5,
         relevance: float = 0.6,
-        epoch_vector: Optional[Any] = None,
-        current_vector: Optional[Any] = None,
-    ) -> Tuple[bool, float]:
+        epoch_vector: Any | None = None,
+        current_vector: Any | None = None,
+    ) -> tuple[bool, float]:
         """Evaluates whether to speculatively pre-warm read-only context under Option A.
         Returns (is_approved, score). Disapproves if epochs are incompatible or benefit too low.
         """
@@ -207,8 +207,8 @@ class CognitiveTwinEngine:
         self,
         utility: float = 0.5,
         relevance: float = 0.6,
-        epoch_vector: Optional[Any] = None,
-        current_vector: Optional[Any] = None,
+        epoch_vector: Any | None = None,
+        current_vector: Any | None = None,
     ) -> bool:
         """Convenience predicate for TOCTOU-guarded read-only context pre-warming."""
         approved, _ = self.evaluate_speculative_prewarm(
@@ -236,10 +236,10 @@ class PrewarmedContextEntry:
 
 __all__ = [
     "CognitiveState",
-    "DeliveryModality",
-    "TelemetrySlice",
     "CognitiveTwinEngine",
+    "DeliveryModality",
     "PrewarmedContextEntry",
+    "TelemetrySlice",
 ]
 
 

@@ -6,7 +6,7 @@ import json
 import logging
 import math
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger("Jarvis.Memory.TemporalGraph")
 
@@ -22,7 +22,7 @@ class TemporalGraphMixin:
         is_functional: bool = True,
         confidence: float = 1.0,
         decay_lambda: float = 0.01,
-        source_context: Optional[str] = None,
+        source_context: str | None = None,
     ) -> int:
         """Stores a bi-temporal knowledge edge with automatic functional supersession."""
         now = time.time()
@@ -58,16 +58,16 @@ class TemporalGraphMixin:
 
     def query_active_edges(
         self,
-        subject: Optional[str] = None,
-        predicate: Optional[str] = None,
+        subject: str | None = None,
+        predicate: str | None = None,
         limit: int = 20,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Queries currently active knowledge edges (valid_until IS NULL) with ACT-R temporal activation."""
         now = time.time()
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             query = "SELECT * FROM knowledge_edges WHERE valid_until IS NULL"
-            params: List[Any] = []
+            params: list[Any] = []
             if subject:
                 query += " AND subject = ?"
                 params.append(subject.strip())
@@ -107,8 +107,8 @@ class TemporalGraphMixin:
         self,
         src_event: str,
         dst_event: str,
-        hour_bucket: Optional[int] = None,
-        is_weekend: Optional[int] = None,
+        hour_bucket: int | None = None,
+        is_weekend: int | None = None,
     ) -> None:
         """Records a user action sequence transition conditioned on circadian hour and weekend status."""
         now_dt = datetime.datetime.now()
@@ -130,10 +130,10 @@ class TemporalGraphMixin:
     def predict_next_action(
         self,
         src_event: str,
-        hour_bucket: Optional[int] = None,
-        is_weekend: Optional[int] = None,
+        hour_bucket: int | None = None,
+        is_weekend: int | None = None,
         min_prob: float = 0.50,
-    ) -> Optional[Tuple[str, float]]:
+    ) -> tuple[str, float] | None:
         """Predicts the most probable next action using time-conditioned Dirichlet/Laplace smoothed transitions."""
         now_dt = datetime.datetime.now()
         h = hour_bucket if hour_bucket is not None else now_dt.hour
@@ -168,7 +168,7 @@ class TemporalGraphMixin:
         skill_name: str,
         risk_level: int,
         inverse_skill: str,
-        inverse_payload: Dict[str, Any],
+        inverse_payload: dict[str, Any],
     ) -> None:
         """Logs a Level-1 reversible desktop mutation to the action journal for instant undo."""
         now = time.time()
@@ -179,7 +179,7 @@ class TemporalGraphMixin:
                 VALUES (?, ?, ?, ?, ?, ?, 0)
             """, (action_id, now, skill_name, risk_level, inverse_skill, json.dumps(inverse_payload)))
 
-    def revert_action(self, action_id: Optional[str] = None) -> Tuple[bool, str]:
+    def revert_action(self, action_id: str | None = None) -> tuple[bool, str]:
         """Reverts the latest non-reverted action (or specified action_id)."""
         with self._get_connection() as conn:
             cursor = conn.cursor()

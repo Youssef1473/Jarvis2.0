@@ -3,16 +3,15 @@
 Provides instant chronological recall of touched, created, or modified source files
 without expensive os.walk passes, featuring a cold-start os.scandir mtime fallback.
 """
-from collections import deque
 import os
-from pathlib import Path
 import threading
 import time
-from typing import Any, Deque, Dict, List, Optional, Set, Tuple
+from collections import deque
+from typing import Any, Optional
 
 from jarvis.skills.base import SkillRegistry
 
-_IGNORED_SEGMENTS: Set[str] = {
+_IGNORED_SEGMENTS: set[str] = {
     ".git", "node_modules", ".venv", "__pycache__", ".next",
     "build", "dist", ".pytest_cache", ".idea", ".vscode",
     "coverage", ".egg-info"
@@ -25,7 +24,7 @@ class WorkspaceMutationRing:
     _lock = threading.Lock()
 
     def __init__(self, maxlen: int = 1000) -> None:
-        self.events: Deque[Tuple[float, str, str]] = deque(maxlen=maxlen)  # (ts, action, abs_path)
+        self.events: deque[tuple[float, str, str]] = deque(maxlen=maxlen)  # (ts, action, abs_path)
 
     @classmethod
     def get_instance(cls) -> "WorkspaceMutationRing":
@@ -53,9 +52,9 @@ def _fast_cold_start_scan(
     cutoff_time: float,
     max_results: int = 40,
     max_depth: int = 4,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Performs a fast, shallow mtime scan ignoring noise directories on cold start."""
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
 
     def _scan_dir(current_dir: str, current_depth: int):
         if current_depth > max_depth or len(results) >= max_results * 2:
@@ -104,13 +103,13 @@ def get_recent_workspace_mutations(
     workspace_root: str = ".",
     within_minutes: float = 30.0,
     max_results: int = 40,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Queries the in-memory mutation ring, falling back to fast os.scandir mtime traversal on cold start."""
     abs_root = os.path.abspath(workspace_root)
     cutoff = time.time() - (within_minutes * 60.0)
     ring = WorkspaceMutationRing.get_instance()
 
-    recent: Dict[str, Dict[str, Any]] = {}
+    recent: dict[str, dict[str, Any]] = {}
     with ring._lock:
         for ts, action, path in reversed(ring.events):
             if ts < cutoff:
@@ -148,9 +147,9 @@ def get_recent_workspace_mutations(
 @SkillRegistry.register(
     name="record_workspace_mutation",
     description="Manually records a file mutation into the radar's in-memory ring buffer.",
-    risk_level=0,
+    risk_level=1,
 )
-def record_workspace_mutation(action: str, file_path: str) -> Dict[str, Any]:
+def record_workspace_mutation(action: str, file_path: str) -> dict[str, Any]:
     """Appends an event to the WorkspaceMutationRing if not in an ignored segment."""
     ring = WorkspaceMutationRing.get_instance()
     ring.record(action, file_path)

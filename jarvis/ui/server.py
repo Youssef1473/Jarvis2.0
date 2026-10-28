@@ -1,27 +1,33 @@
 """Starlette and WebSocket server powering the Jarvis 2.0 Holographic Web HUD."""
 import asyncio
+import base64
 import collections
 import json
 import logging
-from pathlib import Path
-import threading
-import time
-from typing import Any, Dict, Optional, Set
-from starlette.applications import Starlette
-from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse, Response, FileResponse, RedirectResponse
-from starlette.routing import Route, WebSocketRoute
-from starlette.websockets import WebSocket, WebSocketDisconnect
-import anyio
-import uvicorn
-import psutil
-
 import os
 import re
 import secrets
-import base64
-from urllib.parse import urlparse, urlsplit, unquote, unquote_to_bytes
+import threading
+import time
+from pathlib import Path
+from typing import Any, Optional
+from urllib.parse import unquote, unquote_to_bytes, urlsplit
+
+import anyio
+import psutil
+import uvicorn
+from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    Response,
+    StreamingResponse,
+)
+from starlette.routing import Route, WebSocketRoute
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from jarvis.skills.os_control import get_raw_battery_info
 
@@ -77,7 +83,6 @@ def render_template_with_nonce(template_text: str, nonce: str) -> str:
 
 def get_hud_session_token() -> str:
     """Returns the current ephemeral HUD cryptographic session token."""
-    global _HUD_SESSION_TOKEN
     return _HUD_SESSION_TOKEN
 
 
@@ -87,7 +92,7 @@ def set_hud_session_token(token: str) -> None:
     _HUD_SESSION_TOKEN = str(token)
 
 
-def resolve_safe_photo_path(photo_id: str, photos_dir: Optional[Path] = None) -> Optional[Path]:
+def resolve_safe_photo_path(photo_id: str, photos_dir: Path | None = None) -> Path | None:
     """Resolves a photo ID safely within the photos directory, preventing directory traversal.
 
     Rejects any paths containing traversal characters ('..', '/', '\\', '%2e', '%2f', '%5c', null bytes)
@@ -508,7 +513,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         "/api/timers",
     )
 
-    def _add_security_headers(self, response, request: Any = None, nonce: Optional[str] = None):
+    def _add_security_headers(self, response, request: Any = None, nonce: str | None = None):
         if nonce is None and request is not None:
             nonce = getattr(getattr(request, "state", None), "csp_nonce", None)
         if not nonce:
@@ -622,7 +627,7 @@ class WorkstationMetricsCollector:
     _nvml_module: Any = None
     _nvml_lock: threading.Lock = threading.Lock()
 
-    _DEFAULT_GPU_METRICS: Dict[str, Any] = {
+    _DEFAULT_GPU_METRICS: dict[str, Any] = {
         "gpu_name": "NVIDIA GeForce RTX 3050 Laptop GPU",
         "gpu_load": 0,
         "vram_used_mb": 0,
@@ -652,7 +657,7 @@ class WorkstationMetricsCollector:
                 return False
 
     @classmethod
-    def _get_gpu_metrics_native(cls) -> Dict[str, Any]:
+    def _get_gpu_metrics_native(cls) -> dict[str, Any]:
         """Polls GPU hardware states natively via pynvml bindings without subprocess forks."""
         if not cls._init_nvml():
             # Fallback to secondary watchdog query if available
@@ -715,7 +720,7 @@ class WorkstationMetricsCollector:
                 cls._nvml_module = None
 
     @staticmethod
-    def sample_metrics_sync(orchestrator: Any = None) -> Dict[str, Any]:
+    def sample_metrics_sync(orchestrator: Any = None) -> dict[str, Any]:
         """Synchronous vitals collection combining psutil host memory/CPU with native NVML GPU telemetry."""
         bat = get_raw_battery_info()
         cpu_val = round(psutil.cpu_percent(interval=None), 1)
@@ -850,8 +855,8 @@ class TelemetryConnectionManager:
 
     def __init__(self, max_clients: int = 8):
         self.max_clients = max_clients
-        self._clients: Dict[WebSocket, asyncio.Queue] = {}
-        self._sender_tasks: Dict[WebSocket, asyncio.Task] = {}
+        self._clients: dict[WebSocket, asyncio.Queue] = {}
+        self._sender_tasks: dict[WebSocket, asyncio.Task] = {}
         self._lock = asyncio.Lock()
 
     @property
@@ -859,7 +864,7 @@ class TelemetryConnectionManager:
         return len(self._clients)
 
     @property
-    def connected_clients(self) -> Set[WebSocket]:
+    def connected_clients(self) -> set[WebSocket]:
         return set(self._clients.keys())
 
     async def connect(self, websocket: WebSocket) -> bool:
@@ -904,7 +909,7 @@ class TelemetryConnectionManager:
         finally:
             asyncio.create_task(self.disconnect(websocket))
 
-    def broadcast_telemetry(self, raw_data: Dict[str, Any]):
+    def broadcast_telemetry(self, raw_data: dict[str, Any]):
         """Non-blocking fanout with non-blocking queue.get_nowait() to drop stale frames under backpressure."""
         if not self._clients:
             return
@@ -985,16 +990,16 @@ class JarvisUIService:
         self.enforce_auth = enforce_auth
         self.access_log = access_log
         self.telemetry_manager = TelemetryConnectionManager(max_clients=8)
-        self._server: Optional[uvicorn.Server] = None
-        self._thread: Optional[threading.Thread] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._server: uvicorn.Server | None = None
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self.template_path = Path(__file__).parent / "templates" / "hud.html"
-        self._pending_approvals: Dict[str, Dict[str, Any]] = {}
+        self._pending_approvals: dict[str, dict[str, Any]] = {}
         self._approval_lock = threading.Lock()
         self._csp_violations_ring: collections.deque = collections.deque(maxlen=50)
         self._csp_report_timestamps: collections.deque = collections.deque(maxlen=100)
         self._csp_report_lock = threading.Lock()
-        self._csp_dedup_cache: Dict[str, float] = {}
+        self._csp_dedup_cache: dict[str, float] = {}
         try:
             from jarvis.core.security_boundaries import DualKeyApprovalManager
             DualKeyApprovalManager.get_instance().set_approval_handler(self.handle_approval_request)
@@ -1007,7 +1012,7 @@ class JarvisUIService:
             pass
 
     @property
-    def connected_clients(self) -> Set[WebSocket]:
+    def connected_clients(self) -> set[WebSocket]:
         return self.telemetry_manager.connected_clients
 
     @classmethod
@@ -1060,6 +1065,7 @@ class JarvisUIService:
     async def _handle_photos_list(self, request):
         """Lists archived photos from SQLite memory for HUD photo matrix."""
         import sqlite3
+
         from jarvis.skills.photo_manager import DB_PATH
         try:
             def _query_photos():
@@ -1261,7 +1267,7 @@ class JarvisUIService:
             logger.error("Error updating memory node: %s", e)
             return JSONResponse({"error": str(e)}, status_code=500)
 
-    def handle_approval_request(self, request_details: Dict[str, Any], timeout: float = 30.0) -> bool:
+    def handle_approval_request(self, request_details: dict[str, Any], timeout: float = 30.0) -> bool:
         """Presents an out-of-band authorization request to the user via WebSocket and HUD mission feed."""
         action_hash = request_details.get("action_hash", "")
         tool_name = request_details.get("tool_name", "")
@@ -1725,7 +1731,7 @@ class JarvisUIService:
 
         elif action == "launch_private_browser":
             try:
-                from jarvis.skills.os_control import press_hotkey, open_browser_tab
+                from jarvis.skills.os_control import open_browser_tab, press_hotkey
                 press_hotkey("ctrl+shift+n")
             except Exception:
                 try:
@@ -1890,9 +1896,9 @@ class JarvisUIService:
             saved_cals = mem.get_saved_calendars() if mem and hasattr(mem, "get_saved_calendars") else []
 
             # Group events chronologically by date
-            from collections import defaultdict
-            import re
             import datetime
+            import re
+            from collections import defaultdict
             grouped = defaultdict(list)
             for e in events:
                 st = e.get("start_time", "")
@@ -2108,11 +2114,11 @@ class JarvisUIService:
         finally:
             await self.telemetry_manager.disconnect(websocket)
 
-    def _gather_telemetry(self) -> Dict[str, Any]:
+    def _gather_telemetry(self) -> dict[str, Any]:
         """Collects current hardware and model telemetry without blocking."""
         return WorkstationMetricsCollector.sample_metrics_sync(self.orchestrator)
 
-    def broadcast(self, payload: Dict[str, Any]):
+    def broadcast(self, payload: dict[str, Any]):
         """Thread-safe broadcast of a JSON payload to all connected clients."""
         if not self.telemetry_manager.client_count or not self._loop:
             return
@@ -2136,7 +2142,7 @@ class JarvisUIService:
             "timestamp": time.strftime("%H:%M:%S"),
         })
 
-    def broadcast_telemetry(self, extra: Optional[Dict[str, Any]] = None):
+    def broadcast_telemetry(self, extra: dict[str, Any] | None = None):
         """Broadcasts telemetry update."""
         base = self._gather_telemetry()
         if extra:
@@ -2232,12 +2238,12 @@ class JarvisUIService:
                         t.cancel()
                     if pending:
                         self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                except Exception:
-                    pass
+                except (asyncio.CancelledError, RuntimeError) as exc:
+                    logger.debug("Loop task cleanup notice: %s", exc)
                 try:
                     self._loop.run_until_complete(self._loop.shutdown_asyncgens())
-                except Exception:
-                    pass
+                except (asyncio.CancelledError, RuntimeError) as exc:
+                    logger.debug("Asyncgen shutdown notice: %s", exc)
                 if not self._loop.is_closed():
                     self._loop.close()
 
@@ -2256,12 +2262,12 @@ class JarvisUIService:
         try:
             from jarvis.core.security_boundaries import DualKeyApprovalManager
             DualKeyApprovalManager.get_instance().set_approval_handler(None)
-        except Exception:
-            pass
+        except (ImportError, AttributeError) as exc:
+            logger.debug("Approval handler teardown notice: %s", exc)
         WorkstationMetricsCollector.shutdown_nvml()
 
 
-async def broadcast_ambient_telemetry(type: str, data: Dict[str, Any]):
+async def broadcast_ambient_telemetry(type: str, data: dict[str, Any]):
     """Module-level helper to dispatch ambient telemetry to the active HUD server."""
     instance = JarvisUIService.get_instance()
     if instance:

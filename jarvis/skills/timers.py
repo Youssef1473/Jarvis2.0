@@ -1,15 +1,16 @@
 """Spoken timers, countdowns, and alert skills for Jarvis 2.0."""
+import logging
 import os
 import re
-import time
-import logging
 import threading
-from typing import Dict, Any, Optional
+import time
+from typing import Any
+
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Timers")
 
-_active_timers: Dict[str, Dict[str, Any]] = {}
+_active_timers: dict[str, dict[str, Any]] = {}
 _timer_lock = threading.Lock()
 _timer_counter = 0
 

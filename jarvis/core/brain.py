@@ -1,75 +1,71 @@
 """Jarvis 3.0 local-first brain with opt-in cloud specialist consultations."""
-import base64
 import json
 import logging
 import os
 import re
-import shutil
-import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple, Callable
-from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
-from google import genai
-from google.genai import types
-from PIL import Image
+from typing import Any
 
-from jarvis.skills.base import SkillRegistry
+import jarvis.skills.ast_code_surgeon
+import jarvis.skills.briefing
+import jarvis.skills.browser_agent
+import jarvis.skills.browser_cdp
+import jarvis.skills.calendar_manager
+import jarvis.skills.chrome_devtools
+import jarvis.skills.deep_research
+import jarvis.skills.dev_shell
+import jarvis.skills.diagnostics
+import jarvis.skills.document_ingest
+import jarvis.skills.email_manager
+import jarvis.skills.everything_search
+import jarvis.skills.gemini_intelligence
+import jarvis.skills.hybrid_actuator
+import jarvis.skills.job_object_sandbox
+import jarvis.skills.mcp_manager
+import jarvis.skills.media_dj
+import jarvis.skills.modern_web
+import jarvis.skills.notes
+import jarvis.skills.nvml_dxgi_vram_arbiter
+
 # Ensure skills are imported and registered
 import jarvis.skills.os_control
-import jarvis.skills.web_search
-import jarvis.skills.dev_shell
-import jarvis.skills.productivity
-import jarvis.skills.calendar_manager
-import jarvis.skills.browser_agent
-import jarvis.skills.email_manager
-import jarvis.skills.screen_vision
-import jarvis.skills.timers
-import jarvis.skills.protocols
-import jarvis.skills.system_maintenance
-import jarvis.skills.media_dj
-import jarvis.skills.briefing
-import jarvis.skills.project_manager
-import jarvis.skills.notes
-import jarvis.skills.system_watchdog
-import jarvis.skills.deep_research
-import jarvis.skills.document_ingest
-import jarvis.skills.self_evolution
 import jarvis.skills.photo_manager
-import jarvis.skills.diagnostics
-import jarvis.skills.browser_cdp
-import jarvis.skills.windows_uia
-import jarvis.skills.voice_control
-import jarvis.skills.everything_search
-import jarvis.skills.rstrtmgr_lock_surgeon
-import jarvis.skills.job_object_sandbox
-import jarvis.skills.nvml_dxgi_vram_arbiter
-import jarvis.skills.usn_journal_delta_radar
+import jarvis.skills.productivity
+import jarvis.skills.project_manager
+import jarvis.skills.protocols
 import jarvis.skills.reflex_macro_compiler
-import jarvis.skills.ast_code_surgeon
-import jarvis.skills.hybrid_actuator
-import jarvis.skills.mcp_manager
-import jarvis.skills.modern_web
-import jarvis.skills.gemini_intelligence
-import jarvis.skills.chrome_devtools
-from jarvis.vision.screen_capture import ScreenPerception
+import jarvis.skills.rstrtmgr_lock_surgeon
+import jarvis.skills.screen_vision
+import jarvis.skills.self_evolution
+import jarvis.skills.system_maintenance
+import jarvis.skills.system_watchdog
+import jarvis.skills.timers
+import jarvis.skills.usn_journal_delta_radar
+import jarvis.skills.voice_control
+import jarvis.skills.web_search
+import jarvis.skills.windows_uia
+from jarvis.context.context_orchestrator import (
+    BASE_SYSTEM_PROMPT as CONTEXT_BASE_SYSTEM_PROMPT,
+)
+from jarvis.context.context_orchestrator import ContextOrchestrator
+from jarvis.core.antigravity_bridge import AntigravityBridge
+from jarvis.core.brain_antigravity import AntigravityProviderMixin
+from jarvis.core.brain_gemini import GeminiProviderMixin
+from jarvis.core.brain_openai import OpenAIProviderMixin
+from jarvis.core.brain_specialist import SpecialistConsultationMixin
+from jarvis.core.cognition import CognitiveRouter
+from jarvis.core.github_bridge import GitHubCopilotBridge
 from jarvis.core.memory import MemoryManager
+from jarvis.core.pipeline.latency_profiler import PipelineLatencyProfiler
+from jarvis.core.reflex_dispatcher import ReflexDispatcher
+from jarvis.core.reflex_engine import DynamicReflexEngine
 from jarvis.core.safety import SafetyGate
 from jarvis.core.services import ManagedServiceManager
-from jarvis.core.antigravity_bridge import AntigravityBridge
-from jarvis.core.github_bridge import GitHubCopilotBridge
-from jarvis.core.reflex_engine import DynamicReflexEngine
-from jarvis.core.cognition import CognitiveRouter
-from jarvis.context.context_orchestrator import ContextOrchestrator, BASE_SYSTEM_PROMPT as CONTEXT_BASE_SYSTEM_PROMPT
-from jarvis.core.reflex_dispatcher import ReflexDispatcher
-from jarvis.core.pipeline.latency_profiler import PipelineLatencyProfiler, TurnTrace
-from jarvis.core.brain_openai import OpenAIProviderMixin
-from jarvis.core.brain_gemini import GeminiProviderMixin
-from jarvis.core.brain_antigravity import AntigravityProviderMixin
-from jarvis.core.brain_specialist import SpecialistConsultationMixin
+from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Brain")
 
@@ -199,10 +195,10 @@ class JarvisBrain(
 
     def __init__(
         self,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         memory_manager: MemoryManager,
         safety_gate: SafetyGate,
-        service_manager: Optional[ManagedServiceManager] = None,
+        service_manager: ManagedServiceManager | None = None,
     ):
         self.config = config
         self.memory = memory_manager
@@ -228,7 +224,7 @@ class JarvisBrain(
         # OpenAI-compatible (OmniRoute / Groq / xAI / Ollama) state
         self.openai_client = None
         self.openai_model = ""
-        self.openai_messages: List[Dict[str, Any]] = []
+        self.openai_messages: list[dict[str, Any]] = []
 
         # Gemini state
         configured_gemini_model = config.get("llm", {}).get("model", "gemini-3.8-flash")
@@ -256,7 +252,7 @@ class JarvisBrain(
         self.openrouter_provider = None
 
         # Dynamic round-trip latency tracking in milliseconds
-        self.last_latencies: Dict[str, float] = {
+        self.last_latencies: dict[str, float] = {
             "ollama": 0.0,
             "groq": 0.0,
             "gemini": 0.0,
@@ -266,7 +262,7 @@ class JarvisBrain(
         }
 
         # Monotonic cancellation token for preempting in-flight tool actuation on speech barge-in
-        self._active_cancel_token: Optional[Any] = None
+        self._active_cancel_token: Any | None = None
 
         # Real-time nanosecond stage-by-stage latency profiler
         self.latency_profiler: PipelineLatencyProfiler = jarvis.skills.diagnostics.get_global_latency_profiler()
@@ -298,17 +294,17 @@ class JarvisBrain(
         self.reflex_engine = DynamicReflexEngine(db_path=db_path)
         import jarvis.skills.self_evolution as self_evo
         self_evo.set_reflex_engine(self.reflex_engine)
-        self._current_turn_executed_tools: List[Tuple[str, Dict[str, Any]]] = []
-        self._current_turn_resolved_tool_outputs: Dict[str, Any] = {}
+        self._current_turn_executed_tools: list[tuple[str, dict[str, Any]]] = []
+        self._current_turn_resolved_tool_outputs: dict[str, Any] = {}
         self.tts = None
 
+        from jarvis.conversation.bookmarks import ReasoningBookmarkStack
         from jarvis.core.pipeline import (
             DualTrackCoordinator,
             InterimSpeechBridge,
             ToolOrchestrator,
             TurnTaintTracker,
         )
-        from jarvis.conversation.bookmarks import ReasoningBookmarkStack
 
         self.interim_bridge = InterimSpeechBridge(
             speak_fn=self._speak_interim_phrase,
@@ -393,11 +389,11 @@ class JarvisBrain(
     def _dispatch_tool_pipeline(
         self,
         tool_name: str,
-        tool_args: Dict[str, Any],
+        tool_args: dict[str, Any],
         step_index: int = 1,
-        sentence_callback: Optional[Callable[[str], None]] = None,
+        sentence_callback: Callable[[str], None] | None = None,
         dual_key_confirmed: bool = False,
-    ) -> Tuple[Any, bool]:
+    ) -> tuple[Any, bool]:
         """Single authoritative gateway for all tool authorization, safety checks, and execution across all providers.
 
         Returns:
@@ -434,7 +430,7 @@ class JarvisBrain(
     def _execute_tool_with_orchestrator(
         self,
         tool_name: str,
-        tool_args: Dict[str, Any],
+        tool_args: dict[str, Any],
         step_index: int = 1,
         dual_key_confirmed: bool = False,
     ) -> Any:
@@ -475,7 +471,7 @@ class JarvisBrain(
         except Exception:
             pass
 
-    def _synthesize_error_lesson(self, tool_name: str, tool_args: Dict[str, Any], failure_signature: str) -> str:
+    def _synthesize_error_lesson(self, tool_name: str, tool_args: dict[str, Any], failure_signature: str) -> str:
         """Synthesizes a deterministic, zero-latency natural language lesson from a tool failure (Reflexion architecture)."""
         args_dict = dict(tool_args or {})
         args_str = json.dumps(args_dict) if args_dict else "{}"
@@ -507,7 +503,7 @@ class JarvisBrain(
         clean_sig = re.sub(r"^(?:Error|Failed to|Action halted|Could not find)[:\s]*", "", failure_signature, flags=re.IGNORECASE).strip()
         return f"When invoking '{tool_name}' with {args_str}: Pre-validate arguments and environment to avoid '{clean_sig[:120]}'."
 
-    def _record_tool_execution(self, tool_name: str, tool_args: Dict[str, Any], tool_result: Any = None):
+    def _record_tool_execution(self, tool_name: str, tool_args: dict[str, Any], tool_result: Any = None):
         """Tracks executed tools during the current turn for habit promotion, or records episodic failure lessons."""
         if not hasattr(self, "_current_turn_executed_tools"):
             self._current_turn_executed_tools = []
@@ -544,7 +540,7 @@ class JarvisBrain(
             except Exception as h_err:
                 logger.debug("HabitGraph tool observation notice: %s", h_err)
 
-    def get_current_turn_tool_outputs(self) -> Dict[str, Any]:
+    def get_current_turn_tool_outputs(self) -> dict[str, Any]:
         """Returns the dictionary of resolved tool outputs from the current turn."""
         return dict(getattr(self, "_current_turn_resolved_tool_outputs", {}))
 
@@ -696,7 +692,7 @@ class JarvisBrain(
         """Determines if a query matches a fast reflex command without executing any tools."""
         return self._get_reflex_dispatcher().is_fast_reflex(norm_text)
 
-    def _try_fast_reflex(self, norm_text: str, dry_run: bool = False) -> Optional[str | bool]:
+    def _try_fast_reflex(self, norm_text: str, dry_run: bool = False) -> str | bool | None:
         """Executes unambiguous local OS, desktop, media, and browser commands in <10ms.
         Bypasses slow cloud round-trips for instant physical and spoken execution.
         If dry_run=True, tests for a reflex hit without executing any skills.
@@ -704,7 +700,7 @@ class JarvisBrain(
         return self._get_reflex_dispatcher().try_fast_reflex(norm_text, dry_run=dry_run)
 
     @staticmethod
-    def _narrate_tool_action(fn_name: str, fn_args: Dict[str, Any]) -> str:
+    def _narrate_tool_action(fn_name: str, fn_args: dict[str, Any]) -> str:
         """Returns a natural, safe spoken phrase describing an action before execution."""
         return ReflexDispatcher.narrate_tool_action(fn_name, fn_args)
 
@@ -837,7 +833,7 @@ class JarvisBrain(
         utterance: str,
         flow_state_xml: str = "",
         bookmark_context: str = "",
-    ) -> Tuple[str, str, Dict[str, Any]]:
+    ) -> tuple[str, str, dict[str, Any]]:
         """Asynchronous cognitive turn generator for orchestrator-driven conversation.
 
         Returns:
@@ -959,7 +955,7 @@ class JarvisBrain(
             return self._process_openrouter_query(user_text, sentence_callback)
         return f"No active model is configured for provider '{self.provider}', Sir."
 
-    def get_latencies(self) -> Dict[str, float]:
+    def get_latencies(self) -> dict[str, float]:
         """Returns the most recent measured round-trip inference latencies in milliseconds."""
         return dict(self.last_latencies)
 
@@ -1046,7 +1042,7 @@ class JarvisBrain(
         return cleaned
 
     @staticmethod
-    def _extract_next_speech_chunk(buffer: str) -> tuple[Optional[str], str]:
+    def _extract_next_speech_chunk(buffer: str) -> tuple[str | None, str]:
         """Extracts the next natural spoken clause or sentence from the streaming buffer
         with speculative punctuation boundary emission for sub-100ms voice reflex latency."""
         # Terminal punctuation (. ! ? \n)
@@ -1085,7 +1081,7 @@ class JarvisBrain(
             self.cognitive_router = CognitiveRouter(default_model=getattr(self, "antigravity_model", "gemini-3.8-flash-medium"))
         return self.cognitive_router.classify_query_tier(query, has_screen_intent=has_screen)
 
-    def _extract_memory_insights(self, user_text: str, reply_text: str) -> List[Dict[str, Any]]:
+    def _extract_memory_insights(self, user_text: str, reply_text: str) -> list[dict[str, Any]]:
         """Asynchronously extracts permanent personal preferences, habits, active project context,
         and technical discussion topics from conversational exchanges."""
         system_prompt = (
@@ -1189,8 +1185,8 @@ class JarvisBrain(
         try:
             ollama_url = self.config.get("llm", {}).get("ollama_base_url", "http://localhost:11434/v1")
             base = ollama_url.split("/v1", 1)[0].rstrip("/")
-            import urllib.request
             import json
+            import urllib.request
             req = urllib.request.Request(
                 f"{base}/api/generate",
                 data=json.dumps({"model": getattr(self, "ollama_model", "qwen3.5:2b-q4_K_M"), "keep_alive": 0}).encode("utf-8"),
@@ -1209,7 +1205,7 @@ class JarvisBrain(
         if hasattr(self, "tool_orchestrator") and self.tool_orchestrator:
             self.tool_orchestrator.cancel_token = token
 
-    def get_cancellation_token(self) -> Optional[Any]:
+    def get_cancellation_token(self) -> Any | None:
         """Returns the active BargeInCancellationToken if set."""
         return self._active_cancel_token
 

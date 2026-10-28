@@ -9,17 +9,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
-import subprocess
 import time
-from typing import Any, Dict, List, Optional
 
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Skills.ChromeDevTools")
 
 
-def _get_brave_executable() -> Optional[str]:
+def _get_brave_executable() -> str | None:
     """Resolves the default desktop browser executable (Brave/Chrome)."""
     candidates = [
         os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),

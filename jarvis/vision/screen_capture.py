@@ -1,8 +1,8 @@
 """Screen capture and visual perception for Jarvis 2.0."""
 import io
-import sys
 import logging
-from typing import Optional
+import sys
+
 from PIL import Image, ImageGrab
 
 logger = logging.getLogger("Jarvis.Vision")
@@ -37,7 +37,7 @@ class ScreenPerception:
     """Captures desktop screenshots and prepares images for Gemini Vision analysis."""
 
     @staticmethod
-    def capture_screen(max_width: int = 1600) -> Optional[Image.Image]:
+    def capture_screen(max_width: int = 1600) -> Image.Image | None:
         """Captures active screen and scales down proportionally for fast LLM inference."""
         _ensure_desktop_access()
         try:
@@ -58,7 +58,7 @@ class ScreenPerception:
             return None
 
     @staticmethod
-    def capture_screen_bytes(max_width: int = 1600, quality: int = 80) -> Optional[bytes]:
+    def capture_screen_bytes(max_width: int = 1600, quality: int = 80) -> bytes | None:
         """Captures screen and returns compressed JPEG bytes."""
         img = ScreenPerception.capture_screen(max_width=max_width)
         if img is None:

@@ -22,14 +22,14 @@ _TRACK_B_MODULES = {
 
 __all__ = [
     "SkillRegistry",
-    "rstrtmgr_lock_surgeon",
-    "job_object_sandbox",
-    "nvml_dxgi_vram_arbiter",
-    "usn_journal_delta_radar",
-    "reflex_macro_compiler",
+    "apply_and_verify_surgical_patch",
     "ast_code_surgeon",
     "diagnose_test_failure_ast",
-    "apply_and_verify_surgical_patch",
+    "job_object_sandbox",
+    "nvml_dxgi_vram_arbiter",
+    "reflex_macro_compiler",
+    "rstrtmgr_lock_surgeon",
+    "usn_journal_delta_radar",
 ]
 
 

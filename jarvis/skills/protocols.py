@@ -1,12 +1,15 @@
 """Stark-style Multi-Action Protocols for Jarvis 2.0."""
-import os
-import sys
-import ctypes
 import logging
-import pyautogui
+
 import pyperclip
+
 from jarvis.skills.base import SkillRegistry
-from jarvis.skills.os_control import launch_application, adjust_volume, minimize_all_windows, lock_workstation
+from jarvis.skills.os_control import (
+    adjust_volume,
+    launch_application,
+    lock_workstation,
+    minimize_all_windows,
+)
 
 logger = logging.getLogger("Jarvis.Protocols")
 

@@ -4,11 +4,12 @@ import os
 import urllib.parse
 import urllib.request
 import webbrowser
+from collections.abc import Callable
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Callable, List, Optional
 
 import requests
+
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.BrowserAgent")
@@ -53,10 +54,10 @@ class _HTMLTextExtractor(HTMLParser):
 
 def _setup_playwright_ssrf_guard(
     context_or_page,
-    violation_holder: List[Optional[str]],
+    violation_holder: list[str | None],
     allow_localhost: bool = False,
     max_hops: int = 4,
-    custom_validator: Optional[Callable[[str], None]] = None,
+    custom_validator: Callable[[str], None] | None = None,
 ) -> None:
     """Installs route and WebSocket interception on a Playwright BrowserContext or Page to enforce
     fail-closed SSRF validation across all requests, subresources, popups, and redirect chains.
@@ -68,7 +69,10 @@ def _setup_playwright_ssrf_guard(
       before issuing any outbound network request to that hop.
     - Intercepts and validates WebSockets (`context.route_web_socket('**/*')`), closing prohibited endpoints (code 1008).
     """
-    from jarvis.core.security_boundaries import validate_egress_url, SecurityBoundaryViolation
+    from jarvis.core.security_boundaries import (
+        SecurityBoundaryViolation,
+        validate_egress_url,
+    )
 
     def _http_route_handler(route):
         req_url = route.request.url
@@ -198,9 +202,9 @@ def _setup_playwright_ssrf_guard(
 def browse_and_read_webpage(url: str, max_chars: int = 2500) -> str:
     """Navigates to URL using Playwright and extracts body text with fail-closed SSRF egress validation."""
     from jarvis.core.security_boundaries import (
-        validate_egress_url,
-        build_safe_url_opener,
         SecurityBoundaryViolation,
+        build_safe_url_opener,
+        validate_egress_url,
     )
 
     clean_url = str(url or "").strip()
@@ -222,7 +226,7 @@ def browse_and_read_webpage(url: str, max_chars: int = 2500) -> str:
     except Exception as err:
         return f"Invalid URL for browsing operation: {err}"
 
-    ssrf_violation: List[Optional[str]] = [None]
+    ssrf_violation: list[str | None] = [None]
 
     try:
         from playwright.sync_api import sync_playwright
@@ -339,7 +343,11 @@ def get_tech_news_headlines(count: int = 5) -> str:
 )
 def capture_webpage_screenshot(url: str, filename: str = "web_snapshot.png") -> str:
     """Captures screenshot of a webpage with SSRF and path confinement safety gates."""
-    from jarvis.core.security_boundaries import validate_egress_url, validate_confined_path, SecurityBoundaryViolation
+    from jarvis.core.security_boundaries import (
+        SecurityBoundaryViolation,
+        validate_confined_path,
+        validate_egress_url,
+    )
 
     clean_url = str(url or "").strip()
     if not clean_url:
@@ -364,7 +372,7 @@ def capture_webpage_screenshot(url: str, filename: str = "web_snapshot.png") -> 
     except Exception as err:
         return f"Invalid screenshot operation parameters: {err}"
 
-    ssrf_violation: List[Optional[str]] = [None]
+    ssrf_violation: list[str | None] = [None]
 
     try:
         from playwright.sync_api import sync_playwright

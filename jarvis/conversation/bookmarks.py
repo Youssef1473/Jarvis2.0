@@ -6,14 +6,13 @@ interrupted cognitive frames across sub-1us Win32 atomic barge-ins.
 """
 from __future__ import annotations
 
-from collections import deque
-import dataclasses
-from dataclasses import dataclass, field
 import logging
 import re
 import threading
 import time
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any
 
 from jarvis.context.flow_state_mirror import FlowStateSnapshot
 
@@ -30,16 +29,16 @@ class ReasoningBookmark:
     turn_id: str
     original_query: str = ""
     topic_label: str = "the architecture"
-    spoken_clauses_completed: Tuple[str, ...] = ()
-    unspoken_clauses_remaining: Tuple[str, ...] = ()
-    resolved_tool_outputs: Dict[str, Any] = field(default_factory=dict)
+    spoken_clauses_completed: tuple[str, ...] = ()
+    unspoken_clauses_remaining: tuple[str, ...] = ()
+    resolved_tool_outputs: dict[str, Any] = field(default_factory=dict)
     flow_state_xml: str = ""
     created_monotonic_ns: int = field(default_factory=time.perf_counter_ns)
     ttl_ns: int = DEFAULT_BOOKMARK_TTL_NS  # 900s (15 minutes) validity
     # Backwards compatibility fields:
     user_query: str = ""
     partial_llm_plan: str = ""
-    flow_state_snapshot: Optional[FlowStateSnapshot] = None
+    flow_state_snapshot: FlowStateSnapshot | None = None
     timestamp: float = field(default_factory=time.time)
 
     def __post_init__(self):
@@ -48,7 +47,7 @@ class ReasoningBookmark:
         elif not self.user_query and self.original_query:
             object.__setattr__(self, "user_query", self.original_query)
 
-    def is_expired(self, now_ns: Optional[int] = None) -> bool:
+    def is_expired(self, now_ns: int | None = None) -> bool:
         current = now_ns if now_ns is not None else time.perf_counter_ns()
         return (current - self.created_monotonic_ns) > self.ttl_ns
 
@@ -75,14 +74,14 @@ class ReasoningBookmarkStack:
         re.IGNORECASE,
     )
 
-    _instance: Optional[ReasoningBookmarkStack] = None
+    _instance: ReasoningBookmarkStack | None = None
     _singleton_lock = threading.Lock()
 
-    def __init__(self, max_depth: int = MAX_BOOKMARK_CAPACITY, capacity: Optional[int] = None) -> None:
+    def __init__(self, max_depth: int = MAX_BOOKMARK_CAPACITY, capacity: int | None = None) -> None:
         eff_capacity = capacity if capacity is not None else max_depth
         self.max_depth = eff_capacity
         self.capacity = eff_capacity
-        self._stack: Deque[ReasoningBookmark] = deque(maxlen=eff_capacity)
+        self._stack: deque[ReasoningBookmark] = deque(maxlen=eff_capacity)
         self._lock = threading.RLock()
 
     @classmethod
@@ -97,14 +96,14 @@ class ReasoningBookmarkStack:
         turn_id: str,
         original_query: str = "",
         topic_label: str = "the architecture",
-        spoken_clauses: Optional[List[str]] = None,
-        unspoken_clauses: Optional[List[str]] = None,
-        resolved_tool_outputs: Optional[Dict[str, Any]] = None,
+        spoken_clauses: list[str] | None = None,
+        unspoken_clauses: list[str] | None = None,
+        resolved_tool_outputs: dict[str, Any] | None = None,
         flow_state_xml: str = "",
-        user_query: Optional[str] = None,
+        user_query: str | None = None,
         partial_llm_plan: str = "",
-        flow_state_snapshot: Optional[FlowStateSnapshot] = None,
-    ) -> Optional[ReasoningBookmark]:
+        flow_state_snapshot: FlowStateSnapshot | None = None,
+    ) -> ReasoningBookmark | None:
         """Pushes an interrupted turn onto the LIFO stack if unspoken clauses remain."""
         eff_query = original_query or user_query or ""
         raw_remaining = unspoken_clauses if unspoken_clauses is not None else ([partial_llm_plan] if partial_llm_plan else ["resumed turn"])
@@ -134,7 +133,7 @@ class ReasoningBookmarkStack:
             logger.info("Reasoning bookmark pushed: turn %s (depth=%d)", turn_id, len(self._stack))
         return bookmark
 
-    def peek_valid(self) -> Optional[ReasoningBookmark]:
+    def peek_valid(self) -> ReasoningBookmark | None:
         with self._lock:
             while self._stack:
                 top = self._stack[-1]
@@ -144,7 +143,7 @@ class ReasoningBookmarkStack:
                     return top
             return None
 
-    def pop_valid(self) -> Optional[ReasoningBookmark]:
+    def pop_valid(self) -> ReasoningBookmark | None:
         with self._lock:
             while self._stack:
                 top = self._stack.pop()
@@ -153,13 +152,13 @@ class ReasoningBookmarkStack:
                     return top
             return None
 
-    def pop_latest_bookmark(self) -> Optional[ReasoningBookmark]:
+    def pop_latest_bookmark(self) -> ReasoningBookmark | None:
         return self.pop_valid()
 
-    def peek_latest_bookmark(self) -> Optional[ReasoningBookmark]:
+    def peek_latest_bookmark(self) -> ReasoningBookmark | None:
         return self.peek_valid()
 
-    def inject_resumed_context(self, pivot_prompt: str) -> Tuple[str, Dict[str, Any]]:
+    def inject_resumed_context(self, pivot_prompt: str) -> tuple[str, dict[str, Any]]:
         """Restores latest bookmark outputs and formats them into the pivot prompt context."""
         bookmark = self.pop_valid()
         if not bookmark:

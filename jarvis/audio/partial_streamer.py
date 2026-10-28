@@ -4,11 +4,11 @@ Eliminates Python queue head-of-line blocking and serialization overhead.
 """
 from __future__ import annotations
 
-import ctypes
-from multiprocessing import shared_memory
 import struct
 import time
-from typing import Any, Optional, Tuple
+from multiprocessing import shared_memory
+from typing import Any
+
 import numpy as np
 
 # Binary Protocol:
@@ -69,7 +69,7 @@ class ShmPartialTokenChannel:
             1 if is_final else 0,
         )
 
-    def read_latest(self) -> Optional[Tuple[str, bool]]:
+    def read_latest(self) -> tuple[str, bool] | None:
         """Non-blocking read of the freshest partial state. Returns None if unchanged."""
         seq_id, _, text_len, is_final = struct.unpack_from(SLOT_HEADER_STRUCT, self.buf, 0)
         if seq_id == self._last_read_seq or text_len == 0:

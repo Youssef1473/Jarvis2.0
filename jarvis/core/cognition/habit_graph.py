@@ -6,16 +6,15 @@ prevented double-decay, and non-blocking asynchronous WAL writes.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 import datetime
 import logging
-from pathlib import Path
 import queue
 import sqlite3
-import sys
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("Jarvis.Cognition.HabitGraph")
 
@@ -58,14 +57,14 @@ class TemporalHabitGraph:
         self.sync_writes = sync_writes
 
         # Centralized sequence state
-        self._last_action: Optional[str] = None
-        self._last_context_key: Optional[str] = None
+        self._last_action: str | None = None
+        self._last_context_key: str | None = None
         self._last_action_ts: float = 0.0
         self._state_lock = threading.Lock()
 
         # Non-blocking write queue & background worker
-        self._write_queue: queue.Queue[Optional[Tuple[str, str, str, float]]] = queue.Queue(maxsize=1000)
-        self._worker_thread: Optional[threading.Thread] = None
+        self._write_queue: queue.Queue[tuple[str, str, str, float] | None] = queue.Queue(maxsize=1000)
+        self._worker_thread: threading.Thread | None = None
         self._running = True
 
         self._init_db()
@@ -120,7 +119,7 @@ class TemporalHabitGraph:
             conn.close()
 
     @staticmethod
-    def get_time_of_day_bin(hour: Optional[int] = None) -> str:
+    def get_time_of_day_bin(hour: int | None = None) -> str:
         """Bins the hour of day into diurnal workflow phases."""
         h = hour if hour is not None else datetime.datetime.now().hour
         if 6 <= h < 12:
@@ -136,7 +135,7 @@ class TemporalHabitGraph:
         cls,
         cognitive_state: str = "ROUTINE_ADMIN",
         domain: str = "general",
-        hour: Optional[int] = None,
+        hour: int | None = None,
     ) -> str:
         """Generates the composite context key (e.g. 'DEEP_FLOW:afternoon:ide')."""
         time_bin = cls.get_time_of_day_bin(hour)
@@ -149,8 +148,8 @@ class TemporalHabitGraph:
         action: str,
         cognitive_state: str = "ROUTINE_ADMIN",
         domain: str = "general",
-        timestamp: Optional[float] = None,
-    ) -> Optional[HabitPrediction]:
+        timestamp: float | None = None,
+    ) -> HabitPrediction | None:
         """Central observation entrypoint for window focus and tool execution events.
 
         1. Enforces 120s causal horizon: resets sequence if gap > 120s.
@@ -158,7 +157,7 @@ class TemporalHabitGraph:
         3. Formulates current context C_t and queries predict_next_action(A_t, C_t).
         """
         now = timestamp if timestamp is not None else time.time()
-        prediction: Optional[HabitPrediction] = None
+        prediction: HabitPrediction | None = None
 
         with self._state_lock:
             # 1. 120s Causal Horizon Check
@@ -243,10 +242,10 @@ class TemporalHabitGraph:
     def predict_next_action(
         self,
         current_action: str,
-        context_state: Optional[str] = None,
+        context_state: str | None = None,
         alpha: float = 0.5,
-        now: Optional[float] = None,
-    ) -> Optional[HabitPrediction]:
+        now: float | None = None,
+    ) -> HabitPrediction | None:
         """Calculates Laplace-smoothed transition probability for candidate next actions.
 
         Applies sparse weight fallback to marginal prior if total exact context weight < 2.0.
@@ -257,7 +256,7 @@ class TemporalHabitGraph:
         try:
             cursor = conn.cursor()
 
-            candidates: List[Dict[str, Any]] = []
+            candidates: list[dict[str, Any]] = []
             context_used = context_state or "marginal"
 
             # 1. Attempt exact context query
@@ -343,7 +342,7 @@ class TemporalHabitGraph:
         self,
         half_life_days: float = 14.0,
         prune_threshold: float = 0.10,
-        now: Optional[float] = None,
+        now: float | None = None,
     ) -> int:
         """Applies exponential decay across all habit weights and prunes abandoned habits.
 

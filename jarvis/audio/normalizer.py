@@ -5,9 +5,8 @@ units, technical symbols, and room codes into natural, conversational British En
 optimized for the Kokoro-82M neural TTS engine and Windows SAPI5.
 """
 import re
-from typing import Dict
 
-MONTH_NAMES: Dict[int, str] = {
+MONTH_NAMES: dict[int, str] = {
     1: "January", 2: "February", 3: "March", 4: "April",
     5: "May", 6: "June", 7: "July", 8: "August",
     9: "September", 10: "October", 11: "November", 12: "December"

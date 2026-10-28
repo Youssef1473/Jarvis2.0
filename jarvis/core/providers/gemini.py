@@ -8,10 +8,11 @@ import logging
 import os
 import re
 import time
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
-from jarvis.core.providers.base import BaseProvider, LLMResponse, ToolCall
 from jarvis.core.antigravity_bridge import AntigravityBridge
+from jarvis.core.providers.base import BaseProvider, LLMResponse, ToolCall
 
 logger = logging.getLogger("Jarvis.Provider.Gemini")
 
@@ -22,9 +23,9 @@ class GeminiProvider(BaseProvider):
     def __init__(
         self,
         model: str = "gemini-3.8-flash-high",
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         use_antigravity: bool = True,
-        config: Optional[Dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
     ):
         super().__init__(name="gemini", model=model, config=config)
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", "").strip()
@@ -41,10 +42,10 @@ class GeminiProvider(BaseProvider):
 
     def generate_turn(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        system_instruction: Optional[str] = None,
-        sentence_callback: Optional[Callable[[str], None]] = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        system_instruction: str | None = None,
+        sentence_callback: Callable[[str], None] | None = None,
         timeout: float = 35.0,
     ) -> LLMResponse:
         """Executes a single generation turn, returning text and extracted ToolCalls."""
@@ -80,10 +81,10 @@ class GeminiProvider(BaseProvider):
 
     def _generate_antigravity_turn(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]],
-        system_instruction: Optional[str],
-        sentence_callback: Optional[Callable[[str], None]],
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        system_instruction: str | None,
+        sentence_callback: Callable[[str], None] | None,
         timeout: float,
         t_start: float,
     ) -> LLMResponse:
@@ -166,7 +167,7 @@ class GeminiProvider(BaseProvider):
         raw_text = (res.get("response") or "").strip()
 
         # Parse tool calls from output
-        tool_calls: List[ToolCall] = []
+        tool_calls: list[ToolCall] = []
         tool_match = re.search(
             r'\{[\s\r\n]*"tool"[\s\r\n]*:[\s\r\n]*"([^"]+)"[\s\r\n]*,[\s\r\n]*"arguments"[\s\r\n]*:[\s\r\n]*(\{.*?\})[\s\r\n]*\}',
             raw_text,
@@ -198,10 +199,10 @@ class GeminiProvider(BaseProvider):
 
     def _generate_sdk_turn(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]],
-        system_instruction: Optional[str],
-        sentence_callback: Optional[Callable[[str], None]],
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        system_instruction: str | None,
+        sentence_callback: Callable[[str], None] | None,
         timeout: float,
         t_start: float,
     ) -> LLMResponse:
@@ -233,7 +234,7 @@ class GeminiProvider(BaseProvider):
         elapsed_ms = (time.perf_counter() - t_start) * 1000.0
         content_text = response.text or ""
 
-        tool_calls: List[ToolCall] = []
+        tool_calls: list[ToolCall] = []
         if response.function_calls:
             for idx, fc in enumerate(response.function_calls):
                 tool_calls.append(ToolCall(

@@ -1,10 +1,11 @@
 """Calendar, schedule management, and Stark executive morning briefing protocol."""
 import datetime
 import re
-from typing import Dict, Any, List
-from jarvis.skills.base import SkillRegistry
-from jarvis.core.memory import MemoryManager
+from typing import Any
+
 from jarvis.core.config_loader import load_config
+from jarvis.core.memory import MemoryManager
+from jarvis.skills.base import SkillRegistry
 from jarvis.skills.web_search import get_weather
 
 _memory_instance = None

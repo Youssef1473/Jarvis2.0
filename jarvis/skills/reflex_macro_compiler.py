@@ -4,16 +4,15 @@ Compiles verified sequences of tool invocations and physical conditions into
 deterministic DAG macros registered in SQLite for <15ms zero-token local execution.
 """
 import json
-import os
-from pathlib import Path
 import re
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional, Set
+from pathlib import Path
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
 
-FORBIDDEN_MACRO_SKILLS: Set[str] = {
+FORBIDDEN_MACRO_SKILLS: set[str] = {
     "execute_powershell",
     "execute_powershell_destructive",
     "delete_file",
@@ -53,7 +52,7 @@ def compile_workflow_reflex(
     macro_name: str,
     steps_json: str,
     db_path: str = "data/jarvis_memory.db",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Validates and registers a deterministic multi-step workflow into SQLite."""
     # 1. Validate regex safety
     try:
@@ -70,7 +69,7 @@ def compile_workflow_reflex(
         return {"status": "error", "reason": f"Invalid JSON in steps: {err}"}
 
     # 3. Forbid high-blast-radius actions in autonomous macros
-    validated_steps: List[Dict[str, Any]] = []
+    validated_steps: list[dict[str, Any]] = []
     for idx, step in enumerate(steps_raw):
         skill = step.get("skill_name", "")
         if not skill:
@@ -115,7 +114,7 @@ def compile_workflow_reflex(
 def execute_workflow_reflex(
     macro_name: str,
     db_path: str = "data/jarvis_memory.db",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Retrieves and sequentially executes the steps of a compiled macro."""
     _ensure_db_initialized(db_path)
     conn = sqlite3.connect(db_path, timeout=5.0)
@@ -135,7 +134,7 @@ def execute_workflow_reflex(
         conn.close()
 
     t0 = time.perf_counter()
-    step_results: List[Dict[str, Any]] = []
+    step_results: list[dict[str, Any]] = []
 
     for step in steps:
         skill_name = step["skill_name"]
@@ -220,7 +219,7 @@ def _record_macro_outcome(db_path: str, macro_name: str, success: bool) -> None:
     description="Lists all compiled DynamicReflexEngine workflow macros and their reliability metrics.",
     risk_level=0,
 )
-def list_compiled_reflex_macros(db_path: str = "data/jarvis_memory.db") -> Dict[str, Any]:
+def list_compiled_reflex_macros(db_path: str = "data/jarvis_memory.db") -> dict[str, Any]:
     """Returns metadata for all registered workflow macros."""
     _ensure_db_initialized(db_path)
     conn = sqlite3.connect(db_path, timeout=5.0)
@@ -242,7 +241,7 @@ def list_compiled_reflex_macros(db_path: str = "data/jarvis_memory.db") -> Dict[
 )
 def delete_compiled_reflex_macro(
     macro_name: str, db_path: str = "data/jarvis_memory.db"
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Removes a macro by name."""
     _ensure_db_initialized(db_path)
     conn = sqlite3.connect(db_path, timeout=5.0)

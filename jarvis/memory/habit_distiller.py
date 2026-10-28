@@ -5,14 +5,13 @@ executed >= 3 times within a session, proposing deterministic macro promotion.
 """
 from __future__ import annotations
 
-from collections import deque
-from dataclasses import dataclass, field
-import hashlib
 import json
 import logging
 import threading
 import time
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any
 
 from jarvis.core.reflex_engine import DynamicReflexEngine
 
@@ -30,7 +29,7 @@ class ActionRecord:
 class DistilledHabitProposal:
     macro_name: str
     trigger_suggestion: str
-    steps: List[Tuple[str, str]]
+    steps: list[tuple[str, str]]
     occurrence_count: int
     proposal_text: str
 
@@ -42,17 +41,17 @@ class AutonomousHabitDistiller:
         self,
         window_size: int = 100,
         repetition_threshold: int = 3,
-        reflex_engine: Optional[DynamicReflexEngine] = None,
+        reflex_engine: DynamicReflexEngine | None = None,
     ):
         self.window_size = window_size
         self.repetition_threshold = repetition_threshold
         self.reflex_engine = reflex_engine or DynamicReflexEngine()
-        self._history: Deque[ActionRecord] = deque(maxlen=window_size)
-        self._trigram_counts: Dict[Tuple[str, str, str], int] = {}
+        self._history: deque[ActionRecord] = deque(maxlen=window_size)
+        self._trigram_counts: dict[tuple[str, str, str], int] = {}
         self._proposed_macros: set[str] = set()
         self._lock = threading.Lock()
 
-    def record_action(self, skill_name: str, kwargs: Optional[Dict[str, Any]] = None) -> Optional[DistilledHabitProposal]:
+    def record_action(self, skill_name: str, kwargs: dict[str, Any] | None = None) -> DistilledHabitProposal | None:
         """Records an executed skill and checks if a 3-gram sequence hits the repetition threshold."""
         # Strip transient secrets or tokens from args before hashing
         clean_kwargs = dict(kwargs or {})
@@ -93,7 +92,7 @@ class AutonomousHabitDistiller:
 
         return None
 
-    def _synthesize_proposal(self, triplet: Tuple[str, str, str], count: int) -> DistilledHabitProposal:
+    def _synthesize_proposal(self, triplet: tuple[str, str, str], count: int) -> DistilledHabitProposal:
         macro_name = f"macro_{triplet[0]}_{triplet[1]}_{triplet[2]}"
         trigger = f"run {triplet[0]} and {triplet[2]}"
 

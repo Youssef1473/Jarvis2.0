@@ -7,12 +7,12 @@ credential and financial data leakage in screen capture pipelines.
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
-from dataclasses import dataclass
 import logging
 import re
 import sys
-from typing import Dict, List, Optional, Set, Tuple
+from ctypes import wintypes
+from dataclasses import dataclass
+
 from PIL import Image, ImageDraw
 
 logger = logging.getLogger("Jarvis.Vision.PrivacyGuard")
@@ -43,7 +43,7 @@ def is_window_dwm_cloaked(hwnd: int) -> bool:
     except Exception:
         return False
 
-SENSITIVE_PROCESSES: Set[str] = {
+SENSITIVE_PROCESSES: set[str] = {
     "1password.exe",
     "bitwarden.exe",
     "keepass.exe",
@@ -59,7 +59,7 @@ SENSITIVE_PROCESSES: Set[str] = {
     "authy.exe",
 }
 
-SENSITIVE_TITLE_KEYWORDS: Tuple[str, ...] = (
+SENSITIVE_TITLE_KEYWORDS: tuple[str, ...] = (
     "1password",
     "bitwarden",
     "keepass",
@@ -89,7 +89,7 @@ SENSITIVE_TITLE_KEYWORDS: Tuple[str, ...] = (
     "sign in - google accounts",
 )
 
-SAFE_IDE_PROCESSES: Set[str] = {
+SAFE_IDE_PROCESSES: set[str] = {
     "code.exe",
     "devenv.exe",
     "pycharm64.exe",
@@ -138,10 +138,10 @@ class ZOrderPrivacyGuard:
     or split-screen), and zeroes out their bounding boxes directly in memory.
     """
 
-    _instance: Optional[ZOrderPrivacyGuard] = None
+    _instance: ZOrderPrivacyGuard | None = None
 
     def __init__(self) -> None:
-        self._pid_name_cache: Dict[int, str] = {}
+        self._pid_name_cache: dict[int, str] = {}
 
     @classmethod
     def get_instance(cls) -> ZOrderPrivacyGuard:
@@ -160,7 +160,7 @@ class ZOrderPrivacyGuard:
         except Exception:
             return ""
 
-    def get_redaction_rectangles(self) -> List[Tuple[BoundingRect, str, str]]:
+    def get_redaction_rectangles(self) -> list[tuple[BoundingRect, str, str]]:
         """Enumerates visible, uncloaked HWNDs in <1ms and returns sensitive bounding rects.
 
         Returns:
@@ -176,7 +176,7 @@ class ZOrderPrivacyGuard:
             logger.debug("Win32 API unavailable for privacy scan: %s", e)
             return []
 
-        redacted_items: List[Tuple[BoundingRect, str, str]] = []
+        redacted_items: list[tuple[BoundingRect, str, str]] = []
 
         @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
         def enum_windows_callback(hwnd: int, lparam: int) -> bool:
@@ -206,11 +206,7 @@ class ZOrderPrivacyGuard:
             proc_lower = proc_name.lower()
 
             is_sensitive = False
-            if proc_lower in SENSITIVE_PROCESSES:
-                is_sensitive = True
-            elif any(kw in title_lower for kw in SENSITIVE_TITLE_KEYWORDS):
-                is_sensitive = True
-            elif LOGIN_PATTERN.search(title_lower) and proc_lower not in SAFE_IDE_PROCESSES:
+            if proc_lower in SENSITIVE_PROCESSES or any(kw in title_lower for kw in SENSITIVE_TITLE_KEYWORDS) or LOGIN_PATTERN.search(title_lower) and proc_lower not in SAFE_IDE_PROCESSES:
                 is_sensitive = True
 
             if is_sensitive:
@@ -246,7 +242,7 @@ class ZOrderPrivacyGuard:
     def redact_image_in_place(
         self,
         image: Image.Image,
-        redaction_items: Optional[List[Tuple[BoundingRect, str, str]]] = None,
+        redaction_items: list[tuple[BoundingRect, str, str]] | None = None,
     ) -> Image.Image:
         """Draws solid black rectangles over sensitive window areas on the given image.
 

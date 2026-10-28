@@ -8,14 +8,15 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.ReflexDispatcher")
 
-SERVICES_MAP: Dict[str, str] = {
+SERVICES_MAP: dict[str, str] = {
     "youtube": "https://youtube.com",
     "google": "https://google.com",
     "github": "https://github.com",
@@ -32,7 +33,7 @@ SERVICES_MAP: Dict[str, str] = {
 class ReflexDispatcher:
     """Dispatches unambiguous local OS, desktop, media, and browser commands in <15ms."""
 
-    def __init__(self, reflex_engine: Optional[Any] = None) -> None:
+    def __init__(self, reflex_engine: Any | None = None) -> None:
         self.reflex_engine = reflex_engine
 
     @staticmethod
@@ -83,8 +84,8 @@ class ReflexDispatcher:
         self,
         norm_text: str,
         dry_run: bool = False,
-        execute_fn: Optional[Callable[..., Any]] = None,
-    ) -> Optional[str | bool]:
+        execute_fn: Callable[..., Any] | None = None,
+    ) -> str | bool | None:
         """Executes unambiguous local OS, desktop, media, and browser commands in <15ms.
 
         Bypasses slow cloud round-trips for instant physical and spoken execution.
@@ -95,7 +96,7 @@ class ReflexDispatcher:
                 return True
             if skill_name in ("jarvis_doctor", "run_system_troubleshooting", "profile_runtime", "audit_memory_heap"):
                 try:
-                    import jarvis.skills.diagnostics
+                    pass
                 except Exception:
                     pass
             if execute_fn:
@@ -308,7 +309,7 @@ class ReflexDispatcher:
     def finalize_turn_habit(
         self,
         user_text: str,
-        executed_tools: List[Tuple[str, Dict[str, Any]]],
+        executed_tools: list[tuple[str, dict[str, Any]]],
         turn_start_time: float,
     ) -> None:
         """Promotes successful multi-step or single-step tool executions into persistent fast reflexes."""
@@ -335,7 +336,7 @@ class ReflexDispatcher:
             )
 
     @staticmethod
-    def narrate_tool_action(fn_name: str, fn_args: Dict[str, Any]) -> str:
+    def narrate_tool_action(fn_name: str, fn_args: dict[str, Any]) -> str:
         """Returns a natural, safe spoken phrase describing an action before execution."""
         name = (fn_name or "").lower().strip()
 

@@ -10,12 +10,11 @@ import contextlib
 import datetime
 import json
 import logging
-from pathlib import Path
 import re
 import sqlite3
 import threading
-import time
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("Jarvis.ReflexEngine")
 
@@ -83,8 +82,8 @@ class DynamicReflexEngine:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._cache: Dict[str, Dict[str, Any]] = {}
-        self._macro_cache: Dict[str, Dict[str, Any]] = {}
+        self._cache: dict[str, dict[str, Any]] = {}
+        self._macro_cache: dict[str, dict[str, Any]] = {}
         self._init_db()
         self._load_cache()
 
@@ -171,7 +170,7 @@ class DynamicReflexEngine:
             except Exception as e:
                 logger.error(f"Error loading learned habits cache: {e}")
 
-    def check_habit(self, query: str) -> Optional[Dict[str, Any]]:
+    def check_habit(self, query: str) -> dict[str, Any] | None:
         """Checks if normalized query matches a learned habit or compiled macro in <0.2ms."""
         norm_key = normalize_trigger_phrase(query)
         if not norm_key:
@@ -217,7 +216,7 @@ class DynamicReflexEngine:
         self,
         trigger_query: str,
         skill_name: str,
-        skill_kwargs: Dict[str, Any],
+        skill_kwargs: dict[str, Any],
         turn1_latency_ms: float = 0.0,
     ) -> bool:
         """Promotes a successful single-tool execution into the persistent habit cache."""
@@ -274,7 +273,7 @@ class DynamicReflexEngine:
     def record_compound_habit(
         self,
         trigger_query: str,
-        steps: List[Dict[str, Any]],
+        steps: list[dict[str, Any]],
         turn1_latency_ms: float = 0.0,
     ) -> bool:
         """Promotes a multi-step sequential action pipeline into the persistent habit cache."""
@@ -363,7 +362,7 @@ class DynamicReflexEngine:
         except Exception as e:
             logger.debug(f"Error updating habit hit telemetry: {e}")
 
-    def list_learned_habits(self) -> List[Dict[str, Any]]:
+    def list_learned_habits(self) -> list[dict[str, Any]]:
         """Returns all registered habits sorted by hit count."""
         with self._lock:
             items = list(self._cache.values())

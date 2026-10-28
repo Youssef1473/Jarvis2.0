@@ -4,11 +4,9 @@ Provides sub-2ms inspection and surgical release of file locks via Rstrtmgr.dll
 and port conflicts via iphlpapi.dll without spawning external subprocesses.
 """
 import ctypes
-from ctypes import wintypes
 import os
-from pathlib import Path
-import sys
-from typing import Any, Dict, List, Optional, Set
+from ctypes import wintypes
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
 
@@ -29,7 +27,7 @@ AF_INET = 2
 TCP_TABLE_OWNER_PID_ALL = 5
 
 # System Critical Process Protection
-PROTECTED_PROCESS_NAMES: Set[str] = {
+PROTECTED_PROCESS_NAMES: set[str] = {
     "system", "system idle process", "csrss.exe", "lsass.exe",
     "services.exe", "smss.exe", "wininit.exe", "winlogon.exe"
 }
@@ -85,7 +83,7 @@ kernel32.TerminateProcess.restype = wintypes.BOOL
 kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
 
 
-def _get_process_image_path(pid: int) -> Optional[str]:
+def _get_process_image_path(pid: int) -> str | None:
     """Retrieves the full executable path of a PID using QueryFullProcessImageNameW."""
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     h_proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
@@ -106,7 +104,7 @@ def _get_process_image_path(pid: int) -> Optional[str]:
     description="Identifies exact Windows processes locking a file or directory in <2ms via Rstrtmgr.dll.",
     risk_level=0,
 )
-def inspect_file_locks(file_path: str) -> Dict[str, Any]:
+def inspect_file_locks(file_path: str) -> dict[str, Any]:
     """Queries the Windows Restart Manager API to pinpoint processes holding locks on file_path."""
     norm_path = os.path.abspath(file_path)
     session_handle = wintypes.DWORD(0)
@@ -158,7 +156,7 @@ def inspect_file_locks(file_path: str) -> Dict[str, Any]:
         if res != ERROR_SUCCESS:
             return {"status": "error", "win32_error": res, "file_path": norm_path, "holders": []}
 
-        holders: List[Dict[str, Any]] = []
+        holders: list[dict[str, Any]] = []
         for i in range(proc_info_count.value):
             info = rg_affected[i]
             pid = int(info.Process.dwProcessId)
@@ -186,7 +184,7 @@ def inspect_file_locks(file_path: str) -> Dict[str, Any]:
     description="Identifies the PID and process listening on an active TCP port in <2ms via iphlpapi.dll.",
     risk_level=0,
 )
-def inspect_port_holders(port: int) -> Dict[str, Any]:
+def inspect_port_holders(port: int) -> dict[str, Any]:
     """Queries the Windows Extended TCP table to find processes listening on port."""
     buf_size = wintypes.DWORD(0)
     # Probe required buffer size
@@ -208,7 +206,7 @@ def inspect_port_holders(port: int) -> Dict[str, Any]:
     table_offset = ctypes.sizeof(wintypes.DWORD)
     row_size = ctypes.sizeof(MIB_TCPROW_OWNER_PID)
 
-    holders: List[Dict[str, Any]] = []
+    holders: list[dict[str, Any]] = []
     for i in range(num_entries):
         row_ptr = ctypes.byref(buf, table_offset + (i * row_size))
         row = ctypes.cast(row_ptr, ctypes.POINTER(MIB_TCPROW_OWNER_PID)).contents
@@ -235,7 +233,7 @@ def inspect_port_holders(port: int) -> Dict[str, Any]:
     description="Surgically releases non-critical locks on a file or folder, strictly shielding OS critical PIDs.",
     risk_level=2,
 )
-def release_file_lock(file_path: str, allow_kill: bool = False) -> Dict[str, Any]:
+def release_file_lock(file_path: str, allow_kill: bool = False) -> dict[str, Any]:
     """Inspects file locks and optionally terminates non-critical holder processes."""
     inspection = inspect_file_locks(file_path)
     if inspection.get("status") != "locked":
@@ -244,7 +242,7 @@ def release_file_lock(file_path: str, allow_kill: bool = False) -> Dict[str, Any
     holders = inspection.get("holders", [])
     current_pid = os.getpid()
 
-    actions: List[Dict[str, Any]] = []
+    actions: list[dict[str, Any]] = []
     for holder in holders:
         pid = holder["pid"]
         app_name = (holder.get("app_name") or "").lower()

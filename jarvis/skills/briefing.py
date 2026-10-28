@@ -1,12 +1,13 @@
 """Cinematic Daily & Morning Briefing protocol for Jarvis 2.0."""
-import re
-import logging
 import concurrent.futures
+import logging
+import re
+
 from jarvis.skills.base import SkillRegistry
-from jarvis.skills.productivity import get_current_time_and_date
-from jarvis.skills.web_search import get_weather
 from jarvis.skills.browser_agent import get_tech_news_headlines
 from jarvis.skills.os_control import get_system_vitals
+from jarvis.skills.productivity import get_current_time_and_date
+from jarvis.skills.web_search import get_weather
 
 logger = logging.getLogger("Jarvis.Briefing")
 

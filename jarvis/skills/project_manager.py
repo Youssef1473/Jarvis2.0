@@ -1,9 +1,10 @@
 ﻿"""Semantic project launcher and user folder navigator for Jarvis 2.0."""
+import logging
 import os
 import re
 import shutil
-import logging
 import subprocess
+
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.ProjectManager")

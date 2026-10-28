@@ -5,8 +5,6 @@ tripping VisualPrivacyGuard atomically if sensitive privacy flags are raised.
 """
 from __future__ import annotations
 
-import ctypes
-from dataclasses import dataclass
 import logging
 import mmap
 import os
@@ -14,9 +12,13 @@ import struct
 import sys
 import threading
 import time
-from typing import List, Optional
+from dataclasses import dataclass
 
-from jarvis.context.flow_state_mirror import EnvironmentEpochTracker, ResourceScope, VisualPrivacyGuard
+from jarvis.context.flow_state_mirror import (
+    EnvironmentEpochTracker,
+    ResourceScope,
+    VisualPrivacyGuard,
+)
 
 logger = logging.getLogger("Jarvis.Desktop.UIADelta")
 
@@ -44,8 +46,8 @@ class UIADeltaWorker:
     def __init__(self, shm_name: str = SHM_NAME):
         self.shm_name = shm_name
         self.running = False
-        self._thread: Optional[threading.Thread] = None
-        self._shm_buf: Optional[bytearray | mmap.mmap] = None
+        self._thread: threading.Thread | None = None
+        self._shm_buf: bytearray | mmap.mmap | None = None
         self.active_hwnd: int = 0
         self.active_title: str = ""
         self.events_processed: int = 0

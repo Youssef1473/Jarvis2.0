@@ -8,12 +8,12 @@ fade-out ramps to eliminate speaker pop DC transients on interruption.
 from __future__ import annotations
 
 import ctypes
-import math
 import threading
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
+
 import numpy as np
 
-__all__ = ["AudioRingBuffer", "apply_zero_crossing_cos2_rolloff", "apply_cinematic_jarvis_dsp"]
+__all__ = ["AudioRingBuffer", "apply_cinematic_jarvis_dsp", "apply_zero_crossing_cos2_rolloff"]
 
 _FLOAT32_BYTES = 4
 _c_float_p = ctypes.POINTER(ctypes.c_float)
@@ -23,13 +23,13 @@ _memset = ctypes.memset
 # Precomputed raised-cosine anti-click fade-out roll-off tables (1 to 512 samples)
 # Precomputed at module import time to guarantee strictly zero runtime heap allocations
 _MAX_PRECOMPUTED_RAMP = 512
-_COS2_WINDOW_CACHE: Dict[int, np.ndarray] = {
+_COS2_WINDOW_CACHE: dict[int, np.ndarray] = {
     length: (np.cos(np.linspace(0.0, np.pi / 2.0, length, dtype=np.float32)) ** 2).astype(np.float32)
     for length in range(1, _MAX_PRECOMPUTED_RAMP + 1)
 }
 _COS2_WINDOW_CACHE[0] = np.empty(0, dtype=np.float32)
 
-_COS2_POINTER_CACHE: Dict[int, Any] = {
+_COS2_POINTER_CACHE: dict[int, Any] = {
     length: ctypes.cast(_COS2_WINDOW_CACHE[length].ctypes.data, _c_float_p)
     for length in range(1, _MAX_PRECOMPUTED_RAMP + 1)
 }
@@ -54,8 +54,8 @@ def apply_zero_crossing_cos2_rolloff(
     samples: np.ndarray,
     fade_len: int = 60,
     max_zc_search: int = 48,
-    out: Optional[np.ndarray] = None,
-    length: Optional[int] = None,
+    out: np.ndarray | None = None,
+    length: int | None = None,
 ) -> np.ndarray:
     """Applies a zero-crossing phase-continuous cos^2 fade-out roll-off to eliminate barge-in DC transients.
 
@@ -243,7 +243,7 @@ class AudioRingBuffer:
         self._ramp_temp_ptr = self._ramp_temp.ctypes.data
         self._ramp_temp_cfloat = ctypes.cast(self._ramp_temp_ptr, _c_float_p)
 
-    def _get_buffer_ptrs(self, arr: np.ndarray) -> Tuple[int, Any]:
+    def _get_buffer_ptrs(self, arr: np.ndarray) -> tuple[int, Any]:
         """Retrieves raw memory address and typed c_float pointer safely without stale id(arr) cache aliasing."""
         raw_ptr = arr.ctypes.data
         cfloat_ptr = ctypes.cast(raw_ptr, _c_float_p)
@@ -271,7 +271,7 @@ class AudioRingBuffer:
     def write(
         self,
         data: np.ndarray,
-        producer_epoch: Optional[int] = None,
+        producer_epoch: int | None = None,
         apply_dsp: bool = False,
         sample_rate: int = 24000,
     ) -> int:
@@ -400,7 +400,7 @@ class AudioRingBuffer:
             if to_read < frames:
                 out_buf.ravel()[to_read:frames].fill(0.0)
 
-    def read_into(self, out: np.ndarray, frames: Optional[int] = None) -> int:
+    def read_into(self, out: np.ndarray, frames: int | None = None) -> int:
         """Reads available float32 audio samples directly into pre-allocated `out` buffer.
 
         Guarantees strictly zero allocations during WASAPI playback:
@@ -470,7 +470,7 @@ class AudioRingBuffer:
             self._available -= to_read
             return to_read
 
-    def read(self, frames: int, out: Optional[np.ndarray] = None) -> Tuple[np.ndarray, int]:
+    def read(self, frames: int, out: np.ndarray | None = None) -> tuple[np.ndarray, int]:
         """Reads up to `frames` audio samples from the buffer with zero intermediate slice allocations.
 
         Returns a tuple of (samples_array, actual_samples_read).

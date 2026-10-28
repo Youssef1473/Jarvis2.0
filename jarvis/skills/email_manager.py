@@ -1,14 +1,15 @@
 """Bidirectional email integration for Gmail and Outlook via secure IMAP and SMTP."""
-import imaplib
-import smtplib
 import email
-from email.header import decode_header
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import imaplib
+import logging
 import os
 import re
-import logging
-from typing import List, Dict, Any, Optional, Tuple
+import smtplib
+from email.header import decode_header
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Any
+
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Email")
@@ -75,7 +76,7 @@ def _get_email_body(msg, max_len: int = 2500) -> str:
     return _sanitize_email_text(text_to_clean, max_chars=max_len)
 
 
-def _fetch_unread_imap(host: str, username: str, password: str, max_count: int = 5) -> List[Dict[str, str]]:
+def _fetch_unread_imap(host: str, username: str, password: str, max_count: int = 5) -> list[dict[str, str]]:
     """Fetches unread emails from an IMAP server."""
     if not username or not password:
         return []
@@ -120,7 +121,7 @@ def _fetch_unread_imap(host: str, username: str, password: str, max_count: int =
             pass
 
 
-def _search_imap(host: str, username: str, password: str, query: str, max_count: int = 5) -> List[Dict[str, str]]:
+def _search_imap(host: str, username: str, password: str, query: str, max_count: int = 5) -> list[dict[str, str]]:
     """Searches emails in IMAP inbox matching keyword, sender, or subject."""
     if not username or not password:
         return []
@@ -175,7 +176,7 @@ def _search_imap(host: str, username: str, password: str, query: str, max_count:
             pass
 
 
-def _fetch_email_details(host: str, username: str, password: str, email_id: str) -> Optional[Dict[str, str]]:
+def _fetch_email_details(host: str, username: str, password: str, email_id: str) -> dict[str, str] | None:
     """Fetches full sanitized body of a specific email by numerical ID."""
     if not username or not password or not email_id:
         return None
@@ -222,7 +223,7 @@ def _send_smtp_email(
     subject: str,
     body: str,
     use_ssl: bool = True
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Transmits an email via authenticated SMTP with SSL or STARTTLS."""
     if not username or not password:
         return False, "SMTP credentials missing."
@@ -253,7 +254,7 @@ def _send_smtp_email(
         return False, f"SMTP transmission failed: {e}"
 
 
-def _normalize_account_type(account: Optional[str]) -> str:
+def _normalize_account_type(account: str | None) -> str:
     """Normalizes arbitrary user, email address, or LLM account strings into 'gmail', 'outlook', or 'all'."""
     if not account:
         return "all"
@@ -277,7 +278,7 @@ def _normalize_account_type(account: Optional[str]) -> str:
     return "all"
 
 
-def _get_credentials(account: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], int, bool]:
+def _get_credentials(account: str) -> tuple[str | None, str | None, str | None, str | None, int, bool]:
     """Returns (username, password, imap_host, smtp_host, smtp_port, use_ssl) for requested provider."""
     try:
         from dotenv import load_dotenv

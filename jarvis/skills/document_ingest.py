@@ -3,21 +3,19 @@ Supports multi-domain intake (calendar events, tasks, research papers, contracts
 Files remain staged until Sir provides conversational context and instructions.
 """
 import datetime
-import hashlib
 import json
 import logging
 import os
-from pathlib import Path
 import re
-from typing import Dict, Any, List, Optional
+from pathlib import Path
 
-from jarvis.skills.base import SkillRegistry
-from jarvis.core.memory import MemoryManager
 from jarvis.core.config_loader import load_config
+from jarvis.core.memory import MemoryManager
+from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.DocumentIngest")
 
-_memory_instance: Optional[MemoryManager] = None
+_memory_instance: MemoryManager | None = None
 
 
 def _get_memory() -> MemoryManager:
@@ -28,7 +26,7 @@ def _get_memory() -> MemoryManager:
     return _memory_instance
 
 
-def set_memory_manager(mem: Optional[MemoryManager]) -> None:
+def set_memory_manager(mem: MemoryManager | None) -> None:
     """Sets or resets the memory manager instance for document ingestion (used for test isolation)."""
     global _memory_instance
     _memory_instance = mem
@@ -258,7 +256,7 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
     try:
         raw_text = extract_text_from_pdf(file_path)
     except Exception as e:
-        return f"Unable to extract text from '{filename}', Sir: {str(e)}"
+        return f"Unable to extract text from '{filename}', Sir: {e!s}"
 
     if not raw_text.strip():
         return f"Document '{filename}' appears to be empty or unreadable, Sir."

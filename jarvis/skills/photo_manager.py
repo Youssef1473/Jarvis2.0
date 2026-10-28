@@ -10,13 +10,13 @@ import hashlib
 import io
 import logging
 import os
-from pathlib import Path
 import queue
 import sqlite3
 import threading
 import time
-from typing import Any, Dict, List, Optional
 import uuid
+from pathlib import Path
+from typing import Any
 
 from PIL import Image, ImageGrab
 
@@ -35,7 +35,7 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 # -----------------------------------------------------------------------------
 # Async Background SQLite Layer (<15ms latency guarantee)
 # -----------------------------------------------------------------------------
-_db_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue()
+_db_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
 
 
 def _init_photos_table(conn: sqlite3.Connection):
@@ -126,7 +126,7 @@ def shutdown_photo_manager(timeout: float = 2.0):
 # -----------------------------------------------------------------------------
 # Core Image Ingestion & Sanitization Engine
 # -----------------------------------------------------------------------------
-def _process_and_save_image_stream(stream: io.BytesIO) -> Dict[str, Any]:
+def _process_and_save_image_stream(stream: io.BytesIO) -> dict[str, Any]:
     """Validates magic bytes, strips all EXIF/geolocation, writes to disk, and flushes RAM."""
     stream.seek(0)
     with Image.open(stream) as test_img:
@@ -139,7 +139,7 @@ def _process_and_save_image_stream(stream: io.BytesIO) -> Dict[str, Any]:
         mode = "RGB" if img.mode in ("RGBA", "LA", "P", "CMYK") else img.mode
         clean_img = img.convert(mode)
 
-        raw_seed = f"{uuid.uuid4()}_{time.time_ns()}".encode("utf-8")
+        raw_seed = f"{uuid.uuid4()}_{time.time_ns()}".encode()
         photo_id = hashlib.sha256(raw_seed).hexdigest()[:24]
         target_name = f"{photo_id}.jpg"
         target_path = PHOTOS_DIR / target_name
@@ -180,7 +180,10 @@ def _process_and_save_image_stream(stream: io.BytesIO) -> Dict[str, Any]:
 )
 def save_photo(file_path: str) -> str:
     """Ingests an image file, validates format, strips metadata, and preserves in data/photos/."""
-    from jarvis.core.security_boundaries import validate_confined_path, SecurityBoundaryViolation
+    from jarvis.core.security_boundaries import (
+        SecurityBoundaryViolation,
+        validate_confined_path,
+    )
     clean = str(file_path).strip()
     try:
         allowed_root = str(PHOTOS_DIR.parent)
@@ -359,12 +362,12 @@ def describe_photo(photo_id: str) -> str:
 
 
 __all__ = [
-    "WORKSPACE_DIR",
-    "PHOTOS_DIR",
     "DB_PATH",
-    "shutdown_photo_manager",
-    "save_photo",
-    "save_clipboard_photo",
-    "list_photos",
+    "PHOTOS_DIR",
+    "WORKSPACE_DIR",
     "describe_photo",
+    "list_photos",
+    "save_clipboard_photo",
+    "save_photo",
+    "shutdown_photo_manager",
 ]

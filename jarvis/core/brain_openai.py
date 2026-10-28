@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import time
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import urlsplit
 
 from jarvis.skills.base import SkillRegistry
@@ -264,7 +264,10 @@ class OpenAIProviderMixin:
         # Prepare user payload with vision if requested
         include_vision = self.should_capture_screen(user_text)
         if include_vision:
-            from jarvis.skills.screen_vision import _get_active_window_details, check_visual_privacy
+            from jarvis.skills.screen_vision import (
+                _get_active_window_details,
+                check_visual_privacy,
+            )
             w_title, w_proc = _get_active_window_details()
             privacy_alert = check_visual_privacy(w_title, w_proc)
             if privacy_alert:

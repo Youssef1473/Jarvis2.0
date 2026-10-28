@@ -1,9 +1,7 @@
 """Futuristic Arc-Reactor Holographic HUD Overlay for Jarvis 2.0."""
 import math
 import threading
-import time
 import tkinter as tk
-from typing import Optional
 
 
 class JarvisHUD:
@@ -20,9 +18,9 @@ class JarvisHUD:
         self.pulse = 0.0
         self.pulse_dir = 1
         self.running = False
-        self.root: Optional[tk.Tk] = None
-        self.canvas: Optional[tk.Canvas] = None
-        self._thread: Optional[threading.Thread] = None
+        self.root: tk.Tk | None = None
+        self.canvas: tk.Canvas | None = None
+        self._thread: threading.Thread | None = None
 
         # Dragging state
         self._drag_start_x = 0

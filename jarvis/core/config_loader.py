@@ -1,14 +1,15 @@
 """Configuration loader for Jarvis 2.0."""
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
+
 import yaml
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
-def load_config(config_path: Path | None = None) -> Dict[str, Any]:
+def load_config(config_path: Path | None = None) -> dict[str, Any]:
     """Loads environment variables and YAML configuration."""
     # 1. Load .env
     env_path = BASE_DIR / ".env"
@@ -30,7 +31,7 @@ def load_config(config_path: Path | None = None) -> Dict[str, Any]:
     return config
 
 
-def get_database_path(config: Dict[str, Any] | None = None) -> Path:
+def get_database_path(config: dict[str, Any] | None = None) -> Path:
     """Retrieves the unified canonical database path (data/jarvis_memory.db)."""
     cfg = config if config is not None else load_config()
     base_dir = Path(cfg.get("_base_dir", BASE_DIR))

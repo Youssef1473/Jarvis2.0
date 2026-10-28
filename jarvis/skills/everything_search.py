@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import List, Optional
+
 import psutil
 
 from jarvis.skills.base import SkillRegistry
@@ -21,7 +21,7 @@ WINGET_ES_GLOB = (
 )
 
 
-def find_es_executable() -> Optional[str]:
+def find_es_executable() -> str | None:
     """Locates the voidtools es.exe command-line utility across standard paths."""
     # 1. Local tools/ directory
     if LOCAL_ES_PATH.exists():

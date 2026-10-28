@@ -7,12 +7,12 @@ while the user is idle, gated through PrivacyGuard with per-HWND baseline tracki
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
 import logging
 import sys
 import threading
-import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from ctypes import wintypes
+from typing import Any
 
 import numpy as np
 from PIL import Image, ImageGrab
@@ -26,7 +26,7 @@ from jarvis.core.win32_affinity import (
 logger = logging.getLogger("Jarvis.Vision.DHashMonitor")
 
 
-def _get_window_title_and_proc(hwnd: int) -> Tuple[str, str]:
+def _get_window_title_and_proc(hwnd: int) -> tuple[str, str]:
     """Returns (window_title, process_name) for a given HWND in <0.05ms."""
     if sys.platform != "win32" or not hwnd:
         return ("", "")
@@ -64,7 +64,7 @@ class BackgroundDHashMonitor:
     def __init__(
         self,
         orchestrator: Any = None,
-        get_idle_seconds_fn: Optional[Callable[[], float]] = None,
+        get_idle_seconds_fn: Callable[[], float] | None = None,
         check_interval: float = 2.0,
         hamming_threshold: int = 140,
         idle_threshold: float = 3.0,
@@ -76,14 +76,14 @@ class BackgroundDHashMonitor:
         self.idle_threshold = idle_threshold
 
         # Mandatory constraint: track previous 32x32 dHash per hwnd
-        self._last_hashes: Dict[int, np.ndarray] = {}
+        self._last_hashes: dict[int, np.ndarray] = {}
         # Mandatory constraint: track foreground hwnd to reset baseline on window switch
         self._current_fg_hwnd: int = 0
 
         self._running = False
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        self._callbacks: List[Callable[[int, str, int], None]] = []
+        self._callbacks: list[Callable[[int, str, int], None]] = []
         self._lock = threading.Lock()
 
     def add_transition_callback(self, callback: Callable[[int, str, int], None]) -> None:
@@ -139,7 +139,7 @@ class BackgroundDHashMonitor:
                 pass
         return 0.0
 
-    def _capture_window_or_screen(self, hwnd: int) -> Optional[Image.Image]:
+    def _capture_window_or_screen(self, hwnd: int) -> Image.Image | None:
         """Captures window bounds or active screen with fallback."""
         if sys.platform != "win32" or not hwnd:
             return None
@@ -159,7 +159,7 @@ class BackgroundDHashMonitor:
             logger.debug("Failed to capture frame for dHash: %s", e)
             return None
 
-    def poll_once(self) -> Optional[Tuple[int, str, int]]:
+    def poll_once(self) -> tuple[int, str, int] | None:
         """Executes a single check iteration.
 
         Returns (hwnd, window_title, distance) if an idle screen transition occurred, else None.

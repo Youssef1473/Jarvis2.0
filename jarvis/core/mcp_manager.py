@@ -15,9 +15,13 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
-from jarvis.core.security_boundaries import TurnTaintTracker, validate_egress_url, resolve_and_validate_destination, SecurityBoundaryViolation, build_safe_url_opener
+from jarvis.core.security_boundaries import (
+    TurnTaintTracker,
+    build_safe_url_opener,
+    resolve_and_validate_destination,
+)
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Core.MCP")
@@ -29,7 +33,7 @@ STDIO_MEMORY_LIMIT_MB = 512
 STDIO_AFFINITY_MASK = 0xFF00
 
 
-def _setup_win32_job_object(proc_handle: int, max_memory_mb: int = STDIO_MEMORY_LIMIT_MB) -> Optional[int]:
+def _setup_win32_job_object(proc_handle: int, max_memory_mb: int = STDIO_MEMORY_LIMIT_MB) -> int | None:
     """Configures a 64-bit Windows Job Object to constrain stdio MCP servers to E-Cores and 512MB RAM."""
     try:
         import ctypes
@@ -151,7 +155,7 @@ def _setup_win32_job_object(proc_handle: int, max_memory_mb: int = STDIO_MEMORY_
         return None
 
 
-def _close_win32_job_object(h_job: Optional[int]) -> None:
+def _close_win32_job_object(h_job: int | None) -> None:
     """Closes and terminates a Win32 Job Object handle."""
     if not h_job:
         return
@@ -177,12 +181,12 @@ class MCPClientSession:
         self,
         name: str,
         transport: str = "http",
-        endpoint_url: Optional[str] = None,
-        command: Optional[List[str]] = None,
-        args: Optional[List[str]] = None,
-        env: Optional[Dict[str, str]] = None,
-        cwd: Optional[str] = None,
-        headers: Optional[Dict[str, str]] = None,
+        endpoint_url: str | None = None,
+        command: list[str] | None = None,
+        args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+        headers: dict[str, str] | None = None,
         tool_cache_ttl_sec: float = DEFAULT_TOOL_CACHE_TTL_SEC,
     ):
         self.name = name
@@ -197,25 +201,25 @@ class MCPClientSession:
 
         self._request_id: int = 0
         self._lock = threading.Lock()
-        self._tool_cache: Optional[List[Dict[str, Any]]] = None
+        self._tool_cache: list[dict[str, Any]] | None = None
         self._cache_timestamp: float = 0.0
         self._is_closed: bool = False
-        self._http_opener: Optional[urllib.request.OpenerDirector] = None
+        self._http_opener: urllib.request.OpenerDirector | None = None
 
         # Stdio specific state
-        self._proc: Optional[subprocess.Popen] = None
-        self._job_handle: Optional[int] = None
+        self._proc: subprocess.Popen | None = None
+        self._job_handle: int | None = None
         self._stderr_buffer: collections.deque = collections.deque(maxlen=200)
         self._stdout_queue: queue.Queue = queue.Queue()
-        self._stderr_thread: Optional[threading.Thread] = None
-        self._stdout_thread: Optional[threading.Thread] = None
+        self._stderr_thread: threading.Thread | None = None
+        self._stdout_thread: threading.Thread | None = None
 
     def _next_id(self) -> int:
         with self._lock:
             self._request_id += 1
             return self._request_id
 
-    def initialize(self, timeout: float = DEFAULT_TIMEOUT_SEC) -> Dict[str, Any]:
+    def initialize(self, timeout: float = DEFAULT_TIMEOUT_SEC) -> dict[str, Any]:
         """Performs protocol handshake with MCP server."""
         proto_ver = self.headers.get("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
         payload = {
@@ -232,7 +236,7 @@ class MCPClientSession:
         logger.info("Initialized MCP session '%s' (transport: %s)", self.name, self.transport)
         return res
 
-    def list_tools(self, force_refresh: bool = False, timeout: float = DEFAULT_TIMEOUT_SEC) -> List[Dict[str, Any]]:
+    def list_tools(self, force_refresh: bool = False, timeout: float = DEFAULT_TIMEOUT_SEC) -> list[dict[str, Any]]:
         """Queries exposed tools from the server, respecting ttl caching."""
         now = time.time()
         if (
@@ -260,7 +264,7 @@ class MCPClientSession:
         logger.info("Discovered %d MCP tools for session '%s'", len(tools), self.name)
         return list(tools)
 
-    def call_tool(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None, timeout: float = 15.0) -> Any:
+    def call_tool(self, tool_name: str, arguments: dict[str, Any] | None = None, timeout: float = 15.0) -> Any:
         """Executes a tool on the external MCP server via JSON-RPC 2.0."""
         payload = {
             "jsonrpc": "2.0",
@@ -279,7 +283,7 @@ class MCPClientSession:
         result = resp.get("result", {})
         return result
 
-    def _send_request(self, payload: Dict[str, Any], timeout: float = DEFAULT_TIMEOUT_SEC) -> Dict[str, Any]:
+    def _send_request(self, payload: dict[str, Any], timeout: float = DEFAULT_TIMEOUT_SEC) -> dict[str, Any]:
         """Dispatches JSON-RPC request over active transport."""
         if self._is_closed:
             raise RuntimeError(f"MCPClientSession '{self.name}' is already closed.")
@@ -291,7 +295,7 @@ class MCPClientSession:
         else:
             raise ValueError(f"Unsupported MCP transport: '{self.transport}'")
 
-    def _send_http_request(self, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+    def _send_http_request(self, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
         """Stateless HTTP POST transport conforming to 2026-07-28 specification."""
         if not self.endpoint_url:
             raise ValueError(f"HTTP transport requires endpoint_url for session '{self.name}'.")
@@ -444,7 +448,7 @@ class MCPClientSession:
             self._stdout_thread = threading.Thread(target=_drain_stdout, daemon=True, name=f"mcp-stdout-{self.name}")
             self._stdout_thread.start()
 
-    def _send_stdio_request(self, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+    def _send_stdio_request(self, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
         """Transmits JSON-RPC payload over stdio framing and waits for response line."""
         self._ensure_stdio_process()
 
@@ -510,10 +514,10 @@ class MCPClientSession:
         logger.info("Closed MCP session '%s'", self.name)
 
 
-def register_discovered_mcp_tools(session: MCPClientSession) -> List[str]:
+def register_discovered_mcp_tools(session: MCPClientSession) -> list[str]:
     """Discovers tools from an MCPClientSession and registers them in SkillRegistry with taint tracking."""
     tools = session.list_tools()
-    registered_names: List[str] = []
+    registered_names: list[str] = []
 
     for tool_spec in tools:
         raw_name = tool_spec.get("name", "")
@@ -548,19 +552,19 @@ def register_discovered_mcp_tools(session: MCPClientSession) -> List[str]:
 class MCPManager:
     """Manages active MCP client sessions and their exposed tool integrations."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: dict[str, Any] | None = None):
         self.config = config or {}
         base_dir = Path(self.config.get("_base_dir", "."))
         cfg_rel_path = self.config.get("mcp", {}).get("config_path", "config/mcp_servers.json")
         self.config_path = base_dir / cfg_rel_path
-        self.active_sessions: Dict[str, MCPClientSession] = {}
+        self.active_sessions: dict[str, MCPClientSession] = {}
         self._lock = threading.Lock()
 
     def connect_http(
         self,
         name: str,
         endpoint_url: str,
-        headers: Optional[Dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         tool_cache_ttl_sec: float = DEFAULT_TOOL_CACHE_TTL_SEC,
     ) -> MCPClientSession:
         """Establishes a stateless HTTP MCP session and auto-registers tools."""
@@ -581,10 +585,10 @@ class MCPManager:
     def connect_stdio(
         self,
         name: str,
-        command: List[str],
-        args: Optional[List[str]] = None,
-        env: Optional[Dict[str, str]] = None,
-        cwd: Optional[str] = None,
+        command: list[str],
+        args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> MCPClientSession:
         """Establishes an E-core sandboxed stdio MCP session and auto-registers tools."""
         with self._lock:
@@ -602,11 +606,11 @@ class MCPManager:
             self.active_sessions[name] = session
             return session
 
-    def get_session(self, name: str) -> Optional[MCPClientSession]:
+    def get_session(self, name: str) -> MCPClientSession | None:
         with self._lock:
             return self.active_sessions.get(name)
 
-    def list_available_mcp_tools(self) -> List[Dict[str, Any]]:
+    def list_available_mcp_tools(self) -> list[dict[str, Any]]:
         """Aggregates all exposed tools across all enabled/connected sessions."""
         all_tools = []
         with self._lock:
@@ -622,7 +626,7 @@ class MCPManager:
             except Exception as e:
                 logger.warning("Could not list tools from MCP session '%s': %s", sess.name, e)
 
-    def load_servers_config(self) -> Dict[str, Any]:
+    def load_servers_config(self) -> dict[str, Any]:
         """Loads mcpServers definitions from config_path."""
         if not self.config_path.exists():
             logger.debug("MCP config file '%s' does not exist.", self.config_path)
@@ -635,10 +639,10 @@ class MCPManager:
             logger.error("Failed to parse MCP config '%s': %s", self.config_path, e)
             return {}
 
-    def start_configured_servers(self, auto_register_skills: bool = True) -> Dict[str, List[str]]:
+    def start_configured_servers(self, auto_register_skills: bool = True) -> dict[str, list[str]]:
         """Spawns enabled MCP servers from configuration and optionally registers tools."""
         servers = self.load_servers_config()
-        registered_by_server: Dict[str, List[str]] = {}
+        registered_by_server: dict[str, list[str]] = {}
 
         for server_name, server_def in servers.items():
             if not isinstance(server_def, dict) or not server_def.get("enabled", True):
@@ -650,7 +654,7 @@ class MCPManager:
                 if not transport:
                     transport = "http" if "endpoint_url" in server_def else "stdio"
 
-                session: Optional[MCPClientSession] = None
+                session: MCPClientSession | None = None
                 if transport == "http":
                     url = server_def.get("endpoint_url", "")
                     headers = server_def.get("headers")

@@ -6,14 +6,14 @@ zero-hallucination deterministic physical interaction via click_marked_element(m
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 import ctypes
-from ctypes import wintypes
 import logging
 import sys
 import threading
 import warnings
-from typing import Any, Dict, List, Optional, Tuple, Union
+from ctypes import wintypes
+from dataclasses import dataclass
+from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont, ImageGrab
 
@@ -106,7 +106,7 @@ def is_window_privacy_blocked(hwnd: int = 0, title: str = "", proc_name: str = "
     return any(p in title_lower or p in proc_lower for p in SENSITIVE_APP_PATTERNS)
 
 
-def is_sensitive_element(control: Dict[str, Any]) -> bool:
+def is_sensitive_element(control: dict[str, Any]) -> bool:
     """Returns True if the control represents a credential, password, or security token field."""
     if control.get("is_password", False):
         return True
@@ -121,9 +121,9 @@ class UIElementCandidate:
     control_type: str
     name: str
     auto_id: str
-    rect: Tuple[int, int, int, int]
+    rect: tuple[int, int, int, int]
     is_password: bool = False
-    uia_ref: Optional[Any] = None
+    uia_ref: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,13 +133,13 @@ class MarkElement:
     control_type: str
     name: str
     auto_id: str
-    local_rect: Tuple[int, int, int, int]
-    screen_rect: Tuple[int, int, int, int]
-    local_center: Tuple[int, int]
-    screen_center: Tuple[int, int]
+    local_rect: tuple[int, int, int, int]
+    screen_rect: tuple[int, int, int, int]
+    local_center: tuple[int, int]
+    screen_center: tuple[int, int]
     hwnd: int
-    snapshot_win_rect: Tuple[int, int, int, int]
-    uia_ref: Optional[Any] = None
+    snapshot_win_rect: tuple[int, int, int, int]
+    uia_ref: Any | None = None
 
 
 # Alias for backward/forward compatibility
@@ -148,21 +148,21 @@ MarkedUIElement = MarkElement
 
 class MarkRegistry:
     """Thread-safe registry for the most recently computed Set-of-Mark elements."""
-    _current_marks: Dict[int, MarkElement] = {}
+    _current_marks: dict[int, MarkElement] = {}
     _lock = threading.Lock()
 
     @classmethod
-    def set_marks(cls, marks: Dict[int, MarkElement]) -> None:
+    def set_marks(cls, marks: dict[int, MarkElement]) -> None:
         with cls._lock:
             cls._current_marks = dict(marks)
 
     @classmethod
-    def get_mark(cls, mark_id: int) -> Optional[MarkElement]:
+    def get_mark(cls, mark_id: int) -> MarkElement | None:
         with cls._lock:
             return cls._current_marks.get(mark_id)
 
     @classmethod
-    def get_all_marks(cls) -> Dict[int, MarkElement]:
+    def get_all_marks(cls) -> dict[int, MarkElement]:
         with cls._lock:
             return dict(cls._current_marks)
 
@@ -188,7 +188,7 @@ class MarkRegistry:
 class SetOfMarkAnnotator:
     """Annotates window screenshots with crisp, numbered Set-of-Mark badges."""
 
-    _instance: Optional["SetOfMarkAnnotator"] = None
+    _instance: SetOfMarkAnnotator | None = None
 
     def __init__(self, max_controls: int = 75, min_size: int = 12) -> None:
         self.max_controls = max_controls
@@ -196,13 +196,13 @@ class SetOfMarkAnnotator:
         enable_per_monitor_v2_dpi()
 
     @classmethod
-    def get_instance(cls) -> "SetOfMarkAnnotator":
+    def get_instance(cls) -> SetOfMarkAnnotator:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
 
     @staticmethod
-    def _get_window_rect(hwnd: int) -> Tuple[int, int, int, int]:
+    def _get_window_rect(hwnd: int) -> tuple[int, int, int, int]:
         if sys.platform != "win32" or not hwnd:
             return (0, 0, 0, 0)
         try:
@@ -229,11 +229,11 @@ class SetOfMarkAnnotator:
     def annotate(
         self,
         image: Image.Image,
-        win_rect: Tuple[int, int, int, int],
+        win_rect: tuple[int, int, int, int],
         hwnd: int = 0,
-        raw_controls: Optional[List[Dict[str, Any]]] = None,
+        raw_controls: list[dict[str, Any]] | None = None,
         win_title: str = "Active Window",
-    ) -> Tuple[Image.Image, Dict[int, MarkElement], str]:
+    ) -> tuple[Image.Image, dict[int, MarkElement], str]:
         """Annotates an existing image using provided control definitions or pre-parsed elements."""
         annotated_img = image.copy()
         draw = ImageDraw.Draw(annotated_img)
@@ -243,7 +243,7 @@ class SetOfMarkAnnotator:
         except Exception:
             font = None
 
-        marks: Dict[int, MarkElement] = {}
+        marks: dict[int, MarkElement] = {}
         mark_counter = 1
         controls = raw_controls or []
 
@@ -346,8 +346,8 @@ class SetOfMarkAnnotator:
 
     def annotate_window(
         self,
-        hwnd: Optional[int] = None,
-    ) -> Tuple[Optional[Image.Image], Dict[int, MarkElement], str]:
+        hwnd: int | None = None,
+    ) -> tuple[Image.Image | None, dict[int, MarkElement], str]:
         """Interrogates live UIA tree for the active window and produces an annotated screenshot."""
         if sys.platform != "win32":
             return (None, {}, "Set-of-Mark visual grounding is only supported on Windows workstations.")
@@ -374,7 +374,7 @@ class SetOfMarkAnnotator:
         if win_w <= 0 or win_h <= 0:
             return (None, {}, "Target window has invalid or minimized dimensions.")
 
-        screenshot: Optional[Image.Image] = None
+        screenshot: Image.Image | None = None
         try:
             screenshot = ImageGrab.grab(bbox=win_rect, all_screens=True)
         except Exception as grab_err:
@@ -401,7 +401,7 @@ class SetOfMarkAnnotator:
         except Exception:
             pass
 
-        raw_controls: List[Dict[str, Any]] = []
+        raw_controls: list[dict[str, Any]] = []
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -475,7 +475,7 @@ class SetOfMarkAnnotator:
         )
 
     @classmethod
-    def click_element(cls, tag_id: int, verify_window_geometry: bool = True) -> Dict[str, Any]:
+    def click_element(cls, tag_id: int, verify_window_geometry: bool = True) -> dict[str, Any]:
         """Performs coordinate-free deterministic click on the marked element."""
         mark = MarkRegistry.get_mark(tag_id)
         if not mark:

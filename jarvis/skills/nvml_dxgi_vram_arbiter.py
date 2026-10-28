@@ -6,7 +6,8 @@ preventing WDDM 3.1 PCIe memory paging and faster-whisper transcription spikes.
 import ctypes
 import glob
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import psutil
 
 from jarvis.skills.base import SkillRegistry
@@ -29,11 +30,11 @@ class c_nvmlProcessInfo_t(ctypes.Structure):
     ]
 
 
-_nvml_lib: Optional[ctypes.WinDLL] = None
+_nvml_lib: ctypes.WinDLL | None = None
 _nvml_initialized: bool = False
 
 
-def _get_nvml_lib() -> Optional[ctypes.WinDLL]:
+def _get_nvml_lib() -> ctypes.WinDLL | None:
     """Resiliently loads nvml.dll across Windows DCH driver layouts and NVSMI paths."""
     global _nvml_lib
     if _nvml_lib is not None:
@@ -72,7 +73,7 @@ def _get_nvml_lib() -> Optional[ctypes.WinDLL]:
     description="Queries RTX 3050 VRAM allocations, GPU temp, and clock throttling in <0.1ms via nvml.dll, reclaiming cache if pressured.",
     risk_level=0,
 )
-def audit_vram_and_thermal_budget(reclaim_if_pressured: bool = True) -> Dict[str, Any]:
+def audit_vram_and_thermal_budget(reclaim_if_pressured: bool = True) -> dict[str, Any]:
     """Performs sub-millisecond NVML inspection and enforces VRAM safety limits."""
     global _nvml_initialized
     nvml = _get_nvml_lib()
@@ -128,7 +129,7 @@ def audit_vram_and_thermal_budget(reclaim_if_pressured: bool = True) -> Dict[str
         procs = (c_nvmlProcessInfo_t * 32)()
         nvml.nvmlDeviceGetComputeRunningProcesses_v3(device, ctypes.byref(count), procs)
 
-        process_breakdown: List[Dict[str, Any]] = []
+        process_breakdown: list[dict[str, Any]] = []
         for i in range(count.value):
             pid = int(procs[i].pid)
             # Filter sentinel value -1ULL (0xFFFFFFFFFFFFFFFF)

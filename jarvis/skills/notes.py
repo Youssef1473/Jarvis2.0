@@ -1,11 +1,10 @@
 """Spoken Note-Taker & Thought Capture skill for Jarvis 2.0."""
-import os
-import re
 import datetime
-import threading
 import logging
+import re
+import threading
 from pathlib import Path
-from typing import List, Dict, Optional
+
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Notes")

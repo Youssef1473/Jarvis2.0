@@ -6,17 +6,17 @@ dual-stamp invalidation.
 """
 from __future__ import annotations
 
-from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
 import hashlib
 import inspect
 import json
 import logging
 import os
-from pathlib import Path
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from jarvis.context.flow_state_mirror import ResourceScope
 from jarvis.core.thread_affinity import init_speculative_worker_thread
@@ -32,7 +32,7 @@ class EpochVector:
     terminal_seq: int = 0
     active_hwnd: int = 0
 
-    def is_compatible_with(self, current: "EpochVector") -> bool:
+    def is_compatible_with(self, current: EpochVector) -> bool:
         return (
             self.fs_usn_epoch == current.fs_usn_epoch
             and self.git_head_crc == current.git_head_crc
@@ -42,9 +42,9 @@ class EpochVector:
 
 
 class EnvironmentEpochTracker:
-    __slots__ = ("_fs_usn_epoch", "_git_head_crc", "_terminal_seq", "_active_hwnd")
+    __slots__ = ("_active_hwnd", "_fs_usn_epoch", "_git_head_crc", "_terminal_seq")
 
-    _instance: Optional["EnvironmentEpochTracker"] = None
+    _instance: EnvironmentEpochTracker | None = None
     _lock = threading.Lock()
 
     def __init__(self) -> None:
@@ -54,7 +54,7 @@ class EnvironmentEpochTracker:
         self._active_hwnd: int = 0
 
     @classmethod
-    def get_instance(cls) -> "EnvironmentEpochTracker":
+    def get_instance(cls) -> EnvironmentEpochTracker:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = cls()
@@ -63,7 +63,10 @@ class EnvironmentEpochTracker:
     def bump_fs_epoch(self, usn: int | None = None) -> None:
         self._fs_usn_epoch = int(usn) if usn is not None else (self._fs_usn_epoch + 1)
         try:
-            from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker, ResourceScope
+            from jarvis.context.flow_state_mirror import (
+                EnvironmentEpochTracker as FlowEpochTracker,
+            )
+            from jarvis.context.flow_state_mirror import ResourceScope
             with FlowEpochTracker._lock:
                 FlowEpochTracker._epochs[ResourceScope.FILESYSTEM] = FlowEpochTracker._epochs.get(ResourceScope.FILESYSTEM, 0) + 1
         except Exception:
@@ -73,7 +76,10 @@ class EnvironmentEpochTracker:
         digest = hashlib.blake2b(head_ref.encode("utf-8"), digest_size=4).digest()
         self._git_head_crc = int.from_bytes(digest, "little")
         try:
-            from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker, ResourceScope
+            from jarvis.context.flow_state_mirror import (
+                EnvironmentEpochTracker as FlowEpochTracker,
+            )
+            from jarvis.context.flow_state_mirror import ResourceScope
             with FlowEpochTracker._lock:
                 FlowEpochTracker._epochs[ResourceScope.GIT] = FlowEpochTracker._epochs.get(ResourceScope.GIT, 0) + 1
         except Exception:
@@ -82,7 +88,10 @@ class EnvironmentEpochTracker:
     def bump_terminal_seq(self) -> None:
         self._terminal_seq += 1
         try:
-            from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker, ResourceScope
+            from jarvis.context.flow_state_mirror import (
+                EnvironmentEpochTracker as FlowEpochTracker,
+            )
+            from jarvis.context.flow_state_mirror import ResourceScope
             with FlowEpochTracker._lock:
                 FlowEpochTracker._epochs[ResourceScope.TERMINAL] = FlowEpochTracker._epochs.get(ResourceScope.TERMINAL, 0) + 1
         except Exception:
@@ -107,22 +116,30 @@ class EnvironmentEpochTracker:
 
     @classmethod
     def bump(cls, scope: Any) -> int:
-        from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker
+        from jarvis.context.flow_state_mirror import (
+            EnvironmentEpochTracker as FlowEpochTracker,
+        )
         return FlowEpochTracker.bump(scope)
 
     @classmethod
     def get_epoch(cls, scope: Any) -> int:
-        from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker
+        from jarvis.context.flow_state_mirror import (
+            EnvironmentEpochTracker as FlowEpochTracker,
+        )
         return FlowEpochTracker.get_epoch(scope)
 
     @classmethod
-    def get_snapshot(cls) -> Dict[Any, int]:
-        from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker
+    def get_snapshot(cls) -> dict[Any, int]:
+        from jarvis.context.flow_state_mirror import (
+            EnvironmentEpochTracker as FlowEpochTracker,
+        )
         return FlowEpochTracker.get_snapshot()
 
     @classmethod
     def reset(cls) -> None:
-        from jarvis.context.flow_state_mirror import EnvironmentEpochTracker as FlowEpochTracker
+        from jarvis.context.flow_state_mirror import (
+            EnvironmentEpochTracker as FlowEpochTracker,
+        )
         FlowEpochTracker.reset()
 
 
@@ -137,9 +154,9 @@ class FileStatStamp:
 @dataclass(frozen=True)
 class ValidationSnapshot:
     """Dual-stamp snapshot of environment epochs and tracked file stats."""
-    scope_epochs: Dict[ResourceScope, int]
-    file_stamps: Tuple[FileStatStamp, ...]
-    epoch_vector: Optional[EpochVector] = None
+    scope_epochs: dict[ResourceScope, int]
+    file_stamps: tuple[FileStatStamp, ...]
+    epoch_vector: EpochVector | None = None
 
 
 @dataclass
@@ -149,7 +166,7 @@ class SpeculativeEntry:
     future: Future
     snapshot: ValidationSnapshot
     meta: SkillMetadata
-    bound_args: Dict[str, Any]
+    bound_args: dict[str, Any]
     submit_monotonic_ns: int = field(default_factory=time.monotonic_ns)
 
 
@@ -164,7 +181,7 @@ class ExecutionMetrics:
     saved_wall_clock_ms: float = 0.0
 
 
-def compute_deterministic_cache_key(skill_name: str, bound_args: Dict[str, Any]) -> str:
+def compute_deterministic_cache_key(skill_name: str, bound_args: dict[str, Any]) -> str:
     """Computes BLAKE2b-128(skill_name || canonical_json(bound_args))."""
     def _json_serializable(obj):
         if isinstance(obj, (int, float, str, bool)) or obj is None:
@@ -179,17 +196,17 @@ def compute_deterministic_cache_key(skill_name: str, bound_args: Dict[str, Any])
 
     canonical_dict = {k: _json_serializable(v) for k, v in sorted(bound_args.items())}
     canonical_payload = json.dumps(canonical_dict, sort_keys=True, separators=(",", ":"))
-    key_input = f"{skill_name}:{canonical_payload}".encode("utf-8")
+    key_input = f"{skill_name}:{canonical_payload}".encode()
     return hashlib.blake2b(key_input, digest_size=16).hexdigest()
 
 
 class SpeculativeExecutionEngine:
     """Autonomous speculative execution coordinator managing E-core thread pool and cache."""
 
-    _instance: Optional[SpeculativeExecutionEngine] = None
+    _instance: SpeculativeExecutionEngine | None = None
     _lock = threading.Lock()
 
-    def __init__(self, max_workers: int = 4, epoch_tracker: Optional[EnvironmentEpochTracker] = None):
+    def __init__(self, max_workers: int = 4, epoch_tracker: EnvironmentEpochTracker | None = None):
         self.max_workers = max_workers
         self._epoch_tracker = epoch_tracker or EnvironmentEpochTracker.get_instance()
         self._executor = ThreadPoolExecutor(
@@ -197,7 +214,7 @@ class SpeculativeExecutionEngine:
             thread_name_prefix="SpeculativeWorker",
             initializer=init_speculative_worker_thread,
         )
-        self._active_entries: Dict[str, SpeculativeEntry] = {}
+        self._active_entries: dict[str, SpeculativeEntry] = {}
         self._entries_lock = threading.Lock()
         self.metrics = ExecutionMetrics()
 
@@ -212,10 +229,10 @@ class SpeculativeExecutionEngine:
                 cls._instance = cls()
             return cls._instance
 
-    def _capture_validation_snapshot(self, meta: SkillMetadata, bound_args: Dict[str, Any]) -> ValidationSnapshot:
+    def _capture_validation_snapshot(self, meta: SkillMetadata, bound_args: dict[str, Any]) -> ValidationSnapshot:
         scope_epochs = EnvironmentEpochTracker.get_snapshot()
         epoch_vector = self._epoch_tracker.snapshot()
-        file_stamps: List[FileStatStamp] = []
+        file_stamps: list[FileStatStamp] = []
 
         for arg_name in meta.path_arg_names:
             val = bound_args.get(arg_name)
@@ -392,12 +409,12 @@ class SpeculativeExecutionEngine:
 
 
 __all__ = [
-    "EpochVector",
     "EnvironmentEpochTracker",
-    "FileStatStamp",
-    "ValidationSnapshot",
-    "SpeculativeEntry",
+    "EpochVector",
     "ExecutionMetrics",
-    "compute_deterministic_cache_key",
+    "FileStatStamp",
+    "SpeculativeEntry",
     "SpeculativeExecutionEngine",
+    "ValidationSnapshot",
+    "compute_deterministic_cache_key",
 ]

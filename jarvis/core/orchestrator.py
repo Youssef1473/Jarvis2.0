@@ -1,26 +1,25 @@
 """Central orchestrator coordinating audio, hotkeys, STT, LLM, tools, TTS, and HUD overlay."""
 import asyncio
-import queue
 import logging
-import os
-import random
+import queue
 import re
 import sys
 import threading
 import time
-from typing import Dict, Any, List, Optional
+from typing import Any
+
 import numpy as np
 import sounddevice as sd
 
-from jarvis.audio.sound_effects import SoundEffects
 from jarvis.audio.hotkey_listener import HotkeyListener
+from jarvis.audio.sound_effects import SoundEffects
 from jarvis.audio.stt import SpeechToText
 from jarvis.audio.tts import TextToSpeech
 from jarvis.audio.wake_word import WakeWordDetector
-from jarvis.core.memory import MemoryManager
-from jarvis.core.safety import SafetyGate
 from jarvis.core.brain import JarvisBrain
 from jarvis.core.heartbeat import JarvisHeartbeat
+from jarvis.core.memory import MemoryManager
+from jarvis.core.safety import SafetyGate
 from jarvis.core.services import ManagedServiceManager
 from jarvis.ui.hud import JarvisHUD
 
@@ -44,7 +43,7 @@ def trim_process_memory(aggressive: bool = False):
 class JarvisOrchestrator:
     """Coordinates Jarvis's sensory inputs, cognitive loop, speech output, holographic HUD, and proactive heartbeat."""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.config = config
         self.sample_rate = config.get("audio", {}).get("sample_rate", 16000)
 
@@ -86,10 +85,10 @@ class JarvisOrchestrator:
             or get_global_latency_profiler()
         )
         self.tool_orchestrator = getattr(self.brain, "tool_orchestrator", None)
-        self._active_turn_id: Optional[str] = None
+        self._active_turn_id: str | None = None
         self._active_query: str = ""
         self._active_topic_label: str = "the architecture"
-        self._active_tool_outputs: Dict[str, Any] = {}
+        self._active_tool_outputs: dict[str, Any] = {}
 
         # Web-Powered Holographic HUD Server
         ui_cfg = config.get("ui", {})
@@ -102,10 +101,10 @@ class JarvisOrchestrator:
             )
         else:
             self.ui_service = None
-            def _cli_approval_handler(details: Dict[str, Any]) -> bool:
+            def _cli_approval_handler(details: dict[str, Any]) -> bool:
                 if not sys.stdin or not hasattr(sys.stdin, "isatty") or not sys.stdin.isatty():
                     return False
-                print(f"\n[JARVIS DUAL-KEY SECURITY GATE]")
+                print("\n[JARVIS DUAL-KEY SECURITY GATE]")
                 print(f" Tool: {details.get('tool_name')}")
                 print(f" Action: {details.get('summary')}")
                 print(f" Hash: {details.get('action_hash')}")
@@ -130,7 +129,7 @@ class JarvisOrchestrator:
         self._is_recording = False
         self._is_ptt_recording = False
         self.last_recording_had_overflow = False
-        self._recorded_frames: List[np.ndarray] = []
+        self._recorded_frames: list[np.ndarray] = []
         self._record_stream: sd.InputStream | None = None
         self._lock = threading.Lock()
 
@@ -250,7 +249,7 @@ class JarvisOrchestrator:
         """
         self.abort_active_command()
 
-    def broadcast_ambient_telemetry(self, data: Dict[str, Any]):
+    def broadcast_ambient_telemetry(self, data: dict[str, Any]):
         """Dispatches ambient desktop context and presence telemetry to the Holographic HUD."""
         if getattr(self, "ui_service", None):
             try:
@@ -262,7 +261,7 @@ class JarvisOrchestrator:
             except Exception:
                 pass
 
-    def _on_tool_status_event(self, event: Dict[str, Any]):
+    def _on_tool_status_event(self, event: dict[str, Any]):
         """Dispatches live tool execution status events to the Holographic HUD."""
         if getattr(self, "ui_service", None):
             try:
@@ -699,7 +698,7 @@ class JarvisOrchestrator:
             # Check if this query is an instant deterministic reflex (<10ms) or model switch
             norm_query = re.sub(r"^[\s,;:.]+|[\s,!?:.]+$", "", (query or "").strip()).strip()
             is_fast_reflex = self.brain.is_fast_reflex(norm_query)
-            is_model_switch = bool(re.match(r"^(?:switch to|use|activate|set model to|enable)\s+(pro|flash|claude|sonnet|opus|gemini|3\.8|3\.1)", norm_query, re.I))
+            is_model_switch = bool(re.match(r"^(?:switch to|use|activate|set model to|enable)\s+(pro|flash|claude|sonnet|opus|gemini|3\.8|3\.1)", norm_query, re.IGNORECASE))
 
             queued_ack = None
             # For non-reflex cognitive tasks, speak an immediate contextual intent update (<150ms) so Sir is never left in silence
@@ -739,7 +738,7 @@ class JarvisOrchestrator:
                         r"^(?:right away|on it|certainly|understood|very well)(?:,?\s+[a-z\s]+)?[.,]?\s*",
                         "",
                         s_clean,
-                        flags=re.I
+                        flags=re.IGNORECASE
                     ).strip()
                 if s_clean:
                     if self.get_state() != "speaking":
@@ -809,6 +808,7 @@ class JarvisOrchestrator:
             if self.config.get("ui", {}).get("auto_open", False):
                 try:
                     import webbrowser
+
                     from jarvis.ui.server import create_bootstrap_token
                     b_token = create_bootstrap_token(ttl_seconds=60.0)
                     webbrowser.open(f"http://{self.ui_service.host}:{self.ui_service.port}/#bootstrap={b_token}")

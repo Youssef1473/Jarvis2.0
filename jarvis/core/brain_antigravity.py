@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
 
@@ -134,7 +134,7 @@ class AntigravityProviderMixin:
         reply_text = turn_response.content or ""
 
         if turn_response.tool_calls:
-            assistant_entry: Dict[str, Any] = {
+            assistant_entry: dict[str, Any] = {
                 "role": "assistant",
                 "content": reply_text or None,
                 "tool_calls": [

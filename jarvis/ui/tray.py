@@ -2,15 +2,16 @@
 import ctypes
 import logging
 import os
-from pathlib import Path
 import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
-from typing import Optional, Callable, Any
-from PIL import Image, ImageDraw
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
 import pystray
+from PIL import Image, ImageDraw
 
 logger = logging.getLogger("Jarvis.UI.Tray")
 
@@ -118,10 +119,10 @@ def set_startup_enabled(enabled: bool, project_dir: Path) -> bool:
 class SystemTrayApp:
     """Manages the Windows taskbar notification tray icon and stealth mode controls."""
 
-    def __init__(self, orchestrator: Any, on_quit_callback: Optional[Callable] = None):
+    def __init__(self, orchestrator: Any, on_quit_callback: Callable | None = None):
         self.orchestrator = orchestrator
         self.on_quit_callback = on_quit_callback
-        self.icon: Optional[pystray.Icon] = None
+        self.icon: pystray.Icon | None = None
         self._project_dir = Path(__file__).resolve().parent.parent.parent
 
     def _toggle_mute(self, icon, item):
@@ -250,7 +251,7 @@ class SystemTrayApp:
             pystray.MenuItem("JARVIS 3.0 (Online)", None, enabled=False),
             pystray.MenuItem(f"Brain: {provider_name} ({model_name})", None, enabled=False),
             pystray.MenuItem("Routing: local-first; cloud consultations by request", None, enabled=False),
-            pystray.MenuItem(f"Voice: Kokoro-82M Neural (Local CUDA)", None, enabled=False),
+            pystray.MenuItem("Voice: Kokoro-82M Neural (Local CUDA)", None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
                 "Mute Voice Sensors",

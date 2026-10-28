@@ -6,7 +6,7 @@ import html
 import logging
 import re
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from jarvis.core.memory.vector_engine import (
     fuse_vec_and_fts_rrf,
@@ -19,7 +19,7 @@ logger = logging.getLogger("Jarvis.Memory.DocumentVault")
 class DocumentVaultMixin:
     """Provides document staging, JIT archival, hybrid retrieval, and reference block formatting."""
 
-    def stage_document(self, filename: str, file_path: str, file_hash: str = "", file_size: int = 0) -> Dict[str, Any]:
+    def stage_document(self, filename: str, file_path: str, file_hash: str = "", file_size: int = 0) -> dict[str, Any]:
         """Registers an uploaded document into the staged queue awaiting user context."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -36,7 +36,7 @@ class DocumentVaultMixin:
                 "status": "PENDING_CONTEXT",
             }
 
-    def get_staged_documents(self, status: str = "PENDING_CONTEXT") -> List[Dict[str, Any]]:
+    def get_staged_documents(self, status: str = "PENDING_CONTEXT") -> list[dict[str, Any]]:
         """Retrieves documents waiting in the staged queue."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
@@ -46,7 +46,7 @@ class DocumentVaultMixin:
                 cursor.execute("SELECT * FROM staged_documents WHERE status = ? ORDER BY id DESC", (status,))
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_staged_document(self, doc_id: Optional[int] = None, filename: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def get_staged_document(self, doc_id: int | None = None, filename: str | None = None) -> dict[str, Any] | None:
         """Finds a specific staged document or the most recent pending one."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
@@ -115,7 +115,7 @@ class DocumentVaultMixin:
             conn.commit()
             return doc_id
 
-    def search_documents(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def search_documents(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         """Searches archived document summaries and titles using FTS5 BM25 with LIKE fallback."""
         sanitized = sanitize_fts5_query(query)
         if sanitized:
@@ -148,7 +148,7 @@ class DocumentVaultMixin:
             """, (q, q, q, limit))
             return [dict(row) for row in cursor.fetchall()]
 
-    def semantic_search_documents(self, query: str, top_k: int = 5, min_score: float = 0.10) -> List[Dict[str, Any]]:
+    def semantic_search_documents(self, query: str, top_k: int = 5, min_score: float = 0.10) -> list[dict[str, Any]]:
         """Finds archived documents semantically relevant to query using sqlite-vec KNN search with TF-IDF fallback."""
         try:
             import sqlite_vec
@@ -216,22 +216,22 @@ class DocumentVaultMixin:
 
     def fuse_vec_and_fts_rrf(
         self,
-        vec_results: List[Dict[str, Any]],
-        fts_results: List[Dict[str, Any]],
+        vec_results: list[dict[str, Any]],
+        fts_results: list[dict[str, Any]],
         k: int = 60,
         max_l2_distance: float = 0.78,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Fuses vector KNN and FTS5 BM25 search results via Reciprocal Rank Fusion (RRF)."""
         return fuse_vec_and_fts_rrf(vec_results, fts_results, k=k, max_l2_distance=max_l2_distance)
 
-    def hybrid_search_documents(self, query: str, limit: int = 5, k_rrf: int = 60, max_l2_distance: float = 0.78) -> List[Dict[str, Any]]:
+    def hybrid_search_documents(self, query: str, limit: int = 5, k_rrf: int = 60, max_l2_distance: float = 0.78) -> list[dict[str, Any]]:
         """Hybrid search combining FTS5 BM25 and sqlite-vec KNN via Reciprocal Rank Fusion (RRF)."""
         fts_results = self.search_documents(query, limit=max(limit * 2, 10))
         vec_results = self.semantic_search_documents(query, top_k=max(limit * 2, 10))
         fused = fuse_vec_and_fts_rrf(vec_results, fts_results, k=k_rrf, max_l2_distance=max_l2_distance)
         return fused[:limit]
 
-    async def search_documents_async(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    async def search_documents_async(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         """Asynchronously searches archived documents via FTS5 BM25 with LIKE fallback."""
         sanitized = sanitize_fts5_query(query)
         pool = self.get_vector_pool()
@@ -270,7 +270,7 @@ class DocumentVaultMixin:
 
     async def semantic_search_documents_async(
         self, query: str, top_k: int = 5, min_score: float = 0.10
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Asynchronously finds archived documents semantically relevant to query using VectorMemoryPool."""
         pool = self.get_vector_pool()
         try:
@@ -317,7 +317,7 @@ class DocumentVaultMixin:
 
     async def hybrid_search_documents_async(
         self, query: str, limit: int = 5, k_rrf: int = 60, max_l2_distance: float = 0.78
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Asynchronously performs hybrid search combining FTS5 BM25 and sqlite-vec KNN via RRF."""
         fts_task = asyncio.create_task(self.search_documents_async(query, limit=max(limit * 2, 10)))
         vec_task = asyncio.create_task(self.semantic_search_documents_async(query, top_k=max(limit * 2, 10)))
@@ -325,7 +325,7 @@ class DocumentVaultMixin:
         fused = fuse_vec_and_fts_rrf(vec_results, fts_results, k=k_rrf, max_l2_distance=max_l2_distance)
         return fused[:limit]
 
-    def get_document_by_id(self, doc_id: int) -> Optional[Dict[str, Any]]:
+    def get_document_by_id(self, doc_id: int) -> dict[str, Any] | None:
         """Retrieves a single archived document by its primary key ID."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
@@ -336,7 +336,7 @@ class DocumentVaultMixin:
             row = cursor.fetchone()
             return dict(row) if row else None
 
-    def get_recent_documents(self, limit: int = 5) -> List[Dict[str, Any]]:
+    def get_recent_documents(self, limit: int = 5) -> list[dict[str, Any]]:
         """Retrieves recently archived documents."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
@@ -389,7 +389,7 @@ class DocumentVaultMixin:
         s = "".join(ch for ch in s if ch in ("\t", "\n", "\r") or (ord(ch) >= 32 and ord(ch) != 127))
         return html.escape(s, quote=True)
 
-    def format_document_reference_block(self, docs: List[Dict[str, Any]]) -> str:
+    def format_document_reference_block(self, docs: list[dict[str, Any]]) -> str:
         """Formats retrieved document chunks using metadata headers under inert XML tags.
         Guarantees structural delimiter confinement and passive-data framing."""
         if not docs:

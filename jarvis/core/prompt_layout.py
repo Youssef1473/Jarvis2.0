@@ -8,11 +8,10 @@ Structure:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
-import json
 import logging
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger("Jarvis.Core.PromptLayout")
 
@@ -23,7 +22,7 @@ class RadixNode:
 
     content: str
     digest: bytes
-    parent: Optional[RadixNode] = None
+    parent: RadixNode | None = None
 
     @classmethod
     def create_root(cls, preamble: str, tool_specs: str) -> RadixNode:
@@ -51,7 +50,7 @@ class RadixNode:
         appending the un-cached volatile ephemera at the absolute tail.
         """
         nodes = []
-        current: Optional[RadixNode] = self
+        current: RadixNode | None = self
         while current is not None:
             nodes.append(current.content)
             current = current.parent
@@ -69,14 +68,14 @@ class RadixNode:
     def depth(self) -> int:
         """Returns the depth of the node from root (root depth = 1)."""
         count = 0
-        current: Optional[RadixNode] = self
+        current: RadixNode | None = self
         while current is not None:
             count += 1
             current = current.parent
         return count
 
 
-def _map_schema_type_to_ts(prop_spec: Dict[str, Any]) -> str:
+def _map_schema_type_to_ts(prop_spec: dict[str, Any]) -> str:
     """Maps JSON schema parameter specification to compact TypeScript type."""
     stype = prop_spec.get("type", "any")
     if stype == "string":
@@ -97,7 +96,7 @@ def _map_schema_type_to_ts(prop_spec: Dict[str, Any]) -> str:
     return "any"
 
 
-def format_compact_typescript_tools(tools: List[Dict[str, Any]]) -> str:
+def format_compact_typescript_tools(tools: list[dict[str, Any]]) -> str:
     """Converts tool schemas into deterministic, compact TypeScript function declarations.
 
     Tools and parameters are strictly sorted alphabetically to guarantee byte-for-byte
@@ -118,7 +117,7 @@ def format_compact_typescript_tools(tools: List[Dict[str, Any]]) -> str:
 
     parsed_tools.sort(key=lambda t: t[0])
 
-    lines: List[str] = []
+    lines: list[str] = []
     for name, desc, params in parsed_tools:
         if desc:
             lines.append(f"/** {desc.strip()} */")
@@ -148,10 +147,10 @@ def format_compact_typescript_tools(tools: List[Dict[str, Any]]) -> str:
 
 def build_canonical_4zone_prompt(
     system_instructions: str,
-    tools: List[Dict[str, Any]],
-    user_preferences: Dict[str, Any],
-    conversation_history: List[Dict[str, Any]],
-    ephemeral_telemetry: Dict[str, Any],
+    tools: list[dict[str, Any]],
+    user_preferences: dict[str, Any],
+    conversation_history: list[dict[str, Any]],
+    ephemeral_telemetry: dict[str, Any],
     user_query: str,
     nonce: str,
 ) -> str:
@@ -223,7 +222,7 @@ def verify_prefix_stability(prompt_a: str, prompt_b: str, min_prefix_chars: int 
 
 __all__ = [
     "RadixNode",
-    "format_compact_typescript_tools",
     "build_canonical_4zone_prompt",
+    "format_compact_typescript_tools",
     "verify_prefix_stability",
 ]

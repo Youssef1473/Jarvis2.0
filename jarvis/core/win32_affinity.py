@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Optional
 
 logger = logging.getLogger("Jarvis.Hardware.Affinity")
 
@@ -57,9 +56,7 @@ else:
 def get_pcore_affinity_mask() -> int:
     """Calculates the processor affinity bitmask for Intel/AMD Performance (P) cores."""
     logical_cpus = os.cpu_count() or 1
-    if logical_cpus >= 16:
-        return 0x00FF
-    elif logical_cpus >= 12:
+    if logical_cpus >= 16 or logical_cpus >= 12:
         return 0x00FF
     elif logical_cpus > 4:
         return (1 << min(logical_cpus, 8)) - 1
@@ -70,9 +67,7 @@ def get_pcore_affinity_mask() -> int:
 def get_physical_pcore_mask() -> int:
     """Calculates affinity bitmask selecting non-SMT physical P-cores (e.g. 0x55)."""
     logical_cpus = os.cpu_count() or 1
-    if logical_cpus >= 12:
-        return 0x55
-    elif logical_cpus >= 8:
+    if logical_cpus >= 12 or logical_cpus >= 8:
         return 0x55
     elif logical_cpus >= 4:
         return 0x05
@@ -94,7 +89,7 @@ def get_ecore_affinity_mask() -> int:
         return (1 << logical_cpus) - 1
 
 
-def disable_thread_power_throttling(thread_handle: Optional[int] = None) -> bool:
+def disable_thread_power_throttling(thread_handle: int | None = None) -> bool:
     """Disables Windows 11 EcoQoS power throttling on the specified or current calling thread."""
     if sys.platform != "win32":
         return False
@@ -183,8 +178,8 @@ def pin_current_thread_to_mask(
 
 
 def pin_thread_to_pcores(
-    thread_handle: Optional[int] = None,
-    mask: Optional[int] = None,
+    thread_handle: int | None = None,
+    mask: int | None = None,
     physical_only: bool = False,
 ) -> bool:
     """Pins a thread to high-performance P-cores using SetThreadAffinityMask."""
@@ -215,7 +210,7 @@ def pin_thread_to_pcores(
         return False
 
 
-def elevate_thread_priority(thread_handle: Optional[int] = None, priority: int = THREAD_PRIORITY_HIGHEST) -> bool:
+def elevate_thread_priority(thread_handle: int | None = None, priority: int = THREAD_PRIORITY_HIGHEST) -> bool:
     """Elevates thread priority on Windows."""
     if sys.platform != "win32":
         return False
@@ -238,7 +233,7 @@ def elevate_thread_priority(thread_handle: Optional[int] = None, priority: int =
         return False
 
 
-def elevate_to_pro_audio_mmcss(task_name: str = "Pro Audio") -> Optional[int]:
+def elevate_to_pro_audio_mmcss(task_name: str = "Pro Audio") -> int | None:
     """Elevates calling thread to Windows Multimedia Class Scheduler Service (MMCSS)."""
     if sys.platform != "win32":
         return None
@@ -265,7 +260,7 @@ def elevate_to_pro_audio_mmcss(task_name: str = "Pro Audio") -> Optional[int]:
         return None
 
 
-def elevate_audio_thread_mmcss(task_name: str = "Pro Audio") -> Optional[int]:
+def elevate_audio_thread_mmcss(task_name: str = "Pro Audio") -> int | None:
     """Alias for elevate_to_pro_audio_mmcss with Alder Lake P-Core 0 pinning."""
     if sys.platform != "win32":
         return None
@@ -315,7 +310,7 @@ def pin_and_elevate_current_thread(
     return False
 
 
-def demote_to_ecore_background(thread_handle: Optional[int] = None) -> bool:
+def demote_to_ecore_background(thread_handle: int | None = None) -> bool:
     """Demotes the target or current thread to below-normal priority and pins to E-cores."""
     if sys.platform != "win32":
         return False

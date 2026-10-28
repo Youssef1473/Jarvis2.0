@@ -4,9 +4,7 @@ Provides native Windows desktop compositing, cloaking the HUD from Jarvis's own
 VLM visual cortex while enabling dynamic click-through hit testing.
 """
 import ctypes
-import os
 import sys
-from typing import List, Tuple
 
 # Win32 Constants
 GWL_EXSTYLE: int = -20
@@ -83,7 +81,7 @@ def configure_stark_overlay_hwnd(hwnd: int) -> bool:
         return False
 
 
-def update_dynamic_click_through(hwnd: int, interactive_screen_rects: List[Tuple[int, int, int, int]]) -> bool:
+def update_dynamic_click_through(hwnd: int, interactive_screen_rects: list[tuple[int, int, int, int]]) -> bool:
     """Polls cursor position and dynamically toggles WS_EX_TRANSPARENT.
 
     If cursor is over any interactive bounding box (left, top, right, bottom),

@@ -1,11 +1,11 @@
 """Workstation diagnostics, RAM hog inspection, and safe system maintenance for Windows."""
-import os
-import time
-import shutil
 import logging
+import os
 import subprocess
-from typing import Dict, List
+import time
+
 import psutil
+
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Maintenance")
@@ -17,7 +17,7 @@ logger = logging.getLogger("Jarvis.Maintenance")
 )
 def inspect_ram_hogs() -> str:
     """Scans and groups active processes by memory consumption (RAM)."""
-    mem_by_name: Dict[str, int] = {}
+    mem_by_name: dict[str, int] = {}
     for proc in psutil.process_iter(['name', 'memory_info']):
         try:
             name = proc.info.get('name')
