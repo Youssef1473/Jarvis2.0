@@ -20,8 +20,11 @@ class TestBrowserCDPSuite(unittest.TestCase):
     def setUp(self):
         TurnTaintTracker.get_instance().reset_turn()
         DualKeyApprovalManager.get_instance().reset()
+        self._managed_port_patcher = patch.object(b_cdp, "get_managed_cdp_port", return_value=9222)
+        self._managed_port_patcher.start()
 
     def tearDown(self):
+        self._managed_port_patcher.stop()
         TurnTaintTracker.get_instance().reset_turn()
         DualKeyApprovalManager.get_instance().reset()
 
@@ -37,7 +40,8 @@ class TestBrowserCDPSuite(unittest.TestCase):
 
     def test_list_open_browser_tabs_fallback(self):
         """Verifies tool returns courteous message when CDP port 9222 is not active."""
-        with patch.object(b_cdp, "is_cdp_available", return_value=False):
+        with patch.object(b_cdp, "get_managed_cdp_port", return_value=9222), \
+             patch.object(b_cdp, "is_cdp_available", return_value=False):
             res = SkillRegistry.execute("list_open_browser_tabs")
             self.assertIn("port 9222 is closed", res)
 
@@ -125,7 +129,8 @@ class TestBrowserCDPSuite(unittest.TestCase):
 
     def test_close_browser_tab_skill_cdp_path(self):
         """Verifies close_browser_tab skill executes CDP fast path when available."""
-        with patch("jarvis.skills.browser_cdp.close_cdp_tab", return_value="Closed browser tab 'Docs' via silent DevTools channel, Sir."):
+        with patch("jarvis.skills.browser_cdp.get_managed_cdp_port", return_value=9222), \
+             patch("jarvis.skills.browser_cdp.close_cdp_tab", return_value="Closed browser tab 'Docs' via silent DevTools channel, Sir."):
             res = SkillRegistry.execute("close_browser_tab", browser="brave", tab_title="Docs")
             self.assertIn("Closed browser tab", res)
 
@@ -172,6 +177,7 @@ class TestBrowserCDPSuite(unittest.TestCase):
         ws_ctx.__enter__.return_value = ws_mock
 
         with patch.object(b_cdp, "is_cdp_available", return_value=True), \
+             patch.object(b_cdp, "get_managed_cdp_port", return_value=9222), \
              patch.object(b_cdp, "list_cdp_tabs", return_value=fake_tabs), \
              patch("websockets.sync.client.connect", return_value=ws_ctx):
             
@@ -200,6 +206,7 @@ class TestBrowserCDPSuite(unittest.TestCase):
         ws_ctx.__enter__.return_value = ws_mock
 
         with patch.object(b_cdp, "is_cdp_available", return_value=True), \
+             patch.object(b_cdp, "get_managed_cdp_port", return_value=9222), \
              patch.object(b_cdp, "list_cdp_tabs", return_value=fake_tabs), \
              patch("websockets.sync.client.connect", return_value=ws_ctx):
             
@@ -216,7 +223,8 @@ class TestBrowserCDPSuite(unittest.TestCase):
         fake_tabs = [
             {"id": "tab_gh", "title": "Jarvis 2.0 Repository", "url": "https://github.com/repo"}
         ]
-        with patch.object(b_cdp, "is_cdp_available", return_value=True), \
+        with patch.object(b_cdp, "get_managed_cdp_port", return_value=9222), \
+             patch.object(b_cdp, "is_cdp_available", return_value=True), \
              patch.object(b_cdp, "list_cdp_tabs", return_value=fake_tabs), \
              patch.object(b_cdp, "activate_cdp_tab", return_value=True) as mock_act, \
              patch("jarvis.skills.windows_uia.focus_window_uia", return_value=True):
@@ -235,7 +243,8 @@ class TestBrowserCDPSuite(unittest.TestCase):
         mock_mem = MagicMock()
         mock_mem.save_document_knowledge.return_value = 101
 
-        with patch.object(b_cdp, "read_webpage_content_cdp", return_value=fake_content), \
+        with patch.object(b_cdp, "get_managed_cdp_port", return_value=9222), \
+             patch.object(b_cdp, "read_webpage_content_cdp", return_value=fake_content), \
              patch("jarvis.skills.calendar_manager._get_memory", return_value=mock_mem):
             
             res = SkillRegistry.execute("scrape_and_archive_webpage", tab_name_or_url="Quantum", category="quantum_intel")

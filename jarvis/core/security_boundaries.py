@@ -1,15 +1,14 @@
 """Closed-Loop Security Boundaries, SSRF Protection, Path Confinement, and Taint Tracking for Jarvis 2.0."""
+import contextlib
+import contextvars
 import hashlib
 import hmac
-import contextvars
 import http.client
 import ipaddress
 import json
 import logging
 import math
 import os
-from dataclasses import dataclass, field
-from pathlib import Path
 import re
 import secrets
 import socket
@@ -17,23 +16,25 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Collection, Dict, List, Optional, Set, Tuple
+from collections.abc import Callable, Collection
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Optional
 
 logger = logging.getLogger("Jarvis.SecurityBoundaries")
 
 
 class SecurityBoundaryViolation(PermissionError):
     """Raised when an operation attempts to breach security, SSRF, or path boundaries."""
-    pass
 
 
-WINDOWS_RESERVED_DEVICE_NAMES: Set[str] = {
+WINDOWS_RESERVED_DEVICE_NAMES: set[str] = {
     "CON", "PRN", "AUX", "NUL",
     "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
     "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 }
 
-SENSITIVE_AUTH_HEADERS: Set[str] = {
+SENSITIVE_AUTH_HEADERS: set[str] = {
     "authorization",
     "proxy-authorization",
     "cookie",
@@ -54,7 +55,7 @@ DISALLOWED_EGRESS_PORTS: frozenset[int] = frozenset({
     6443,   # Kubernetes API server
 })
 
-IGNORED_MODEL_AUTH_FIELDS: Set[str] = {
+IGNORED_MODEL_AUTH_FIELDS: set[str] = {
     "authorization",
     "user_approved",
     "dual_key_confirmed",
@@ -67,11 +68,11 @@ IGNORED_MODEL_AUTH_FIELDS: Set[str] = {
 
 def resolve_and_validate_destination(
     url: str,
-    allowed_schemes: Tuple[str, ...] = ("http", "https"),
+    allowed_schemes: tuple[str, ...] = ("http", "https"),
     allow_local_mcp: bool = False,
     allow_localhost: bool = False,
-    disallowed_ports: Optional[Collection[int]] = None,
-) -> Tuple[str, urllib.parse.SplitResult, str]:
+    disallowed_ports: Collection[int] | None = None,
+) -> tuple[str, urllib.parse.SplitResult, str]:
     """Parses, resolves, and validates destination URL against SSRF, non-global IPs, and DNS rebinding.
 
     Performs fail-closed DNS pre-resolution, validates all returned candidate IP addresses against
@@ -135,9 +136,9 @@ def resolve_and_validate_host_port(
     port: int,
     allow_local_mcp: bool = False,
     allow_localhost: bool = False,
-    disallowed_ports: Optional[Collection[int]] = None,
-    allowed_ports: Optional[Collection[int]] = None,
-) -> Tuple[str, int, int]:
+    disallowed_ports: Collection[int] | None = None,
+    allowed_ports: Collection[int] | None = None,
+) -> tuple[str, int, int]:
     """Resolves and validates destination host and port against SSRF, non-global IPs,
     prohibited ports, and DNS rebinding.
 
@@ -204,7 +205,7 @@ def resolve_and_validate_host_port(
     if not addr_info:
         raise SecurityBoundaryViolation(f"No IP addresses resolved for host '{clean_host}'.")
 
-    validated_ips: List[str] = []
+    validated_ips: list[str] = []
     selected_family: int = addr_info[0][0]
 
     # Inspect all resolved IPs - every address answer must be valid and global (or permitted loopback)
@@ -263,10 +264,10 @@ def resolve_and_validate_host_port(
 
 def validate_egress_url(
     url: str,
-    allowed_schemes: Tuple[str, ...] = ("http", "https"),
+    allowed_schemes: tuple[str, ...] = ("http", "https"),
     allow_local_mcp: bool = False,
     allow_localhost: bool = False,
-    disallowed_ports: Optional[Collection[int]] = None,
+    disallowed_ports: Collection[int] | None = None,
 ) -> str:
     """Validates an egress URL against SSRF, DNS rebinding, and private network access.
 
@@ -293,8 +294,8 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     def __init__(
         self,
         max_hops: int = 4,
-        allowed_schemes: Tuple[str, ...] = ("http", "https"),
-        disallowed_ports: Optional[Collection[int]] = None,
+        allowed_schemes: tuple[str, ...] = ("http", "https"),
+        disallowed_ports: Collection[int] | None = None,
     ):
         super().__init__()
         self.max_hops = max_hops
@@ -366,7 +367,7 @@ class NoProxyHandler(urllib.request.ProxyHandler):
 class PinnedIPHTTPConnection(http.client.HTTPConnection):
     """HTTPConnection that connects directly to a pre-validated IP to eliminate DNS rebinding."""
 
-    def __init__(self, host, port=None, pinned_ip: Optional[str] = None, **kwargs):
+    def __init__(self, host, port=None, pinned_ip: str | None = None, **kwargs):
         super().__init__(host, port=port, **kwargs)
         self.pinned_ip = pinned_ip
 
@@ -387,7 +388,7 @@ class PinnedIPHTTPConnection(http.client.HTTPConnection):
 class PinnedIPHTTPSConnection(http.client.HTTPSConnection):
     """HTTPSConnection that connects to a pre-validated IP while preserving SNI and cert verification."""
 
-    def __init__(self, host, port=None, pinned_ip: Optional[str] = None, **kwargs):
+    def __init__(self, host, port=None, pinned_ip: str | None = None, **kwargs):
         super().__init__(host, port=port, **kwargs)
         self.pinned_ip = pinned_ip
 
@@ -416,7 +417,7 @@ class PinnedHTTPHandler(urllib.request.HTTPHandler):
         self,
         allow_local_mcp: bool = False,
         allow_localhost: bool = False,
-        disallowed_ports: Optional[Collection[int]] = None,
+        disallowed_ports: Collection[int] | None = None,
     ):
         super().__init__()
         self.allow_local_mcp = allow_local_mcp
@@ -449,7 +450,7 @@ class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         allow_local_mcp: bool = False,
         allow_localhost: bool = False,
         context=None,
-        disallowed_ports: Optional[Collection[int]] = None,
+        disallowed_ports: Collection[int] | None = None,
     ):
         super().__init__(context=context)
         self.allow_local_mcp = allow_local_mcp
@@ -483,7 +484,7 @@ def build_safe_url_opener(
     max_hops: int = 4,
     allow_local_mcp: bool = False,
     allow_localhost: bool = False,
-    disallowed_ports: Optional[Collection[int]] = None,
+    disallowed_ports: Collection[int] | None = None,
 ) -> urllib.request.OpenerDirector:
     """Builds a hardened urllib opener director equipped with SafeRedirectHandler,
     NoProxyHandler, and destination-pinned HTTP/HTTPS handlers to eliminate SSRF and DNS rebinding.
@@ -598,7 +599,7 @@ def validate_confined_path(target_path: str, allowed_root_dir: str) -> str:
     return real_target
 
 
-def compute_action_hash(tool_name: str, arguments: Dict[str, Any]) -> str:
+def compute_action_hash(tool_name: str, arguments: dict[str, Any]) -> str:
     """Computes a deterministic SHA-256 hash of a tool call's payload, ignoring forged model auth fields."""
     clean_args = {
         k: v for k, v in (arguments or {}).items()
@@ -667,7 +668,7 @@ class DualKeyAuthorization:
 class GateDecision:
     """Decision returned by TurnTaintTracker.evaluate_tool_execution."""
     allowed: bool
-    grant: Optional[DualKeyAuthorization] = None
+    grant: DualKeyAuthorization | None = None
 
     def __bool__(self) -> bool:
         return bool(self.allowed)
@@ -677,7 +678,7 @@ class _ActiveAuthToken:
     """Thread-safe, single-use active authorization token propagating through ContextVar.
     Cryptographically derived from a validated, manager-issued DualKeyAuthorization grant.
     """
-    __slots__ = ("grant_id", "tool_name", "action_hash", "grant_token", "expires_at", "_consumed", "_invalidated", "_disarmed", "_lock", "manager")
+    __slots__ = ("_consumed", "_disarmed", "_invalidated", "_lock", "action_hash", "expires_at", "grant_id", "grant_token", "manager", "tool_name")
 
     def __init__(
         self,
@@ -740,7 +741,7 @@ class _ActiveAuthToken:
 
 _DISARMED_TOKEN = _ActiveAuthToken(disarmed=True)
 
-_active_auth_context: contextvars.ContextVar[Optional[_ActiveAuthToken]] = contextvars.ContextVar(
+_active_auth_context: contextvars.ContextVar[_ActiveAuthToken | None] = contextvars.ContextVar(
     "_active_auth_context", default=None
 )
 
@@ -752,14 +753,15 @@ class DualKeyApprovalManager:
     _local = threading.local()
 
     def __init__(self) -> None:
-        self._grants: Dict[str, DualKeyAuthorization] = {}
-        self._grants_by_id: Dict[str, DualKeyAuthorization] = {}
-        self._approval_handler: Optional[Callable[[Dict[str, Any]], bool]] = None
-        self._pending_requests: Set[threading.Event] = set()
-        self._grants_by_event: Dict[threading.Event, DualKeyAuthorization] = {}
-        self._cancelled_events: Set[threading.Event] = set()
-        self._pre_grant_creation_hook: Optional[Callable[[], None]] = None
-        self._post_grant_creation_hook: Optional[Callable[[DualKeyAuthorization], None]] = None
+        self._grants: dict[str, DualKeyAuthorization] = {}
+        self._grants_by_id: dict[str, DualKeyAuthorization] = {}
+        self._approval_handler: Callable[[dict[str, Any]], bool] | None = None
+        self._pending_requests: set[threading.Event] = set()
+        self._grants_by_event: dict[threading.Event, DualKeyAuthorization] = {}
+        self._cancelled_events: set[threading.Event] = set()
+        self._pre_grant_creation_hook: Callable[[], None] | None = None
+        self._post_grant_creation_hook: Callable[[DualKeyAuthorization], None] | None = None
+        self._unmanaged_browser_approved_until: float = 0.0
 
     @classmethod
     def get_instance(cls) -> "DualKeyApprovalManager":
@@ -788,7 +790,7 @@ class DualKeyApprovalManager:
                 if auth.status == "active":
                     auth.status = "invalidated"
 
-    def set_approval_handler(self, handler: Optional[Callable[[Dict[str, Any]], bool]]) -> None:
+    def set_approval_handler(self, handler: Callable[[dict[str, Any]], bool] | None) -> None:
         """Sets a trusted local UI or CLI approval handler to prompt human operators."""
         with self._lock:
             self._approval_handler = handler
@@ -796,7 +798,7 @@ class DualKeyApprovalManager:
     def grant_approval(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         ttl_seconds: float = 60.0,
         summary: str = "",
     ) -> DualKeyAuthorization:
@@ -837,7 +839,7 @@ class DualKeyApprovalManager:
         logger.info("Dual-Key authorization granted for tool '%s' (id: %s, hash: %s, ttl: %.0fs)", tool_name, grant_id[:8], action_hash[:12], ttl_seconds)
         return auth
 
-    def has_valid_grant(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
+    def has_valid_grant(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """Checks if a valid, unexpired grant exists without consuming it."""
         clean_args = {
             k: v for k, v in (arguments or {}).items()
@@ -848,7 +850,7 @@ class DualKeyApprovalManager:
             auth = self._grants.get(action_hash)
             return bool(auth and auth.is_valid_for(tool_name, action_hash) and auth.status == "pending")
 
-    def consume_grant_object(self, tool_name: str, arguments: Dict[str, Any]) -> Optional[DualKeyAuthorization]:
+    def consume_grant_object(self, tool_name: str, arguments: dict[str, Any]) -> DualKeyAuthorization | None:
         """Validates and consumes an existing pre-grant for the given tool and arguments (single-use),
         returning the DualKeyAuthorization if valid.
         """
@@ -869,11 +871,11 @@ class DualKeyApprovalManager:
                 del self._grants[action_hash]
         return None
 
-    def consume_grant(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
+    def consume_grant(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """Validates and consumes an existing pre-grant for the given tool and arguments (single-use)."""
         return self.consume_grant_object(tool_name, arguments) is not None
 
-    def revoke_grant(self, grant: Optional[DualKeyAuthorization]) -> None:
+    def revoke_grant(self, grant: DualKeyAuthorization | None) -> None:
         """Immediately revokes and permanently invalidates a grant so it cannot be bound or consumed."""
         if not grant or not isinstance(grant, DualKeyAuthorization):
             return
@@ -884,7 +886,7 @@ class DualKeyApprovalManager:
                 self._grants.pop(auth.action_hash, None)
                 self._grants_by_id.pop(auth.grant_id, None)
 
-    def cancel_approval_request(self, cancel_event: Optional[threading.Event]) -> None:
+    def cancel_approval_request(self, cancel_event: threading.Event | None) -> None:
         """Atomically cancels an approval request and revokes any associated grant."""
         if cancel_event is None:
             return
@@ -902,7 +904,7 @@ class DualKeyApprovalManager:
                     auth.tool_name,
                 )
 
-    def cleanup_approval_request(self, cancel_event: Optional[threading.Event]) -> None:
+    def cleanup_approval_request(self, cancel_event: threading.Event | None) -> None:
         """Cleans up internal tracking references for a completed or cancelled approval request."""
         if cancel_event is None:
             return
@@ -911,12 +913,12 @@ class DualKeyApprovalManager:
             self._cancelled_events.discard(cancel_event)
             self._pending_requests.discard(cancel_event)
 
-    def set_pre_grant_creation_hook(self, hook: Optional[Callable[[], None]]) -> None:
+    def set_pre_grant_creation_hook(self, hook: Callable[[], None] | None) -> None:
         """Sets a synchronization hook executed immediately before registering an approved grant."""
         with self._lock:
             self._pre_grant_creation_hook = hook
 
-    def set_post_grant_creation_hook(self, hook: Optional[Callable[[DualKeyAuthorization], None]]) -> None:
+    def set_post_grant_creation_hook(self, hook: Callable[[DualKeyAuthorization], None] | None) -> None:
         """Sets a synchronization hook executed immediately after registering an approved grant."""
         with self._lock:
             self._post_grant_creation_hook = hook
@@ -934,11 +936,11 @@ class DualKeyApprovalManager:
     def request_human_approval(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         summary: str = "",
         risk_level: int = 2,
-        cancel_event: Optional[threading.Event] = None,
-    ) -> Optional[DualKeyAuthorization]:
+        cancel_event: threading.Event | None = None,
+    ) -> DualKeyAuthorization | None:
         """Presents the proposed action and readable summary to the user via registered trusted local handler.
         If approved, returns a validated DualKeyAuthorization grant.
         """
@@ -1080,8 +1082,8 @@ class DualKeyApprovalManager:
     def set_active_authorized(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
-        grant: Optional[DualKeyAuthorization] = None,
+        arguments: dict[str, Any],
+        grant: DualKeyAuthorization | None = None,
     ) -> contextvars.Token:
         """Binds an active authorization derived ONLY from a genuine, registered DualKeyAuthorization grant.
         If grant is not provided, consumes an existing matching pending grant from _grants.
@@ -1108,13 +1110,13 @@ class DualKeyApprovalManager:
     def set_thread_authorized(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
-        grant: Optional[DualKeyAuthorization] = None,
+        arguments: dict[str, Any],
+        grant: DualKeyAuthorization | None = None,
     ) -> contextvars.Token:
         """Binds a verified single-use authorization to the current thread and async context for tool execution."""
         return self.set_active_authorized(tool_name, arguments, grant=grant)
 
-    def clear_active_authorized(self, ctx_token: Optional[contextvars.Token] = None) -> None:
+    def clear_active_authorized(self, ctx_token: contextvars.Token | None = None) -> None:
         """Clears and permanently invalidates the active authorization context.
         Restores previous ContextVar binding if ctx_token is provided.
         """
@@ -1132,11 +1134,11 @@ class DualKeyApprovalManager:
         restored = _active_auth_context.get()
         self._local.authorized_token = restored
 
-    def clear_thread_authorized(self, ctx_token: Optional[contextvars.Token] = None) -> None:
+    def clear_thread_authorized(self, ctx_token: contextvars.Token | None = None) -> None:
         """Clears the active authorization context (alias for clear_active_authorized)."""
         self.clear_active_authorized(ctx_token)
 
-    def verify_and_consume_active_context(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
+    def verify_and_consume_active_context(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """Verifies if the current context holds an active, valid human authorization.
         Consumes the context immediately (single-use).
         Fails closed without searching or scavenging pending grants.
@@ -1188,10 +1190,10 @@ class DualKeyApprovalManager:
     def check_and_consume(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         risk_level: int = 2,
-        cancel_event: Optional[threading.Event] = None,
-    ) -> Optional[DualKeyAuthorization]:
+        cancel_event: threading.Event | None = None,
+    ) -> DualKeyAuthorization | None:
         """Single-entry check: consumes an existing grant if present, or requests human approval via handler."""
         grant = self.consume_grant_object(tool_name, arguments)
         if grant is not None:
@@ -1208,6 +1210,65 @@ class DualKeyApprovalManager:
             tool_name, arguments, summary=summary, risk_level=risk_level, cancel_event=cancel_event
         )
 
+    def authorize_unmanaged_browser(self, ttl_seconds: float = 60.0) -> None:
+        """Grants trusted human operator authorization to connect to unmanaged personal browser port 9222."""
+        with self._lock:
+            self._unmanaged_browser_approved_until = time.time() + max(0.0, float(ttl_seconds))
+
+    def revoke_unmanaged_browser(self) -> None:
+        """Revokes active human authorization for unmanaged personal browser port 9222."""
+        with self._lock:
+            self._unmanaged_browser_approved_until = 0.0
+
+    def is_unmanaged_browser_approved(self) -> bool:
+        """Checks if a trusted human authorization for unmanaged personal browser port 9222 is active."""
+        with self._lock:
+            return time.time() < self._unmanaged_browser_approved_until
+
+    def request_unmanaged_browser_approval(
+        self,
+        ttl_seconds: float = 60.0,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
+        """Presents an explicit human approval request to authorize unmanaged browser connection (CDP port 9222).
+
+        If the registered human approval handler accepts, authorizes unmanaged browser access for ttl_seconds.
+        """
+        with self._lock:
+            handler = self._approval_handler
+            if cancel_event is not None:
+                if cancel_event.is_set() or cancel_event in self._cancelled_events:
+                    return False
+                self._pending_requests.add(cancel_event)
+
+        if not handler:
+            if cancel_event is not None:
+                with self._lock:
+                    self._pending_requests.discard(cancel_event)
+            return False
+
+        request_details = {
+            "tool_name": "authorize_unmanaged_browser",
+            "arguments": {"ttl_seconds": ttl_seconds},
+            "action_hash": compute_action_hash("authorize_unmanaged_browser", {"ttl_seconds": ttl_seconds}),
+            "summary": "Authorize connection to unmanaged personal browser (CDP port 9222/custom)",
+            "risk_level": 2,
+            "timestamp": time.time(),
+            "cancel_event": cancel_event,
+        }
+
+        try:
+            approved = bool(handler(request_details))
+        finally:
+            if cancel_event is not None:
+                with self._lock:
+                    self._pending_requests.discard(cancel_event)
+
+        if approved:
+            self.authorize_unmanaged_browser(ttl_seconds=ttl_seconds)
+            return True
+        return False
+
     def reset(self) -> None:
         """Clears all pending and active authorization grants."""
         with self._lock:
@@ -1219,7 +1280,19 @@ class DualKeyApprovalManager:
             self._pre_grant_creation_hook = None
             self._post_grant_creation_hook = None
             self._approval_handler = None
+            self._unmanaged_browser_approved_until = 0.0
         self.clear_active_authorized()
+
+
+@contextlib.contextmanager
+def scoped_unmanaged_browser_approval(ttl_seconds: float = 60.0):
+    """Context manager granting scoped human authorization for unmanaged browser access."""
+    mgr = DualKeyApprovalManager.get_instance()
+    mgr.authorize_unmanaged_browser(ttl_seconds=ttl_seconds)
+    try:
+        yield
+    finally:
+        mgr.revoke_unmanaged_browser()
 
 
 @dataclass(frozen=True)
@@ -1227,21 +1300,21 @@ class IngestionRecord:
     """Immutable audit record documenting untrusted external-data ingestion provenance."""
     source: str
     timestamp: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class _TurnTaintState:
     """Thread-safe turn-scoped taint state holder enforcing monotonic taint within a logical turn."""
-    __slots__ = ("_is_tainted", "_tainting_sources", "_provenance_records", "_lock", "turn_id")
+    __slots__ = ("_is_tainted", "_lock", "_provenance_records", "_tainting_sources", "turn_id")
 
     MAX_SOURCES_PER_TURN: int = 128
     MAX_SOURCE_LENGTH: int = 128
 
-    def __init__(self, turn_id: Optional[str] = None) -> None:
+    def __init__(self, turn_id: str | None = None) -> None:
         self.turn_id = turn_id or secrets.token_hex(8)
         self._is_tainted: bool = False
-        self._tainting_sources: List[str] = []
-        self._provenance_records: List[IngestionRecord] = []
+        self._tainting_sources: list[str] = []
+        self._provenance_records: list[IngestionRecord] = []
         self._lock = threading.Lock()
 
     @property
@@ -1250,12 +1323,12 @@ class _TurnTaintState:
             return self._is_tainted
 
     @property
-    def tainting_sources(self) -> Tuple[str, ...]:
+    def tainting_sources(self) -> tuple[str, ...]:
         with self._lock:
             return tuple(self._tainting_sources)
 
     @property
-    def provenance_records(self) -> Tuple[IngestionRecord, ...]:
+    def provenance_records(self) -> tuple[IngestionRecord, ...]:
         with self._lock:
             # Return defensive copy of records with copied metadata dicts
             return tuple(
@@ -1285,10 +1358,10 @@ class _TurnTaintState:
         return clean or "unknown_external_source"
 
     @classmethod
-    def _sanitize_metadata(cls, meta: Optional[Dict[str, Any]], max_depth: int = 3) -> Dict[str, Any]:
+    def _sanitize_metadata(cls, meta: dict[str, Any] | None, max_depth: int = 3) -> dict[str, Any]:
         if not meta or not isinstance(meta, dict) or max_depth < 0:
             return {}
-        safe: Dict[str, Any] = {}
+        safe: dict[str, Any] = {}
         # Sensitive field key patterns (normalized by stripping non-alphanumeric characters)
         sensitive_normalized_tokens = {
             "token", "password", "passwd", "secret", "auth", "authorization",
@@ -1310,7 +1383,7 @@ class _TurnTaintState:
                     safe[k_str] = nested_safe
         return safe
 
-    def mark_tainted(self, source: Any, metadata: Optional[Dict[str, Any]] = None) -> None:
+    def mark_tainted(self, source: Any, metadata: dict[str, Any] | None = None) -> None:
         clean_source = self._sanitize_source(source)
         clean_meta = self._sanitize_metadata(metadata)
         with self._lock:
@@ -1331,7 +1404,7 @@ class _TurnTaintState:
                     )
 
 
-_turn_taint_context: contextvars.ContextVar[Optional[_TurnTaintState]] = contextvars.ContextVar(
+_turn_taint_context: contextvars.ContextVar[_TurnTaintState | None] = contextvars.ContextVar(
     "turn_taint_context", default=None
 )
 
@@ -1346,7 +1419,7 @@ class TurnTaintTracker:
     _instance: Optional["TurnTaintTracker"] = None
     _lock = threading.Lock()
 
-    UNTRUSTED_INGESTION_TOOLS: Set[str] = {
+    UNTRUSTED_INGESTION_TOOLS: set[str] = {
         "web_search",
         "deep_research",
         "browser_navigate",
@@ -1382,7 +1455,7 @@ class TurnTaintTracker:
         "capture_webpage_screenshot",
     }
 
-    HIGH_PRIVILEGE_MUTATION_TOOLS: Set[str] = {
+    HIGH_PRIVILEGE_MUTATION_TOOLS: set[str] = {
         "execute_powershell",
         "execute_sandboxed_powershell",
         "execute_browser_javascript",
@@ -1400,7 +1473,7 @@ class TurnTaintTracker:
         "delete_custom_skill",
     }
 
-    CRITICAL_PRIVILEGE_TOOLS: Set[str] = {
+    CRITICAL_PRIVILEGE_TOOLS: set[str] = {
         "create_or_update_custom_skill",
         "delete_custom_skill",
         "execute_powershell",
@@ -1411,8 +1484,8 @@ class TurnTaintTracker:
     # Verified Level-0 read-only query and inspection tools safe on tainted turns
     from jarvis.skills.base import KNOWN_READ_ONLY_TOOLS
 
-    TRUSTED_DOCUMENT_PROVENANCES: Set[str] = {"trusted_internal", "system"}
-    KNOWN_DOCUMENT_PROVENANCES: Set[str] = {
+    TRUSTED_DOCUMENT_PROVENANCES: set[str] = {"trusted_internal", "system"}
+    KNOWN_DOCUMENT_PROVENANCES: set[str] = {
         "trusted_internal",
         "system",
         "web_scrape",
@@ -1422,7 +1495,7 @@ class TurnTaintTracker:
     }
 
     def __init__(self) -> None:
-        self._dynamic_ingestion_tools: Set[str] = set()
+        self._dynamic_ingestion_tools: set[str] = set()
 
     @classmethod
     def normalize_document_provenance(cls, provenance: Any) -> str:
@@ -1445,7 +1518,7 @@ class TurnTaintTracker:
         return clean not in cls.TRUSTED_DOCUMENT_PROVENANCES
 
     @staticmethod
-    def _get_context_state(create_if_missing: bool = True) -> Optional[_TurnTaintState]:
+    def _get_context_state(create_if_missing: bool = True) -> _TurnTaintState | None:
         state = _turn_taint_context.get()
         if state is None and create_if_missing:
             state = _TurnTaintState()
@@ -1467,17 +1540,17 @@ class TurnTaintTracker:
             state.mark_tainted("manual_override")
 
     @property
-    def tainting_sources(self) -> Tuple[str, ...]:
+    def tainting_sources(self) -> tuple[str, ...]:
         state = _turn_taint_context.get()
         return state.tainting_sources if state is not None else ()
 
     @property
-    def _tainting_sources(self) -> List[str]:
+    def _tainting_sources(self) -> list[str]:
         state = _turn_taint_context.get()
         return list(state.tainting_sources) if state is not None else []
 
     @_tainting_sources.setter
-    def _tainting_sources(self, value: List[str]) -> None:
+    def _tainting_sources(self, value: list[str]) -> None:
         state = self._get_context_state(create_if_missing=True)
         if state.is_tainted and not value:
             logger.warning("Attempt to clear tainting sources within active turn ignored (taint is monotonic).")
@@ -1486,11 +1559,11 @@ class TurnTaintTracker:
             state.mark_tainted(src)
 
     @property
-    def provenance_records(self) -> Tuple[IngestionRecord, ...]:
+    def provenance_records(self) -> tuple[IngestionRecord, ...]:
         state = _turn_taint_context.get()
         return state.provenance_records if state is not None else ()
 
-    def get_provenance_records(self) -> Tuple[IngestionRecord, ...]:
+    def get_provenance_records(self) -> tuple[IngestionRecord, ...]:
         return self.provenance_records
 
     @classmethod
@@ -1527,15 +1600,15 @@ class TurnTaintTracker:
             with self._lock:
                 self._dynamic_ingestion_tools.add(clean)
 
-    def mark_tainted(self, source: Any, metadata: Optional[Dict[str, Any]] = None) -> None:
+    def mark_tainted(self, source: Any, metadata: dict[str, Any] | None = None) -> None:
         """Marks the current turn context as tainted by untrusted external data with provenance."""
         state = self._get_context_state(create_if_missing=True)
         state.mark_tainted(source, metadata=metadata)
         logger.warning("Turn marked as TAINTED by untrusted source: %s", source)
 
-    def record_ingestion(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> None:
+    def record_ingestion(self, tool_name: str, arguments: dict[str, Any] | None = None) -> None:
         """Records provenance of external untrusted data ingestion into the active turn."""
-        meta: Dict[str, Any] = {"tool": tool_name}
+        meta: dict[str, Any] = {"tool": tool_name}
         if arguments and isinstance(arguments, dict):
             url_val = arguments.get("url")
             if not url_val and "tab_name_or_url" in arguments:
@@ -1568,6 +1641,11 @@ class TurnTaintTracker:
                 meta["filename"] = arguments["filename"][:64]
         self.mark_tainted(tool_name, metadata=meta)
 
+    def get_current_turn_id(self) -> str | None:
+        """Returns the active logical turn ID, or None if no context state exists."""
+        state = _turn_taint_context.get()
+        return state.turn_id if state is not None else None
+
     def reset_turn(self) -> None:
         """Resets the taint tracking state for the current conversational turn context."""
         _turn_taint_context.set(_TurnTaintState())
@@ -1575,10 +1653,10 @@ class TurnTaintTracker:
     def evaluate_tool_execution(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         risk_level: int = 0,
         dual_key_confirmed: bool = False,
-        cancel_event: Optional[threading.Event] = None,
+        cancel_event: threading.Event | None = None,
     ) -> GateDecision:
         """Evaluates whether tool execution is permitted and returns a GateDecision.
         If a genuine human authorization grant was consumed (or pre-granted), the grant is returned.
@@ -1596,11 +1674,20 @@ class TurnTaintTracker:
             # CRITICAL CORE-SEC-04D: Do NOT return early. Ingestion classification marks turn taint,
             # but must never exempt execution-capable or mutating tools from authorization.
 
-        # 2. Determine effective risk level: unverified tools fail closed to at least risk_level=1
-        effective_risk = risk_level
+        # 2. Determine effective risk level: unverified tools or invalid risk levels fail closed to at least risk_level=1
+        if isinstance(risk_level, bool) or not isinstance(risk_level, int) or risk_level < 0:
+            effective_risk = 1
+        else:
+            effective_risk = risk_level
         from jarvis.skills.base import SkillRegistry
         meta = SkillRegistry.get_metadata(clean_name)
-        is_verified_ro = bool(meta and meta.read_only) or (clean_name in self.KNOWN_READ_ONLY_TOOLS)
+        is_verified_ro = bool(
+            (clean_name in self.KNOWN_READ_ONLY_TOOLS or clean_name in SkillRegistry._test_certified_read_only_tools)
+            and meta is not None
+            and getattr(meta, "origin", "builtin") == "builtin"
+            and getattr(meta, "read_only", False)
+            and getattr(meta, "risk_level", 1) == 0
+        )
         # If not explicitly verified as read-only, all tools (MCP or native) fail closed to at least risk_level=1
         if not is_verified_ro and effective_risk == 0:
             effective_risk = max(effective_risk, SkillRegistry.get_risk_level(clean_name) or 1)
@@ -1663,10 +1750,10 @@ class TurnTaintTracker:
     def check_tool_execution(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         risk_level: int = 0,
         dual_key_confirmed: bool = False,
-        cancel_event: Optional[threading.Event] = None,
+        cancel_event: threading.Event | None = None,
     ) -> bool:
         """Enforces mandatory out-of-band authorization on critical risk level 2 operations
         regardless of taint state, and enforces Dual-Key safety on high-privilege mutations

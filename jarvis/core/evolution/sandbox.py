@@ -1071,14 +1071,35 @@ except Exception as e:
                     if not result_file.exists():
                         return f"Error: Tool '{tool_name}' terminated unexpectedly (code {proc.returncode}) without result."
 
+                    # Symlink / reparse point defense: reject aliased or escaped result paths
+                    if result_file.is_symlink():
+                        return "Security Violation: Result file is a symbolic link or reparse point; rejected."
+                    try:
+                        resolved_result = result_file.resolve()
+                        if resolved_result.parent != run_scratch.resolve():
+                            return "Security Violation: Result file resolved outside run scratch directory; rejected."
+                    except (OSError, RuntimeError) as res_err:
+                        return f"Security Violation: Failed to verify result file containment: {res_err}"
+
                     if result_file.stat().st_size > 1048576:
                         return f"Security Violation: Output from tool '{tool_name}' exceeded 1MB ceiling; rejected."
 
-                    with open(result_file, "r", encoding="utf-8") as f:
-                        res_data = json.load(f)
+                    try:
+                        with open(result_file, "r", encoding="utf-8") as f:
+                            res_data = json.load(f)
+                    except (json.JSONDecodeError, UnicodeDecodeError) as decode_err:
+                        return f"Security Violation: Child response payload is not valid JSON: {decode_err}"
 
-                    if res_data.get("nonce") != nonce:
+                    # Strict schema validation
+                    if not isinstance(res_data, dict):
+                        return "Security Violation: Child response payload is not a valid JSON dictionary."
+
+                    child_nonce = res_data.get("nonce")
+                    if not isinstance(child_nonce, str) or not isinstance(nonce, str) or not hmac.compare_digest(child_nonce, nonce):
                         return "Security Violation: Nonce verification failed for child response."
+
+                    if "status" not in res_data:
+                        return "Security Violation: Child response missing required 'status' field."
 
                     if res_data.get("status") == "success":
                         return res_data.get("result")

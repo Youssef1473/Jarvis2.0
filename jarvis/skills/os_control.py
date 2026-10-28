@@ -1,30 +1,29 @@
 """Operating system and desktop automation tools for Windows."""
-import os
-import sys
-import re
-import glob
-import shutil
-import logging
-import winreg
 import datetime
+import logging
+import os
+import re
+import shutil
 import subprocess
+import sys
 import threading
 import time
 import warnings
 import webbrowser
+import winreg
 from pathlib import Path
 
 # Suppress benign pywinauto STA COM mode revert warning on Windows
 warnings.filterwarnings("ignore", message=".*Revert to STA COM threading mode.*")
-from typing import Dict, Any, Optional, List
-import pyautogui
 import psutil
+import pyautogui
 import pyperclip
+
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.OSControl")
 
-_app_index_cache: Dict[str, str] = {}
+_app_index_cache: dict[str, str] = {}
 _app_index_initialized: bool = False
 
 IS_WINDOWS = sys.platform == "win32"
@@ -102,13 +101,13 @@ def _ensure_desktop_access():
             logger.debug(f"Desktop switch notice: {e}")
 
 
-def _build_app_index() -> Dict[str, str]:
+def _build_app_index() -> dict[str, str]:
     """Scans and caches Windows Start Menu shortcuts (.lnk) and Registry App Paths."""
     global _app_index_cache, _app_index_initialized
     if _app_index_initialized:
         return _app_index_cache
 
-    apps: Dict[str, str] = {}
+    apps: dict[str, str] = {}
 
     # 1. Windows App Paths registry (Direct .exe executable paths)
     for root_key in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
@@ -631,7 +630,7 @@ def close_application(app_name: str) -> str:
         return "Application name cannot be empty, Sir."
 
     # Normalize name and remove .exe if provided
-    base_target = cleaned[:-4] if cleaned.endswith(".exe") else cleaned
+    base_target = cleaned.removesuffix(".exe")
 
     # Check for direct system critical protection
     if f"{base_target}.exe" in CRITICAL_PROCESS_DENYLIST or base_target in ("explorer", "python", "pythonw", "system"):
@@ -658,7 +657,7 @@ def close_application(app_name: str) -> str:
                 continue
 
             # Match target or alias
-            p_base = p_name[:-4] if p_name.endswith(".exe") else p_name
+            p_base = p_name.removesuffix(".exe")
             is_match = any(
                 cand == p_name or cand == p_base or (len(cand) >= 4 and (cand in p_name or cand in p_base))
                 for cand in candidate_targets
@@ -681,8 +680,8 @@ def close_application(app_name: str) -> str:
 
     # 2. Deterministic Fallback Cascade: If no process was found by name, attempt graceful window close via Win32 WM_CLOSE
     try:
-        import win32gui
         import win32con
+        import win32gui
         import win32process
         _ensure_desktop_access()
         matched_hwnds = []
@@ -934,7 +933,13 @@ def take_desktop_screenshot(filename: str = "") -> str:
     name="open_browser_tab",
     description="Opens a new tab or navigates to a specific URL in Brave, Chrome, Edge, or the desktop browser. Reuses active empty tabs automatically without duplicate tabs."
 )
-def open_browser_tab(url: str = "", browser: str = "brave", new_tab: bool = True, automated: bool = False) -> str:
+def open_browser_tab(
+    url: str = "",
+    browser: str = "brave",
+    new_tab: bool = True,
+    automated: bool = False,
+    allow_unmanaged: bool = False,
+) -> str:
     """Opens a new tab or URL in the requested desktop browser.
     If the browser is already running on the desktop, focuses the active window and navigates.
     Reuses existing empty New Tab pages without redundant duplicate tabs.
@@ -961,15 +966,20 @@ def open_browser_tab(url: str = "", browser: str = "brave", new_tab: bool = True
         else:
             target_url = validated_url
 
-    # 0. Sub-5ms Silent CDP Fast Path: If Chrome DevTools Protocol is available on port 9222
+    # 0. Sub-5ms Silent CDP Fast Path: If managed browser is active or unmanaged access is authoritatively approved
     if browser_clean in ("brave", "chrome", "edge", "browser"):
-        try:
-            from jarvis.skills.browser_cdp import open_or_navigate_tab_cdp
-            cdp_res = open_or_navigate_tab_cdp(target_url, new_tab=new_tab)
-            if cdp_res:
-                return cdp_res
-        except Exception as e:
-            logger.debug(f"CDP fast path bypass: {e}")
+        from jarvis.skills.browser_cdp import (
+            get_managed_cdp_port,
+            is_unmanaged_cdp_authorized,
+        )
+        if get_managed_cdp_port() is not None or is_unmanaged_cdp_authorized(allow_unmanaged):
+            try:
+                from jarvis.skills.browser_cdp import open_or_navigate_tab_cdp
+                cdp_res = open_or_navigate_tab_cdp(target_url, new_tab=new_tab, allow_unmanaged=allow_unmanaged)
+                if cdp_res:
+                    return cdp_res
+            except Exception as e:
+                logger.debug(f"CDP fast path bypass: {e}")
 
     # Automated operations must fail closed: never fall back to ambient personal browser
     if automated:
@@ -985,7 +995,7 @@ def open_browser_tab(url: str = "", browser: str = "brave", new_tab: bool = True
     if browser_clean in ("brave", "browser"):
         _candidates.extend(["chrome", "msedge", "edge", "firefox"])
 
-    _active_browser: Optional[str] = None
+    _active_browser: str | None = None
     try:
         from jarvis.skills.windows_uia import focus_window_uia
         for _cand in _candidates:
@@ -1131,23 +1141,28 @@ def open_browser_tab(url: str = "", browser: str = "brave", new_tab: bool = True
     name="close_browser_tab",
     description="Terminates or closes an active or matching tab in Brave, Chrome, Edge, or the desktop browser. Prefers silent CDP if attached, falling back to foreground Win32 shortcut."
 )
-def close_browser_tab(browser: str = "brave", tab_title: str = "") -> str:
+def close_browser_tab(browser: str = "brave", tab_title: str = "", allow_unmanaged: bool = False) -> str:
     """Terminates a tab in the requested browser.
     
-    1. CDP fast path: Closes the matching or active tab silently over Chrome DevTools Protocol (port 9222).
+    1. CDP fast path: Closes the matching or active tab silently over Chrome DevTools Protocol.
     2. Win32 fallback: Focuses the browser window and presses Ctrl+W without stealing overall workflow context.
     """
     browser_clean = (browser or "brave").lower().strip()
 
-    # 0. Sub-5ms Silent CDP Fast Path
+    # 0. Sub-5ms Silent CDP Fast Path: If managed browser is active or unmanaged access is authoritatively approved
     if browser_clean in ("brave", "chrome", "edge", "browser"):
-        try:
-            from jarvis.skills.browser_cdp import close_cdp_tab
-            cdp_res = close_cdp_tab(title_or_url=tab_title)
-            if cdp_res and not cdp_res.startswith("Could not find") and not cdp_res.startswith("No open browser tabs"):
-                return cdp_res
-        except Exception as e:
-            logger.debug(f"CDP close tab bypass: {e}")
+        from jarvis.skills.browser_cdp import (
+            get_managed_cdp_port,
+            is_unmanaged_cdp_authorized,
+        )
+        if get_managed_cdp_port() is not None or is_unmanaged_cdp_authorized(allow_unmanaged):
+            try:
+                from jarvis.skills.browser_cdp import close_cdp_tab
+                cdp_res = close_cdp_tab(title_or_url=tab_title, allow_unmanaged=allow_unmanaged)
+                if cdp_res and not cdp_res.startswith("Could not find") and not cdp_res.startswith("No open browser tabs"):
+                    return cdp_res
+            except Exception as e:
+                logger.debug(f"CDP close tab bypass: {e}")
 
     # 1. Desktop Window Fallback via UIA / Win32 + Ctrl+W (last resort)
     try:
@@ -1168,8 +1183,8 @@ def close_browser_tab(browser: str = "brave", tab_title: str = "") -> str:
             logger.debug(f"UIA focus bypass in close_browser_tab: {e}")
 
         if not focused_via_uia:
-            import win32gui
             import win32con
+            import win32gui
             _ensure_desktop_access()
             matched_hwnds = []
 
@@ -1270,8 +1285,8 @@ def focus_window(title: str) -> str:
         logger.debug(f"UIA focus bypass: {e}")
 
     try:
-        import win32gui
         import win32con
+        import win32gui
         _ensure_desktop_access()
 
         matched_hwnds = []

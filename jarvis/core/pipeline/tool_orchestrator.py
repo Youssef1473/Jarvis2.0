@@ -3,18 +3,16 @@
 Governs multi-step tool-use cycles, loop detection, taint tracking, and acoustic interim bridges.
 """
 import asyncio
-from dataclasses import dataclass
 import json
 import logging
 import threading
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
-if TYPE_CHECKING:
-    from jarvis.core.pipeline.dual_track import DualTrackCoordinator
-
-from jarvis.skills.base import SkillRegistry, SkillExecutionResult, _active_orchestrator_scope
-from jarvis.core.security_boundaries import TurnTaintTracker, SecurityBoundaryViolation
 from jarvis.core.pipeline.interim_bridge import InterimSpeechBridge
+from jarvis.core.security_boundaries import SecurityBoundaryViolation, TurnTaintTracker
+from jarvis.skills.base import SkillRegistry, _active_orchestrator_scope
 
 logger = logging.getLogger("Jarvis.Pipeline.ToolOrchestrator")
 
@@ -24,8 +22,8 @@ class OrchestratorStepResult:
     """Structured step execution result from ToolOrchestrator."""
     result: Any
     success: bool
-    failure_category: Optional[str] = None  # "cancelled", "loop_cycle", "orchestrator_denied", "exception"
-    error_message: Optional[str] = None
+    failure_category: str | None = None  # "cancelled", "loop_cycle", "orchestrator_denied", "exception"
+    error_message: str | None = None
 
 
 class ToolOrchestrator:
@@ -33,18 +31,18 @@ class ToolOrchestrator:
 
     def __init__(
         self,
-        interim_bridge: Optional[InterimSpeechBridge] = None,
-        taint_tracker: Optional[TurnTaintTracker] = None,
+        interim_bridge: InterimSpeechBridge | None = None,
+        taint_tracker: TurnTaintTracker | None = None,
         max_identical_cycles: int = 2,
-        on_status_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-        dual_track_coordinator: Optional[Any] = None,
+        on_status_callback: Callable[[dict[str, Any]], None] | None = None,
+        dual_track_coordinator: Any | None = None,
     ):
         self.interim_bridge = interim_bridge or InterimSpeechBridge()
         self.taint_tracker = taint_tracker or TurnTaintTracker.get_instance()
         self.max_identical_cycles = max_identical_cycles
         self.on_status_callback = on_status_callback
         self.dual_track_coordinator = dual_track_coordinator
-        self._history: List[Tuple[str, str]] = []
+        self._history: list[tuple[str, str]] = []
 
     def reset(self) -> None:
         """Resets trajectory history for a new conversation turn."""
@@ -59,7 +57,7 @@ class ToolOrchestrator:
     def execute_step_with_status(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         step_index: int = 1,
         dual_key_confirmed: bool = False,
     ) -> OrchestratorStepResult:
@@ -77,6 +75,8 @@ class ToolOrchestrator:
                 "_dual_key_token",
                 "allow_uncontained",
                 "_allow_uncontained",
+                "allow_unmanaged",
+                "_allow_unmanaged",
                 "automated",
                 "_automated",
             )
@@ -178,22 +178,36 @@ class ToolOrchestrator:
             except Exception as e:
                 logger.debug("Tool status callback notice (start): %s", e)
 
-        orch_token = _active_orchestrator_scope.set({"tool_name": tool_name, "consumed": False})
-        try:
-            # 4. Physical Execution via SkillRegistry
-            exec_kwargs = dict(sanitized_args)
-            tool_fn = SkillRegistry.get_tool(tool_name)
-            if tool_fn:
-                import inspect
-                try:
-                    sig = inspect.signature(tool_fn)
-                    if "user_approved" in sig.parameters:
-                        exec_kwargs["user_approved"] = True
-                    if "automated" in sig.parameters:
-                        exec_kwargs["automated"] = True
-                except Exception:
-                    pass
+        # 4. Physical Execution via SkillRegistry
+        exec_kwargs = dict(sanitized_args)
+        tool_fn = SkillRegistry.get_tool(tool_name)
+        if tool_fn:
+            import inspect
+            try:
+                sig = inspect.signature(tool_fn)
+                if "user_approved" in sig.parameters:
+                    exec_kwargs["user_approved"] = True
+                if "automated" in sig.parameters:
+                    exec_kwargs["automated"] = True
+            except Exception:
+                pass
 
+        current_turn_id = None
+        try:
+            from jarvis.core.security_boundaries import TurnTaintTracker
+            current_turn_id = TurnTaintTracker.get_instance().get_current_turn_id()
+        except Exception:
+            pass
+
+        from jarvis.skills.base import ExecutionCapability
+        cap = ExecutionCapability.create(
+            tool_name=tool_name,
+            arguments=exec_kwargs,
+            turn_id=current_turn_id,
+            ttl_seconds=10.0,
+        )
+        orch_token = _active_orchestrator_scope.set(cap)
+        try:
             skill_res = SkillRegistry.execute_with_status(tool_name, **exec_kwargs)
             if self.dual_track_coordinator is not None and getattr(self.dual_track_coordinator, "is_read_only_tool", lambda t: False)(tool_name):
                 if skill_res.success and skill_res.result is not None:
@@ -233,7 +247,7 @@ class ToolOrchestrator:
     def execute_step(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         step_index: int = 1,
         dual_key_confirmed: bool = False,
     ) -> Any:
@@ -248,11 +262,11 @@ class ToolOrchestrator:
     async def execute_step_async(
         self,
         tool_name: str,
-        arguments: Dict[str, Any],
+        arguments: dict[str, Any],
         user_query: str = "",
         step_index: int = 1,
         dual_key_confirmed: bool = False,
-        milestone_phrase: Optional[str] = None,
+        milestone_phrase: str | None = None,
     ) -> Any:
         """Asynchronously executes a tool step using DualTrackCoordinator for masking and gating."""
         # Ensure active turn taint state exists in caller context before spawning worker threads
@@ -277,6 +291,8 @@ class ToolOrchestrator:
                 "_dual_key_token",
                 "allow_uncontained",
                 "_allow_uncontained",
+                "allow_unmanaged",
+                "_allow_unmanaged",
                 "automated",
                 "_automated",
             )
@@ -347,6 +363,10 @@ class ToolOrchestrator:
                     logger.debug("Tool status callback notice (start): %s", e)
 
             exec_kwargs = dict(sanitized_args)
+            # Security: AI-generated arguments must NEVER set internal authorization or unmanaged bypass flags
+            for forbidden_param in ("allow_unmanaged", "user_approved", "automated"):
+                exec_kwargs.pop(forbidden_param, None)
+
             tool_fn = SkillRegistry.get_tool(tool_name)
             if tool_fn:
                 import inspect
@@ -360,7 +380,20 @@ class ToolOrchestrator:
                     pass
 
             def _orch_run():
-                orch_token = _active_orchestrator_scope.set({"tool_name": tool_name, "consumed": False})
+                current_turn_id = None
+                try:
+                    from jarvis.core.security_boundaries import TurnTaintTracker
+                    current_turn_id = TurnTaintTracker.get_instance().get_current_turn_id()
+                except Exception:
+                    pass
+                from jarvis.skills.base import ExecutionCapability
+                cap = ExecutionCapability.create(
+                    tool_name=tool_name,
+                    arguments=exec_kwargs,
+                    turn_id=current_turn_id,
+                    ttl_seconds=10.0,
+                )
+                orch_token = _active_orchestrator_scope.set(cap)
                 try:
                     return SkillRegistry.execute(tool_name, **exec_kwargs)
                 finally:

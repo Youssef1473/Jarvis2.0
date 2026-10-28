@@ -181,6 +181,9 @@ def _install_audit_hook(allowlist_roots: list[str], scratch_dir: str) -> None:
         norm = _normalize_path(path_candidate)
         if not norm:
             return False
+        # Explicitly deny site-packages and dist-packages under all circumstances
+        if "site-packages" in norm or "dist-packages" in norm:
+            return False
         for root in norm_allowlist:
             if norm == root or norm.startswith(root + os.sep):
                 return True
@@ -289,13 +292,17 @@ def main() -> int:
     sys.modules.pop("winreg", None)
     sys.modules.pop("nt", None)
 
-    # Step 2: Set up normalized read allowlist
+    # Step 2: Set up normalized read allowlist (Standard library, scratch, and skill only)
+    stdlib_dir = os.path.dirname(os.__file__)
+    base_prefix = getattr(sys, "base_prefix", sys.prefix)
     allowlist = [
-        sys.prefix,
-        getattr(sys, "base_prefix", sys.prefix),
+        stdlib_dir,
         str(scratch_dir),
         str(module_path),
     ]
+    dlls_dir = os.path.join(base_prefix, "DLLs")
+    if os.path.isdir(dlls_dir):
+        allowlist.append(dlls_dir)
 
     # Step 3: Install audit hook
     try:

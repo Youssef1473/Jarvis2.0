@@ -7,7 +7,6 @@ import itertools
 import json
 import logging
 import os
-from pathlib import Path
 import queue
 import shutil
 import socket
@@ -17,14 +16,15 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
-from typing import Dict, Any, List, Optional, Tuple, Set
+from pathlib import Path
+from typing import Any
 
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.BrowserCDP")
 import re as _re
 
-_CDP_PROBE_CACHE: Dict[Tuple[str, int], Tuple[bool, float]] = {}
+_CDP_PROBE_CACHE: dict[tuple[str, int], tuple[bool, float]] = {}
 _CDP_CACHE_TTL_SEC: float = 3.0
 
 # Safe internal new-tab pages that may be navigated via CDP.
@@ -44,9 +44,9 @@ _DESTRUCTIVE_CDP_URLS: tuple = (
 )
 
 
-def get_blocked_localhost_ports() -> Set[int]:
+def get_blocked_localhost_ports() -> set[int]:
     """Retrieves ports reserved for Jarvis internal services and sensitive daemons that must be shielded from browser navigation."""
-    ports: Set[int] = {
+    ports: set[int] = {
         20129,  # Jarvis HUD / UI default port
         9222,   # Chrome DevTools Protocol port
         11434,  # Local Ollama daemon
@@ -659,7 +659,10 @@ def sanitize_browser_url(url: str) -> str:
     # SSRF & Private Network Egress Validation for web targets
     if cleaned_lower.startswith(("http://", "https://")):
         try:
-            from jarvis.core.security_boundaries import validate_egress_url, SecurityBoundaryViolation
+            from jarvis.core.security_boundaries import (
+                SecurityBoundaryViolation,
+                validate_egress_url,
+            )
             blocked_ports = get_blocked_localhost_ports()
             cleaned = validate_egress_url(
                 cleaned,
@@ -673,10 +676,92 @@ def sanitize_browser_url(url: str) -> str:
     return cleaned
 
 
-def is_cdp_available(host: str = "127.0.0.1", port: Optional[int] = None, timeout_sec: float = 0.05, force_refresh: bool = False) -> bool:
+def is_unmanaged_cdp_authorized(allow_unmanaged: bool = False) -> bool:
+    """Verifies that unmanaged CDP port access is authoritatively permitted by a trusted approval decision.
+
+    A caller-controlled Boolean flag (e.g. from an AI tool call) is NEVER sufficient by itself.
+    Unmanaged access to ambient personal browser ports (such as default 9222 or custom ports) requires:
+    1. allow_unmanaged is explicitly True, AND
+    2. A trusted approval decision exists from DualKeyApprovalManager (is_unmanaged_browser_approved() == True),
+       OR the registered human operator approval handler explicitly approves the prompt when requested.
+    """
+    if not allow_unmanaged:
+        return False
+    try:
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
+        mgr = DualKeyApprovalManager.get_instance()
+        if mgr.is_unmanaged_browser_approved():
+            return True
+        # Complete human-approval path: prompt human operator through registered handler
+        return mgr.request_unmanaged_browser_approval(ttl_seconds=60.0)
+    except (ImportError, AttributeError):
+        return False
+
+
+_ACTIVE_MANAGED_PORTS: set[int] = set()
+_ACTIVE_MANAGED_PORTS_LOCK = threading.Lock()
+
+
+def is_managed_cdp_port(port: int | None) -> bool:
+    """Returns True if the port belongs to an active Job Object-contained managed browser session."""
+    if port is None:
+        return False
+    with _ACTIVE_MANAGED_PORTS_LOCK:
+        if port in _ACTIVE_MANAGED_PORTS:
+            return True
+    try:
+        session = get_managed_browser_session()
+        if session and session.cdp_port == port:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def resolve_cdp_port(
+    port: int | None = None,
+    allow_unmanaged: bool = False,
+) -> int | None:
+    """Resolves target CDP port prioritizing managed browser sessions. Fails closed by default.
+
+    Fail-Closed Authorization Invariant:
+    1. If a managed browser session is active:
+       - If port is None or port belongs to a managed session, returns the managed port.
+       - If port is specified and does not belong to a managed session, it represents an UNMANAGED target.
+    2. Any unmanaged browser port (default 9222 or explicit unmanaged port) strictly
+       requires authoritative human approval via is_unmanaged_cdp_authorized(allow_unmanaged).
+    3. A caller-supplied boolean flag (allow_unmanaged=True) alone is NEVER sufficient.
+       DualKeyApprovalManager must have an active approval or the operator must approve.
+    4. If unmanaged access is unauthorized, fails closed and returns None.
+    """
+    managed_port = get_managed_cdp_port()
+    if port is None:
+        if managed_port is not None:
+            return managed_port
+    else:
+        if (managed_port is not None and port == managed_port) or is_managed_cdp_port(port):
+            return port
+
+    # Target is unmanaged (either default 9222 or explicit unmanaged port)
+    target = port if port is not None else 9222
+    if is_unmanaged_cdp_authorized(allow_unmanaged):
+        return target
+
+    return None
+
+
+def is_cdp_available(
+    host: str = "127.0.0.1",
+    port: int | None = None,
+    timeout_sec: float = 0.05,
+    force_refresh: bool = False,
+    allow_unmanaged: bool = False,
+) -> bool:
     """Non-blocking probe checking if Chrome DevTools Protocol port is listening on localhost."""
+    effective_port = resolve_cdp_port(port, allow_unmanaged=allow_unmanaged)
+    if effective_port is None:
+        return False
     now = time.time()
-    effective_port = port or get_managed_cdp_port() or 9222
     cache_key = (host, effective_port)
     if not force_refresh and cache_key in _CDP_PROBE_CACHE:
         val, ts = _CDP_PROBE_CACHE[cache_key]
@@ -691,17 +776,21 @@ def is_cdp_available(host: str = "127.0.0.1", port: Optional[int] = None, timeou
     try:
         with socket.create_connection((host, effective_port), timeout=timeout_sec):
             is_open = True
-    except (OSError, socket.timeout):
+    except (TimeoutError, OSError):
         is_open = False
 
     _CDP_PROBE_CACHE[cache_key] = (is_open, now)
     return is_open
 
 
-def list_cdp_tabs(host: str = "127.0.0.1", port: Optional[int] = None) -> List[Dict[str, Any]]:
+def list_cdp_tabs(
+    host: str = "127.0.0.1",
+    port: int | None = None,
+    allow_unmanaged: bool = False,
+) -> list[dict[str, Any]]:
     """Retrieves all open page targets via CDP HTTP JSON interface."""
-    target_port = port or get_managed_cdp_port() or 9222
-    if not is_cdp_available(host, target_port):
+    target_port = resolve_cdp_port(port, allow_unmanaged=allow_unmanaged)
+    if target_port is None or not is_cdp_available(host, target_port, allow_unmanaged=allow_unmanaged):
         prune_stale_tab_sessions(set())
         return []
 
@@ -734,15 +823,16 @@ def open_or_navigate_tab_cdp(
     url: str,
     new_tab: bool = True,
     host: str = "127.0.0.1",
-    port: Optional[int] = None
-) -> Optional[str]:
+    port: int | None = None,
+    allow_unmanaged: bool = False,
+) -> str | None:
     """Navigates to URL via CDP. Reuses empty tabs or navigates an existing tab when new_tab is False.
     
     Returns:
         Status message if navigation succeeded via CDP, or None if CDP is unavailable / failed.
     """
-    target_port = port or get_managed_cdp_port() or 9222
-    if not is_cdp_available(host, target_port):
+    target_port = resolve_cdp_port(port, allow_unmanaged=allow_unmanaged)
+    if target_port is None or not is_cdp_available(host, target_port, allow_unmanaged=allow_unmanaged):
         return None
 
     clean_url = sanitize_browser_url(url)
@@ -851,10 +941,15 @@ def open_or_navigate_tab_cdp(
         return None
 
 
-def activate_cdp_tab(target_id: str, host: str = "127.0.0.1", port: Optional[int] = None) -> bool:
+def activate_cdp_tab(
+    target_id: str,
+    host: str = "127.0.0.1",
+    port: int | None = None,
+    allow_unmanaged: bool = False,
+) -> bool:
     """Activates/focuses a specific browser tab via CDP HTTP PUT /json/activate/{target_id}."""
-    target_port = port or get_managed_cdp_port() or 9222
-    if not is_cdp_available(host, target_port) or not target_id:
+    target_port = resolve_cdp_port(port, allow_unmanaged=allow_unmanaged)
+    if target_port is None or not is_cdp_available(host, target_port, allow_unmanaged=allow_unmanaged) or not target_id:
         return False
     try:
         activate_url = f"http://{host}:{target_port}/json/activate/{target_id}"
@@ -867,18 +962,19 @@ def activate_cdp_tab(target_id: str, host: str = "127.0.0.1", port: Optional[int
 
 
 def read_webpage_content_cdp(
-    target_id_or_title: Optional[str] = None,
+    target_id_or_title: str | None = None,
     max_chars: int = 15000,
     host: str = "127.0.0.1",
-    port: Optional[int] = None
-) -> Optional[Dict[str, Any]]:
+    port: int | None = None,
+    allow_unmanaged: bool = False,
+) -> dict[str, Any] | None:
     """Extracts title, URL, and readable body/article text from an open tab in <5ms using Runtime.evaluate."""
-    target_port = port or get_managed_cdp_port() or 9222
-    if not is_cdp_available(host, target_port):
+    target_port = resolve_cdp_port(port, allow_unmanaged=allow_unmanaged)
+    if target_port is None or not is_cdp_available(host, target_port, allow_unmanaged=allow_unmanaged):
         return None
 
     try:
-        tabs = list_cdp_tabs(host, target_port)
+        tabs = list_cdp_tabs(host, target_port, allow_unmanaged=allow_unmanaged)
         if not tabs:
             return None
 
@@ -953,17 +1049,18 @@ def read_webpage_content_cdp(
 
 def execute_cdp_javascript(
     expression: str,
-    target_id_or_title: Optional[str] = None,
+    target_id_or_title: str | None = None,
     host: str = "127.0.0.1",
-    port: Optional[int] = None
-) -> Optional[Any]:
+    port: int | None = None,
+    allow_unmanaged: bool = False,
+) -> Any | None:
     """Evaluates JavaScript expression on the target tab via CDP Runtime.evaluate."""
-    target_port = port or get_managed_cdp_port() or 9222
-    if not is_cdp_available(host, target_port) or not expression:
+    target_port = resolve_cdp_port(port, allow_unmanaged=allow_unmanaged)
+    if target_port is None or not is_cdp_available(host, target_port, allow_unmanaged=allow_unmanaged) or not expression:
         return None
 
     try:
-        tabs = list_cdp_tabs(host, target_port)
+        tabs = list_cdp_tabs(host, target_port, allow_unmanaged=allow_unmanaged)
         if not tabs:
             return None
 
@@ -1020,7 +1117,7 @@ def execute_cdp_javascript(
         return None
 
 
-def resolve_browser_executable(browser_name: str = "brave") -> Optional[str]:
+def resolve_browser_executable(browser_name: str = "brave") -> str | None:
     """Resolves the executable path for the requested browser without launching it."""
     b_clean = (browser_name or "brave").lower().strip()
     try:
@@ -1156,6 +1253,8 @@ class ManagedBrowserSession:
 
             self.cdp_port = discovered_port
             self.ws_url_path = ws_path
+            with _ACTIVE_MANAGED_PORTS_LOCK:
+                _ACTIVE_MANAGED_PORTS.add(discovered_port)
 
             deadline = time.monotonic() + 3.0
             ready = False
@@ -1200,6 +1299,9 @@ class ManagedBrowserSession:
         """Terminates the process tree and purges the isolated per-run profile directory."""
         with self._lock:
             self._stopped = True
+            if self.cdp_port is not None:
+                with _ACTIVE_MANAGED_PORTS_LOCK:
+                    _ACTIVE_MANAGED_PORTS.discard(self.cdp_port)
             if self.process:
                 try:
                     self.process.terminate()
@@ -1334,12 +1436,13 @@ def stop_managed_browser() -> None:
 
 def bootstrap_cdp_browser(
     browser_name: str = "brave",
-    port: Optional[int] = None,
+    port: int | None = None,
     dedicated_profile: bool = True
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Ensures a browser instance is running with remote debugging port enabled."""
-    if is_cdp_available("127.0.0.1", port):
-        return True, f"Browser DevTools Protocol is active and connected on port {port}, Sir."
+    target_port = port or 9222
+    if is_cdp_available("127.0.0.1", target_port):
+        return True, f"Browser DevTools Protocol is active and connected on port {target_port}, Sir."
 
     browser_path = None
     try:
@@ -1385,14 +1488,14 @@ def bootstrap_cdp_browser(
 
     cmd = [
         browser_path,
-        f"--remote-debugging-port={port}",
+        f"--remote-debugging-port={target_port}",
         "--remote-debugging-address=127.0.0.1",
         f"--remote-allow-origins={','.join(trusted_origins)}",
     ]
     if is_running or dedicated_profile:
         profile_dir = Path("data/browser_debug_profile").resolve()
         profile_dir.mkdir(parents=True, exist_ok=True)
-        cmd.append(f"--user-data-dir={str(profile_dir)}")
+        cmd.append(f"--user-data-dir={profile_dir!s}")
 
     try:
         subprocess.Popen(
@@ -1405,28 +1508,29 @@ def bootstrap_cdp_browser(
         for _ in range(40):
             time.sleep(0.1)
             if is_cdp_available("127.0.0.1", port, force_refresh=True):
-                return True, f"Attached browser '{browser_name.title()}' with remote debugging port {port} enabled, Sir."
+                return True, f"Attached browser '{browser_name.title()}' with remote debugging port {target_port} enabled, Sir."
 
-        return False, f"Browser launched, but port {port} did not respond within timeout, Sir."
+        return False, f"Browser launched, but port {target_port} did not respond within timeout, Sir."
     except Exception as e:
         return False, f"Failed to launch browser with debugging flags: {e}"
 
 
 def close_cdp_tab(
-    title_or_url: Optional[str] = None,
+    title_or_url: str | None = None,
     host: str = "127.0.0.1",
-    port: Optional[int] = None
-) -> Optional[str]:
+    port: int | None = None,
+    allow_unmanaged: bool = False,
+) -> str | None:
     """Closes an open browser tab via Chrome DevTools Protocol (CDP) HTTP API.
     
     Returns status message if successfully closed via CDP, or None if CDP unavailable/failed.
     """
-    target_port = port or get_managed_cdp_port() or 9222
-    if not is_cdp_available(host, target_port):
+    target_port = resolve_cdp_port(port, allow_unmanaged=allow_unmanaged)
+    if target_port is None or not is_cdp_available(host, target_port, allow_unmanaged=allow_unmanaged):
         return None
 
     try:
-        tabs = list_cdp_tabs(host, target_port)
+        tabs = list_cdp_tabs(host, target_port, allow_unmanaged=allow_unmanaged)
         if not tabs:
             return "No open browser tabs detected via DevTools channel, Sir."
 
@@ -1467,12 +1571,20 @@ def close_cdp_tab(
     name="list_open_browser_tabs",
     description="Lists all open tabs in Sir's browser via silent Chrome DevTools Protocol (CDP), including tab titles and URLs without stealing focus."
 )
-def list_open_browser_tabs() -> str:
+def list_open_browser_tabs(allow_unmanaged: bool = False) -> str:
     """Tool to inspect active browser tabs without foreground window disruption."""
-    if not is_cdp_available():
+    managed_port = get_managed_cdp_port()
+    if managed_port is None and not is_unmanaged_cdp_authorized(allow_unmanaged):
+        return (
+            "Browser DevTools Protocol execution blocked: No managed browser session is active, Sir. "
+            "Autonomous execution cannot connect to unmanaged browser port 9222 without trusted approval authorization."
+        )
+
+    target_port = resolve_cdp_port(port=None, allow_unmanaged=allow_unmanaged)
+    if target_port is None or not is_cdp_available(port=target_port, allow_unmanaged=allow_unmanaged):
         return "Browser DevTools Protocol is not currently attached (port 9222 is closed), Sir. Open tabs cannot be inspected silently without attaching debugging flags."
 
-    tabs = list_cdp_tabs()
+    tabs = list_cdp_tabs(port=target_port, allow_unmanaged=allow_unmanaged)
     if not tabs:
         return "No open browser tabs detected via DevTools channel, Sir."
 
@@ -1489,12 +1601,20 @@ def list_open_browser_tabs() -> str:
     name="switch_to_browser_tab",
     description="Switches focus and activates an open browser tab by title or URL keyword via Chrome DevTools Protocol (CDP)."
 )
-def switch_to_browser_tab(tab_name_or_url: str) -> str:
+def switch_to_browser_tab(tab_name_or_url: str, allow_unmanaged: bool = False) -> str:
     """Activates a browser tab and brings the browser window to the foreground."""
-    if not is_cdp_available():
+    managed_port = get_managed_cdp_port()
+    if managed_port is None and not is_unmanaged_cdp_authorized(allow_unmanaged):
+        return (
+            "Browser DevTools Protocol execution blocked: No managed browser session is active, Sir. "
+            "Autonomous execution cannot connect to unmanaged browser port 9222 without trusted approval authorization."
+        )
+
+    target_port = resolve_cdp_port(port=None, allow_unmanaged=allow_unmanaged)
+    if target_port is None or not is_cdp_available(port=target_port, allow_unmanaged=allow_unmanaged):
         return "Browser DevTools Protocol is not currently attached (port 9222 is closed), Sir."
 
-    tabs = list_cdp_tabs()
+    tabs = list_cdp_tabs(port=target_port, allow_unmanaged=allow_unmanaged)
     if not tabs:
         return "No open browser tabs found to switch to, Sir."
 
@@ -1527,15 +1647,23 @@ def switch_to_browser_tab(tab_name_or_url: str) -> str:
     description="Extracts clean readable text, articles, or documentation directly from the active or specified browser tab via silent Chrome DevTools Protocol without stealing focus or copying to clipboard.",
     external_ingestion=True,
 )
-def read_webpage_content(tab_name_or_url: str = "") -> str:
+def read_webpage_content(tab_name_or_url: str = "", allow_unmanaged: bool = False) -> str:
     """Reads readable text from active or specified browser tab via CDP."""
-    if not is_cdp_available():
+    managed_port = get_managed_cdp_port()
+    if managed_port is None and not is_unmanaged_cdp_authorized(allow_unmanaged):
+        return (
+            "Browser DevTools Protocol execution blocked: No managed browser session is active, Sir. "
+            "Autonomous execution cannot connect to unmanaged browser port 9222 without trusted approval authorization."
+        )
+
+    target_port = resolve_cdp_port(port=None, allow_unmanaged=allow_unmanaged)
+    if target_port is None or not is_cdp_available(port=target_port, allow_unmanaged=allow_unmanaged):
         return (
             "Browser DevTools Protocol is not currently attached (port 9222 is closed), Sir. "
             "Please launch the browser with debugging enabled or use 'launch_debug_browser'."
         )
 
-    data = read_webpage_content_cdp(target_id_or_title=tab_name_or_url)
+    data = read_webpage_content_cdp(target_id_or_title=tab_name_or_url, port=target_port, allow_unmanaged=allow_unmanaged)
     if not data or not data.get("text"):
         return f"Unable to extract readable content from browser tab '{tab_name_or_url or 'Active'}', Sir."
 
@@ -1555,7 +1683,13 @@ def read_webpage_content(tab_name_or_url: str = "") -> str:
     read_only=False,
     external_ingestion=False,
 )
-def execute_browser_javascript(script: str, tab_name: str = "") -> str:
+def execute_browser_javascript(
+    script: str,
+    tab_name: str = "",
+    allow_unmanaged: bool = False,
+    automated: bool = False,
+    user_approved: bool = False,
+) -> str:
     """Executes JavaScript in the browser tab via CDP."""
     # Record untrusted external web provenance for executed script results
     from jarvis.core.security_boundaries import TurnTaintTracker
@@ -1564,10 +1698,18 @@ def execute_browser_javascript(script: str, tab_name: str = "") -> str:
         {"script": str(script or "")[:100], "tab_name": str(tab_name or "")}
     )
 
-    if not is_cdp_available():
-        return "Browser DevTools Protocol is not currently attached (port 9222 is closed), Sir."
+    managed_port = get_managed_cdp_port()
+    if managed_port is None and not is_unmanaged_cdp_authorized(allow_unmanaged):
+        return (
+            "Browser DevTools Protocol execution blocked: No managed browser session is active, Sir. "
+            "Autonomous execution cannot connect to unmanaged browser port 9222 without trusted approval authorization."
+        )
 
-    res = execute_cdp_javascript(expression=script, target_id_or_title=tab_name)
+    target_port = resolve_cdp_port(port=None, allow_unmanaged=allow_unmanaged)
+    if target_port is None or not is_cdp_available(port=target_port, allow_unmanaged=allow_unmanaged):
+        return "Browser DevTools Protocol is not currently attached (port is closed), Sir."
+
+    res = execute_cdp_javascript(expression=script, target_id_or_title=tab_name, port=target_port)
     if res is None:
         return "JavaScript execution returned no result or encountered an error, Sir."
     return f"JavaScript Evaluation Result, Sir:\n{res}"
@@ -1588,8 +1730,15 @@ def launch_debug_browser(browser: str = "brave", dedicated_profile: bool = True)
     description="Extracts the readable text and documentation from an open browser tab and archives it directly into Jarvis's local JIT document memory vault for future semantic retrieval.",
     external_ingestion=True,
 )
-def scrape_and_archive_webpage(tab_name_or_url: str = "", category: str = "web_intel") -> str:
+def scrape_and_archive_webpage(tab_name_or_url: str = "", category: str = "web_intel", allow_unmanaged: bool = False) -> str:
     """Extracts webpage content via CDP and permanently stores it in Tier 3 Document Memory."""
+    managed_port = get_managed_cdp_port()
+    if managed_port is None and not is_unmanaged_cdp_authorized(allow_unmanaged):
+        return (
+            "Browser DevTools Protocol execution blocked: No managed browser session is active, Sir. "
+            "Autonomous execution cannot connect to unmanaged browser port 9222 without trusted approval authorization."
+        )
+
     content_data = read_webpage_content_cdp(target_id_or_title=tab_name_or_url)
     if not content_data or not content_data.get("text"):
         return "Could not extract webpage content to archive. Please ensure the target tab is loaded, Sir."

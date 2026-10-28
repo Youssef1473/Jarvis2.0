@@ -153,6 +153,13 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
     def tearDownClass(cls):
         cls.mock_srv.stop()
 
+    def setUp(self):
+        self._managed_port_patcher = patch.object(b_cdp, "get_managed_cdp_port", return_value=9222)
+        self._managed_port_patcher.start()
+
+    def tearDown(self):
+        self._managed_port_patcher.stop()
+
     def test_redirect_to_protected_localhost_port_rejected(self):
         """Verifies pre-flight detects and blocks redirect hops targeting protected localhost ports."""
         target_url = f"http://127.0.0.1:{self.mock_srv.port}/to-hud"
@@ -683,9 +690,11 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
         if not ready:
             cls.tearDownClass()
             raise RuntimeError(f"Browser failed to initialize CDP on port {LIVE_CDP_PORT}")
+        b_cdp._ACTIVE_MANAGED_PORTS.add(LIVE_CDP_PORT)
 
     @classmethod
     def tearDownClass(cls):
+        b_cdp._ACTIVE_MANAGED_PORTS.discard(LIVE_CDP_PORT)
         if hasattr(cls, "proc") and cls.proc:
             try:
                 cls.proc.kill()

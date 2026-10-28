@@ -4,11 +4,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from pathlib import Path
 import queue
 import sqlite3
 import threading
-from typing import Any, Callable, Dict, Optional, Tuple
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("Jarvis.Memory.SqliteBase")
 
@@ -16,14 +17,38 @@ logger = logging.getLogger("Jarvis.Memory.SqliteBase")
 class SingleWriterActor:
     """Serializes all write operations (INSERT, UPDATE, DELETE) through an asynchronous queue worker.
     Guarantees zero SQLITE_BUSY write lock contention and atomic transaction sequencing.
+    Enforces clean lifecycle state management, timeout cancellation, and leak-free shutdown.
     """
+
+    STATE_RUNNING = "running"
+    STATE_STOPPING = "stopping"
+    STATE_STOPPED = "stopped"
 
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
-        self._queue: queue.Queue[Optional[Tuple[Callable[[sqlite3.Connection], Any], threading.Event, list, list]]] = queue.Queue()
-        self._running = True
+        self._queue: queue.Queue[tuple[Callable[[sqlite3.Connection], Any], threading.Event, list, list, threading.Event, dict, threading.Lock] | None] = queue.Queue()
+        self._state = self.STATE_RUNNING
+        self._state_lock = threading.Lock()
         self._thread = threading.Thread(target=self._worker_loop, daemon=True, name="JarvisSingleWriter")
         self._thread.start()
+
+    @property
+    def _running(self) -> bool:
+        with self._state_lock:
+            return self._state == self.STATE_RUNNING and self._thread.is_alive()
+
+    @_running.setter
+    def _running(self, val: bool) -> None:
+        with self._state_lock:
+            self._state = self.STATE_RUNNING if val else self.STATE_STOPPED
+
+    @property
+    def state(self) -> str:
+        """Returns the current actor lifecycle state, never reporting STOPPED if worker is still running."""
+        with self._state_lock:
+            if self._state == self.STATE_STOPPED and self._thread.is_alive():
+                return self.STATE_STOPPING
+            return self._state
 
     def _create_conn(self) -> sqlite3.Connection:
         c = sqlite3.connect(str(self.db_path), check_same_thread=False)
@@ -46,22 +71,41 @@ class SingleWriterActor:
         key = str(self.db_path.resolve())
         is_temp = "tmp" in key.lower() or "temp" in key.lower() or self.db_path.name.startswith("test_")
 
-        conn: Optional[sqlite3.Connection] = None
+        conn: sqlite3.Connection | None = None
         if not is_temp:
             try:
                 conn = self._create_conn()
             except Exception as e:
                 logger.debug("SingleWriterActor persistent conn init note: %s", e)
 
-        while self._running:
+        while True:
+            with self._state_lock:
+                if self._state == self.STATE_STOPPED:
+                    break
             try:
                 item = self._queue.get(timeout=0.1)
             except queue.Empty:
+                with self._state_lock:
+                    if self._state != self.STATE_RUNNING and self._queue.empty():
+                        break
                 continue
+
             if item is None:
+                self._queue.task_done()
                 break
 
-            func, done_evt, res_box, err_box = item
+            func, done_evt, res_box, err_box, cancel_evt, status, item_lock = item
+
+            # Check if caller already timed out or cancelled this write under mutex
+            with item_lock:
+                if cancel_evt.is_set() or status.get("phase") == "cancelled_before_execution":
+                    status["phase"] = "cancelled_before_execution"
+                    done_evt.set()
+                    self._queue.task_done()
+                    continue
+                # Atomically commit to executing this item so caller cannot cancel before execution
+                status["phase"] = "executing"
+
             local_conn = conn
             opened_temp = False
             if local_conn is None:
@@ -69,7 +113,9 @@ class SingleWriterActor:
                     local_conn = self._create_conn()
                     opened_temp = True
                 except Exception as ce:
-                    err_box.append(ce)
+                    with item_lock:
+                        err_box.append(ce)
+                        status["phase"] = "failed"
                     done_evt.set()
                     self._queue.task_done()
                     continue
@@ -77,9 +123,13 @@ class SingleWriterActor:
             try:
                 with local_conn:
                     result = func(local_conn)
-                res_box.append(result)
+                with item_lock:
+                    res_box.append(result)
+                    status["phase"] = "completed"
             except Exception as e:
-                err_box.append(e)
+                with item_lock:
+                    err_box.append(e)
+                    status["phase"] = "failed"
             finally:
                 if opened_temp and local_conn is not None:
                     try:
@@ -96,12 +146,43 @@ class SingleWriterActor:
                 pass
 
     def execute_write(self, func: Callable[[sqlite3.Connection], Any], timeout: float = 30.0) -> Any:
+        with self._state_lock:
+            if self._state != self.STATE_RUNNING:
+                raise RuntimeError(f"SingleWriterActor is {self._state}; cannot accept new write operations.")
+
         done_evt = threading.Event()
+        cancel_evt = threading.Event()
         res_box: list = []
         err_box: list = []
-        self._queue.put((func, done_evt, res_box, err_box))
+        status: dict = {"phase": "pending"}
+        item_lock = threading.Lock()
+        self._queue.put((func, done_evt, res_box, err_box, cancel_evt, status, item_lock))
+
         if not done_evt.wait(timeout=timeout):
-            raise TimeoutError("Single-writer queue timeout exceeded")
+            # Check execution phase atomically under mutex to distinguish pre-execution cancellation vs in-flight execution
+            with item_lock:
+                if done_evt.is_set() and status.get("phase") == "completed":
+                    if err_box:
+                        raise err_box[0]
+                    return res_box[0] if res_box else None
+
+                if status.get("phase") == "pending":
+                    cancel_evt.set()
+                    status["phase"] = "cancelled_before_execution"
+                    err = TimeoutError("Single-writer queue timeout exceeded before write execution started.")
+                    err.cancelled_before_execution = True
+                    err.timed_out_in_flight = False
+                    err.transaction_outcome_unknown = False
+                    err.transaction_outcome = "not_executed"
+                    raise err
+                else:
+                    err = TimeoutError("Single-writer active write timed out during in-flight execution.")
+                    err.cancelled_before_execution = False
+                    err.timed_out_in_flight = True
+                    err.transaction_outcome_unknown = True
+                    err.transaction_outcome = "unknown"
+                    raise err
+
         if err_box:
             raise err_box[0]
         return res_box[0] if res_box else None
@@ -109,11 +190,52 @@ class SingleWriterActor:
     async def execute_write_async(self, func: Callable[[sqlite3.Connection], Any]) -> Any:
         return await asyncio.to_thread(self.execute_write, func)
 
-    def stop(self) -> None:
-        self._running = False
+    def _drain_and_reject_pending(self) -> None:
+        """Drains remaining queue items and sets error on pending callers."""
+        while not self._queue.empty():
+            try:
+                item = self._queue.get_nowait()
+                if item is not None:
+                    _, done_evt, _, err_box, cancel_evt, status, item_lock = item
+                    with item_lock:
+                        cancel_evt.set()
+                        status["phase"] = "cancelled_before_execution"
+                        err_box.append(RuntimeError("SingleWriterActor shutdown before write could execute."))
+                        done_evt.set()
+                self._queue.task_done()
+            except (queue.Empty, ValueError):
+                break
+
+    def stop(self, drain: bool = True, timeout: float = 3.0) -> None:
+        """Stops the single-writer worker loop.
+
+        Args:
+            drain: If True, waits for queued items to be processed before shutting down.
+                   If False, cancels and rejects queued items immediately.
+            timeout: Maximum wait time for worker thread to terminate.
+        """
+        with self._state_lock:
+            if self._state == self.STATE_STOPPED:
+                return
+            self._state = self.STATE_STOPPING
+
+        if not drain:
+            self._drain_and_reject_pending()
+
         self._queue.put(None)
         if self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+            self._thread.join(timeout=timeout)
+
+        with self._state_lock:
+            if not self._thread.is_alive():
+                self._state = self.STATE_STOPPED
+                self._drain_and_reject_pending()
+            else:
+                logger.error(
+                    "SingleWriterActor worker thread failed to terminate within %.2fs timeout; state remains %s.",
+                    timeout,
+                    self.STATE_STOPPING,
+                )
 
 
 class SqliteBaseMixin:
@@ -520,6 +642,7 @@ class SqliteBaseMixin:
             # sqlite-vec Native C Vector Virtual Table & Real-Time Sync Triggers (Native 384-dim BGE INT8)
             try:
                 import sqlite_vec
+
                 from jarvis.core.memory.onnx_embeddings import DEFAULT_EMBEDDING_DIM
                 TARGET_VEC_DIM = DEFAULT_EMBEDDING_DIM  # 384
                 current_backend = self.vector_engine.get_backend_name()

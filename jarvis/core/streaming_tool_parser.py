@@ -6,13 +6,16 @@ executing tool call JSON blocks cleanly under cryptographic nonce protection.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import asyncio
 import inspect
 import json
 import logging
 import secrets
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+import threading
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
 
 logger = logging.getLogger("Jarvis.StreamingToolParser")
 
@@ -24,9 +27,10 @@ STATE_ACCUMULATING_TOOL_CALL = 2
 # Streaming buffer resource boundaries
 MAX_STREAMING_BUFFER_BYTES: int = 65536  # 64 KB per tool call buffer
 MAX_ACTIVE_CALL_BUFFERS: int = 128
+MAX_DISPATCHED_CALL_IDS: int = 256
 
 # Canonical set of Level-0 read-only tools safe for speculative dispatch
-DEFAULT_IDEMPOTENT_READ_TOOLS: Set[str] = {
+DEFAULT_IDEMPOTENT_READ_TOOLS: set[str] = {
     "get_battery_status",
     "get_current_time_and_date",
     "get_system_vitals",
@@ -55,7 +59,7 @@ DEFAULT_IDEMPOTENT_READ_TOOLS: Set[str] = {
 class ParsedToolCall:
     """Represents a validated tool call extracted from a streaming response."""
     name: str
-    args: Dict[str, Any] = field(default_factory=dict)
+    args: dict[str, Any] = field(default_factory=dict)
     raw_payload: str = ""
 
 
@@ -64,28 +68,31 @@ class StreamingToolCallParser:
 
     def __init__(
         self,
-        idempotent_read_tools: Optional[Set[str]] = None,
-        dispatch_callback: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
-        coordinator: Optional[Any] = None,
+        idempotent_read_tools: set[str] | None = None,
+        dispatch_callback: Callable[[str, dict[str, Any]], Any] | None = None,
+        coordinator: Any | None = None,
     ) -> None:
         self.idempotent_read_tools = set(DEFAULT_IDEMPOTENT_READ_TOOLS) if idempotent_read_tools is None else set(idempotent_read_tools)
         self.dispatch_callback = dispatch_callback
         self.coordinator = coordinator
         self._buffers: dict[str, str] = {}
-        self._dispatched_call_ids: Set[str] = set()
-        self._pending_tasks: Set[asyncio.Task] = set()
+        self._dispatched_call_ids: OrderedDict[str, None] = OrderedDict()
+        self._pending_tasks: set[asyncio.Task] = set()
+        self._lock = threading.Lock()
 
     @property
     def _buffer(self) -> str:
         """Backward-compatibility property returning default buffer."""
-        return self._buffers.get("default_0", "")
+        with self._lock:
+            return self._buffers.get("default_0", "")
 
     @_buffer.setter
     def _buffer(self, value: str) -> None:
-        if not value:
-            self._buffers.pop("default_0", None)
-        else:
-            self._buffers["default_0"] = value
+        with self._lock:
+            if not value:
+                self._buffers.pop("default_0", None)
+            else:
+                self._buffers["default_0"] = value
 
     @staticmethod
     def _log_unhandled_task_exception(task: asyncio.Task) -> None:
@@ -95,7 +102,7 @@ class StreamingToolCallParser:
             if exc is not None:
                 logger.error("Speculative early tool execution failed: %s", exc)
 
-    def feed_chunk(self, delta_json: str, call_id: str = "default_0") -> Optional[Any]:
+    def feed_chunk(self, delta_json: str, call_id: str = "default_0") -> Any | None:
         """Feeds partial JSON tokens and triggers early execution when valid tool JSON closes.
 
         Returns:
@@ -104,144 +111,156 @@ class StreamingToolCallParser:
             - An asyncio.Task if DualTrackCoordinator scheduled acoustic masking on a running event loop.
             - The synchronous dispatch_callback result (or parsed payload) if no event loop/coordinator is active.
         """
-        if call_id in self._dispatched_call_ids:
-            return None
+        with self._lock:
+            if call_id in self._dispatched_call_ids:
+                return None
 
-        current_buf = self._buffers.get(call_id, "")
-        if len(current_buf) + len(delta_json) > MAX_STREAMING_BUFFER_BYTES:
-            logger.warning(
-                "Streaming buffer ceiling exceeded (%d bytes) for call_id '%s'; discarding delta.",
-                MAX_STREAMING_BUFFER_BYTES,
-                call_id,
-            )
-            return None
+            current_buf = self._buffers.get(call_id, "")
+            current_bytes = len(current_buf.encode("utf-8"))
+            delta_bytes = len(delta_json.encode("utf-8"))
+            if current_bytes + delta_bytes > MAX_STREAMING_BUFFER_BYTES:
+                logger.warning(
+                    "Streaming buffer ceiling exceeded (%d bytes) for call_id '%s'; discarding delta.",
+                    MAX_STREAMING_BUFFER_BYTES,
+                    call_id,
+                )
+                return None
 
-        if call_id not in self._buffers and len(self._buffers) >= MAX_ACTIVE_CALL_BUFFERS:
-            oldest_key = next(iter(self._buffers))
-            self._buffers.pop(oldest_key, None)
-            logger.warning("Evicted oldest streaming buffer '%s' (capacity %d reached)", oldest_key, MAX_ACTIVE_CALL_BUFFERS)
+            if call_id not in self._buffers and len(self._buffers) >= MAX_ACTIVE_CALL_BUFFERS:
+                oldest_key = next(iter(self._buffers))
+                self._buffers.pop(oldest_key, None)
+                logger.warning("Evicted oldest streaming buffer '%s' (capacity %d reached)", oldest_key, MAX_ACTIVE_CALL_BUFFERS)
 
-        self._buffers[call_id] = current_buf + delta_json
-        stripped = self._buffers[call_id].strip()
-        if not stripped.endswith("}"):
-            return None
+            self._buffers[call_id] = current_buf + delta_json
+            stripped = self._buffers[call_id].strip()
+            if not stripped.endswith("}"):
+                return None
 
-        try:
-            parsed = json.loads(stripped)
-        except json.JSONDecodeError:
-            return None
-
-        tool_name = parsed.get("name")
-        tool_args = parsed.get("arguments", {})
-        if isinstance(tool_args, str):
             try:
-                tool_args = json.loads(tool_args)
+                parsed = json.loads(stripped)
             except json.JSONDecodeError:
                 return None
 
-        if tool_name and tool_name in self.idempotent_read_tools and isinstance(tool_args, dict):
-            self._dispatched_call_ids.add(call_id)
+            tool_name = parsed.get("name")
+            tool_args = parsed.get("arguments", {})
+            if isinstance(tool_args, str):
+                try:
+                    tool_args = json.loads(tool_args)
+                except json.JSONDecodeError:
+                    return None
+
+            if not (tool_name and tool_name in self.idempotent_read_tools and isinstance(tool_args, dict)):
+                return None
+
+            if len(self._dispatched_call_ids) >= MAX_DISPATCHED_CALL_IDS:
+                self._dispatched_call_ids.popitem(last=False)
+            self._dispatched_call_ids[call_id] = None
             self._buffers.pop(call_id, None)
-            logger.info("Speculative early tool dispatch for '%s' with args %s", tool_name, list(tool_args.keys()))
 
-            # Acoustic masking via DualTrackCoordinator if configured
-            if self.coordinator is not None:
-                try:
-                    args_repr = json.dumps(tool_args or {}, sort_keys=True, default=str)
-                except Exception:
-                    args_repr = str(sorted((tool_args or {}).items()))
-                cache_key = f"{tool_name}:{args_repr}"
-                cached = self.coordinator._get_cached_result(cache_key)
-                if cached is not None:
-                    logger.debug("Fast-path cache hit for '%s' in StreamingToolCallParser", tool_name)
-                    return cached
+        logger.info("Speculative early tool dispatch for '%s' with args %s", tool_name, list(tool_args.keys()))
 
-                try:
-                    loop = asyncio.get_running_loop()
-                    if loop.is_running():
-                        coro = self.coordinator.execute_with_masking(
-                            user_query="",
-                            tool_name=tool_name,
-                            tool_args=tool_args,
-                            tool_coro=(lambda: self.dispatch_callback(tool_name, tool_args)) if self.dispatch_callback else (lambda: parsed),
-                            is_read_only=True,
-                        )
-                        task = loop.create_task(coro)
-                        self._pending_tasks.add(task)
-                        task.add_done_callback(self._pending_tasks.discard)
-                        task.add_done_callback(self._log_unhandled_task_exception)
-                        return task
-                except RuntimeError:
-                    pass
+        # Acoustic masking via DualTrackCoordinator if configured
+        if self.coordinator is not None:
+            try:
+                args_repr = json.dumps(tool_args or {}, sort_keys=True, default=str)
+            except Exception:
+                args_repr = str(sorted((tool_args or {}).items()))
+            cache_key = f"{tool_name}:{args_repr}"
+            cached = self.coordinator._get_cached_result(cache_key)
+            if cached is not None:
+                logger.debug("Fast-path cache hit for '%s' in StreamingToolCallParser", tool_name)
+                return cached
 
-            if self.dispatch_callback:
-                return self.dispatch_callback(tool_name, tool_args)
-            return parsed
+            try:
+                loop = asyncio.get_running_loop()
+                if loop.is_running():
+                    coro = self.coordinator.execute_with_masking(
+                        user_query="",
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        tool_coro=(lambda: self.dispatch_callback(tool_name, tool_args)) if self.dispatch_callback else (lambda: parsed),
+                        is_read_only=True,
+                    )
+                    task = loop.create_task(coro)
+                    self._pending_tasks.add(task)
+                    task.add_done_callback(self._pending_tasks.discard)
+                    task.add_done_callback(self._log_unhandled_task_exception)
+                    return task
+            except RuntimeError:
+                pass
 
-        return None
+        if self.dispatch_callback:
+            return self.dispatch_callback(tool_name, tool_args)
+        return parsed
 
     async def feed_chunk_async(
         self, delta_json: str, call_id: str = "default_0", user_query: str = ""
-    ) -> Optional[Any]:
+    ) -> Any | None:
         """Asynchronously feeds partial JSON tokens and executes early read tools with acoustic masking."""
-        if call_id in self._dispatched_call_ids:
-            return None
+        with self._lock:
+            if call_id in self._dispatched_call_ids:
+                return None
 
-        current_buf = self._buffers.get(call_id, "")
-        if len(current_buf) + len(delta_json) > MAX_STREAMING_BUFFER_BYTES:
-            logger.warning(
-                "Streaming buffer ceiling exceeded (%d bytes) for call_id '%s'; discarding delta.",
-                MAX_STREAMING_BUFFER_BYTES,
-                call_id,
-            )
-            return None
+            current_buf = self._buffers.get(call_id, "")
+            current_bytes = len(current_buf.encode("utf-8"))
+            delta_bytes = len(delta_json.encode("utf-8"))
+            if current_bytes + delta_bytes > MAX_STREAMING_BUFFER_BYTES:
+                logger.warning(
+                    "Streaming buffer ceiling exceeded (%d bytes) for call_id '%s'; discarding delta.",
+                    MAX_STREAMING_BUFFER_BYTES,
+                    call_id,
+                )
+                return None
 
-        if call_id not in self._buffers and len(self._buffers) >= MAX_ACTIVE_CALL_BUFFERS:
-            oldest_key = next(iter(self._buffers))
-            self._buffers.pop(oldest_key, None)
-            logger.warning("Evicted oldest streaming buffer '%s' (capacity %d reached)", oldest_key, MAX_ACTIVE_CALL_BUFFERS)
+            if call_id not in self._buffers and len(self._buffers) >= MAX_ACTIVE_CALL_BUFFERS:
+                oldest_key = next(iter(self._buffers))
+                self._buffers.pop(oldest_key, None)
+                logger.warning("Evicted oldest streaming buffer '%s' (capacity %d reached)", oldest_key, MAX_ACTIVE_CALL_BUFFERS)
 
-        self._buffers[call_id] = current_buf + delta_json
-        stripped = self._buffers[call_id].strip()
-        if not stripped.endswith("}"):
-            return None
+            self._buffers[call_id] = current_buf + delta_json
+            stripped = self._buffers[call_id].strip()
+            if not stripped.endswith("}"):
+                return None
 
-        try:
-            parsed = json.loads(stripped)
-        except json.JSONDecodeError:
-            return None
-
-        tool_name = parsed.get("name")
-        tool_args = parsed.get("arguments", {})
-        if isinstance(tool_args, str):
             try:
-                tool_args = json.loads(tool_args)
+                parsed = json.loads(stripped)
             except json.JSONDecodeError:
                 return None
 
-        if tool_name and tool_name in self.idempotent_read_tools and isinstance(tool_args, dict):
-            self._dispatched_call_ids.add(call_id)
+            tool_name = parsed.get("name")
+            tool_args = parsed.get("arguments", {})
+            if isinstance(tool_args, str):
+                try:
+                    tool_args = json.loads(tool_args)
+                except json.JSONDecodeError:
+                    return None
+
+            if not (tool_name and tool_name in self.idempotent_read_tools and isinstance(tool_args, dict)):
+                return None
+
+            if len(self._dispatched_call_ids) >= MAX_DISPATCHED_CALL_IDS:
+                self._dispatched_call_ids.popitem(last=False)
+            self._dispatched_call_ids[call_id] = None
             self._buffers.pop(call_id, None)
-            logger.info("Speculative early tool dispatch (async) for '%s' with args %s", tool_name, list(tool_args.keys()))
 
-            if self.coordinator is not None:
-                tool_target = (lambda: self.dispatch_callback(tool_name, tool_args)) if self.dispatch_callback else (lambda: parsed)
-                return await self.coordinator.execute_with_masking(
-                    user_query=user_query,
-                    tool_name=tool_name,
-                    tool_args=tool_args,
-                    tool_coro=tool_target,
-                    is_read_only=True,
-                )
+        logger.info("Speculative early tool dispatch (async) for '%s' with args %s", tool_name, list(tool_args.keys()))
 
-            if self.dispatch_callback:
-                res = self.dispatch_callback(tool_name, tool_args)
-                if inspect.isawaitable(res):
-                    return await res
-                return res
-            return parsed
+        if self.coordinator is not None:
+            tool_target = (lambda: self.dispatch_callback(tool_name, tool_args)) if self.dispatch_callback else (lambda: parsed)
+            return await self.coordinator.execute_with_masking(
+                user_query=user_query,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                tool_coro=tool_target,
+                is_read_only=True,
+            )
 
-        return None
+        if self.dispatch_callback:
+            res = self.dispatch_callback(tool_name, tool_args)
+            if inspect.isawaitable(res):
+                return await res
+            return res
+        return parsed
 
     def reset(self) -> None:
         """Resets the internal streaming buffer, dispatched call tracking, and cancels pending tasks."""
@@ -263,7 +282,7 @@ class NonceGuardedStreamParser:
     - Automatically rejects and flushes invalid/injected nonce tags as inert text.
     """
 
-    def __init__(self, turn_nonce: Optional[str] = None) -> None:
+    def __init__(self, turn_nonce: str | None = None) -> None:
         self.turn_nonce: str = turn_nonce or secrets.token_hex(4)
         self.start_tag: str = f"<<JARVIS_CALL_{self.turn_nonce}>>"
         self.end_tag: str = f"<<END_CALL_{self.turn_nonce}>>"
@@ -271,9 +290,9 @@ class NonceGuardedStreamParser:
         self._state: int = STATE_SPEAKING
         self._speech_buffer: str = ""
         self._tool_buffer: str = ""
-        self._completed_tools: List[ParsedToolCall] = []
+        self._completed_tools: list[ParsedToolCall] = []
 
-    def reset(self, new_nonce: Optional[str] = None) -> None:
+    def reset(self, new_nonce: str | None = None) -> None:
         """Resets the parser state machine for a new turn."""
         if new_nonce:
             self.turn_nonce = new_nonce
@@ -284,7 +303,7 @@ class NonceGuardedStreamParser:
         self._tool_buffer = ""
         self._completed_tools.clear()
 
-    def _parse_tool_payload(self, raw_json: str) -> Optional[ParsedToolCall]:
+    def _parse_tool_payload(self, raw_json: str) -> ParsedToolCall | None:
         """Safely parses raw tool JSON into a ParsedToolCall object."""
         if not raw_json.strip():
             return None
@@ -313,7 +332,7 @@ class NonceGuardedStreamParser:
             logger.warning("Failed to parse nonce-guarded tool payload: %s (err: %s)", raw_json[:80], e)
         return None
 
-    def feed(self, delta: str) -> Tuple[str, List[ParsedToolCall]]:
+    def feed(self, delta: str) -> tuple[str, list[ParsedToolCall]]:
         """Feeds an incoming LLM token/delta through the state machine.
 
         Returns:
@@ -322,8 +341,8 @@ class NonceGuardedStreamParser:
         if not delta:
             return "", []
 
-        speech_out: List[str] = []
-        ready_tools: List[ParsedToolCall] = []
+        speech_out: list[str] = []
+        ready_tools: list[ParsedToolCall] = []
 
         if self._state == STATE_ACCUMULATING_TOOL_CALL:
             self._tool_buffer += delta
@@ -399,11 +418,11 @@ class NonceGuardedStreamParser:
 
         return "".join(speech_out), ready_tools
 
-    def flush(self) -> Tuple[str, List[ParsedToolCall]]:
+    def flush(self) -> tuple[str, list[ParsedToolCall]]:
         """Flushes any remaining text at EOF."""
         speech = self._speech_buffer
         self._speech_buffer = ""
-        tools: List[ParsedToolCall] = []
+        tools: list[ParsedToolCall] = []
 
         if self._state == STATE_ACCUMULATING_TOOL_CALL and self._tool_buffer.strip():
             tool = self._parse_tool_payload(self._tool_buffer.strip())
@@ -418,10 +437,10 @@ class NonceGuardedStreamParser:
 
 __all__ = [
     "DEFAULT_IDEMPOTENT_READ_TOOLS",
+    "STATE_ACCUMULATING_TOOL_CALL",
+    "STATE_BUFFERING_POSSIBLE_TAG",
+    "STATE_SPEAKING",
+    "NonceGuardedStreamParser",
     "ParsedToolCall",
     "StreamingToolCallParser",
-    "NonceGuardedStreamParser",
-    "STATE_SPEAKING",
-    "STATE_BUFFERING_POSSIBLE_TAG",
-    "STATE_ACCUMULATING_TOOL_CALL",
 ]

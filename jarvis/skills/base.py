@@ -1,17 +1,23 @@
 """Base tool decorator and skill registry for Jarvis 2.0."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-import enum
+import contextlib
+import contextvars
+import hashlib
+import hmac
 import inspect
-from typing import Callable, Dict, Any, Iterable, List, Optional, Tuple
+import json
+import threading
+import time
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from typing import Any, ClassVar
 
 from jarvis.context.flow_state_mirror import ResourceScope
 
 
 class SpeculationForbiddenError(PermissionError):
     """Raised when an agent attempts to execute a non-read-only skill speculatively."""
-    pass
 
 
 # Verified Level-0 read-only query and inspection tools safe unconditionally
@@ -82,6 +88,12 @@ KNOWN_READ_ONLY_TOOLS: set[str] = {
     "inspect_window_controls",
     "check_unread_emails",
     "check_hardware_health",
+    "check_code_diagnostics",
+    "search_gemini_api_documentation",
+    "get_gemini_documentation_chunk",
+    "get_gemini_live_architecture_overview",
+    "search_modern_web_guidance",
+    "retrieve_modern_web_guide",
     "jarvis_doctor",
     "run_system_troubleshooting",
     "verify_learned_habits",
@@ -97,16 +109,133 @@ class SkillMetadata:
     risk_level: int = 1
     external_ingestion: bool = False
     scopes: ResourceScope = ResourceScope.NONE
-    path_arg_names: Tuple[str, ...] = ()
+    path_arg_names: tuple[str, ...] = ()
     default_timeout_ms: int = 1500
     origin: str = "builtin"
 
 
-import contextvars
+class ExecutionCapability:
+    """Single-use, action-bound capability token granting execution for an authorized tool call.
+
+    In-Process Threat Model & Security Notice:
+    In CPython, in-process plugins and tools share the same memory space, thread pool,
+    and ContextVar scopes. ExecutionCapability provides strict defense-in-depth against
+    accidental re-entrancy, cross-turn propagation, and argument tampering within the
+    orchestrator pipeline. It does NOT provide kernel-enforced process isolation against
+    adversarial native code or direct CPython object inspection running in-process. Untrusted
+    skills must execute in isolated external worker processes (e.g., Win32 Job Object sandbox).
+
+    Action hashing uses canonical JSON serialization with SHA-256 and constant-time digest
+    comparison (hmac.compare_digest) for TOCTOU prevention. It does NOT use a hardcoded
+    secret key or claim HMAC-keyed secrecy against in-process memory inspection.
+    """
+
+    def __init__(
+        self,
+        tool_name: str,
+        action_hash: str,
+        turn_id: str | None,
+        expires_at: float,
+    ) -> None:
+        object.__setattr__(self, "_tool_name", str(tool_name))
+        object.__setattr__(self, "_action_hash", str(action_hash))
+        object.__setattr__(self, "_turn_id", str(turn_id) if turn_id is not None else None)
+        object.__setattr__(self, "_expires_at", float(expires_at))
+        object.__setattr__(self, "_consumed", False)
+        object.__setattr__(self, "_lock", threading.Lock())
+
+    @property
+    def tool_name(self) -> str:
+        return self._tool_name
+
+    @property
+    def action_hash(self) -> str:
+        return self._action_hash
+
+    @property
+    def turn_id(self) -> str | None:
+        return self._turn_id
+
+    @property
+    def expires_at(self) -> float:
+        return self._expires_at
+
+    @property
+    def is_consumed(self) -> bool:
+        with self._lock:
+            return self._consumed
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(f"ExecutionCapability attribute '{name}' is immutable and cannot be reassigned.")
+
+    def __repr__(self) -> str:
+        return (
+            f"ExecutionCapability(tool_name={self._tool_name!r}, "
+            f"action_hash={self._action_hash[:8]}..., "
+            f"turn_id={self._turn_id!r}, "
+            f"expires_at={self._expires_at}, "
+            f"consumed={self.is_consumed})"
+        )
+
+    @classmethod
+    def compute_action_hash(cls, tool_name: str, arguments: dict[str, Any]) -> str:
+        """Computes deterministic canonical SHA-256 action hash across tool name and arguments.
+
+        Requires canonical JSON serialization. Non-serializable inputs fail closed with ValueError.
+        """
+        clean_args = dict(arguments or {})
+        try:
+            canonical_json = json.dumps(clean_args, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError) as err:
+            raise ValueError(f"Arguments for capability hashing must be canonical JSON serializable: {err}") from err
+        data = f"{tool_name}:{canonical_json}".encode()
+        return hashlib.sha256(data).hexdigest()
+
+    @classmethod
+    def create(
+        cls,
+        tool_name: str,
+        arguments: dict[str, Any],
+        turn_id: str | None = None,
+        ttl_seconds: float = 10.0,
+    ) -> ExecutionCapability:
+        h = cls.compute_action_hash(tool_name, arguments)
+        return cls(
+            tool_name=tool_name,
+            action_hash=h,
+            turn_id=turn_id,
+            expires_at=time.monotonic() + ttl_seconds,
+        )
+
+    def consume(self, target_tool: str, target_args: dict[str, Any], current_turn_id: str | None = None) -> bool:
+        """Atomically validates and consumes the capability. Single-use and TOCTOU protected."""
+        with self._lock:
+            if self._consumed:
+                return False
+
+            if time.monotonic() > self._expires_at:
+                return False
+
+            if target_tool != self._tool_name:
+                return False
+
+            if self._turn_id is not None and (not current_turn_id or current_turn_id != self._turn_id):
+                return False
+
+            try:
+                expected_hash = self.compute_action_hash(target_tool, target_args)
+            except ValueError:
+                return False
+
+            if not hmac.compare_digest(self._action_hash, expected_hash):
+                return False
+
+            object.__setattr__(self, "_consumed", True)
+            return True
+
 
 # ContextVar tracking active single-use ToolOrchestrator execution capability
-# When active, holds dict: {"tool_name": str, "consumed": bool}
-_active_orchestrator_scope: contextvars.ContextVar[Optional[dict[str, Any]]] = contextvars.ContextVar(
+_active_orchestrator_scope: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
     "_active_orchestrator_scope", default=None
 )
 
@@ -116,29 +245,52 @@ class SkillExecutionResult:
     """Structured execution result from SkillRegistry."""
     result: Any
     success: bool
-    error_type: Optional[str] = None  # "not_found", "exception"
-    error_message: Optional[str] = None
+    error_type: str | None = None  # "not_found", "exception"
+    error_message: str | None = None
 
 
 class SkillRegistry:
     """Central registry holding all callable tools for Jarvis."""
 
-    _tools: Dict[str, Callable] = {}
-    _descriptions: Dict[str, str] = {}
-    _risk_levels: Dict[str, int] = {}
-    _metadata: Dict[str, SkillMetadata] = {}
-    _openai_tools_cache: Dict[tuple[str, ...], List[Dict[str, Any]]] = {}
+    _tools: ClassVar[dict[str, Callable]] = {}
+    _descriptions: ClassVar[dict[str, str]] = {}
+    _risk_levels: ClassVar[dict[str, int]] = {}
+    _metadata: ClassVar[dict[str, SkillMetadata]] = {}
+    _openai_tools_cache: ClassVar[dict[tuple[str, ...], list[dict[str, Any]]]] = {}
+    _test_certified_read_only_tools: ClassVar[set[str]] = set()
+
+    @classmethod
+    def certify_test_read_only_tool(cls, name: str) -> None:
+        """Explicitly certifies a test tool as read-only within a test harness."""
+        cls._test_certified_read_only_tools.add(name)
+
+    @classmethod
+    def decertify_test_read_only_tool(cls, name: str) -> None:
+        """Removes test certification for a tool."""
+        cls._test_certified_read_only_tools.discard(name)
+
+    @classmethod
+    @contextlib.contextmanager
+    def scoped_test_read_only_certification(cls, *names: str):
+        """Context manager temporarily certifying tools as read-only for testing."""
+        for n in names:
+            cls._test_certified_read_only_tools.add(n)
+        try:
+            yield
+        finally:
+            for n in names:
+                cls._test_certified_read_only_tools.discard(n)
 
     @classmethod
     def register(
         cls,
         name: str | Callable | None = None,
         description: str | None = None,
-        risk_level: Optional[int] = None,
+        risk_level: int | None = None,
         read_only: bool = False,
         external_ingestion: bool = False,
         scopes: ResourceScope = ResourceScope.NONE,
-        path_arg_names: Tuple[str, ...] = (),
+        path_arg_names: tuple[str, ...] = (),
         default_timeout_ms: int = 1500,
         origin: str = "builtin",
     ):
@@ -149,6 +301,34 @@ class SkillRegistry:
         - Call without args: @SkillRegistry.register()
         - Parameterized: @SkillRegistry.register(name="foo", read_only=True, external_ingestion=True)
         """
+        # 1. Enforce exact permitted origin policy
+        valid_origins = {"builtin", "custom", "mcp"}
+        if origin not in valid_origins:
+            raise ValueError(f"Invalid skill origin '{origin}'. Must be one of {valid_origins}.")
+
+        # 2. Enforce exact permitted risk-level policy bounds if declared
+        if risk_level is not None and (
+            isinstance(risk_level, bool) or not isinstance(risk_level, int) or risk_level < 0 or risk_level > 2
+        ):
+            raise ValueError(
+                f"Invalid risk_level '{risk_level}'. Risk level must be an integer in the range [0, 2]."
+            )
+
+        def _verify_origin_trust(t_name: str, fn: Callable):
+            if origin == "builtin":
+                fn_mod = getattr(fn, "__module__", "") or ""
+                co = getattr(fn, "__code__", None)
+                fn_file = getattr(co, "co_filename", "").replace("\\", "/") if co else ""
+                if (
+                    fn_mod.startswith("jarvis.skills.custom.")
+                    or "jarvis/skills/custom" in fn_file
+                    or "data/skills" in fn_file
+                    or (fn_file.startswith("<") and "test" not in fn_mod)
+                ):
+                    raise PermissionError(
+                        f"Security Violation: Custom or dynamically executed skill '{t_name}' cannot claim origin='builtin'."
+                    )
+
         def _check_collision(t_name: str, incoming_origin: str):
             existing_meta = cls._metadata.get(t_name)
             if existing_meta:
@@ -164,11 +344,20 @@ class SkillRegistry:
                     )
 
         def _resolve_read_only(t_name: str) -> bool:
-            return bool(read_only) or (t_name in KNOWN_READ_ONLY_TOOLS)
+            # 1. Custom skills, MCP tools, and untrusted extensions are strictly prohibited from being read-only
+            if origin != "builtin":
+                return False
+            # 2. Elevated risk takes precedence: if risk_level > 0 was declared, it cannot be read-only
+            if risk_level is not None and risk_level > 0:
+                return False
+            # 3. Must be in canonical KNOWN_READ_ONLY_TOOLS or test-certified set
+            return t_name in KNOWN_READ_ONLY_TOOLS or t_name in cls._test_certified_read_only_tools
 
         def _resolve_risk(t_name: str, is_ro: bool) -> int:
             if is_ro:
                 return 0
+            if origin != "builtin":
+                return max(1, risk_level if risk_level is not None else 1)
             if risk_level is not None:
                 if risk_level == 0:
                     import logging
@@ -180,13 +369,26 @@ class SkillRegistry:
                 return risk_level
             return 1
 
+        def _log_ro_rejection_if_needed(t_name: str, is_ro: bool):
+            if read_only and not is_ro:
+                import logging
+                logging.getLogger("Jarvis.SkillRegistry").warning(
+                    "Tool '%s' requested read_only=True but is not certified (origin='%s', in_known=%s, risk_level=%s). Failing closed to read_only=False.",
+                    t_name,
+                    origin,
+                    (t_name in KNOWN_READ_ONLY_TOOLS or t_name in cls._test_certified_read_only_tools),
+                    risk_level,
+                )
+
         # Case 1: Bare decorator @SkillRegistry.register
         if callable(name):
             func = name
             tool_name = func.__name__
+            _verify_origin_trust(tool_name, func)
             _check_collision(tool_name, origin)
             effective_ro = _resolve_read_only(tool_name)
             resolved_risk = _resolve_risk(tool_name, effective_ro)
+            _log_ro_rejection_if_needed(tool_name, effective_ro)
             doc = (func.__doc__ or "").strip()
             cls._tools[tool_name] = func
             cls._descriptions[tool_name] = doc
@@ -208,9 +410,11 @@ class SkillRegistry:
         # Case 2: Parameterized decorator @SkillRegistry.register(...)
         def decorator(func: Callable):
             tool_name = name or func.__name__
+            _verify_origin_trust(tool_name, func)
             _check_collision(tool_name, origin)
             effective_ro = _resolve_read_only(tool_name)
             resolved_risk = _resolve_risk(tool_name, effective_ro)
+            _log_ro_rejection_if_needed(tool_name, effective_ro)
             doc = description or (func.__doc__ or "").strip()
             cls._tools[tool_name] = func
             cls._descriptions[tool_name] = doc
@@ -238,7 +442,7 @@ class SkillRegistry:
         return bool(meta and getattr(meta, "external_ingestion", False))
 
     @classmethod
-    def get_metadata(cls, name: str) -> Optional[SkillMetadata]:
+    def get_metadata(cls, name: str) -> SkillMetadata | None:
         """Returns the SkillMetadata for a registered tool, or a synthesized fallback."""
         meta = cls._metadata.get(name)
         if meta is not None:
@@ -250,14 +454,14 @@ class SkillRegistry:
 
     @classmethod
     def get_risk_level(cls, name: str) -> int:
-        return cls._risk_levels.get(name, 0)
+        return cls._risk_levels.get(name, 1)
 
     @classmethod
     def get_tool(cls, name: str) -> Callable | None:
         return cls._tools.get(name)
 
     @classmethod
-    def get_all_tools(cls) -> Dict[str, Callable]:
+    def get_all_tools(cls) -> dict[str, Callable]:
         return cls._tools
 
     @classmethod
@@ -273,7 +477,7 @@ class SkillRegistry:
         return False
 
     @classmethod
-    def get_openai_tools(cls, names: Iterable[str] | None = None) -> List[Dict[str, Any]]:
+    def get_openai_tools(cls, names: Iterable[str] | None = None) -> list[dict[str, Any]]:
         """Return cached OpenAI-compatible schemas for every tool or a selected subset."""
         selected = set(names) if names is not None else None
         ordered_names = tuple(name for name in cls._tools if selected is None or name in selected)
@@ -301,6 +505,13 @@ class SkillRegistry:
                 if (
                     p_name in ("self", "cls")
                     or p_name.startswith("_")
+                    or p_name in (
+                        "user_approved",
+                        "automated",
+                        "allow_unmanaged",
+                        "context",
+                        "approval_token",
+                    )
                     or param.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
                 ):
                     continue
@@ -354,14 +565,22 @@ class SkillRegistry:
         # Single-use authorization capability bound to exact tool authorized by orchestrator
         cap = _active_orchestrator_scope.get()
         is_authorized_orchestrator_call = False
-        if isinstance(cap, dict) and not cap.get("consumed", False) and cap.get("tool_name") == resolved:
-            # Consume capability so nested or concurrent child calls cannot inherit it
-            cap["consumed"] = True
-            is_authorized_orchestrator_call = True
+        if isinstance(cap, ExecutionCapability):
+            current_turn_id = None
+            try:
+                from jarvis.core.security_boundaries import TurnTaintTracker
+                current_turn_id = TurnTaintTracker.get_instance().get_current_turn_id()
+            except (ImportError, AttributeError):
+                current_turn_id = None
+            if cap.consume(resolved, kwargs, current_turn_id=current_turn_id):
+                is_authorized_orchestrator_call = True
 
         if not is_authorized_orchestrator_call:
             try:
-                from jarvis.core.security_boundaries import TurnTaintTracker, SecurityBoundaryViolation
+                from jarvis.core.security_boundaries import (
+                    SecurityBoundaryViolation,
+                    TurnTaintTracker,
+                )
                 tracker = TurnTaintTracker.get_instance()
                 effective_risk = cls.get_risk_level(resolved)
 
@@ -389,7 +608,7 @@ class SkillRegistry:
                 result=output,
                 success=True,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - catch arbitrary skill execution failures to return structured status
             err_msg = f"Error executing tool '{name}': {e}"
             return SkillExecutionResult(
                 result=err_msg,

@@ -4,6 +4,23 @@ from __future__ import annotations
 import pytest
 
 from jarvis.core.security_boundaries import DualKeyApprovalManager, TurnTaintTracker
+from jarvis.skills.base import SkillRegistry
+
+# Certify test tools exclusively within the test harness
+TEST_HARNESS_READ_ONLY_TOOLS = (
+    "_test_cached_ro_tool",
+    "test_conv_read",
+    "fast_readonly_tool",
+    "slow_readonly_tool",
+    "scoped_read_tool",
+    "epoch_sensitive_read",
+    "file_reader_tool",
+    "read_file_tool",
+    "git_status_inspection",
+    "git_diff_inspection",
+)
+for _t_name in TEST_HARNESS_READ_ONLY_TOOLS:
+    SkillRegistry.certify_test_read_only_tool(_t_name)
 
 
 @pytest.fixture(autouse=True)
