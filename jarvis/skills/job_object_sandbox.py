@@ -448,6 +448,8 @@ class SandboxedProcess:
         creationflags: int = 0,
         priority_class: int | None = None,
         apply_ui_restrictions: bool = False,
+        use_appcontainer: bool = False,
+        appcontainer_config: Any = None,
     ) -> None:
         self.command = command
         self.cwd = cwd
@@ -465,6 +467,8 @@ class SandboxedProcess:
         self.creationflags = creationflags
         self.priority_class = priority_class
         self.apply_ui_restrictions = apply_ui_restrictions
+        self.use_appcontainer = use_appcontainer
+        self.appcontainer_config = appcontainer_config
 
         self.proc: subprocess.Popen | None = None
         self.h_job: int | None = None
@@ -473,6 +477,149 @@ class SandboxedProcess:
     def start(self) -> subprocess.Popen:
         if self.proc is not None:
             return self.proc
+
+        if self.use_appcontainer:
+            if sys.platform != "win32":
+                raise RuntimeError("SandboxedProcess: AppContainer isolation is only supported on Windows.")
+
+            from jarvis.core.evolution.appcontainer import (
+                AppContainerConfig,
+                AppContainerProcessLauncher,
+                AppContainerProcessWrapper,
+                AppContainerProfileManager,
+                create_pipe_pair,
+            )
+
+            if not AppContainerProfileManager.is_supported():
+                raise RuntimeError("SandboxedProcess: AppContainer isolation is not supported on this Windows environment.")
+
+            config = self.appcontainer_config
+            if config is None:
+                config = AppContainerConfig()
+
+            child_stdin = None
+            parent_stdin = None
+            child_stdout = None
+            parent_stdout = None
+            child_stderr = None
+            parent_stderr = None
+
+            try:
+                if self.stdin == subprocess.PIPE:
+                    child_stdin, parent_stdin = create_pipe_pair(inherit_read=True)
+                if self.stdout == subprocess.PIPE:
+                    parent_stdout, child_stdout = create_pipe_pair(inherit_write=True)
+                if self.stderr == subprocess.PIPE:
+                    parent_stderr, child_stderr = create_pipe_pair(inherit_write=True)
+
+                handle = AppContainerProcessLauncher.spawn_suspended_appcontainer(
+                    command=self.command,
+                    cwd=self.cwd,
+                    env=self.env,
+                    stdin_handle=child_stdin,
+                    stdout_handle=child_stdout,
+                    stderr_handle=child_stderr,
+                    config=config,
+                )
+            except Exception as exc:
+                for h in (child_stdin, parent_stdin, child_stdout, parent_stdout, child_stderr, parent_stderr):
+                    if h and kernel32:
+                        try:
+                            kernel32.CloseHandle(wintypes.HANDLE(h))
+                        except (OSError, ValueError, AttributeError) as close_err:
+                            logger.debug("CloseHandle cleanup notice: %s", close_err)
+                logger.error("SandboxedProcess: failed to spawn suspended AppContainer process: %s", exc)
+                raise RuntimeError(f"SandboxedProcess: AppContainer launch failed: {exc}") from exc
+            finally:
+                for h in (child_stdin, child_stdout, child_stderr):
+                    if h and kernel32:
+                        try:
+                            kernel32.CloseHandle(wintypes.HANDLE(h))
+                        except (OSError, ValueError, AttributeError) as close_err:
+                            logger.debug("CloseHandle cleanup notice: %s", close_err)
+
+            h_job = None
+            try:
+                h_job = create_process_job_object(
+                    max_memory_mb=self.max_memory_mb,
+                    max_processes=self.max_processes,
+                    kill_on_close=True,
+                    requested_affinity=self.requested_affinity,
+                    priority_class=self.priority_class,
+                    apply_ui_restrictions=self.apply_ui_restrictions,
+                )
+            except Exception as e:
+                logger.error("SandboxedProcess: AppContainer Job Object creation error: %s", e)
+                h_job = None
+
+            if not h_job:
+                handle.terminate(1)
+                handle.cleanup()
+                for h in (parent_stdin, parent_stdout, parent_stderr):
+                    if h and kernel32:
+                        try:
+                            kernel32.CloseHandle(wintypes.HANDLE(h))
+                        except (OSError, ValueError, AttributeError) as close_err:
+                            logger.debug("CloseHandle cleanup notice: %s", close_err)
+                raise RuntimeError("SandboxedProcess: Failed to create Win32 Job Object for AppContainer; execution aborted to fail closed.")
+
+            self.h_job = h_job
+
+            assigned = False
+            try:
+                assigned = bool(kernel32.AssignProcessToJobObject(wintypes.HANDLE(h_job), wintypes.HANDLE(handle.h_process)))
+            except Exception as e:
+                logger.error("SandboxedProcess: AppContainer Job Object assignment error: %s", e)
+                assigned = False
+
+            if not assigned:
+                handle.terminate(1)
+                handle.cleanup()
+                terminate_and_close_job(h_job)
+                self.h_job = None
+                for h in (parent_stdin, parent_stdout, parent_stderr):
+                    if h and kernel32:
+                        try:
+                            kernel32.CloseHandle(wintypes.HANDLE(h))
+                        except (OSError, ValueError, AttributeError) as close_err:
+                            logger.debug("CloseHandle cleanup notice: %s", close_err)
+                raise RuntimeError("SandboxedProcess: Failed to assign AppContainer process to Job Object; execution aborted to fail closed.")
+
+            resumed = False
+            try:
+                resumed = handle.resume()
+            except Exception as e:
+                logger.error("SandboxedProcess: AppContainer process resumption error: %s", e)
+                resumed = False
+
+            if not resumed:
+                handle.terminate(1)
+                handle.cleanup()
+                terminate_and_close_job(h_job)
+                self.h_job = None
+                for h in (parent_stdin, parent_stdout, parent_stderr):
+                    if h and kernel32:
+                        try:
+                            kernel32.CloseHandle(wintypes.HANDLE(h))
+                        except (OSError, ValueError, AttributeError) as close_err:
+                            logger.debug("CloseHandle cleanup notice: %s", close_err)
+                raise RuntimeError("SandboxedProcess: Failed to resume suspended AppContainer process; execution aborted to fail closed.")
+
+            proc = AppContainerProcessWrapper(
+                handle=handle,
+                h_job=h_job,
+                stdin_write=parent_stdin,
+                stdout_read=parent_stdout,
+                stderr_read=parent_stderr,
+                text=self.text,
+                encoding=self.encoding,
+                errors=self.errors,
+            )
+            self.proc = proc
+            proc.terminate_tree = self.terminate_tree
+            proc.h_job = self.h_job
+            proc._sandboxed_process = self
+            return proc
 
         is_win = sys.platform == "win32"
         if is_win:
@@ -608,7 +755,12 @@ class SandboxedProcess:
                 success = False
 
         if self.proc is not None:
-            if self.proc.poll() is None:
+            if hasattr(self.proc, "close") and not isinstance(self.proc, subprocess.Popen):
+                try:
+                    self.proc.close()
+                except Exception as e:
+                    logger.debug("SandboxedProcess: error closing custom process wrapper: %s", e)
+            elif self.proc.poll() is None:
                 try:
                     self.proc.kill()
                     self.proc.wait(timeout=1.0)
@@ -659,6 +811,8 @@ def run_sandboxed_batch(
     max_memory_mb: int | None = None,
     max_processes: int | None = None,
     requested_affinity: int = 0,
+    use_appcontainer: bool = False,
+    appcontainer_config: Any = None,
 ) -> subprocess.CompletedProcess:
     """Runs a command with full process-tree Job Object containment (batch execution).
 
@@ -702,6 +856,8 @@ def run_sandboxed_batch(
         max_memory_mb=max_memory_mb,
         max_processes=max_processes,
         requested_affinity=requested_affinity,
+        use_appcontainer=use_appcontainer,
+        appcontainer_config=appcontainer_config,
     ) as proc:
         try:
             out, err = proc.communicate(input=input, timeout=timeout)
