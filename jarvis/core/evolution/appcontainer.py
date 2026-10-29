@@ -915,6 +915,7 @@ class AppContainerProcessWrapper:
         self._terminated = False
         self._closed = False
         self._close_result = True
+        self._terminate_tree_result: bool | None = None
 
     @property
     def handle(self) -> AppContainerProcessHandle:
@@ -1147,11 +1148,14 @@ class AppContainerProcessWrapper:
 
     def terminate_tree(self, exit_code: int = 1) -> bool:
         """Terminates the process and all descendant processes in the job tree."""
+        if self._closed and self._terminate_tree_result is not None:
+            return self._terminate_tree_result
         term_ok = True
         if self.returncode is None:
             term_ok = self.terminate(timeout=2.0)
         close_ok = self.close()
-        return term_ok and close_ok
+        self._terminate_tree_result = term_ok and close_ok
+        return self._terminate_tree_result
 
     def close(self) -> bool:
         """Releases underlying AppContainer resources exactly once."""

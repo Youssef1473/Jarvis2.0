@@ -1265,7 +1265,7 @@ class TestAppContainerTerminationTruthfulness(unittest.TestCase):
 
     @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
     def test_terminate_tree_propagates_unsuccessful_drain_result(self):
-        """terminate_tree returns False if Job Object fails to drain active processes."""
+        """terminate_tree returns False if Job Object fails to drain active processes, and repeated calls report failure."""
         from jarvis.skills import job_object_sandbox as jsb
         proc_mgr = SandboxedProcess(
             [sys.executable, "-c", "import time; time.sleep(10)"],
@@ -1274,9 +1274,32 @@ class TestAppContainerTerminationTruthfulness(unittest.TestCase):
         proc_mgr.start()
         try:
             with mock.patch.object(jsb, "_terminate_and_drain", return_value=False):
-                res = proc_mgr.terminate_tree()
-                self.assertFalse(res, "terminate_tree must propagate failure when draining fails!")
+                res1 = proc_mgr.terminate_tree()
+                self.assertFalse(res1, "terminate_tree must propagate failure when draining fails!")
+                # Repeat call must return honest cached failure, never masking it as success
+                res2 = proc_mgr.terminate_tree()
+                self.assertFalse(res2, "Repeated terminate_tree() falsely reported success after failed drain!")
         finally:
+            proc_mgr._closed = False
+            proc_mgr.terminate_tree()
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_standard_sandboxed_process_repeated_teardown_preserves_failed_result(self):
+        """Standard SandboxedProcess (use_appcontainer=False) repeated terminate_tree preserves failure."""
+        from jarvis.skills import job_object_sandbox as jsb
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            use_appcontainer=False,
+        )
+        proc_mgr.start()
+        try:
+            with mock.patch.object(jsb, "_terminate_and_drain", return_value=False):
+                res1 = proc_mgr.terminate_tree()
+                self.assertFalse(res1, "First terminate_tree must return False on drain failure")
+                res2 = proc_mgr.terminate_tree()
+                self.assertFalse(res2, "Second terminate_tree must preserve False and not falsely report True")
+        finally:
+            proc_mgr._closed = False
             proc_mgr.terminate_tree()
 
 

@@ -60,13 +60,18 @@
    - In `tests/test_learned_habits.py`, relaxed reflex duration assertions under `os.environ.get("CI")` to prevent false failures caused by CPU thread preemption and SQLite lock contention on 2-vCPU Windows GitHub Actions runners.
    - In `tests/test_p0_action_bound_authorization.py`, increased background thread synchronization timeouts from 1.0s to 5.0s in `test_single_writer_actor_atomic_cancellation_race_guarantees_never_executes_after_not_executed` and `test_single_writer_actor_blocked_worker_never_reports_stopped` to eliminate thread scheduling starvation flakes on 2-vCPU runners.
 
+11. **Truthful Teardown Outcome Caching & Repeat Teardown Verification:**
+   - In `SandboxedProcess.terminate_tree()` (`jarvis/skills/job_object_sandbox.py`) and `AppContainerProcessWrapper.terminate_tree()` (`jarvis/core/evolution/appcontainer.py`), replaced premature `if self._closed: return True` with cached result returning `self._close_result` / `self._terminate_tree_result`.
+   - If a first teardown fails (e.g. Job Object drain failure, wait failure, or query failure), subsequent calls preserve that honest failure status (`False`) rather than falsely masking it as `True`.
+   - Added regression tests `test_terminate_tree_propagates_unsuccessful_drain_result` and `test_standard_sandboxed_process_repeated_teardown_preserves_failed_result` in `tests/test_appcontainer_sandbox.py` proving repeated teardown preserves failed results for both AppContainer and standard Job Object sandboxes.
+
 ---
 
 ## 2. Empirical Verification Results
 
 | Suite / Check | Command | Result |
 | :--- | :--- | :--- |
-| **AppContainer Test Suite (Full)** | `python tools/run_fast_tests.py tests/test_appcontainer_sandbox.py` | **54 passed in 4.04s (Exit code: 0)** |
+| **AppContainer Test Suite (Full)** | `python tools/run_fast_tests.py tests/test_appcontainer_sandbox.py` | **55 passed in 3.90s (Exit code: 0)** |
 | **P0 Action Bound Authorization Suite** | `python tools/run_fast_tests.py tests/test_p0_action_bound_authorization.py` | **35 passed in 1.40s (Exit code: 0)** |
 | **Learned Habits Reflex Suite** | `python tools/run_fast_tests.py tests/test_learned_habits.py` | **17 passed in 20.20s (Exit code: 0)** |
 | **Job Object Sandbox Suite** | `python tools/run_fast_tests.py tests/test_job_object_sandbox.py` | **6 passed in 2.23s (Exit code: 0)** |
@@ -74,7 +79,7 @@
 | **Antigravity Job Containment Suite** | `python tools/run_fast_tests.py tests/test_antigravity_job_containment.py` | **38 passed in 1.26s (Exit code: 0)** |
 | **Job Object Sandbox Hardening Suite** | `python tools/run_fast_tests.py tests/test_job_object_sandbox_hardening.py` | **32 passed, 13 skipped in 7.57s (Exit code: 0)** |
 | **Self-Evolution Sandbox Suite** | `python tools/run_fast_tests.py tests/test_self_evolution_sandbox.py` | **35 passed in 11.18s (Exit code: 0)** |
-| **Fast Parallel Test Suite (Non-Hardware)** | `python tools/run_fast_tests.py --fast -w 4` | **1,466 passed, 22 skipped, 156 subtests in 101.41s (Exit code: 0)** |
+| **Fast Parallel Test Suite (Non-Hardware)** | `python tools/run_fast_tests.py --fast -w 4` | **1,467 passed, 22 skipped, 156 subtests in 90.64s (Exit code: 0)** |
 | **Lint Rules (UP, C4, F841, I, RUF022)** | `python tools/lint.py check --select UP,C4,F841,I,RUF022 jarvis/ tests/` | **All checks passed (Exit code: 0)** |
 | **AST Invariant Scanner** | `python tools/diagnostics.py scan jarvis tools` | **Clean (Exit code: 0)** |
 | **Git Diff Whitespace Check** | `git diff --check` | **Clean (Exit code: 0)** |

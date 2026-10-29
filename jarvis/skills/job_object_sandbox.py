@@ -570,6 +570,7 @@ class SandboxedProcess:
         self._raw_h_job: int | None = None
         self.job_holder: JobHandleHolder | None = None
         self._closed: bool = False
+        self._close_result: bool = True
 
     @property
     def h_job(self) -> int | None:
@@ -852,7 +853,7 @@ class SandboxedProcess:
     def terminate_tree(self, exit_code: int = 1) -> bool:
         """Terminates the process and all descendant processes in the job tree."""
         if self._closed:
-            return True
+            return self._close_result
         self._closed = True
         success = True
 
@@ -906,7 +907,8 @@ class SandboxedProcess:
                     pass
             self._close_pipes()
 
-        return success
+        self._close_result = success
+        return self._close_result
 
     def _close_pipes(self) -> None:
         if self.proc is not None:
@@ -1255,6 +1257,7 @@ class ContainedProcess:
         self.pid = pid
         self.command = command
         self._closed = False
+        self._close_result = True
 
     def is_alive(self) -> bool:
         """Returns True if the process is currently active."""
@@ -1287,7 +1290,7 @@ class ContainedProcess:
     def terminate(self, timeout_sec: float = 3.0) -> bool:
         """Terminates all processes in the Job Object, waits for exit, and releases handles."""
         if self._closed:
-            return True
+            return self._close_result
         self._closed = True
         success = True
         if kernel32 is not None:
@@ -1316,7 +1319,8 @@ class ContainedProcess:
                     logger.warning("Error closing job handle: %s", exc)
                     success = False
                 self.h_job = 0
-        return success
+        self._close_result = success
+        return self._close_result
 
     def __del__(self) -> None:
         try:
