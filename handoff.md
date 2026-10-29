@@ -56,8 +56,9 @@
    - Updated `check_runtime_path_effective_access()` to inspect all explicit `(DENY)` ACEs (both specific AppContainer SID and `ALL APPLICATION PACKAGES` / `S-1-15-2-1`) before evaluating allow permissions.
    - Conflicting allow/deny ACE combinations evaluate to `DENIED`.
 
-10. **CI Latency Jitter Resilience for Learned Habits:**
+10. **CI Latency Jitter Resilience for Learned Habits & SingleWriterActor:**
    - In `tests/test_learned_habits.py`, relaxed reflex duration assertions under `os.environ.get("CI")` to prevent false failures caused by CPU thread preemption and SQLite lock contention on 2-vCPU Windows GitHub Actions runners.
+   - In `tests/test_p0_action_bound_authorization.py`, increased background thread synchronization timeouts from 1.0s to 5.0s in `test_single_writer_actor_atomic_cancellation_race_guarantees_never_executes_after_not_executed` and `test_single_writer_actor_blocked_worker_never_reports_stopped` to eliminate thread scheduling starvation flakes on 2-vCPU runners.
 
 ---
 
@@ -66,6 +67,7 @@
 | Suite / Check | Command | Result |
 | :--- | :--- | :--- |
 | **AppContainer Test Suite (Full)** | `python tools/run_fast_tests.py tests/test_appcontainer_sandbox.py` | **54 passed in 4.04s (Exit code: 0)** |
+| **P0 Action Bound Authorization Suite** | `python tools/run_fast_tests.py tests/test_p0_action_bound_authorization.py` | **35 passed in 1.40s (Exit code: 0)** |
 | **Learned Habits Reflex Suite** | `python tools/run_fast_tests.py tests/test_learned_habits.py` | **17 passed in 20.20s (Exit code: 0)** |
 | **Job Object Sandbox Suite** | `python tools/run_fast_tests.py tests/test_job_object_sandbox.py` | **6 passed in 2.23s (Exit code: 0)** |
 | **Oneshot Process Containment Suite** | `python tools/run_fast_tests.py tests/test_oneshot_process_containment.py` | **23 passed in 0.73s (Exit code: 0)** |
