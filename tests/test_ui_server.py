@@ -1,19 +1,28 @@
 """Test suite for Jarvis 2.0 Holographic Web HUD Server."""
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import time
-import urllib.request
 import json
+import socket
+import time
 import unittest
-from jarvis.ui.server import JarvisUIService, create_bootstrap_token, get_hud_session_token
+import urllib.request
+
+from jarvis.ui.server import (
+    JarvisUIService,
+    create_bootstrap_token,
+    get_hud_session_token,
+)
 
 
 class TestUIServer(unittest.TestCase):
     def test_ui_server_lifecycle(self):
         # Use ephemeral test port
-        test_port = 20139
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            test_port = s.getsockname()[1]
         service = JarvisUIService(orchestrator=None, host="127.0.0.1", port=test_port)
 
         try:

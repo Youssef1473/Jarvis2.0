@@ -135,6 +135,7 @@ def _get_scrubbed_env(scratch_dir: Path | None = None) -> dict[str, str]:
         "PATHEXT",
         "NUMBER_OF_PROCESSORS",
         "OS",
+        "LOCALAPPDATA",
     }
     scrubbed = {}
     for k in allowed_keys:
@@ -1016,8 +1017,9 @@ except Exception as e:
         tool_name: str,
         kwargs: dict[str, Any],
         timeout_seconds: float = 10.0,
+        use_appcontainer: bool = False,
     ) -> Any:
-        """Executes a custom skill out-of-process inside an E-core-pinned Win32 Job Object."""
+        """Executes a custom skill out-of-process inside an E-core-pinned Win32 Job Object and optional AppContainer."""
         acquired = _SANDBOX_CONCURRENCY_SEMAPHORE.acquire(timeout=2.0)
         if not acquired:
             return "Error: Sandbox is busy executing concurrent tasks; try again shortly."
@@ -1062,13 +1064,21 @@ except Exception as e:
             run_scratch.mkdir(parents=True, exist_ok=True)
             result_file = run_scratch / "result.json"
 
+            runner_exec_path = ISOLATED_RUNNER_PATH
+            target_exec_path = target_file
+            if use_appcontainer:
+                runner_exec_path = run_scratch / "isolated_runner.py"
+                shutil.copy2(ISOLATED_RUNNER_PATH, runner_exec_path)
+                target_exec_path = run_scratch / f"{clean_name}.py"
+                shutil.copy2(target_file, target_exec_path)
+
             try:
                 cmd = [
                     sys.executable,
                     "-I",
                     "-S",
-                    str(ISOLATED_RUNNER_PATH),
-                    "--module-path", str(target_file),
+                    str(runner_exec_path),
+                    "--module-path", str(target_exec_path),
                     "--tool-name", tool_name,
                     "--result-file", str(result_file),
                     "--expected-hash", actual_hash,
@@ -1077,6 +1087,15 @@ except Exception as e:
 
                 payload = json.dumps({"nonce": nonce, "kwargs": kwargs})
                 is_win = sys.platform == "win32"
+
+                appcontainer_config = None
+                if use_appcontainer:
+                    from jarvis.core.evolution.appcontainer import AppContainerConfig
+                    appcontainer_config = AppContainerConfig(
+                        profile_name=f"J_Skill_{clean_name[:12]}_{dir_id[:8]}",
+                        grant_paths=[run_scratch],
+                        auto_cleanup_profile=True,
+                    )
 
                 proc_mgr = SandboxedProcess(
                     cmd,
@@ -1091,17 +1110,20 @@ except Exception as e:
                     requested_affinity=0xFF00,
                     priority_class=BELOW_NORMAL_PRIORITY_CLASS if is_win else None,
                     apply_ui_restrictions=is_win,
+                    use_appcontainer=use_appcontainer,
+                    appcontainer_config=appcontainer_config,
                 )
 
-                with proc_mgr as proc:
-                    try:
-                        proc.communicate(input=payload, timeout=timeout_seconds)
-                    except subprocess.TimeoutExpired:
-                        proc_mgr.terminate_tree()
-                        return f"Error: Tool '{tool_name}' timed out after {timeout_seconds}s in isolated sandbox."
+                try:
+                    with proc_mgr as proc:
+                        try:
+                            proc.communicate(input=payload, timeout=timeout_seconds)
+                        except subprocess.TimeoutExpired:
+                            proc_mgr.terminate_tree()
+                            return f"Error: Tool '{tool_name}' timed out after {timeout_seconds}s in isolated sandbox."
 
-                    if not result_file.exists():
-                        return f"Error: Tool '{tool_name}' terminated unexpectedly (code {proc.returncode}) without result."
+                        if not result_file.exists():
+                            return f"Error: Tool '{tool_name}' terminated unexpectedly (code {proc.returncode}) without result."
 
                     # Symlink / reparse point defense: reject aliased or escaped result paths
                     if result_file.is_symlink():
@@ -1137,6 +1159,9 @@ except Exception as e:
                         return res_data.get("result")
                     else:
                         return f"Error executing tool '{tool_name}': {res_data.get('error', 'Unknown error')}"
+
+                except Exception as run_exc:
+                    return f"Error: Sandboxed execution failed: {run_exc}"
 
             finally:
                 shutil.rmtree(run_scratch, ignore_errors=True)

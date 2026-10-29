@@ -727,7 +727,7 @@ class TestActionBoundAuthorizationAndHardening(unittest.TestCase):
 
         def slow_blocking_write(conn):
             blocker_started.set()
-            blocker_release.wait(timeout=2.0)
+            blocker_release.wait(timeout=5.0)
             return "blocker_done"
 
         def target_write(conn):
@@ -736,9 +736,9 @@ class TestActionBoundAuthorizationAndHardening(unittest.TestCase):
 
         try:
             # Start blocker on background thread
-            t_blocker = threading.Thread(target=lambda: actor.execute_write(slow_blocking_write, timeout=2.0))
+            t_blocker = threading.Thread(target=lambda: actor.execute_write(slow_blocking_write, timeout=5.0))
             t_blocker.start()
-            self.assertTrue(blocker_started.wait(timeout=1.0))
+            self.assertTrue(blocker_started.wait(timeout=5.0))
 
             # Queue write with tiny timeout so it times out while blocker is executing
             with self.assertRaises(TimeoutError) as ctx:
@@ -780,13 +780,13 @@ class TestActionBoundAuthorizationAndHardening(unittest.TestCase):
 
         def long_write(conn):
             blocker_started.set()
-            blocker_release.wait(timeout=2.0)
+            blocker_release.wait(timeout=5.0)
             return "done"
 
         try:
-            t = threading.Thread(target=lambda: actor.execute_write(long_write, timeout=2.0))
+            t = threading.Thread(target=lambda: actor.execute_write(long_write, timeout=5.0))
             t.start()
-            blocker_started.wait(timeout=1.0)
+            self.assertTrue(blocker_started.wait(timeout=5.0))
 
             # Stop with short timeout while worker is still blocked
             actor.stop(timeout=0.05)

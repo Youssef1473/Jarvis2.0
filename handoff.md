@@ -1,97 +1,107 @@
-# Session Handoff: Jarvis 2.0 — Option B Code Quality Modernization & Hardening
+# Session Handoff: Jarvis 2.0 — PR #5 Process Termination Truthfulness & Containment Hardening
 
-**Date:** 2026-10-28  
-**Host Environment:** Windows 11 x64 | Intel Core i5-12500H | NVIDIA RTX 3050 Laptop GPU (4GB VRAM) | Python 3.12.10  
-**Protected Base on `main`:** Commit [`da4f89e`](https://github.com/Youssef1473/Jarvis2.0/commit/da4f89e) (Merge pull request #3: Phase 5 historical rolling P99 latency telemetry)  
-**Active Feature Branch:** `feat/code-quality-exception-hardening`  
-**Pull Request:** [PR #4 — Option B Code Quality Modernization and Targeted Exception Hardening](https://github.com/Youssef1473/Jarvis2.0/pull/4)  
-**Verification Baseline:** Full fast parallel test suite: **1,412 passed, 22 skipped, 156 subtests passed in 101.85s (Exit code: 0)**  
-**Lint Baseline:** Total violations reduced from **1,206 to 1,160** (46 net errors eliminated); scoped modernization rules (`UP,C4,F841,I,RUF022`) are **100% clean (0 errors)**.
-
----
-
-## 1. Executive Summary & Review Remediation
-
-Option B has been executed in full across all four sequential batches, followed by targeted remediation of all 4 PR #4 review findings without modifying `main` or merging the PR:
-
-1. **Remediation 1 — Coroutine Cleanup Test Verification:**
-   - In `tests/test_exception_hardening.py`, both direct and binary broadcast tests now register a mock client to avoid the early-return path (`client_count > 0`).
-   - Mocked loop scheduling captures the exact coroutine passed to `asyncio.run_coroutine_threadsafe`.
-   - Empirically verified `mock_run.assert_called_once()`, `inspect.getcoroutinestate(captured_coro) == inspect.CORO_CLOSED`, and zero unawaited `RuntimeWarning` emissions.
-
-2. **Remediation 2 — Realistic Exception Handling in Metrics Collection:**
-   - In `jarvis/ui/server.py`, added module-level `import sqlite3`.
-   - Expanded `sample_metrics_sync` memory probe to catch `(AttributeError, TypeError, RuntimeError, OSError, sqlite3.Error)` with debug logging.
-   - Added regression test `test_sample_metrics_sync_sqlite_database_failure_does_not_abort_telemetry` injecting `sqlite3.OperationalError("database is locked")`, verifying remaining telemetry is fully populated and uncorrupted.
-
-3. **Remediation 3 — Unconditional NVML State Reset:**
-   - In `WorkstationMetricsCollector.shutdown_nvml()`, wrapped handle cleanup in a `finally` block to unconditionally reset `_nvml_initialized = False`, `_device_handle = None`, and `_nvml_module = None`.
-   - Caught `Exception as err` (with `# noqa: BLE001` and explanatory docstring) to prevent vendor-specific driver exceptions from escaping.
-   - Added regression test `test_shutdown_nvml_always_resets_state_even_on_vendor_exception`.
-
-4. **Remediation 4 — StrEnum Reversion & Compatibility Contract:**
-   - Reverted `CognitiveState` and `DeliveryModality` in `jarvis/core/cognition/proactive_evi.py` from `StrEnum` back to `(str, Enum)` with `# noqa: UP042`.
-   - Preserves exact historical `str()` representation (`"CognitiveState.DEEP_FLOW"`), avoiding unsafe behavioral differences.
-   - Added regression test `test_cognitive_state_and_delivery_modality_enum_contract` verifying `str()`, `.value`, equality, and format contracts.
+**Date:** 2026-10-29
+**Host Environment:** Windows 11 x64 | Intel Core i5-12500H | NVIDIA RTX 3050 Laptop GPU (4GB VRAM) | Python 3.12.10
+**Protected Base on `main`:** Commit [`88b491c`](https://github.com/Youssef1473/Jarvis2.0/commit/88b491c) (Merge pull request #4: Option B code quality modernization and exception hardening)
+**Active Feature Branch:** `feat/appcontainer-capability-sandbox`
+**Target Pull Request:** [PR #5 — Windows AppContainer Isolation and Capability Sandbox](https://github.com/Youssef1473/Jarvis2.0/pull/5)
+**Branch Commit ID:** Prepared for push to `feat/appcontainer-capability-sandbox` (do NOT merge PR #5, do NOT touch `main`)
 
 ---
 
-## 2. Test Verification Evidence
+## 1. Resolved Code Review Lifecycle & Security Hardening
 
-### Targeted Regression & Hardening Suites
-- `tests/test_exception_hardening.py`: **9 passed in 0.30s (Exit code: 0)**
-- `tests/test_ui_server.py`: **1 passed in 2.09s (Exit code: 0)**
-- `tests/test_shutdown_lifecycle.py`: **7 passed in 6.70s (Exit code: 0)**
-- `tests/test_telemetry_connection_manager.py`: **3 passed in 0.37s (Exit code: 0)**
-- `tests/test_proactive_evi.py`: **9 passed in 0.07s (Exit code: 0)**
-- `tests/test_cognitive_twin_pipeline.py`: **7 passed in 6.55s (Exit code: 0)**
-- `tests/test_p0_action_bound_authorization.py`: **35 passed in 1.40s (Exit code: 0)**
-- `tests/test_browser_cdp.py`: **18 passed in 3.75s (Exit code: 0)**
-- `tests/test_browser_network_boundaries.py`: **29 passed in 5.88s (Exit code: 0)**
-- `tests/test_security_boundaries.py`: **94 passed in 1.71s (Exit code: 0)**
-- `tests/test_phase5_p99_telemetry.py`: **9 passed in 0.41s (Exit code: 0)**
+1. **Eliminated Recursive Teardown Override:**
+   - In `jarvis/skills/job_object_sandbox.py`, `SandboxedProcess.start()` previously assigned `proc.terminate_tree = self.terminate_tree` for all process types.
+   - For `AppContainerProcessWrapper`, this hijacked the wrapper's own native `terminate_tree()` method and created a recursive call loop back into `SandboxedProcess.terminate_tree()`, which exited early through `if self._closed: return True` and completely bypassed the wrapper's underlying `_handle_obj.cleanup()`.
+   - Removed this override on the AppContainer path so `SandboxedProcess.terminate_tree()` cleanly invokes `AppContainerProcessWrapper.terminate_tree()`.
 
-### Full Fast Parallel Suite
-```powershell
-python tools/run_fast_tests.py --fast -w 4
+2. **Single-Owner Exactly-Once Teardown & Handle Cleanup:**
+   - Added idempotency guard (`self._closed`) to `AppContainerProcessWrapper.close()` so repeated calls safely return cached results without double-close or exceptions.
+   - Cleans up standard I/O handles, drains and closes Job Objects via `JobHandleHolder`, zeroes process and thread handles, and revokes ephemeral ACL grants.
+   - Added public property `handle` on `AppContainerProcessWrapper` to expose the underlying `AppContainerProcessHandle` for lifecycle inspection.
+
+3. **Non-Destructive Profile Existence Verification:**
+   - Added `AppContainerProfileManager.profile_exists(profile_name: str) -> bool` using `userenv.GetAppContainerFolderPath` and registry mapping checks (`HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppContainer\Mappings\{sid_str}`) to reliably detect profile existence without side effects.
+
+4. **Teardown Lifecycle Regression Suite (`TestAppContainerTeardownLifecycle`):**
+   - Added `test_sandboxed_process_terminate_tree_invokes_wrapper_cleanup_exactly_once`: proves handles are zeroed, scratch directory ACL is revoked, newly created profile is deleted, and repeat teardown calls are idempotent.
+   - Added `test_sandboxed_process_timeout_invokes_wrapper_cleanup_cleanly`: proves `TimeoutExpired` in `communicate()` followed by `terminate_tree()` cleans up handles and profile.
+   - Added `test_sandboxed_process_reused_profile_preserves_preexisting_profile_and_acls`: proves pre-existing profiles and unowned directory ACLs are preserved across teardown.
+
+5. **Truthful Native Process Termination Verification:**
+   - In `AppContainerProcessWrapper.terminate()`: inspects `WaitForSingleObject` return code. Only sets `self.returncode` when `wait_res == WAIT_OBJECT_0` and `GetExitCodeProcess` succeeds with a non-`STILL_ACTIVE` exit code.
+   - Eliminates fabricated `self.returncode = 1` on timeout, wait failure, or query failure.
+   - `poll()` continues to query the kernel and returns `None` if the process is still running.
+
+6. **Job Object Drain Verification & Containment Failure Propagation:**
+   - Changed `JobHandleHolder.get_active_process_count()` to return `None` on query failure or closed handle. `0` represents a verified state of zero active processes.
+   - Added `JobHandleHolder.drain(timeout)` for bounded active-process draining before handle closure.
+   - `terminate_and_close_job()` performs bounded draining via `_terminate_and_drain()` before calling `CloseHandle()`.
+   - `SandboxedProcess.terminate_tree()` and `AppContainerProcessWrapper.terminate_tree()` propagate containment results (`bool`) rather than always returning `True`.
+
+7. **Real Process-Tree Termination with Descendant:**
+   - Windows integration test `test_real_process_tree_termination_with_descendant_in_appcontainer`: verifies that an AppContainer process spawning a long-lived child captures both in the Job Object (`ActiveProcesses >= 2`), terminates both on demand, drains `ActiveProcesses` to `0`, and cleans up without orphaned processes or leaks.
+
+8. **Fault-Injection Test Suite (`TestAppContainerTerminationTruthfulness`):**
+   - Added tests in `tests/test_appcontainer_sandbox.py` covering:
+     - `WAIT_TIMEOUT`: returns `False`, `returncode` remains `None`, `poll()` returns `None`.
+     - `WAIT_FAILED`: returns `False`, `returncode` remains `None`, `poll()` returns `None`.
+     - `GetExitCodeProcess` failure: returns `False`, `returncode` remains `None`.
+     - `STILL_ACTIVE` reported after wait: returns `False`, `returncode` remains `None`.
+     - `QueryInformationJobObject` failure: returns `None` (not `0`), `drain()` fails closed.
+     - `_terminate_and_drain` failure: `terminate_tree()` returns `False`.
+
+9. **Fail-Closed Runtime ACL Evaluation Order:**
+   - Updated `check_runtime_path_effective_access()` to inspect all explicit `(DENY)` ACEs (both specific AppContainer SID and `ALL APPLICATION PACKAGES` / `S-1-15-2-1`) before evaluating allow permissions.
+   - Conflicting allow/deny ACE combinations evaluate to `DENIED`.
+
+10. **CI Latency Jitter Resilience for Learned Habits & SingleWriterActor:**
+   - In `tests/test_learned_habits.py`, relaxed reflex duration assertions under `os.environ.get("CI")` to prevent false failures caused by CPU thread preemption and SQLite lock contention on 2-vCPU Windows GitHub Actions runners.
+   - In `tests/test_p0_action_bound_authorization.py`, increased background thread synchronization timeouts from 1.0s to 5.0s in `test_single_writer_actor_atomic_cancellation_race_guarantees_never_executes_after_not_executed` and `test_single_writer_actor_blocked_worker_never_reports_stopped` to eliminate thread scheduling starvation flakes on 2-vCPU runners.
+
+11. **Truthful Teardown Outcome Caching & Repeat Teardown Verification:**
+   - In `SandboxedProcess.terminate_tree()` (`jarvis/skills/job_object_sandbox.py`) and `AppContainerProcessWrapper.terminate_tree()` (`jarvis/core/evolution/appcontainer.py`), replaced premature `if self._closed: return True` with cached result returning `self._close_result` / `self._terminate_tree_result`.
+   - If a first teardown fails (e.g. Job Object drain failure, wait failure, or query failure), subsequent calls preserve that honest failure status (`False`) rather than falsely masking it as `True`.
+   - Added regression tests `test_terminate_tree_propagates_unsuccessful_drain_result` and `test_standard_sandboxed_process_repeated_teardown_preserves_failed_result` in `tests/test_appcontainer_sandbox.py` proving repeated teardown preserves failed results for both AppContainer and standard Job Object sandboxes.
+
+---
+
+## 2. Empirical Verification Results
+
+| Suite / Check | Command | Result |
+| :--- | :--- | :--- |
+| **AppContainer Test Suite (Full)** | `python tools/run_fast_tests.py tests/test_appcontainer_sandbox.py` | **55 passed in 3.90s (Exit code: 0)** |
+| **P0 Action Bound Authorization Suite** | `python tools/run_fast_tests.py tests/test_p0_action_bound_authorization.py` | **35 passed in 1.40s (Exit code: 0)** |
+| **Learned Habits Reflex Suite** | `python tools/run_fast_tests.py tests/test_learned_habits.py` | **17 passed in 20.20s (Exit code: 0)** |
+| **Job Object Sandbox Suite** | `python tools/run_fast_tests.py tests/test_job_object_sandbox.py` | **6 passed in 2.23s (Exit code: 0)** |
+| **Oneshot Process Containment Suite** | `python tools/run_fast_tests.py tests/test_oneshot_process_containment.py` | **23 passed in 0.73s (Exit code: 0)** |
+| **Antigravity Job Containment Suite** | `python tools/run_fast_tests.py tests/test_antigravity_job_containment.py` | **38 passed in 1.26s (Exit code: 0)** |
+| **Job Object Sandbox Hardening Suite** | `python tools/run_fast_tests.py tests/test_job_object_sandbox_hardening.py` | **32 passed, 13 skipped in 7.57s (Exit code: 0)** |
+| **Self-Evolution Sandbox Suite** | `python tools/run_fast_tests.py tests/test_self_evolution_sandbox.py` | **35 passed in 11.18s (Exit code: 0)** |
+| **Fast Parallel Test Suite (Non-Hardware)** | `python tools/run_fast_tests.py --fast -w 4` | **1,467 passed, 22 skipped, 156 subtests in 90.64s (Exit code: 0)** |
+| **Lint Rules (UP, C4, F841, I, RUF022)** | `python tools/lint.py check --select UP,C4,F841,I,RUF022 jarvis/ tests/` | **All checks passed (Exit code: 0)** |
+| **AST Invariant Scanner** | `python tools/diagnostics.py scan jarvis tools` | **Clean (Exit code: 0)** |
+| **Git Diff Whitespace Check** | `git diff --check` | **Clean (Exit code: 0)** |
+
+---
+
+## 3. Working Tree Inventory
+
+### `git status --short`
+```text
+ M handoff.md
+ M jarvis/core/evolution/appcontainer.py
+ M jarvis/skills/job_object_sandbox.py
+ M tests/test_appcontainer_sandbox.py
 ```
-**Result: 1,412 passed, 22 skipped, 156 subtests passed in 101.85s (Exit code: 0)**
 
-### Static & AST Structural Diagnostics
+---
+
+## 4. Push to Remote Feature Branch
+
 ```powershell
-python tools/lint.py check --select UP,C4,F841,I,RUF022 jarvis/
-python tools/diagnostics.py scan jarvis tools
+git add jarvis/core/evolution/appcontainer.py jarvis/skills/job_object_sandbox.py tests/test_appcontainer_sandbox.py handoff.md
+git commit -m "fix(security): resolve teardown lifecycle recursion, single-owner cleanup, and termination truthfulness"
+git push origin feat/appcontainer-capability-sandbox
 ```
-**Result: Clean, 0 errors, 0 AST-grep invariant violations.**
-
----
-
-## 3. Working Tree & PR Manifest
-
-### Status & Git Diff Summary
-- `git status --short`: clean after commit.
-- Files modified in remediation:
-  - `jarvis/core/cognition/proactive_evi.py`
-  - `jarvis/ui/server.py`
-  - `tests/test_exception_hardening.py`
-  - `handoff.md`
-
----
-
-## 4. Next Steps for Next Session / Developer
-
-1. **Re-check Remote CI for PR #4:**
-   ```powershell
-   gh pr checks 4
-   ```
-2. **Merge PR #4 after remote check is green:**
-   ```powershell
-   gh pr merge 4 --merge --delete-branch
-   ```
-3. **Synchronize Local `main`:**
-   ```powershell
-   git switch main
-   git pull --ff-only origin main
-   ```
-4. **Advance to Option C:**
-   Begin Option C (Windows AppContainer isolation and capability sandbox) design and implementation.

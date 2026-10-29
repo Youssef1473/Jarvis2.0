@@ -27,6 +27,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from ctypes import wintypes
 from typing import Any
@@ -384,18 +385,113 @@ def assign_process_to_job(h_job: Any, proc: subprocess.Popen) -> bool:
         return False
 
 
+class JobHandleHolder:
+    """Thread-safe holder providing single, idempotent ownership of a Win32 Job Object handle."""
+
+    def __init__(self, handle: int | None):
+        self._handle = int(handle) if handle else 0
+        self._closed = False
+        self._close_result = True
+        self._lock = threading.Lock()
+
+    @property
+    def value(self) -> int | None:
+        with self._lock:
+            return None if self._closed or not self._handle else self._handle
+
+    @property
+    def is_closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
+    def get_active_process_count(self) -> int | None:
+        """Queries the kernel for ActiveProcesses.
+
+        Returns int (>=0) on success.
+        Returns None if closed, invalid handle, kernel32 unavailable, or query fails.
+        Zero represents a confirmed state with 0 active processes, never an error or closed state.
+        """
+        with self._lock:
+            if self._closed or not self._handle or kernel32 is None:
+                return None
+            h = self._handle
+        return _active_process_count(wintypes.HANDLE(h))
+
+    def drain(self, timeout: float = _DRAIN_TIMEOUT_SEC) -> bool:
+        """Waits until active processes reach 0 or timeout expires.
+
+        Returns True only if ActiveProcesses == 0 was confirmed.
+        Returns False if timeout expires, handle is closed/invalid, or query fails.
+        """
+        with self._lock:
+            if self._closed or not self._handle or kernel32 is None:
+                return False
+            h = self._handle
+        deadline = time.monotonic() + timeout
+        while True:
+            cnt = _active_process_count(wintypes.HANDLE(h))
+            if cnt == 0:
+                return True
+            if cnt is None or time.monotonic() >= deadline:
+                return False
+            time.sleep(0.005)
+
+    def terminate(self, exit_code: int = 1) -> bool:
+        """Signals TerminateJobObject without closing the handle."""
+        with self._lock:
+            if self._closed or not self._handle or kernel32 is None:
+                return False
+            h = self._handle
+        try:
+            return bool(kernel32.TerminateJobObject(wintypes.HANDLE(h), exit_code))
+        except (OSError, ValueError, RuntimeError) as err:
+            logger.debug("JobHandleHolder TerminateJobObject notice: %s", err)
+            return False
+
+    def close(self, exit_code: int = 1) -> bool:
+        """Terminates processes in the Job Object, drains active processes to 0, and closes the handle."""
+        with self._lock:
+            if self._closed:
+                return self._close_result
+            self._closed = True
+            h = self._handle
+            self._handle = 0
+
+        if not h:
+            self._close_result = False
+            return False
+
+        try:
+            self._close_result = terminate_and_close_job(h, exit_code=exit_code)
+        except Exception as e:
+            logger.debug("JobHandleHolder terminate_and_close_job notice: %s", e)
+            self._close_result = False
+
+        return self._close_result
+
+
 def terminate_and_close_job(h_job: Any, exit_code: int = 1) -> bool:
-    """Terminates all processes in the Job Object and closes the handle."""
+    """Terminates all processes in the Job Object, drains active processes to 0, and closes the handle."""
+    if isinstance(h_job, JobHandleHolder):
+        return h_job.close(exit_code=exit_code)
     if kernel32 is None or not h_job:
         return False
+
+    raw_h = wintypes.HANDLE(int(h_job))
+    drained = True
     try:
-        kernel32.TerminateJobObject(wintypes.HANDLE(int(h_job)), exit_code)
-    except Exception:
-        pass
+        drained = _terminate_and_drain(raw_h, exit_code=exit_code, drain_timeout=_DRAIN_TIMEOUT_SEC)
+    except Exception as e:
+        logger.debug("terminate_and_close_job drain notice: %s", e)
+        drained = False
+
+    closed = False
     try:
-        return bool(kernel32.CloseHandle(wintypes.HANDLE(int(h_job))))
+        closed = bool(kernel32.CloseHandle(raw_h))
     except Exception:
-        return False
+        closed = False
+
+    return drained and closed
 
 
 def _kill_unstarted(proc: subprocess.Popen) -> None:
@@ -448,6 +544,8 @@ class SandboxedProcess:
         creationflags: int = 0,
         priority_class: int | None = None,
         apply_ui_restrictions: bool = False,
+        use_appcontainer: bool = False,
+        appcontainer_config: Any = None,
     ) -> None:
         self.command = command
         self.cwd = cwd
@@ -465,14 +563,184 @@ class SandboxedProcess:
         self.creationflags = creationflags
         self.priority_class = priority_class
         self.apply_ui_restrictions = apply_ui_restrictions
+        self.use_appcontainer = use_appcontainer
+        self.appcontainer_config = appcontainer_config
 
         self.proc: subprocess.Popen | None = None
-        self.h_job: int | None = None
+        self._raw_h_job: int | None = None
+        self.job_holder: JobHandleHolder | None = None
         self._closed: bool = False
+        self._close_result: bool = True
+
+    @property
+    def h_job(self) -> int | None:
+        if self.job_holder is not None:
+            return self.job_holder.value
+        return self._raw_h_job
+
+    @h_job.setter
+    def h_job(self, val: Any) -> None:
+        if val is None:
+            self.job_holder = None
+            self._raw_h_job = None
+        elif isinstance(val, JobHandleHolder):
+            self.job_holder = val
+            self._raw_h_job = val.value
+        else:
+            self.job_holder = JobHandleHolder(int(val))
+            self._raw_h_job = int(val)
 
     def start(self) -> subprocess.Popen:
         if self.proc is not None:
             return self.proc
+
+        if self.use_appcontainer:
+            if sys.platform != "win32":
+                raise RuntimeError("SandboxedProcess: AppContainer isolation is only supported on Windows.")
+
+            from jarvis.core.evolution.appcontainer import (
+                AppContainerConfig,
+                AppContainerProcessLauncher,
+                AppContainerProcessWrapper,
+                AppContainerProfileManager,
+                create_pipe_pair,
+            )
+
+            if not AppContainerProfileManager.is_supported():
+                raise RuntimeError("SandboxedProcess: AppContainer isolation is not supported on this Windows environment.")
+
+            config = self.appcontainer_config
+            if config is None:
+                config = AppContainerConfig()
+
+            child_stdin = None
+            parent_stdin = None
+            child_stdout = None
+            parent_stdout = None
+            child_stderr = None
+            parent_stderr = None
+
+            try:
+                if self.stdin == subprocess.PIPE:
+                    child_stdin, parent_stdin = create_pipe_pair(inherit_read=True)
+                if self.stdout == subprocess.PIPE:
+                    parent_stdout, child_stdout = create_pipe_pair(inherit_write=True)
+                if self.stderr == subprocess.PIPE:
+                    parent_stderr, child_stderr = create_pipe_pair(inherit_write=True)
+
+                handle = AppContainerProcessLauncher.spawn_suspended_appcontainer(
+                    command=self.command,
+                    cwd=self.cwd,
+                    env=self.env,
+                    stdin_handle=child_stdin,
+                    stdout_handle=child_stdout,
+                    stderr_handle=child_stderr,
+                    config=config,
+                )
+            except Exception as exc:
+                for h in (child_stdin, parent_stdin, child_stdout, parent_stdout, child_stderr, parent_stderr):
+                    if h and kernel32:
+                        try:
+                            kernel32.CloseHandle(wintypes.HANDLE(h))
+                        except (OSError, ValueError, AttributeError) as close_err:
+                            logger.debug("CloseHandle cleanup notice: %s", close_err)
+                logger.error("SandboxedProcess: failed to spawn suspended AppContainer process: %s", exc)
+                raise RuntimeError(f"SandboxedProcess: AppContainer launch failed: {exc}") from exc
+            finally:
+                for h in (child_stdin, child_stdout, child_stderr):
+                    if h and kernel32:
+                        try:
+                            kernel32.CloseHandle(wintypes.HANDLE(h))
+                        except (OSError, ValueError, AttributeError) as close_err:
+                            logger.debug("CloseHandle cleanup notice: %s", close_err)
+
+            h_job = None
+            try:
+                h_job = create_process_job_object(
+                    max_memory_mb=self.max_memory_mb,
+                    max_processes=self.max_processes,
+                    kill_on_close=True,
+                    requested_affinity=self.requested_affinity,
+                    priority_class=self.priority_class,
+                    apply_ui_restrictions=self.apply_ui_restrictions,
+                )
+            except Exception as e:
+                logger.error("SandboxedProcess: AppContainer Job Object creation error: %s", e)
+                h_job = None
+
+            if not h_job:
+                handle.terminate(1)
+                handle.cleanup()
+                for h in (parent_stdin, parent_stdout, parent_stderr):
+                    if h and kernel32:
+                        try:
+                            kernel32.CloseHandle(wintypes.HANDLE(h))
+                        except (OSError, ValueError, AttributeError) as close_err:
+                            logger.debug("CloseHandle cleanup notice: %s", close_err)
+                raise RuntimeError("SandboxedProcess: Failed to create Win32 Job Object for AppContainer; execution aborted to fail closed.")
+
+            self.h_job = h_job
+
+            assigned = False
+            try:
+                assigned = bool(kernel32.AssignProcessToJobObject(wintypes.HANDLE(h_job), wintypes.HANDLE(handle.h_process)))
+            except Exception as e:
+                logger.error("SandboxedProcess: AppContainer Job Object assignment error: %s", e)
+                assigned = False
+
+            if not assigned:
+                handle.terminate(1)
+                handle.cleanup()
+                terminate_and_close_job(h_job)
+                self.h_job = None
+                for h in (parent_stdin, parent_stdout, parent_stderr):
+                    if h and kernel32:
+                        try:
+                            kernel32.CloseHandle(wintypes.HANDLE(h))
+                        except (OSError, ValueError, AttributeError) as close_err:
+                            logger.debug("CloseHandle cleanup notice: %s", close_err)
+                raise RuntimeError("SandboxedProcess: Failed to assign AppContainer process to Job Object; execution aborted to fail closed.")
+
+            resumed = False
+            try:
+                resumed = handle.resume()
+            except Exception as e:
+                logger.error("SandboxedProcess: AppContainer process resumption error: %s", e)
+                resumed = False
+
+            if not resumed:
+                handle.terminate(1)
+                handle.cleanup()
+                terminate_and_close_job(h_job)
+                self.h_job = None
+                for h in (parent_stdin, parent_stdout, parent_stderr):
+                    if h and kernel32:
+                        try:
+                            kernel32.CloseHandle(wintypes.HANDLE(h))
+                        except (OSError, ValueError, AttributeError) as close_err:
+                            logger.debug("CloseHandle cleanup notice: %s", close_err)
+                raise RuntimeError("SandboxedProcess: Failed to resume suspended AppContainer process; execution aborted to fail closed.")
+
+            proc = AppContainerProcessWrapper(
+                handle=handle,
+                h_job=self.h_job,
+                job_holder=self.job_holder,
+                stdin_write=parent_stdin,
+                stdout_read=parent_stdout,
+                stderr_read=parent_stderr,
+                text=self.text,
+                encoding=self.encoding,
+                errors=self.errors,
+            )
+            self.proc = proc
+            # NOTE: Do NOT assign proc.terminate_tree = self.terminate_tree here.
+            # AppContainerProcessWrapper has its own native terminate_tree() method.
+            # Overwriting it causes recursive re-entry into SandboxedProcess.terminate_tree()
+            # which bypassed wrapper cleanup.
+            proc.h_job = self.h_job
+            proc.job_holder = self.job_holder
+            proc._sandboxed_process = self
+            return proc
 
         is_win = sys.platform == "win32"
         if is_win:
@@ -553,6 +821,7 @@ class SandboxedProcess:
             # Attach helper references onto proc
             proc.terminate_tree = self.terminate_tree
             proc.h_job = self.h_job
+            proc.job_holder = self.job_holder
             proc._sandboxed_process = self
             return proc
         else:
@@ -584,18 +853,32 @@ class SandboxedProcess:
     def terminate_tree(self, exit_code: int = 1) -> bool:
         """Terminates the process and all descendant processes in the job tree."""
         if self._closed:
-            return True
+            return self._close_result
         self._closed = True
         success = True
 
-        if sys.platform == "win32" and self.h_job is not None:
-            try:
-                terminate_and_close_job(self.h_job, exit_code=exit_code)
-            except Exception as e:
-                logger.debug("SandboxedProcess: error terminating Job Object: %s", e)
-                success = False
-            finally:
-                self.h_job = None
+        if sys.platform == "win32":
+            if self.job_holder is not None:
+                try:
+                    job_ok = self.job_holder.close(exit_code=exit_code)
+                    if not job_ok:
+                        success = False
+                except Exception as e:
+                    logger.debug("SandboxedProcess: error terminating Job Object holder: %s", e)
+                    success = False
+                finally:
+                    self.job_holder = None
+                    self._raw_h_job = None
+            elif self.h_job is not None:
+                try:
+                    job_ok = terminate_and_close_job(self.h_job, exit_code=exit_code)
+                    if not job_ok:
+                        success = False
+                except Exception as e:
+                    logger.debug("SandboxedProcess: error terminating Job Object: %s", e)
+                    success = False
+                finally:
+                    self.h_job = None
         elif sys.platform != "win32" and self.proc is not None and getattr(self.proc, "pid", None):
             try:
                 import signal
@@ -608,7 +891,15 @@ class SandboxedProcess:
                 success = False
 
         if self.proc is not None:
-            if self.proc.poll() is None:
+            if type(self.proc).__name__ == "AppContainerProcessWrapper":
+                try:
+                    proc_ok = self.proc.terminate_tree(exit_code=exit_code)
+                    if not proc_ok:
+                        success = False
+                except Exception as e:
+                    logger.debug("SandboxedProcess: error closing custom process wrapper: %s", e)
+                    success = False
+            elif self.proc.poll() is None:
                 try:
                     self.proc.kill()
                     self.proc.wait(timeout=1.0)
@@ -616,7 +907,8 @@ class SandboxedProcess:
                     pass
             self._close_pipes()
 
-        return success
+        self._close_result = success
+        return self._close_result
 
     def _close_pipes(self) -> None:
         if self.proc is not None:
@@ -659,6 +951,8 @@ def run_sandboxed_batch(
     max_memory_mb: int | None = None,
     max_processes: int | None = None,
     requested_affinity: int = 0,
+    use_appcontainer: bool = False,
+    appcontainer_config: Any = None,
 ) -> subprocess.CompletedProcess:
     """Runs a command with full process-tree Job Object containment (batch execution).
 
@@ -702,6 +996,8 @@ def run_sandboxed_batch(
         max_memory_mb=max_memory_mb,
         max_processes=max_processes,
         requested_affinity=requested_affinity,
+        use_appcontainer=use_appcontainer,
+        appcontainer_config=appcontainer_config,
     ) as proc:
         try:
             out, err = proc.communicate(input=input, timeout=timeout)
@@ -961,6 +1257,7 @@ class ContainedProcess:
         self.pid = pid
         self.command = command
         self._closed = False
+        self._close_result = True
 
     def is_alive(self) -> bool:
         """Returns True if the process is currently active."""
@@ -993,7 +1290,7 @@ class ContainedProcess:
     def terminate(self, timeout_sec: float = 3.0) -> bool:
         """Terminates all processes in the Job Object, waits for exit, and releases handles."""
         if self._closed:
-            return True
+            return self._close_result
         self._closed = True
         success = True
         if kernel32 is not None:
@@ -1022,7 +1319,8 @@ class ContainedProcess:
                     logger.warning("Error closing job handle: %s", exc)
                     success = False
                 self.h_job = 0
-        return success
+        self._close_result = success
+        return self._close_result
 
     def __del__(self) -> None:
         try:
