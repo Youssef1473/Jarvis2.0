@@ -453,6 +453,10 @@ class AppContainerProfileManager:
             return "NONE", None
         try:
             res = subprocess.run(["icacls", str(p)], capture_output=True, text=True, check=False)
+            if res.returncode != 0:
+                err_msg = res.stderr.strip() or f"icacls exited with code {res.returncode}"
+                return "UNREADABLE", err_msg
+
             pattern = rf"{re.escape(sid_str)}:([^\r\n]+)"
             matches = [m.strip() for m in re.findall(pattern, res.stdout)]
             if not matches:
@@ -474,8 +478,8 @@ class AppContainerProfileManager:
                 if has_read:
                     return "SUFFICIENT", ", ".join(matches)
                 return "INADEQUATE", ", ".join(matches)
-        except (OSError, ValueError):
-            return "NONE", None
+        except (OSError, ValueError) as exc:
+            return "UNREADABLE", str(exc)
 
     @classmethod
     def has_path_access(cls, path: str | Path, sid_str: str, require_write: bool = True) -> bool:
@@ -484,31 +488,78 @@ class AppContainerProfileManager:
         return status == "SUFFICIENT"
 
     @classmethod
+    def check_runtime_path_effective_access(
+        cls,
+        path: str | Path,
+        sid_str: str | None = None,
+    ) -> tuple[str, str | None]:
+        """Inspects effective read access for Python runtime paths via icacls.
+
+        Evaluates:
+          1. Explicit DENY on sid_str takes unconditional precedence over all ALLOW ACEs -> returns ("DENIED", ...).
+          2. Explicit ALLOW on sid_str with read permission (RX, R, F, M) -> returns ("SUFFICIENT", ...).
+          3. ALL APPLICATION PACKAGES / S-1-15-2-1 with read permission (RX, R, F, M) -> returns ("SUFFICIENT", ...).
+          4. ALL APPLICATION PACKAGES with DENY -> returns ("DENIED", ...).
+          5. ALL APPLICATION PACKAGES with insufficient permission (e.g. W only) -> returns ("INADEQUATE", ...).
+          6. If icacls fails, access denied reading DACL, or unreadable -> returns ("UNREADABLE", ...).
+          7. If no matching ACE exists -> returns ("NONE", None).
+        """
+        import re
+
+        p = Path(path).resolve()
+        if not p.exists():
+            return "NOT_FOUND", None
+
+        try:
+            res = subprocess.run(["icacls", str(p)], capture_output=True, text=True, check=False)
+            if res.returncode != 0:
+                err_msg = res.stderr.strip() or f"icacls exited with code {res.returncode}"
+                return "UNREADABLE", err_msg
+
+            out = res.stdout
+            if not out.strip() or ("Failed processing" in out and "Successfully processed 0 files" in out):
+                return "UNREADABLE", out.strip()
+
+            # 1. Explicit checks for specific AppContainer SID if provided
+            if sid_str:
+                pattern_sid = rf"{re.escape(sid_str)}:([^\r\n]+)"
+                matches_sid = [m.strip() for m in re.findall(pattern_sid, out)]
+                for m in matches_sid:
+                    # Explicit DENY on this AppContainer SID overrides all group permissions
+                    if "(DENY)" in m or "(N)" in m:
+                        return "DENIED", m
+
+                has_read_sid = any(
+                    any(p in m for p in ("(RX)", "(R)", "(F)", "(M)")) and "(DENY)" not in m and "(N)" not in m
+                    for m in matches_sid
+                )
+                if has_read_sid:
+                    return "SUFFICIENT", ", ".join(matches_sid)
+
+            # 2. Check broad group: ALL APPLICATION PACKAGES or S-1-15-2-1
+            pattern_pkg = r"(?:ALL APPLICATION PACKAGES|S-1-15-2-1):([^\r\n]+)"
+            matches_pkg = [m.strip() for m in re.findall(pattern_pkg, out, re.IGNORECASE)]
+            if matches_pkg:
+                for m in matches_pkg:
+                    if "(DENY)" in m or "(N)" in m:
+                        return "DENIED", m
+                has_read_pkg = any(
+                    any(p in m for p in ("(RX)", "(R)", "(F)", "(M)"))
+                    for m in matches_pkg
+                )
+                if has_read_pkg:
+                    return "SUFFICIENT", ", ".join(matches_pkg)
+                return "INADEQUATE", ", ".join(matches_pkg)
+
+            return "NONE", None
+        except (OSError, ValueError) as exc:
+            return "UNREADABLE", str(exc)
+
+    @classmethod
     def has_runtime_path_access(cls, path: str | Path, sid_str: str | None = None) -> bool:
         """Checks whether a single runtime path has AppContainer access (via ALL APPLICATION PACKAGES or specific SID)."""
-        try:
-            p = Path(path).resolve()
-            if not p.exists():
-                return False
-            p_str = str(p)
-            has_well_known = _WELL_KNOWN_PACKAGE_ACE_CACHE.get(p_str)
-            if has_well_known is None:
-                res = subprocess.run(["icacls", p_str], capture_output=True, text=True, check=False)
-                out = res.stdout
-                has_well_known = "ALL APPLICATION PACKAGES" in out or "S-1-15-2-1" in out
-                _WELL_KNOWN_PACKAGE_ACE_CACHE[p_str] = has_well_known
-                if has_well_known:
-                    return True
-                if sid_str:
-                    return cls.has_path_access(p, sid_str, require_write=False)
-                return False
-            if has_well_known:
-                return True
-            if sid_str:
-                return cls.has_path_access(p, sid_str, require_write=False)
-            return False
-        except (OSError, ValueError):
-            return False
+        status, _ = cls.check_runtime_path_effective_access(path, sid_str=sid_str)
+        return status == "SUFFICIENT"
 
     @classmethod
     def has_runtime_access(cls, sid_str: str | None = None) -> bool:
@@ -529,15 +580,23 @@ class AppContainerProfileManager:
         newly_granted: list[Path] = []
         required_paths = cls.get_required_runtime_paths()
         for p in required_paths:
-            if cls.has_runtime_path_access(p, sid_str):
+            status, perms = cls.check_runtime_path_effective_access(p, sid_str=sid_str)
+            if status == "SUFFICIENT":
                 continue
 
-            status, perms = cls.check_effective_path_access(p, sid_str, require_write=False)
             if status == "DENIED":
                 for granted_p in newly_granted:
                     cls.revoke_path_access(granted_p, sid_str)
                 raise AppContainerSecurityError(
                     f"Runtime directory '{p}' has an explicit pre-existing DENY ACE for SID '{sid_str}' ({perms}); "
+                    f"fail-closed policy aborts launch."
+                )
+
+            if status == "UNREADABLE":
+                for granted_p in newly_granted:
+                    cls.revoke_path_access(granted_p, sid_str)
+                raise AppContainerSecurityError(
+                    f"Runtime directory '{p}' security descriptor could not be read ({perms}); "
                     f"fail-closed policy aborts launch."
                 )
 
@@ -761,6 +820,7 @@ class AppContainerProcessWrapper:
         self,
         handle: AppContainerProcessHandle,
         h_job: int | None = None,
+        job_holder: Any | None = None,
         stdin_write: int | None = None,
         stdout_read: int | None = None,
         stderr_read: int | None = None,
@@ -769,11 +829,18 @@ class AppContainerProcessWrapper:
         errors: str | None = "replace",
     ) -> None:
         self._handle_obj = handle
+        self._job_holder = job_holder
         self._h_job = h_job
+        if self._job_holder is None and h_job is not None:
+            if hasattr(h_job, "close") and hasattr(h_job, "value"):
+                self._job_holder = h_job
+                self._h_job = h_job.value
+        elif self._job_holder is not None and self._h_job is None:
+            self._h_job = getattr(self._job_holder, "value", None)
+
         self.pid = handle.pid
         self._h_process = handle.h_process
         self._handle = handle.h_process
-        self.h_job = h_job
         self._stdin_write = stdin_write
         self._stdout_read = stdout_read
         self._stderr_read = stderr_read
@@ -785,6 +852,35 @@ class AppContainerProcessWrapper:
         self._errors = errors or "replace"
         self.returncode: int | None = None
         self._terminated = False
+
+    @property
+    def h_job(self) -> int | None:
+        if self._job_holder is not None:
+            return self._job_holder.value
+        return self._h_job
+
+    @h_job.setter
+    def h_job(self, val: Any) -> None:
+        if val is None:
+            if self._job_holder is not None:
+                self._job_holder.close()
+                self._job_holder = None
+            self._h_job = None
+        elif hasattr(val, "close") and hasattr(val, "value"):
+            self._job_holder = val
+            self._h_job = val.value
+        else:
+            self._h_job = int(val)
+
+    @property
+    def job_holder(self) -> Any | None:
+        return self._job_holder
+
+    @job_holder.setter
+    def job_holder(self, val: Any) -> None:
+        self._job_holder = val
+        if val is not None and hasattr(val, "value"):
+            self._h_job = val.value
 
     def poll(self) -> int | None:
         """Checks if child process has terminated, setting and returning returncode."""
@@ -865,7 +961,7 @@ class AppContainerProcessWrapper:
                             )
                             break
                         offset += written.value
-            except Exception as e:
+            except (OSError, ValueError, RuntimeError) as e:
                 stdin_exception = e
             finally:
                 try:
@@ -922,17 +1018,43 @@ class AppContainerProcessWrapper:
             return out_bytes.decode(self._encoding, errors=self._errors), err_bytes.decode(self._encoding, errors=self._errors)
         return bytes(out_bytes), bytes(err_bytes)
 
-    def terminate(self) -> None:
-        """Terminates the process and job tree."""
-        if self._h_job:
-            from jarvis.skills.job_object_sandbox import terminate_and_close_job
+    def terminate(self, timeout: float = 2.0) -> None:
+        """Terminates the process and job tree, waiting for native process termination."""
+        if self._job_holder is not None:
             try:
-                terminate_and_close_job(self._h_job)
+                self._job_holder.terminate(1)
             except (OSError, ValueError, RuntimeError) as err:
-                logger.debug("terminate_and_close_job notice: %s", err)
-            self._h_job = None
-        self._handle_obj.terminate(1)
-        self.returncode = 1
+                logger.debug("job_holder terminate notice: %s", err)
+        elif self._h_job and kernel32:
+            try:
+                kernel32.TerminateJobObject(wintypes.HANDLE(int(self._h_job)), 1)
+            except (OSError, ValueError, RuntimeError) as err:
+                logger.debug("TerminateJobObject notice: %s", err)
+
+        if hasattr(self, "_handle_obj") and self._handle_obj:
+            try:
+                self._handle_obj.terminate(1)
+            except (OSError, ValueError, RuntimeError) as err:
+                logger.debug("handle_obj terminate notice: %s", err)
+
+        # Wait for native process to enter signaled state
+        if self._h_process and kernel32:
+            try:
+                ms = int(timeout * 1000) if timeout else 2000
+                kernel32.WaitForSingleObject(wintypes.HANDLE(self._h_process), wintypes.DWORD(ms))
+            except (OSError, ValueError, RuntimeError) as err:
+                logger.debug("WaitForSingleObject notice: %s", err)
+
+            ec = wintypes.DWORD(0)
+            if kernel32.GetExitCodeProcess(wintypes.HANDLE(self._h_process), ctypes.byref(ec)):
+                if ec.value != STILL_ACTIVE:
+                    self.returncode = int(ec.value)
+                else:
+                    self.returncode = 1
+            else:
+                self.returncode = 1
+        else:
+            self.returncode = 1
 
     def kill(self) -> None:
         """Kills the process."""
@@ -940,12 +1062,26 @@ class AppContainerProcessWrapper:
 
     def terminate_tree(self, exit_code: int = 1) -> bool:
         """Terminates the process and all descendant processes in the job tree."""
-        self.terminate()
+        self.close()
         return True
 
     def close(self) -> None:
         """Releases underlying AppContainer resources."""
         self.terminate()
+        if self._job_holder is not None:
+            try:
+                self._job_holder.close(exit_code=1)
+            except (OSError, ValueError, RuntimeError) as err:
+                logger.debug("job_holder close notice: %s", err)
+            self._job_holder = None
+            self._h_job = None
+        elif self._h_job:
+            from jarvis.skills.job_object_sandbox import terminate_and_close_job
+            try:
+                terminate_and_close_job(self._h_job)
+            except (OSError, ValueError, RuntimeError) as err:
+                logger.debug("terminate_and_close_job notice: %s", err)
+            self._h_job = None
         if self._stdin_write and kernel32:
             try:
                 kernel32.CloseHandle(wintypes.HANDLE(self._stdin_write))
@@ -1001,6 +1137,12 @@ class AppContainerProcessLauncher:
         # Pre-existing grants on reused profiles are preserved.
         applied_grants: list[Path] = []
         runtime_grants: list[Path] = []
+        capability_sids: list[int] = []
+        opened_nul_handles: list[int] = []
+        attr_buf = None
+        attr_list_initialized = False
+        spawned_handle = None
+
         try:
             for path in config.grant_paths:
                 p = Path(path).resolve()
@@ -1028,88 +1170,61 @@ class AppContainerProcessLauncher:
 
             # Ensure minimal scoped runtime access for AppContainer SID
             runtime_grants = AppContainerProfileManager.ensure_runtime_access(sid_str)
-        except Exception:
-            cls._cleanup_pre_spawn(
-                p_sid=p_sid,
-                capability_sids=[],
-                config=config,
-                sid_str=sid_str,
-                applied_grants=applied_grants,
-                runtime_grants=runtime_grants,
-                is_new_profile=is_new_profile,
-            )
-            raise
 
-        # 3. Resolve Capability SIDs - fail closed immediately on invalid capability
-        capability_sids: list[int] = []
-        cap_structs = None
-        if config.capabilities:
-            cap_structs = (SID_AND_ATTRIBUTES * len(config.capabilities))()
-            for idx, cap_name in enumerate(config.capabilities):
-                cap_sid_str = CAPABILITY_SID_MAP.get(cap_name, cap_name)
-                cap_sid = ctypes.c_void_p()
-                if not advapi32.ConvertStringSidToSidW(wintypes.LPCWSTR(cap_sid_str), ctypes.byref(cap_sid)) or not cap_sid.value:
-                    last_err = ctypes.get_last_error()
-                    cls._cleanup_pre_spawn(
-                        p_sid=p_sid,
-                        capability_sids=capability_sids,
-                        config=config,
-                        sid_str=sid_str,
-                        applied_grants=applied_grants,
-                        runtime_grants=runtime_grants,
-                        is_new_profile=is_new_profile,
-                    )
-                    raise AppContainerSecurityError(
-                        f"Invalid or unresolvable capability '{cap_name}' (SID string '{cap_sid_str}'): "
-                        f"ConvertStringSidToSidW failed with WinError {last_err}"
-                    )
-                cap_structs[idx].Sid = cap_sid.value
-                cap_structs[idx].Attributes = 0x00000004  # SE_GROUP_ENABLED
-                capability_sids.append(int(cap_sid.value))
+            # 3. Resolve Capability SIDs - fail closed immediately on invalid capability
+            cap_structs = None
+            if config.capabilities:
+                cap_structs = (SID_AND_ATTRIBUTES * len(config.capabilities))()
+                for idx, cap_name in enumerate(config.capabilities):
+                    cap_sid_str = CAPABILITY_SID_MAP.get(cap_name, cap_name)
+                    cap_sid = ctypes.c_void_p()
+                    if not advapi32.ConvertStringSidToSidW(wintypes.LPCWSTR(cap_sid_str), ctypes.byref(cap_sid)) or not cap_sid.value:
+                        last_err = ctypes.get_last_error()
+                        raise AppContainerSecurityError(
+                            f"Invalid or unresolvable capability '{cap_name}' (SID string '{cap_sid_str}'): "
+                            f"ConvertStringSidToSidW failed with WinError {last_err}"
+                        )
+                    cap_structs[idx].Sid = cap_sid.value
+                    cap_structs[idx].Attributes = 0x00000004  # SE_GROUP_ENABLED
+                    capability_sids.append(int(cap_sid.value))
 
-        sec_caps = SECURITY_CAPABILITIES()
-        sec_caps.AppContainerSid = ctypes.c_void_p(p_sid)
-        if cap_structs is not None:
-            sec_caps.Capabilities = ctypes.cast(cap_structs, ctypes.POINTER(SID_AND_ATTRIBUTES))
-            sec_caps.CapabilityCount = len(capability_sids)
-        else:
-            sec_caps.Capabilities = None
-            sec_caps.CapabilityCount = 0
-        sec_caps.Reserved = 0
+            sec_caps = SECURITY_CAPABILITIES()
+            sec_caps.AppContainerSid = ctypes.c_void_p(p_sid)
+            if cap_structs is not None:
+                sec_caps.Capabilities = ctypes.cast(cap_structs, ctypes.POINTER(SID_AND_ATTRIBUTES))
+                sec_caps.CapabilityCount = len(capability_sids)
+            else:
+                sec_caps.Capabilities = None
+                sec_caps.CapabilityCount = 0
+            sec_caps.Reserved = 0
 
-        # 4. Standard handles invariant: when STARTF_USESTDHANDLES is active, ensure all three
-        # handles (stdin, stdout, stderr) hold valid handles. Provide inheritable \\.\NUL device handles
-        # for any unredirected or DEVNULL streams.
-        opened_nul_handles: list[int] = []
-        handles_to_inherit: list[wintypes.HANDLE] = []
-        use_std_handles = any(h is not None for h in (stdin_handle, stdout_handle, stderr_handle))
+            # 4. Standard handles invariant: when STARTF_USESTDHANDLES is active, ensure all three
+            # handles (stdin, stdout, stderr) hold valid handles. Provide inheritable \\.\NUL device handles
+            # for any unredirected or DEVNULL streams.
+            handles_to_inherit: list[wintypes.HANDLE] = []
+            use_std_handles = any(h is not None for h in (stdin_handle, stdout_handle, stderr_handle))
 
-        final_stdin = stdin_handle
-        final_stdout = stdout_handle
-        final_stderr = stderr_handle
+            final_stdin = stdin_handle
+            final_stdout = stdout_handle
+            final_stderr = stderr_handle
 
-        if use_std_handles:
-            if final_stdin is None:
-                final_stdin = _open_nul_handle(GENERIC_READ)
-                opened_nul_handles.append(final_stdin)
-            if final_stdout is None:
-                final_stdout = _open_nul_handle(GENERIC_WRITE)
-                opened_nul_handles.append(final_stdout)
-            if final_stderr is None:
-                final_stderr = _open_nul_handle(GENERIC_WRITE)
-                opened_nul_handles.append(final_stderr)
+            if use_std_handles:
+                if final_stdin is None:
+                    final_stdin = _open_nul_handle(GENERIC_READ)
+                    opened_nul_handles.append(final_stdin)
+                if final_stdout is None:
+                    final_stdout = _open_nul_handle(GENERIC_WRITE)
+                    opened_nul_handles.append(final_stdout)
+                if final_stderr is None:
+                    final_stderr = _open_nul_handle(GENERIC_WRITE)
+                    opened_nul_handles.append(final_stderr)
 
-            handles_to_inherit = [
-                wintypes.HANDLE(final_stdin),
-                wintypes.HANDLE(final_stdout),
-                wintypes.HANDLE(final_stderr),
-            ]
+                handles_to_inherit = [
+                    wintypes.HANDLE(final_stdin),
+                    wintypes.HANDLE(final_stdout),
+                    wintypes.HANDLE(final_stderr),
+                ]
 
-        attr_buf = None
-        attr_list_initialized = False
-        handle_array = None
-        spawned_handle = None
-        try:
             attr_count = 1 + (1 if handles_to_inherit else 0)
             attr_size = ctypes.c_size_t(0)
             kernel32.InitializeProcThreadAttributeList(None, attr_count, 0, ctypes.byref(attr_size))

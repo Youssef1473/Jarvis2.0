@@ -27,6 +27,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from ctypes import wintypes
 from typing import Any
@@ -384,8 +385,66 @@ def assign_process_to_job(h_job: Any, proc: subprocess.Popen) -> bool:
         return False
 
 
+class JobHandleHolder:
+    """Thread-safe holder providing single, idempotent ownership of a Win32 Job Object handle."""
+
+    def __init__(self, handle: int | None):
+        self._handle = int(handle) if handle else 0
+        self._closed = False
+        self._lock = threading.Lock()
+
+    @property
+    def value(self) -> int | None:
+        with self._lock:
+            return None if self._closed or not self._handle else self._handle
+
+    @property
+    def is_closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
+    def get_active_process_count(self) -> int:
+        with self._lock:
+            if self._closed or not self._handle or kernel32 is None:
+                return 0
+            info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
+            ret_len = wintypes.DWORD(0)
+            if kernel32.QueryInformationJobObject(
+                wintypes.HANDLE(self._handle),
+                JobObjectBasicAccountingInformation,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+                ctypes.byref(ret_len),
+            ):
+                return int(info.ActiveProcesses)
+            return 0
+
+    def terminate(self, exit_code: int = 1) -> bool:
+        """Signals TerminateJobObject without closing the handle."""
+        with self._lock:
+            if self._closed or not self._handle or kernel32 is None:
+                return False
+            try:
+                return bool(kernel32.TerminateJobObject(wintypes.HANDLE(self._handle), exit_code))
+            except (OSError, ValueError, RuntimeError) as err:
+                logger.debug("JobHandleHolder TerminateJobObject notice: %s", err)
+                return False
+
+    def close(self, exit_code: int = 1) -> bool:
+        """Terminates processes in the Job Object and closes the handle exactly once."""
+        with self._lock:
+            if self._closed or not self._handle:
+                return False
+            self._closed = True
+            h = self._handle
+            self._handle = 0
+            return terminate_and_close_job(h, exit_code=exit_code)
+
+
 def terminate_and_close_job(h_job: Any, exit_code: int = 1) -> bool:
     """Terminates all processes in the Job Object and closes the handle."""
+    if isinstance(h_job, JobHandleHolder):
+        return h_job.close(exit_code=exit_code)
     if kernel32 is None or not h_job:
         return False
     try:
@@ -471,8 +530,27 @@ class SandboxedProcess:
         self.appcontainer_config = appcontainer_config
 
         self.proc: subprocess.Popen | None = None
-        self.h_job: int | None = None
+        self._raw_h_job: int | None = None
+        self.job_holder: JobHandleHolder | None = None
         self._closed: bool = False
+
+    @property
+    def h_job(self) -> int | None:
+        if self.job_holder is not None:
+            return self.job_holder.value
+        return self._raw_h_job
+
+    @h_job.setter
+    def h_job(self, val: Any) -> None:
+        if val is None:
+            self.job_holder = None
+            self._raw_h_job = None
+        elif isinstance(val, JobHandleHolder):
+            self.job_holder = val
+            self._raw_h_job = val.value
+        else:
+            self.job_holder = JobHandleHolder(int(val))
+            self._raw_h_job = int(val)
 
     def start(self) -> subprocess.Popen:
         if self.proc is not None:
@@ -607,7 +685,8 @@ class SandboxedProcess:
 
             proc = AppContainerProcessWrapper(
                 handle=handle,
-                h_job=h_job,
+                h_job=self.h_job,
+                job_holder=self.job_holder,
                 stdin_write=parent_stdin,
                 stdout_read=parent_stdout,
                 stderr_read=parent_stderr,
@@ -618,6 +697,7 @@ class SandboxedProcess:
             self.proc = proc
             proc.terminate_tree = self.terminate_tree
             proc.h_job = self.h_job
+            proc.job_holder = self.job_holder
             proc._sandboxed_process = self
             return proc
 
@@ -700,6 +780,7 @@ class SandboxedProcess:
             # Attach helper references onto proc
             proc.terminate_tree = self.terminate_tree
             proc.h_job = self.h_job
+            proc.job_holder = self.job_holder
             proc._sandboxed_process = self
             return proc
         else:
@@ -735,14 +816,24 @@ class SandboxedProcess:
         self._closed = True
         success = True
 
-        if sys.platform == "win32" and self.h_job is not None:
-            try:
-                terminate_and_close_job(self.h_job, exit_code=exit_code)
-            except Exception as e:
-                logger.debug("SandboxedProcess: error terminating Job Object: %s", e)
-                success = False
-            finally:
-                self.h_job = None
+        if sys.platform == "win32":
+            if self.job_holder is not None:
+                try:
+                    self.job_holder.close(exit_code=exit_code)
+                except Exception as e:
+                    logger.debug("SandboxedProcess: error terminating Job Object holder: %s", e)
+                    success = False
+                finally:
+                    self.job_holder = None
+                    self._raw_h_job = None
+            elif self.h_job is not None:
+                try:
+                    terminate_and_close_job(self.h_job, exit_code=exit_code)
+                except Exception as e:
+                    logger.debug("SandboxedProcess: error terminating Job Object: %s", e)
+                    success = False
+                finally:
+                    self.h_job = None
         elif sys.platform != "win32" and self.proc is not None and getattr(self.proc, "pid", None):
             try:
                 import signal

@@ -472,10 +472,18 @@ except OSError as oe:
         self.assertIsNotNone(proc_mgr.proc.poll())
         self.assertEqual(proc_mgr.proc.returncode, 1)
 
+        # Verify Job Object has zero active processes before closing
+        self.assertIsNotNone(proc_mgr.job_holder)
+        self.assertEqual(proc_mgr.job_holder.get_active_process_count(), 0)
+
         # Final cleanup - handles and Job Object cleaned up once
         proc_mgr.terminate_tree()
         self.assertIsNone(proc_mgr.h_job)
         self.assertTrue(proc_mgr._closed)
+        self.assertTrue(proc_mgr.job_holder is None or proc_mgr.job_holder.is_closed)
+
+        # Idempotent cleanup check
+        self.assertTrue(proc_mgr.terminate_tree())
 
     @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
     def test_sandboxed_batch_stdin_stdout_pipeline(self):
@@ -633,6 +641,32 @@ class TestAppContainerAttributeListLifecycle(unittest.TestCase):
             with self.assertRaises(AppContainerSecurityError):
                 AppContainerProcessLauncher.spawn_suspended_appcontainer([sys.executable, "-c", "pass"], config=cfg)
         self.assertEqual(events, ["delete_attr_list", "cleanup_pre_spawn"])
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_failed_nul_handle_creation_cleans_up_all_resources(self):
+        """Failed NUL handle creation triggers unified cleanup of grants, SIDs, and profile."""
+        from jarvis.core.evolution import appcontainer
+
+        cleanup_called = []
+        orig_cleanup = AppContainerProcessLauncher._cleanup_pre_spawn
+
+        def mock_cleanup(*args, **kwargs):
+            cleanup_called.append(kwargs)
+            return orig_cleanup(*args, **kwargs)
+
+        cfg = AppContainerConfig(profile_name=f"J_FaultNul_{os.getpid()}_{time.time_ns()}")
+        with (
+            mock.patch.object(appcontainer, "_open_nul_handle", side_effect=OSError("NUL device failure")),
+            mock.patch.object(AppContainerProcessLauncher, "_cleanup_pre_spawn", side_effect=mock_cleanup),
+            self.assertRaises(OSError),
+        ):
+            AppContainerProcessLauncher.spawn_suspended_appcontainer(
+                [sys.executable, "-c", "pass"],
+                stdin_handle=123,
+                config=cfg,
+            )
+        self.assertEqual(len(cleanup_called), 1, "_cleanup_pre_spawn must be called on NUL handle failure")
+        self.assertTrue(cleanup_called[0].get("is_new_profile", False))
 
 
 class TestAppContainerACLOwnership(unittest.TestCase):
@@ -794,7 +828,7 @@ class TestAppContainerRuntimeAccess(unittest.TestCase):
         d2 = Path(tempfile.mkdtemp()).resolve()
         try:
             with mock.patch.object(AppContainerProfileManager, "get_required_runtime_paths", return_value=[d1, d2]), \
-                 mock.patch.object(AppContainerProfileManager, "has_runtime_path_access", side_effect=[True, False]), \
+                 mock.patch.object(AppContainerProfileManager, "check_runtime_path_effective_access", side_effect=[("SUFFICIENT", "(RX)"), ("NONE", None)]), \
                  mock.patch.object(AppContainerProfileManager, "grant_path_access", return_value=False):
                 with self.assertRaises(AppContainerSecurityError) as ctx:
                     AppContainerProfileManager.ensure_runtime_access("S-1-15-2-1234")
@@ -810,11 +844,114 @@ class TestAppContainerRuntimeAccess(unittest.TestCase):
         d2 = Path(tempfile.mkdtemp()).resolve()
         try:
             with mock.patch.object(AppContainerProfileManager, "get_required_runtime_paths", return_value=[d1, d2]), \
-                 mock.patch.object(AppContainerProfileManager, "has_runtime_path_access", side_effect=[False, True, False]), \
+                 mock.patch.object(AppContainerProfileManager, "check_runtime_path_effective_access", side_effect=[("NONE", None), ("NONE", None)]), \
+                 mock.patch.object(AppContainerProfileManager, "has_runtime_path_access", return_value=True), \
                  mock.patch.object(AppContainerProfileManager, "grant_path_access", side_effect=[True, False]), \
                  mock.patch.object(AppContainerProfileManager, "revoke_path_access") as mock_revoke:
                 with self.assertRaises(AppContainerSecurityError):
                     AppContainerProfileManager.ensure_runtime_access("S-1-15-2-1234")
+                mock_revoke.assert_called_once_with(d1, "S-1-15-2-1234")
+        finally:
+            shutil.rmtree(d1, ignore_errors=True)
+            shutil.rmtree(d2, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_check_runtime_path_broad_package_rx_is_sufficient(self):
+        """Broad package ACE with (RX) read permissions evaluates to SUFFICIENT."""
+        d = Path(tempfile.mkdtemp()).resolve()
+        try:
+            mock_out = f"{d} APPLICATION PACKAGE AUTHORITY\\ALL APPLICATION PACKAGES:(OI)(CI)(RX)\nSuccessfully processed 1 files"
+            res = subprocess.CompletedProcess(args=["icacls", str(d)], returncode=0, stdout=mock_out, stderr="")
+            with mock.patch("subprocess.run", return_value=res):
+                status, perms = AppContainerProfileManager.check_runtime_path_effective_access(d, "S-1-15-2-1234")
+                self.assertEqual(status, "SUFFICIENT")
+                self.assertIn("(RX)", str(perms))
+                self.assertTrue(AppContainerProfileManager.has_runtime_path_access(d, "S-1-15-2-1234"))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_check_runtime_path_broad_package_inadequate_permission(self):
+        """Broad package ACE with only write (W) permission evaluates to INADEQUATE."""
+        d = Path(tempfile.mkdtemp()).resolve()
+        try:
+            mock_out = f"{d} APPLICATION PACKAGE AUTHORITY\\ALL APPLICATION PACKAGES:(OI)(CI)(W)\nSuccessfully processed 1 files"
+            res = subprocess.CompletedProcess(args=["icacls", str(d)], returncode=0, stdout=mock_out, stderr="")
+            with mock.patch("subprocess.run", return_value=res):
+                status, perms = AppContainerProfileManager.check_runtime_path_effective_access(d, "S-1-15-2-1234")
+                self.assertEqual(status, "INADEQUATE")
+                self.assertIn("(W)", str(perms))
+                self.assertFalse(AppContainerProfileManager.has_runtime_path_access(d, "S-1-15-2-1234"))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_check_runtime_path_explicit_deny_overrides_broad_package(self):
+        """Explicit DENY ACE on AppContainer SID overrides broad package ACE and evaluates to DENIED."""
+        d = Path(tempfile.mkdtemp()).resolve()
+        try:
+            sid = "S-1-15-2-9999"
+            mock_out = (
+                f"{d} APPLICATION PACKAGE AUTHORITY\\ALL APPLICATION PACKAGES:(OI)(CI)(RX)\n"
+                f"     {sid}:(DENY)(W,Rc)\n"
+                f"Successfully processed 1 files"
+            )
+            res = subprocess.CompletedProcess(args=["icacls", str(d)], returncode=0, stdout=mock_out, stderr="")
+            with mock.patch("subprocess.run", return_value=res):
+                status, perms = AppContainerProfileManager.check_runtime_path_effective_access(d, sid)
+                self.assertEqual(status, "DENIED")
+                self.assertIn("(DENY)", str(perms))
+                self.assertFalse(AppContainerProfileManager.has_runtime_path_access(d, sid))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_check_runtime_path_unreadable_acl_fails_closed(self):
+        """When icacls fails or returns access denied, check_runtime_path evaluates to UNREADABLE."""
+        d = Path(tempfile.mkdtemp()).resolve()
+        try:
+            res = subprocess.CompletedProcess(args=["icacls", str(d)], returncode=5, stdout="", stderr="Access is denied.")
+            with mock.patch("subprocess.run", return_value=res):
+                status, err = AppContainerProfileManager.check_runtime_path_effective_access(d, "S-1-15-2-1234")
+                self.assertEqual(status, "UNREADABLE")
+                self.assertIn("Access is denied", str(err))
+                self.assertFalse(AppContainerProfileManager.has_runtime_path_access(d, "S-1-15-2-1234"))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_ensure_runtime_access_fails_closed_on_explicit_deny_with_rollback(self):
+        """ensure_runtime_access fails closed immediately on DENIED path and rolls back prior grants."""
+        d1 = Path(tempfile.mkdtemp()).resolve()
+        d2 = Path(tempfile.mkdtemp()).resolve()
+        try:
+            with mock.patch.object(AppContainerProfileManager, "get_required_runtime_paths", return_value=[d1, d2]), \
+                 mock.patch.object(AppContainerProfileManager, "check_runtime_path_effective_access", side_effect=[("NONE", None), ("DENIED", "(DENY)")]), \
+                 mock.patch.object(AppContainerProfileManager, "grant_path_access", return_value=True), \
+                 mock.patch.object(AppContainerProfileManager, "has_runtime_path_access", return_value=True), \
+                 mock.patch.object(AppContainerProfileManager, "revoke_path_access") as mock_revoke:
+                with self.assertRaises(AppContainerSecurityError) as ctx:
+                    AppContainerProfileManager.ensure_runtime_access("S-1-15-2-1234")
+                self.assertIn("explicit pre-existing DENY ACE", str(ctx.exception))
+                mock_revoke.assert_called_once_with(d1, "S-1-15-2-1234")
+        finally:
+            shutil.rmtree(d1, ignore_errors=True)
+            shutil.rmtree(d2, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_ensure_runtime_access_fails_closed_on_unreadable_with_rollback(self):
+        """ensure_runtime_access fails closed immediately on UNREADABLE path and rolls back prior grants."""
+        d1 = Path(tempfile.mkdtemp()).resolve()
+        d2 = Path(tempfile.mkdtemp()).resolve()
+        try:
+            with mock.patch.object(AppContainerProfileManager, "get_required_runtime_paths", return_value=[d1, d2]), \
+                 mock.patch.object(AppContainerProfileManager, "check_runtime_path_effective_access", side_effect=[("NONE", None), ("UNREADABLE", "DACL unreadable")]), \
+                 mock.patch.object(AppContainerProfileManager, "grant_path_access", return_value=True), \
+                 mock.patch.object(AppContainerProfileManager, "has_runtime_path_access", return_value=True), \
+                 mock.patch.object(AppContainerProfileManager, "revoke_path_access") as mock_revoke:
+                with self.assertRaises(AppContainerSecurityError) as ctx:
+                    AppContainerProfileManager.ensure_runtime_access("S-1-15-2-1234")
+                self.assertIn("could not be read", str(ctx.exception))
                 mock_revoke.assert_called_once_with(d1, "S-1-15-2-1234")
         finally:
             shutil.rmtree(d1, ignore_errors=True)

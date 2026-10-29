@@ -4,8 +4,8 @@ import unittest
 
 from jarvis.skills.base import SkillRegistry
 from jarvis.skills.job_object_sandbox import (
-    run_job_sandboxed_process,
     _resolve_safe_affinity_mask,
+    run_job_sandboxed_process,
 )
 
 
