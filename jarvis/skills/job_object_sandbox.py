@@ -732,7 +732,10 @@ class SandboxedProcess:
                 errors=self.errors,
             )
             self.proc = proc
-            proc.terminate_tree = self.terminate_tree
+            # NOTE: Do NOT assign proc.terminate_tree = self.terminate_tree here.
+            # AppContainerProcessWrapper has its own native terminate_tree() method.
+            # Overwriting it causes recursive re-entry into SandboxedProcess.terminate_tree()
+            # which bypassed wrapper cleanup.
             proc.h_job = self.h_job
             proc.job_holder = self.job_holder
             proc._sandboxed_process = self

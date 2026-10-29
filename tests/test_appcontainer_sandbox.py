@@ -1280,5 +1280,142 @@ class TestAppContainerTerminationTruthfulness(unittest.TestCase):
             proc_mgr.terminate_tree()
 
 
+class TestAppContainerTeardownLifecycle(unittest.TestCase):
+    """Verifies single-owner exactly-once teardown, handle release, ACL revocation, and profile cleanup."""
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_sandboxed_process_terminate_tree_invokes_wrapper_cleanup_exactly_once(self):
+        """SandboxedProcess.terminate_tree() releases handles, revokes grants, and deletes profile exactly once."""
+        scratch_dir = Path(tempfile.mkdtemp(prefix="j_test_grant_")).resolve()
+        profile_name = f"J_Teardown_{os.getpid()}_{time.time_ns()}"
+        cfg = AppContainerConfig(
+            profile_name=profile_name,
+            grant_paths=[scratch_dir],
+            auto_cleanup_profile=True,
+        )
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            use_appcontainer=True,
+            appcontainer_config=cfg,
+        )
+        proc_mgr.start()
+        try:
+            proc = proc_mgr.proc
+            self.assertIsNotNone(proc)
+            handle = proc.handle
+            sid_str = handle.sid_str
+
+            # Verify initial state: handles valid, scratch ACL granted, profile exists
+            self.assertGreater(handle.h_process, 0)
+            self.assertGreater(handle.h_thread, 0)
+            self.assertIn(scratch_dir, handle.applied_grants)
+            self.assertTrue(AppContainerProfileManager.has_path_access(scratch_dir, sid_str))
+            self.assertTrue(AppContainerProfileManager.profile_exists(profile_name))
+
+            # Teardown process tree
+            term_ok = proc_mgr.terminate_tree()
+            self.assertTrue(term_ok, "SandboxedProcess.terminate_tree() failed!")
+
+            # Verify wrapper cleanup was reached:
+            # 1. Process and thread handles released
+            self.assertEqual(handle.h_process, 0)
+            self.assertEqual(handle.h_thread, 0)
+            self.assertTrue(handle._cleaned_up)
+
+            # 2. Scratch directory ACL revoked
+            self.assertFalse(
+                AppContainerProfileManager.has_path_access(scratch_dir, sid_str),
+                "Scratch ACL grant was not revoked on teardown!",
+            )
+
+            # 3. Newly created profile deleted
+            self.assertFalse(
+                AppContainerProfileManager.profile_exists(profile_name),
+                "AppContainer profile was not deleted on teardown!",
+            )
+
+            # 4. Repeated teardown is idempotent and safe
+            self.assertTrue(proc_mgr.terminate_tree())
+            self.assertTrue(proc.terminate_tree())
+        finally:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
+            AppContainerProfileManager.delete_profile(profile_name)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_sandboxed_process_timeout_invokes_wrapper_cleanup_cleanly(self):
+        """TimeoutExpired in communicate() followed by terminate_tree() cleans up all resources cleanly."""
+        profile_name = f"J_TimeoutClean_{os.getpid()}_{time.time_ns()}"
+        cfg = AppContainerConfig(
+            profile_name=profile_name,
+            auto_cleanup_profile=True,
+        )
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            use_appcontainer=True,
+            appcontainer_config=cfg,
+        )
+        proc_mgr.start()
+        try:
+            handle = proc_mgr.proc.handle
+            with self.assertRaises(subprocess.TimeoutExpired):
+                proc_mgr.proc.communicate(timeout=0.2)
+
+            # Process terminated, now run terminate_tree to finish full cleanup
+            self.assertTrue(proc_mgr.terminate_tree())
+            self.assertEqual(handle.h_process, 0)
+            self.assertEqual(handle.h_thread, 0)
+            self.assertFalse(AppContainerProfileManager.profile_exists(profile_name))
+        finally:
+            AppContainerProfileManager.delete_profile(profile_name)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_sandboxed_process_reused_profile_preserves_preexisting_profile_and_acls(self):
+        """When reusing an existing profile, pre-existing profile and unowned ACLs are preserved across teardown."""
+        shared_name = f"J_Preexisting_{os.getpid()}_{time.time_ns()}"
+        shared_dir = Path(tempfile.mkdtemp(prefix="j_preexist_grant_")).resolve()
+
+        base_cfg = AppContainerConfig(profile_name=shared_name, auto_cleanup_profile=False)
+        p_sid, sid_str, is_new = AppContainerProfileManager.get_or_create_profile(base_cfg)
+        self.assertTrue(is_new)
+        AppContainerProfileManager.free_sid(p_sid)
+
+        # Pre-grant ACL to shared_dir before launching the SandboxedProcess
+        AppContainerProfileManager.grant_path_access(shared_dir, sid_str, access_mode="(OI)(CI)(F)")
+        self.assertTrue(AppContainerProfileManager.has_path_access(shared_dir, sid_str))
+
+        try:
+            # Launch child with auto_cleanup_profile=True on the reused profile
+            child_cfg = AppContainerConfig(
+                profile_name=shared_name,
+                grant_paths=[shared_dir],
+                auto_cleanup_profile=True,
+            )
+            proc_mgr = SandboxedProcess(
+                [sys.executable, "-c", "import sys; sys.exit(0)"],
+                use_appcontainer=True,
+                appcontainer_config=child_cfg,
+            )
+            proc_mgr.start()
+            self.assertFalse(proc_mgr.proc.handle.is_new_profile)
+
+            # Teardown the process
+            proc_mgr.terminate_tree()
+
+            # Profile must STILL exist because this invocation was not its creator
+            self.assertTrue(
+                AppContainerProfileManager.profile_exists(shared_name),
+                "Pre-existing profile was unexpectedly deleted!",
+            )
+            # Pre-existing ACL must STILL be intact because it was pre-existing
+            self.assertTrue(
+                AppContainerProfileManager.has_path_access(shared_dir, sid_str),
+                "Pre-existing ACL grant was unexpectedly revoked!",
+            )
+        finally:
+            AppContainerProfileManager.revoke_path_access(shared_dir, sid_str)
+            shutil.rmtree(shared_dir, ignore_errors=True)
+            AppContainerProfileManager.delete_profile(shared_name)
+
+
 if __name__ == "__main__":
     unittest.main()

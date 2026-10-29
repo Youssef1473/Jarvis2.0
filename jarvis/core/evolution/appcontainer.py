@@ -32,6 +32,7 @@ logger = logging.getLogger("Jarvis.Evolution.AppContainer")
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True) if sys.platform == "win32" else None
 advapi32 = ctypes.WinDLL("advapi32", use_last_error=True) if sys.platform == "win32" else None
 userenv = ctypes.WinDLL("userenv", use_last_error=True) if sys.platform == "win32" else None
+ole32 = ctypes.WinDLL("ole32", use_last_error=True) if sys.platform == "win32" else None
 
 # Process creation and attribute list constants
 PROC_THREAD_ATTRIBUTE_NUMBER = 0x0000FFFF
@@ -669,6 +670,57 @@ class AppContainerProfileManager:
             logger.debug("DeleteAppContainerProfile exception for '%s': %s", profile_name, e)
             return False
 
+    @classmethod
+    def profile_exists(cls, profile_name: str) -> bool:
+        """Returns True if an AppContainer profile with the specified name exists on the host."""
+        if not cls.is_supported():
+            return False
+        try:
+            sid_ptr = ctypes.c_void_p()
+            hr = userenv.DeriveAppContainerSidFromAppContainerName(
+                wintypes.LPCWSTR(profile_name),
+                ctypes.byref(sid_ptr),
+            )
+            if hr != S_OK or not sid_ptr.value:
+                return False
+
+            sid_str_w = wintypes.LPWSTR()
+            if not advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(sid_str_w)):
+                cls.free_sid(sid_ptr.value)
+                return False
+
+            sid_str = str(sid_str_w.value)
+            kernel32.LocalFree(sid_str_w)
+            cls.free_sid(sid_ptr.value)
+
+            # 1. Check via GetAppContainerFolderPath
+            if hasattr(userenv, "GetAppContainerFolderPath"):
+                try:
+                    userenv.GetAppContainerFolderPath.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.LPWSTR)]
+                    userenv.GetAppContainerFolderPath.restype = ctypes.c_long
+                    path_p = wintypes.LPWSTR()
+                    res = userenv.GetAppContainerFolderPath(wintypes.LPCWSTR(sid_str), ctypes.byref(path_p))
+                    if res == S_OK:
+                        if ole32 and hasattr(ole32, "CoTaskMemFree"):
+                            ole32.CoTaskMemFree(path_p)
+                        return True
+                except Exception as e:
+                    logger.debug("GetAppContainerFolderPath check notice for '%s': %s", profile_name, e)
+
+            # 2. Check HKCU AppContainer registry mapping
+            import winreg
+            reg_path = rf"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppContainer\Mappings\{sid_str}"
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_path):
+                    return True
+            except OSError:
+                pass
+
+            return False
+        except Exception as exc:
+            logger.debug("profile_exists exception for '%s': %s", profile_name, exc)
+            return False
+
     @staticmethod
     def grant_path_access(
         path: str | Path,
@@ -861,6 +913,13 @@ class AppContainerProcessWrapper:
         self._errors = errors or "replace"
         self.returncode: int | None = None
         self._terminated = False
+        self._closed = False
+        self._close_result = True
+
+    @property
+    def handle(self) -> AppContainerProcessHandle:
+        """Returns the underlying AppContainerProcessHandle managing this process."""
+        return self._handle_obj
 
     @property
     def h_job(self) -> int | None:
@@ -871,9 +930,7 @@ class AppContainerProcessWrapper:
     @h_job.setter
     def h_job(self, val: Any) -> None:
         if val is None:
-            if self._job_holder is not None:
-                self._job_holder.close()
-                self._job_holder = None
+            self._job_holder = None
             self._h_job = None
         elif hasattr(val, "close") and hasattr(val, "value"):
             self._job_holder = val
@@ -1097,7 +1154,11 @@ class AppContainerProcessWrapper:
         return term_ok and close_ok
 
     def close(self) -> bool:
-        """Releases underlying AppContainer resources."""
+        """Releases underlying AppContainer resources exactly once."""
+        if self._closed:
+            return self._close_result
+        self._closed = True
+
         term_ok = True
         if self.returncode is None:
             term_ok = self.terminate()
@@ -1136,8 +1197,14 @@ class AppContainerProcessWrapper:
             except (OSError, ValueError, AttributeError) as err:
                 logger.debug("CloseHandle _stderr_read notice: %s", err)
             self._stderr_read = None
-        self._handle_obj.cleanup()
-        return term_ok and job_ok
+
+        try:
+            self._handle_obj.cleanup()
+        except Exception as err:
+            logger.debug("handle_obj cleanup notice: %s", err)
+
+        self._close_result = term_ok and job_ok
+        return self._close_result
 
 
 class AppContainerProcessLauncher:
