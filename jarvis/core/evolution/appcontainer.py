@@ -56,6 +56,7 @@ HRESULT_ERROR_ALREADY_EXISTS = 0x800700B7
 ERROR_INSUFFICIENT_BUFFER = 122
 S_OK = 0
 STILL_ACTIVE = 259
+WAIT_OBJECT_0 = 0
 WAIT_TIMEOUT = 258
 WAIT_FAILED = 0xFFFFFFFF
 
@@ -495,14 +496,13 @@ class AppContainerProfileManager:
     ) -> tuple[str, str | None]:
         """Inspects effective read access for Python runtime paths via icacls.
 
-        Evaluates:
-          1. Explicit DENY on sid_str takes unconditional precedence over all ALLOW ACEs -> returns ("DENIED", ...).
-          2. Explicit ALLOW on sid_str with read permission (RX, R, F, M) -> returns ("SUFFICIENT", ...).
+        Evaluation order (fail-closed, deny-first):
+          1. Explicit DENY on specific sid_str OR broad ALL APPLICATION PACKAGES / S-1-15-2-1 -> returns ("DENIED", ...).
+          2. Explicit ALLOW on specific sid_str with read permission (RX, R, F, M) -> returns ("SUFFICIENT", ...).
           3. ALL APPLICATION PACKAGES / S-1-15-2-1 with read permission (RX, R, F, M) -> returns ("SUFFICIENT", ...).
-          4. ALL APPLICATION PACKAGES with DENY -> returns ("DENIED", ...).
-          5. ALL APPLICATION PACKAGES with insufficient permission (e.g. W only) -> returns ("INADEQUATE", ...).
-          6. If icacls fails, access denied reading DACL, or unreadable -> returns ("UNREADABLE", ...).
-          7. If no matching ACE exists -> returns ("NONE", None).
+          4. If matches exist but have insufficient permission (e.g. W only) -> returns ("INADEQUATE", ...).
+          5. If icacls fails, access denied reading DACL, or unreadable -> returns ("UNREADABLE", ...).
+          6. If no matching ACE exists -> returns ("NONE", None).
         """
         import re
 
@@ -520,36 +520,45 @@ class AppContainerProfileManager:
             if not out.strip() or ("Failed processing" in out and "Successfully processed 0 files" in out):
                 return "UNREADABLE", out.strip()
 
-            # 1. Explicit checks for specific AppContainer SID if provided
+            # 1. Extract matches for specific AppContainer SID if provided
+            matches_sid: list[str] = []
             if sid_str:
                 pattern_sid = rf"{re.escape(sid_str)}:([^\r\n]+)"
                 matches_sid = [m.strip() for m in re.findall(pattern_sid, out)]
-                for m in matches_sid:
-                    # Explicit DENY on this AppContainer SID overrides all group permissions
-                    if "(DENY)" in m or "(N)" in m:
-                        return "DENIED", m
 
-                has_read_sid = any(
-                    any(p in m for p in ("(RX)", "(R)", "(F)", "(M)")) and "(DENY)" not in m and "(N)" not in m
-                    for m in matches_sid
-                )
-                if has_read_sid:
-                    return "SUFFICIENT", ", ".join(matches_sid)
-
-            # 2. Check broad group: ALL APPLICATION PACKAGES or S-1-15-2-1
+            # 2. Extract matches for broad group: ALL APPLICATION PACKAGES or S-1-15-2-1
             pattern_pkg = r"(?:ALL APPLICATION PACKAGES|S-1-15-2-1):([^\r\n]+)"
             matches_pkg = [m.strip() for m in re.findall(pattern_pkg, out, re.IGNORECASE)]
+
+            # 3. Evaluate DENY ACEs FIRST (both specific SID and broad package)
+            # Explicit DENY takes unconditional precedence over all group or specific allowances.
+            for m in matches_sid:
+                if "(DENY)" in m or "(N)" in m:
+                    return "DENIED", m
+
+            for m in matches_pkg:
+                if "(DENY)" in m or "(N)" in m:
+                    return "DENIED", m
+
+            # 4. Evaluate ALLOW ACEs
+            has_read_sid = any(
+                any(p in m for p in ("(RX)", "(R)", "(F)", "(M)"))
+                for m in matches_sid
+            )
+            if has_read_sid:
+                return "SUFFICIENT", ", ".join(matches_sid)
+
+            has_read_pkg = any(
+                any(p in m for p in ("(RX)", "(R)", "(F)", "(M)"))
+                for m in matches_pkg
+            )
+            if has_read_pkg:
+                return "SUFFICIENT", ", ".join(matches_pkg)
+
             if matches_pkg:
-                for m in matches_pkg:
-                    if "(DENY)" in m or "(N)" in m:
-                        return "DENIED", m
-                has_read_pkg = any(
-                    any(p in m for p in ("(RX)", "(R)", "(F)", "(M)"))
-                    for m in matches_pkg
-                )
-                if has_read_pkg:
-                    return "SUFFICIENT", ", ".join(matches_pkg)
                 return "INADEQUATE", ", ".join(matches_pkg)
+            if matches_sid:
+                return "INADEQUATE", ", ".join(matches_sid)
 
             return "NONE", None
         except (OSError, ValueError) as exc:
@@ -1018,8 +1027,12 @@ class AppContainerProcessWrapper:
             return out_bytes.decode(self._encoding, errors=self._errors), err_bytes.decode(self._encoding, errors=self._errors)
         return bytes(out_bytes), bytes(err_bytes)
 
-    def terminate(self, timeout: float = 2.0) -> None:
-        """Terminates the process and job tree, waiting for native process termination."""
+    def terminate(self, timeout: float = 2.0) -> bool:
+        """Terminates the process and job tree, waiting for confirmed native process termination.
+
+        Returns True only if the process was confirmed terminated (WAIT_OBJECT_0 and non-STILL_ACTIVE exit code).
+        Returns False if wait timed out, failed, or exit code could not be verified.
+        """
         if self._job_holder is not None:
             try:
                 self._job_holder.terminate(1)
@@ -1038,49 +1051,72 @@ class AppContainerProcessWrapper:
                 logger.debug("handle_obj terminate notice: %s", err)
 
         # Wait for native process to enter signaled state
-        if self._h_process and kernel32:
-            try:
-                ms = int(timeout * 1000) if timeout else 2000
-                kernel32.WaitForSingleObject(wintypes.HANDLE(self._h_process), wintypes.DWORD(ms))
-            except (OSError, ValueError, RuntimeError) as err:
-                logger.debug("WaitForSingleObject notice: %s", err)
+        if not self._h_process or kernel32 is None:
+            return False
 
+        ms = int(timeout * 1000) if timeout else 2000
+        wait_res = None
+        try:
+            wait_res = kernel32.WaitForSingleObject(wintypes.HANDLE(self._h_process), wintypes.DWORD(ms))
+        except (OSError, ValueError, RuntimeError) as err:
+            logger.debug("WaitForSingleObject notice: %s", err)
+            return False
+
+        if wait_res == WAIT_OBJECT_0:
             ec = wintypes.DWORD(0)
             if kernel32.GetExitCodeProcess(wintypes.HANDLE(self._h_process), ctypes.byref(ec)):
                 if ec.value != STILL_ACTIVE:
                     self.returncode = int(ec.value)
-                else:
-                    self.returncode = 1
-            else:
-                self.returncode = 1
+                    return True
+                logger.warning(
+                    "Process signaled termination (WAIT_OBJECT_0) but GetExitCodeProcess reported STILL_ACTIVE for PID %s",
+                    self.pid,
+                )
+                return False
+            last_err = ctypes.get_last_error()
+            logger.warning("GetExitCodeProcess failed for PID %s (WinError %d)", self.pid, last_err)
+            return False
+        elif wait_res == WAIT_TIMEOUT:
+            logger.warning("WaitForSingleObject timed out (%.2fs) waiting for termination of PID %s", timeout, self.pid)
+            return False
         else:
-            self.returncode = 1
+            last_err = ctypes.get_last_error()
+            logger.warning("WaitForSingleObject failed for PID %s (wait_res=%s, WinError %d)", self.pid, wait_res, last_err)
+            return False
 
-    def kill(self) -> None:
+    def kill(self) -> bool:
         """Kills the process."""
-        self.terminate()
+        return self.terminate()
 
     def terminate_tree(self, exit_code: int = 1) -> bool:
         """Terminates the process and all descendant processes in the job tree."""
-        self.close()
-        return True
+        term_ok = True
+        if self.returncode is None:
+            term_ok = self.terminate(timeout=2.0)
+        close_ok = self.close()
+        return term_ok and close_ok
 
-    def close(self) -> None:
+    def close(self) -> bool:
         """Releases underlying AppContainer resources."""
-        self.terminate()
+        term_ok = True
+        if self.returncode is None:
+            term_ok = self.terminate()
+        job_ok = True
         if self._job_holder is not None:
             try:
-                self._job_holder.close(exit_code=1)
+                job_ok = self._job_holder.close(exit_code=1)
             except (OSError, ValueError, RuntimeError) as err:
                 logger.debug("job_holder close notice: %s", err)
+                job_ok = False
             self._job_holder = None
             self._h_job = None
         elif self._h_job:
             from jarvis.skills.job_object_sandbox import terminate_and_close_job
             try:
-                terminate_and_close_job(self._h_job)
+                job_ok = terminate_and_close_job(self._h_job)
             except (OSError, ValueError, RuntimeError) as err:
                 logger.debug("terminate_and_close_job notice: %s", err)
+                job_ok = False
             self._h_job = None
         if self._stdin_write and kernel32:
             try:
@@ -1101,6 +1137,7 @@ class AppContainerProcessWrapper:
                 logger.debug("CloseHandle _stderr_read notice: %s", err)
             self._stderr_read = None
         self._handle_obj.cleanup()
+        return term_ok and job_ok
 
 
 class AppContainerProcessLauncher:

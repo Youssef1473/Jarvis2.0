@@ -391,6 +391,7 @@ class JobHandleHolder:
     def __init__(self, handle: int | None):
         self._handle = int(handle) if handle else 0
         self._closed = False
+        self._close_result = True
         self._lock = threading.Lock()
 
     @property
@@ -403,58 +404,94 @@ class JobHandleHolder:
         with self._lock:
             return self._closed
 
-    def get_active_process_count(self) -> int:
+    def get_active_process_count(self) -> int | None:
+        """Queries the kernel for ActiveProcesses.
+
+        Returns int (>=0) on success.
+        Returns None if closed, invalid handle, kernel32 unavailable, or query fails.
+        Zero represents a confirmed state with 0 active processes, never an error or closed state.
+        """
         with self._lock:
             if self._closed or not self._handle or kernel32 is None:
-                return 0
-            info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
-            ret_len = wintypes.DWORD(0)
-            if kernel32.QueryInformationJobObject(
-                wintypes.HANDLE(self._handle),
-                JobObjectBasicAccountingInformation,
-                ctypes.byref(info),
-                ctypes.sizeof(info),
-                ctypes.byref(ret_len),
-            ):
-                return int(info.ActiveProcesses)
-            return 0
+                return None
+            h = self._handle
+        return _active_process_count(wintypes.HANDLE(h))
+
+    def drain(self, timeout: float = _DRAIN_TIMEOUT_SEC) -> bool:
+        """Waits until active processes reach 0 or timeout expires.
+
+        Returns True only if ActiveProcesses == 0 was confirmed.
+        Returns False if timeout expires, handle is closed/invalid, or query fails.
+        """
+        with self._lock:
+            if self._closed or not self._handle or kernel32 is None:
+                return False
+            h = self._handle
+        deadline = time.monotonic() + timeout
+        while True:
+            cnt = _active_process_count(wintypes.HANDLE(h))
+            if cnt == 0:
+                return True
+            if cnt is None or time.monotonic() >= deadline:
+                return False
+            time.sleep(0.005)
 
     def terminate(self, exit_code: int = 1) -> bool:
         """Signals TerminateJobObject without closing the handle."""
         with self._lock:
             if self._closed or not self._handle or kernel32 is None:
                 return False
-            try:
-                return bool(kernel32.TerminateJobObject(wintypes.HANDLE(self._handle), exit_code))
-            except (OSError, ValueError, RuntimeError) as err:
-                logger.debug("JobHandleHolder TerminateJobObject notice: %s", err)
-                return False
+            h = self._handle
+        try:
+            return bool(kernel32.TerminateJobObject(wintypes.HANDLE(h), exit_code))
+        except (OSError, ValueError, RuntimeError) as err:
+            logger.debug("JobHandleHolder TerminateJobObject notice: %s", err)
+            return False
 
     def close(self, exit_code: int = 1) -> bool:
-        """Terminates processes in the Job Object and closes the handle exactly once."""
+        """Terminates processes in the Job Object, drains active processes to 0, and closes the handle."""
         with self._lock:
-            if self._closed or not self._handle:
-                return False
+            if self._closed:
+                return self._close_result
             self._closed = True
             h = self._handle
             self._handle = 0
-            return terminate_and_close_job(h, exit_code=exit_code)
+
+        if not h:
+            self._close_result = False
+            return False
+
+        try:
+            self._close_result = terminate_and_close_job(h, exit_code=exit_code)
+        except Exception as e:
+            logger.debug("JobHandleHolder terminate_and_close_job notice: %s", e)
+            self._close_result = False
+
+        return self._close_result
 
 
 def terminate_and_close_job(h_job: Any, exit_code: int = 1) -> bool:
-    """Terminates all processes in the Job Object and closes the handle."""
+    """Terminates all processes in the Job Object, drains active processes to 0, and closes the handle."""
     if isinstance(h_job, JobHandleHolder):
         return h_job.close(exit_code=exit_code)
     if kernel32 is None or not h_job:
         return False
+
+    raw_h = wintypes.HANDLE(int(h_job))
+    drained = True
     try:
-        kernel32.TerminateJobObject(wintypes.HANDLE(int(h_job)), exit_code)
-    except Exception:
-        pass
+        drained = _terminate_and_drain(raw_h, exit_code=exit_code, drain_timeout=_DRAIN_TIMEOUT_SEC)
+    except Exception as e:
+        logger.debug("terminate_and_close_job drain notice: %s", e)
+        drained = False
+
+    closed = False
     try:
-        return bool(kernel32.CloseHandle(wintypes.HANDLE(int(h_job))))
+        closed = bool(kernel32.CloseHandle(raw_h))
     except Exception:
-        return False
+        closed = False
+
+    return drained and closed
 
 
 def _kill_unstarted(proc: subprocess.Popen) -> None:
@@ -819,7 +856,9 @@ class SandboxedProcess:
         if sys.platform == "win32":
             if self.job_holder is not None:
                 try:
-                    self.job_holder.close(exit_code=exit_code)
+                    job_ok = self.job_holder.close(exit_code=exit_code)
+                    if not job_ok:
+                        success = False
                 except Exception as e:
                     logger.debug("SandboxedProcess: error terminating Job Object holder: %s", e)
                     success = False
@@ -828,7 +867,9 @@ class SandboxedProcess:
                     self._raw_h_job = None
             elif self.h_job is not None:
                 try:
-                    terminate_and_close_job(self.h_job, exit_code=exit_code)
+                    job_ok = terminate_and_close_job(self.h_job, exit_code=exit_code)
+                    if not job_ok:
+                        success = False
                 except Exception as e:
                     logger.debug("SandboxedProcess: error terminating Job Object: %s", e)
                     success = False
@@ -848,9 +889,12 @@ class SandboxedProcess:
         if self.proc is not None:
             if type(self.proc).__name__ == "AppContainerProcessWrapper":
                 try:
-                    self.proc.close()
+                    proc_ok = self.proc.terminate_tree(exit_code=exit_code)
+                    if not proc_ok:
+                        success = False
                 except Exception as e:
                     logger.debug("SandboxedProcess: error closing custom process wrapper: %s", e)
+                    success = False
             elif self.proc.poll() is None:
                 try:
                     self.proc.kill()

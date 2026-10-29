@@ -486,6 +486,64 @@ except OSError as oe:
         self.assertTrue(proc_mgr.terminate_tree())
 
     @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_real_process_tree_termination_with_descendant_in_appcontainer(self):
+        """AppContainer process with a spawned long-lived descendant terminates completely without leak."""
+        cfg = AppContainerConfig(
+            profile_name=f"Jarvis_Tree_{os.getpid()}_{time.time_ns()}",
+            auto_cleanup_profile=True,
+        )
+        cmd = [
+            sys.executable,
+            "-c",
+            (
+                "import subprocess, sys, time; "
+                "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                "time.sleep(60)"
+            ),
+        ]
+        proc_mgr = SandboxedProcess(
+            cmd,
+            use_appcontainer=True,
+            appcontainer_config=cfg,
+        )
+        proc_mgr.start()
+        try:
+            self.assertIsNotNone(proc_mgr.proc)
+            self.assertIsNotNone(proc_mgr.job_holder)
+
+            # Wait briefly for parent to spawn child descendant into Job Object
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                cnt = proc_mgr.job_holder.get_active_process_count()
+                if cnt is not None and cnt >= 2:
+                    break
+                time.sleep(0.05)
+
+            # Verify Job Object captured both parent and descendant
+            active_cnt = proc_mgr.job_holder.get_active_process_count()
+            self.assertIsNotNone(active_cnt)
+            self.assertGreaterEqual(active_cnt, 2, f"Descendant not captured in Job Object: {active_cnt}")
+
+            # Trigger termination
+            term_ok = proc_mgr.proc.terminate(timeout=2.0)
+            self.assertTrue(term_ok, "AppContainer process terminate failed!")
+            self.assertIsNotNone(proc_mgr.proc.poll())
+            self.assertEqual(proc_mgr.proc.poll(), 1)
+
+            # Verify active process count in Job Object reaches 0 before closing
+            drained = proc_mgr.job_holder.drain(timeout=3.0)
+            self.assertTrue(drained, "Job Object failed to drain active processes to 0!")
+            self.assertEqual(proc_mgr.job_holder.get_active_process_count(), 0)
+
+            # Terminate tree and verify cleanup
+            tree_ok = proc_mgr.terminate_tree()
+            self.assertTrue(tree_ok, "terminate_tree failed!")
+            self.assertIsNone(proc_mgr.h_job)
+            self.assertIsNone(proc_mgr.job_holder)
+        finally:
+            proc_mgr.terminate_tree()
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
     def test_sandboxed_batch_stdin_stdout_pipeline(self):
         """Verifies full standard I/O pipe round-trip through AppContainer and Job Object."""
         cfg = AppContainerConfig(
@@ -957,6 +1015,46 @@ class TestAppContainerRuntimeAccess(unittest.TestCase):
             shutil.rmtree(d1, ignore_errors=True)
             shutil.rmtree(d2, ignore_errors=True)
 
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_check_runtime_path_specific_sid_allow_with_broad_package_deny_returns_denied(self):
+        """Explicit ALLOW on AppContainer SID with pre-existing DENY on ALL APPLICATION PACKAGES evaluates to DENIED."""
+        d = Path(tempfile.mkdtemp()).resolve()
+        try:
+            sid = "S-1-15-2-1234"
+            mock_out = (
+                f"{d} {sid}:(OI)(CI)(RX)\n"
+                f"     APPLICATION PACKAGE AUTHORITY\\ALL APPLICATION PACKAGES:(DENY)(RX)\n"
+                f"Successfully processed 1 files"
+            )
+            res = subprocess.CompletedProcess(args=["icacls", str(d)], returncode=0, stdout=mock_out, stderr="")
+            with mock.patch("subprocess.run", return_value=res):
+                status, perms = AppContainerProfileManager.check_runtime_path_effective_access(d, sid)
+                self.assertEqual(status, "DENIED")
+                self.assertIn("(DENY)", str(perms))
+                self.assertFalse(AppContainerProfileManager.has_runtime_path_access(d, sid))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_check_runtime_path_specific_sid_deny_with_broad_package_allow_returns_denied(self):
+        """Explicit DENY on AppContainer SID with ALLOW on ALL APPLICATION PACKAGES evaluates to DENIED."""
+        d = Path(tempfile.mkdtemp()).resolve()
+        try:
+            sid = "S-1-15-2-1234"
+            mock_out = (
+                f"{d} {sid}:(DENY)(RX)\n"
+                f"     APPLICATION PACKAGE AUTHORITY\\ALL APPLICATION PACKAGES:(OI)(CI)(RX)\n"
+                f"Successfully processed 1 files"
+            )
+            res = subprocess.CompletedProcess(args=["icacls", str(d)], returncode=0, stdout=mock_out, stderr="")
+            with mock.patch("subprocess.run", return_value=res):
+                status, perms = AppContainerProfileManager.check_runtime_path_effective_access(d, sid)
+                self.assertEqual(status, "DENIED")
+                self.assertIn("(DENY)", str(perms))
+                self.assertFalse(AppContainerProfileManager.has_runtime_path_access(d, sid))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
 
 class TestAppContainerCapabilities(unittest.TestCase):
     """Verifies capability parsing, resolution, and fail-closed validation."""
@@ -1053,6 +1151,133 @@ class TestAppContainerCommunicator(unittest.TestCase):
             use_appcontainer=True,
         )
         self.assertEqual(res.returncode, 0)
+
+
+class TestAppContainerTerminationTruthfulness(unittest.TestCase):
+    """Fault injection tests verifying terminate() and poll() do not fabricate return codes."""
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_termination_wait_timeout_does_not_fabricate_returncode(self):
+        """When WaitForSingleObject returns WAIT_TIMEOUT, terminate returns False and returncode remains None."""
+        from jarvis.core.evolution import appcontainer
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            use_appcontainer=True,
+        )
+        proc_mgr.start()
+        try:
+            def mock_get_exit(h, ec_ptr):
+                ec_ptr._obj.value = appcontainer.STILL_ACTIVE
+                return 1
+
+            with mock.patch.object(appcontainer.kernel32, "WaitForSingleObject", return_value=appcontainer.WAIT_TIMEOUT), \
+                 mock.patch.object(appcontainer.kernel32, "GetExitCodeProcess", side_effect=mock_get_exit):
+                term_ok = proc_mgr.proc.terminate(timeout=0.1)
+                self.assertFalse(term_ok)
+                self.assertIsNone(proc_mgr.proc.returncode)
+                self.assertIsNone(proc_mgr.proc.poll())
+        finally:
+            proc_mgr.terminate_tree()
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_termination_wait_failed_does_not_fabricate_returncode(self):
+        """When WaitForSingleObject returns WAIT_FAILED, terminate returns False and returncode remains None."""
+        from jarvis.core.evolution import appcontainer
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            use_appcontainer=True,
+        )
+        proc_mgr.start()
+        try:
+            def mock_get_exit(h, ec_ptr):
+                ec_ptr._obj.value = appcontainer.STILL_ACTIVE
+                return 1
+
+            with mock.patch.object(appcontainer.kernel32, "WaitForSingleObject", return_value=appcontainer.WAIT_FAILED), \
+                 mock.patch.object(appcontainer.kernel32, "GetExitCodeProcess", side_effect=mock_get_exit), \
+                 mock.patch("ctypes.get_last_error", return_value=6):
+                term_ok = proc_mgr.proc.terminate(timeout=0.1)
+                self.assertFalse(term_ok)
+                self.assertIsNone(proc_mgr.proc.returncode)
+                self.assertIsNone(proc_mgr.proc.poll())
+        finally:
+            proc_mgr.terminate_tree()
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_termination_get_exit_code_failed_does_not_fabricate_returncode(self):
+        """When GetExitCodeProcess fails, terminate returns False and returncode remains None."""
+        from jarvis.core.evolution import appcontainer
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            use_appcontainer=True,
+        )
+        proc_mgr.start()
+        try:
+            with mock.patch.object(appcontainer.kernel32, "WaitForSingleObject", return_value=appcontainer.WAIT_OBJECT_0), \
+                 mock.patch.object(appcontainer.kernel32, "GetExitCodeProcess", return_value=0), \
+                 mock.patch("ctypes.get_last_error", return_value=5):
+                term_ok = proc_mgr.proc.terminate(timeout=0.1)
+                self.assertFalse(term_ok)
+                self.assertIsNone(proc_mgr.proc.returncode)
+        finally:
+            proc_mgr.terminate_tree()
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_termination_still_active_reported_does_not_fabricate_returncode(self):
+        """When GetExitCodeProcess reports STILL_ACTIVE after WAIT_OBJECT_0, terminate returns False."""
+        from jarvis.core.evolution import appcontainer
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            use_appcontainer=True,
+        )
+        proc_mgr.start()
+        try:
+            def mock_get_exit(h, ec_ptr):
+                ec_ptr._obj.value = appcontainer.STILL_ACTIVE
+                return 1
+
+            with mock.patch.object(appcontainer.kernel32, "WaitForSingleObject", return_value=appcontainer.WAIT_OBJECT_0), \
+                 mock.patch.object(appcontainer.kernel32, "GetExitCodeProcess", side_effect=mock_get_exit):
+                term_ok = proc_mgr.proc.terminate(timeout=0.1)
+                self.assertFalse(term_ok)
+                self.assertIsNone(proc_mgr.proc.returncode)
+                self.assertIsNone(proc_mgr.proc.poll())
+        finally:
+            proc_mgr.terminate_tree()
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_job_handle_holder_query_failure_returns_none_not_zero(self):
+        """QueryInformationJobObject failure returns None (distinct from 0) and drain fails closed."""
+        from jarvis.skills import job_object_sandbox as jsb
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            use_appcontainer=True,
+        )
+        proc_mgr.start()
+        try:
+            holder = proc_mgr.job_holder
+            self.assertIsNotNone(holder)
+            with mock.patch.object(jsb.kernel32, "QueryInformationJobObject", return_value=0):
+                self.assertIsNone(holder.get_active_process_count())
+                self.assertFalse(holder.drain(timeout=0.05))
+        finally:
+            proc_mgr.terminate_tree()
+
+    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    def test_terminate_tree_propagates_unsuccessful_drain_result(self):
+        """terminate_tree returns False if Job Object fails to drain active processes."""
+        from jarvis.skills import job_object_sandbox as jsb
+        proc_mgr = SandboxedProcess(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            use_appcontainer=True,
+        )
+        proc_mgr.start()
+        try:
+            with mock.patch.object(jsb, "_terminate_and_drain", return_value=False):
+                res = proc_mgr.terminate_tree()
+                self.assertFalse(res, "terminate_tree must propagate failure when draining fails!")
+        finally:
+            proc_mgr.terminate_tree()
 
 
 if __name__ == "__main__":
