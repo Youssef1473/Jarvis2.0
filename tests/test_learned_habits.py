@@ -8,12 +8,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import jarvis.skills.self_evolution as self_evo
 from jarvis.core.brain import JarvisBrain
 from jarvis.core.memory import MemoryManager
-from jarvis.core.reflex_engine import DynamicReflexEngine, normalize_trigger_phrase, REFLEX_ELIGIBLE_TOOLS
+from jarvis.core.reflex_engine import (
+    REFLEX_ELIGIBLE_TOOLS,
+    DynamicReflexEngine,
+    normalize_trigger_phrase,
+)
 from jarvis.core.safety import SafetyGate
 from jarvis.skills.base import SkillRegistry
-import jarvis.skills.self_evolution as self_evo
 
 
 class TestDynamicReflexEngine(unittest.TestCase):
@@ -200,7 +204,8 @@ class TestFastBrowserUrlReflex(unittest.TestCase):
 
         self.assertIsNotNone(res)
         mock_exec.assert_called_with("open_browser_tab", url="youtube.com", browser="brave")
-        self.assertLess(latency_ms, 25.0)
+        max_latency = 100.0 if os.environ.get("CI") else 25.0
+        self.assertLess(latency_ms, max_latency)
 
     @patch("jarvis.skills.base.SkillRegistry.execute")
     def test_open_url_in_brave_direct(self, mock_exec):
@@ -278,7 +283,8 @@ class TestAdaptationProgressionAndVerification(unittest.TestCase):
 
             self.assertEqual(reply, "CPU: 14%, RAM: 46%")
             mock_exec.assert_called_with("get_system_vitals")
-            self.assertLess(duration_ms, 100.0)
+            duration_limit = 500.0 if os.environ.get("CI") else 100.0
+            self.assertLess(duration_ms, duration_limit)
 
             # Hit count incremented
             updated_habit = self.brain.reflex_engine.check_habit(norm_key)
@@ -350,10 +356,12 @@ class TestAdaptationProgressionAndVerification(unittest.TestCase):
             res = self.brain._try_fast_reflex("setup my workstation")
             duration_ms = (time.perf_counter() - start) * 1000.0
 
+            self.assertIsNotNone(res)
             self.assertEqual(len(executed_calls), 2)
             self.assertEqual(executed_calls[0][0], "adjust_volume")
             self.assertEqual(executed_calls[1][0], "open_browser_tab")
-            self.assertLess(duration_ms, 250.0)
+            duration_limit = 500.0 if os.environ.get("CI") else 250.0
+            self.assertLess(duration_ms, duration_limit)
 
     def test_dynamic_voyager_skill_discovery(self):
         """Verifies custom registered skills are dynamically discovered by _select_tools_for_query."""
