@@ -813,7 +813,10 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             _recv_response(ws, 302)
 
         # Connection is now CLOSED
-        time.sleep(1.2)
+        # Wait deterministically up to 5.0s for the scheduled in-page fetch to reach the test server
+        deadline = time.monotonic() + 5.0
+        while "/probe_post_disconnect" not in self.blocked_hits and time.monotonic() < deadline:
+            time.sleep(0.05)
 
         # In Chromium CDP, detaching the DevTools agent resets session domain state (Network.disable).
         # We record the empirical finding:

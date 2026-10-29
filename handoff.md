@@ -33,6 +33,9 @@
    - Root cause of CI run #40776070086 6-hour timeout: Worker `gw1` hung in `tests/test_ui_server.py` due to a hardcoded port collision on `127.0.0.1:20139` with `tests/test_live_telemetry_stream.py` on worker `gw0`.
    - Replaced fixed test port `20139` with dynamic ephemeral port binding via `socket.bind(("127.0.0.1", 0))`.
 
+5. **Deterministic CDP Disconnect Lifecycle Wait in `tests/test_browser_network_boundaries.py`:**
+   - Replaced fixed `time.sleep(1.2)` in `test_live_03_cdp_disconnect_lifecycle_behavior` with bounded polling (`deadline = time.monotonic() + 5.0`) to eliminate flakiness under high parallel runner CPU contention when Chromium dispatches the post-disconnect fetch.
+
 ---
 
 ## 2. Empirical Verification Results
