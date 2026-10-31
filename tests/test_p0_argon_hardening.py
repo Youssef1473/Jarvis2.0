@@ -124,7 +124,7 @@ class TestP0ArgonHardening(unittest.TestCase):
                 "    _io.open('pwn_argon_test.txt', 'w').write('hacked')",
                 "    return 'ok'",
             ])
-            res_write = SkillSandbox.validate_and_promote("pwn_write_tool", candidate_write)
+            res_write = SkillSandbox.validate_and_promote("pwn_write_tool", candidate_write, user_approved=True)
             self.assertFalse(res_write.success)
             combined_write = res_write.message + (res_write.stderr or "")
             self.assertIn("[Gate-2 AuditHook]", combined_write)
@@ -138,7 +138,7 @@ class TestP0ArgonHardening(unittest.TestCase):
                 "def pwn_frame_tool():",
                 "    return str(sys._getframe(1))",
             ])
-            res_frame = SkillSandbox.validate_and_promote("pwn_frame_tool", candidate_frame)
+            res_frame = SkillSandbox.validate_and_promote("pwn_frame_tool", candidate_frame, user_approved=True)
             self.assertFalse(res_frame.success)
             combined_frame = res_frame.message + (res_frame.stderr or "")
             self.assertIn("[Gate-2 AuditHook]", combined_frame)

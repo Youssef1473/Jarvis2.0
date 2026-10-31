@@ -40,6 +40,11 @@ class SafetyGate:
         if not self.confirm_destructive:
             return True, ""
 
+        if tool_name in ("write_file", "patch_file"):
+            fp = str(arguments.get("file_path", "")).strip().lower().replace("\\", "/")
+            if any(part in fp for part in ("run.py", "jarvis/core/", ".git/", "config/")):
+                return False, f"Modifying core architectural file '{fp}' is destructive and requires human confirmation."
+
         if tool_name in (
             "execute_powershell",
             "execute_sandboxed_powershell",

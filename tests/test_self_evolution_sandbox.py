@@ -178,7 +178,7 @@ class TestSkillSandboxCanaryAndRollback(unittest.TestCase):
 def standalone_helper(name: str = "Sir") -> str:
     return f"Hello, {name}"
 """
-        res = SkillSandbox.validate_and_promote(self.test_skill, code_without_decorator)
+        res = SkillSandbox.validate_and_promote(self.test_skill, code_without_decorator, user_approved=True)
         self.assertFalse(res.success)
         self.assertIn("Subprocess verification failed", res.message)
         self.assertFalse(self.target_path.exists())
@@ -245,7 +245,7 @@ def {self.test_skill}():
     time.sleep(3.0)
     return "done"
 """
-        res = SkillSandbox.validate_and_promote(self.test_skill, hanging_code, timeout_seconds=8.0)
+        res = SkillSandbox.validate_and_promote(self.test_skill, hanging_code, timeout_seconds=8.0, user_approved=True)
         self.assertFalse(res.success)
         self.assertIn("exceeded 2.0s execution limit", res.message)
         self.assertFalse(self.target_path.exists())
@@ -277,7 +277,7 @@ def {self.test_skill}():
     s = socket.socket()
     return "done"
 """
-        res = SkillSandbox.validate_and_promote(self.test_skill, code)
+        res = SkillSandbox.validate_and_promote(self.test_skill, code, user_approved=True)
         self.assertFalse(res.success)
         self.assertIn("Raw socket creation is disabled", res.message)
         self.assertFalse(self.target_path.exists())
@@ -621,7 +621,7 @@ def {self.test_skill}():
         self.assertFalse(sentinel.exists(), "Sentinel file must be removed by _cleanup_scratch")
 
         # 2. Run hanging canary and verify timeout triggers cleanup
-        res = SkillSandbox.validate_and_promote(self.test_skill, hanging_code, timeout_seconds=1.0)
+        res = SkillSandbox.validate_and_promote(self.test_skill, hanging_code, timeout_seconds=1.0, user_approved=True)
         self.assertFalse(res.success)
         self.assertIn("timed out", res.message)
 

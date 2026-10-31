@@ -143,7 +143,7 @@ def test_fail_closed_skill():
 """
         with mock.patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=False):
             with mock.patch("sys.platform", "win32"):
-                res = SkillSandbox.validate_and_promote(clean_name, valid_code)
+                res = SkillSandbox.validate_and_promote(clean_name, valid_code, user_approved=True)
                 self.assertFalse(res.success)
                 self.assertIn("Win32 Job Object assignment failed", res.message)
                 self.assertFalse((CUSTOM_SKILLS_DIR / f"{clean_name}.py").exists())

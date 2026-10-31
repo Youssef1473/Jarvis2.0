@@ -175,9 +175,8 @@ def _install_audit_hook(allowlist_roots: list[str], scratch_dir: str) -> None:
         return norm == norm_scratch or norm.startswith(norm_scratch + os.sep)
 
     def _is_path_allowed(path_candidate: Any) -> bool:
-        if isinstance(path_candidate, int):
-            # Already open integer file descriptors are permitted
-            return True
+        if isinstance(path_candidate, (int, float)):
+            return False
         norm = _normalize_path(path_candidate)
         if not norm:
             return False
@@ -215,13 +214,16 @@ def _install_audit_hook(allowlist_roots: list[str], scratch_dir: str) -> None:
         if event == "open":
             mode = args[1] if len(args) > 1 else None
             flags = args[2] if len(args) > 2 else 0
-            is_write_mode = (mode and isinstance(mode, str) and any(m in mode for m in ("w", "a", "+", "x")))
-            is_write_flags = (isinstance(flags, int) and bool(flags & 0x030B))
             target_path = args[0] if len(args) > 0 else None
 
-            if (is_write_mode or is_write_flags) and (
-                not isinstance(target_path, int) and (target_path is None or not _is_scratch_path(target_path))
-            ):
+            # Disallow all direct integer file descriptor manipulation
+            if isinstance(target_path, int):
+                raise PermissionError(f"[AuditHook] Direct file descriptor manipulation is prohibited in isolated sandbox: {target_path}")
+
+            is_write_mode = (mode and isinstance(mode, str) and any(m in mode for m in ("w", "a", "+", "x")))
+            is_write_flags = (isinstance(flags, int) and bool(flags & 0x030B))
+
+            if (is_write_mode or is_write_flags) and (target_path is None or not _is_scratch_path(target_path)):
                 raise PermissionError(f"[AuditHook] Filesystem write prohibited outside scratch: '{target_path}'")
 
             if target_path is not None and not _is_path_allowed(target_path):
@@ -277,12 +279,23 @@ def main() -> int:
     scratch_dir = Path(args.scratch_dir).resolve()
     result_path = Path(args.result_file).resolve()
 
-    # Pre-open result file descriptor before audit hook write restrictions activate
-    try:
-        result_file_handle = open(result_path, "w", encoding="utf-8")  # noqa: SIM115
-    except OSError as e:
-        sys.stderr.write(f"Failed to pre-open result file '{result_path}': {e}\n")
-        return 2
+    def _write_result(payload_dict: dict[str, Any]) -> None:
+        try:
+            json_str = json.dumps(payload_dict)
+        except (TypeError, ValueError):
+            payload_dict["result"] = str(payload_dict.get("result", ""))
+            json_str = json.dumps(payload_dict)
+        if len(json_str.encode("utf-8")) > 1048576:
+            payload_dict = {
+                "nonce": payload_dict.get("nonce", ""),
+                "status": "error",
+                "type": "SecurityViolation",
+                "error": "Custom skill output exceeded 1MB ceiling; rejected.",
+            }
+            json_str = json.dumps(payload_dict)
+        with open(result_path, "w", encoding="utf-8") as rf:
+            rf.write(json_str)
+            rf.flush()
 
     # Step 1: Inject jarvis stub modules
     _inject_jarvis_stubs()
@@ -308,8 +321,7 @@ def main() -> int:
     try:
         _install_audit_hook(allowlist, scratch_dir=str(scratch_dir))
     except (RuntimeError, ValueError, OSError) as e:
-        result_file_handle.write(json.dumps({"status": "error", "error": f"Failed to install audit hook: {e}"}))
-        result_file_handle.close()
+        _write_result({"status": "error", "error": f"Failed to install audit hook: {e}"})
         return 3
 
     # Step 4: Read nonce and kwargs from stdin
@@ -326,8 +338,7 @@ def main() -> int:
         if not isinstance(kwargs, dict):
             raise TypeError("Invalid stdin payload: 'kwargs' must be a JSON dictionary.")
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError, OSError) as e:
-        result_file_handle.write(json.dumps({"status": "error", "error": f"Failed to parse stdin payload: {e}"}))
-        result_file_handle.close()
+        _write_result({"status": "error", "error": f"Failed to parse stdin payload: {e}"})
         return 4
 
     # Step 5: Single-read memory compilation and SHA-256 verification (no TOCTOU)
@@ -359,9 +370,7 @@ def main() -> int:
             "type": type(e).__name__,
             "error": err_msg,
         }
-        result_file_handle.write(json.dumps(resp))
-        result_file_handle.flush()
-        result_file_handle.close()
+        _write_result(resp)
         return 1
 
     # Step 6: Locate and invoke the target tool
@@ -376,9 +385,7 @@ def main() -> int:
             "type": "ToolNotFoundError",
             "error": f"Tool '{args.tool_name}' not registered or callable in module.",
         }
-        result_file_handle.write(json.dumps(resp))
-        result_file_handle.flush()
-        result_file_handle.close()
+        _write_result(resp)
         return 1
 
     try:
@@ -389,25 +396,7 @@ def main() -> int:
             "status": "success",
             "result": result,
         }
-        try:
-            json_payload = json.dumps(resp)
-        except (TypeError, ValueError):
-            # Fallback for non-JSON objects: string representation
-            resp["result"] = str(result)
-            json_payload = json.dumps(resp)
-
-        if len(json_payload.encode("utf-8")) > 1048576:
-            resp = {
-                "nonce": nonce,
-                "status": "error",
-                "type": "SecurityViolation",
-                "error": "Custom skill output exceeded 1MB ceiling; rejected.",
-            }
-            json_payload = json.dumps(resp)
-
-        result_file_handle.write(json_payload)
-        result_file_handle.flush()
-        result_file_handle.close()
+        _write_result(resp)
         return 0
     except Exception as e:  # noqa: BLE001
         err_msg = str(e)
@@ -419,9 +408,7 @@ def main() -> int:
             "type": type(e).__name__,
             "error": err_msg,
         }
-        result_file_handle.write(json.dumps(resp))
-        result_file_handle.flush()
-        result_file_handle.close()
+        _write_result(resp)
         return 1
 
 

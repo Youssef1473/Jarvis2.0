@@ -278,3 +278,9 @@ class FlowStateMirror:
                     '</ambient_untrusted_telemetry>'
                 )
         return result
+
+    def format_quarantined_xml(self, max_bytes: int = 1024) -> str:
+        """Formats the snapshot strictly under 1KB budget inside quarantined XML tags.
+        Canonical alias for format_tier1_telemetry.
+        """
+        return self.format_tier1_telemetry(max_bytes=max_bytes)
