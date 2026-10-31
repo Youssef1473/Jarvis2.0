@@ -12,6 +12,7 @@ import ctypes
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import sys
 import time
@@ -486,16 +487,26 @@ class SleepPhaseConsolidator:
 
         reflex_macros_compiled = 0
 
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(compiled_reflex_macros)")
+        cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row.keys() else row[1] for row in cursor.fetchall()}
+        if cols and "macro_name" not in cols:
+            conn.execute("DROP TABLE compiled_reflex_macros")
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS compiled_reflex_macros (
-                macro_id TEXT PRIMARY KEY,
-                tool_sequence TEXT NOT NULL,
-                occurrence_count INTEGER NOT NULL,
-                last_compiled_ts REAL NOT NULL
+                macro_name TEXT PRIMARY KEY,
+                trigger_regex TEXT NOT NULL,
+                steps_json TEXT NOT NULL,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                macro_id TEXT GENERATED ALWAYS AS (macro_name) VIRTUAL,
+                tool_sequence TEXT DEFAULT '',
+                occurrence_count INTEGER DEFAULT 0,
+                last_compiled_ts REAL DEFAULT 0.0
             ) WITHOUT ROWID
         """)
-
-        cursor = conn.cursor()
         try:
             cursor.execute("""
                 SELECT tool_calls FROM interactions
@@ -542,12 +553,14 @@ class SleepPhaseConsolidator:
                 if is_user_active_fn and is_user_active_fn():
                     break
                 seq_str = "->".join(seq)
-                macro_id = "macro_" + hashlib.sha256(seq_str.encode()).hexdigest()[:12]
+                macro_name = "macro_" + hashlib.sha256(seq_str.encode()).hexdigest()[:12]
+                trigger_regex = "(?i)" + ".*".join(re.escape(t) for t in seq)
+                steps_json = json.dumps([{"tool": t, "args": {}} for t in seq])
                 conn.execute("""
                     INSERT OR REPLACE INTO compiled_reflex_macros
-                    (macro_id, tool_sequence, occurrence_count, last_compiled_ts)
-                    VALUES (?, ?, ?, unixepoch())
-                """, (macro_id, seq_str, count))
+                    (macro_name, trigger_regex, steps_json, success_count, failure_count, created_at, tool_sequence, occurrence_count, last_compiled_ts)
+                    VALUES (?, ?, ?, ?, 0, unixepoch(), ?, ?, unixepoch())
+                """, (macro_name, trigger_regex, steps_json, count, seq_str, count))
                 reflex_macros_compiled += 1
 
         return reflex_macros_compiled

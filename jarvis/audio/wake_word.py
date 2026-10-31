@@ -75,6 +75,7 @@ class SPSCFrameRingBuffer:
         self._read_pos = 0
         self._count = 0
         self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
         self._not_empty = threading.Event()
         self.overflow_count = 0
         self.recording_overflow_detected = False
@@ -119,8 +120,9 @@ class SPSCFrameRingBuffer:
 
             self._write_pos = (self._write_pos + 1) % self.capacity
             self._count += 1
+            self._not_empty.set()
+            self._cond.notify()
 
-        self._not_empty.set()
         return True
 
     def read_frame(self, timeout: float = 0.1) -> np.ndarray | None:
@@ -156,6 +158,7 @@ class SPSCFrameRingBuffer:
             self._count = 0
             self._not_empty.clear()
             self.recording_overflow_detected = False
+            self._cond.notify_all()
 
 
 class WakeWordDetector:
@@ -255,7 +258,22 @@ class WakeWordDetector:
 
             # openWakeWord provides built-in models including "hey_jarvis"
             # Download models if not cached
-            openwakeword.utils.download_models()
+            try:
+                openwakeword.utils.download_models()
+            except Exception as dl_err:
+                logger.debug("openWakeWord download_models note: %s", dl_err)
+
+            # Defensive session options to prevent P-core spinning and thread starvation
+            try:
+                import onnxruntime as ort
+                opts = ort.SessionOptions()
+                opts.intra_op_num_threads = 2
+                opts.inter_op_num_threads = 1
+                opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+                opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
+            except Exception:
+                pass
+
             self.model = Model(wakeword_models=["hey_jarvis"], inference_framework="onnx")
             logger.info("Loaded openWakeWord 'hey_jarvis' model successfully.")
         except Exception as e:  # noqa: BLE001

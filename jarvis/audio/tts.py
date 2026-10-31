@@ -1208,8 +1208,10 @@ class TextToSpeech:
                 self._fallback_thread = t
                 t.start()
 
-    def on_barge_in_flush(self, force: bool = False) -> None:
+    def on_barge_in_flush(self, force: bool = False, expected_epoch: int | None = None) -> None:
         """Immediately interrupts speech playback non-blockingly (<10ms) upon barge-in."""
+        if expected_epoch is not None and getattr(self, "_session_activation_epoch", 0) > expected_epoch:
+            return
         current_epoch = int(GLOBAL_EPOCH_STATE.barge_in_epoch)
         if not force:
             if is_in_cancellation_flush():
@@ -1337,8 +1339,12 @@ class TextToSpeech:
         stop_timeout: float = 0.100,
         ramp_timeout: float = 0.030,
         non_blocking: bool = False,
+        expected_epoch: int | None = None,
     ) -> bool:
         """Immediately interrupts and halts speech playback across all engines."""
+        if expected_epoch is not None and getattr(self, "_session_activation_epoch", 0) > expected_epoch:
+            return True
+
         if non_blocking:
             self._stream_active = False
             self._is_speaking = False
@@ -1347,7 +1353,7 @@ class TextToSpeech:
                 signal_global_barge_in(async_callbacks=True, exclude=self.on_barge_in_flush)
             except Exception:  # noqa: BLE001
                 pass
-            self.on_barge_in_flush(force=True)
+            self.on_barge_in_flush(force=True, expected_epoch=expected_epoch)
             return True
 
         rem_stop = max(0.001, float(stop_timeout))
@@ -1357,7 +1363,7 @@ class TextToSpeech:
             with self._lifecycle_lock:
                 self._stop_in_progress = True
             try:
-                return self._do_stop(stop_timeout=stop_timeout, ramp_timeout=ramp_timeout)
+                return self._do_stop(stop_timeout=stop_timeout, ramp_timeout=ramp_timeout, expected_epoch=expected_epoch)
             finally:
                 with self._lifecycle_lock:
                     self._stop_in_progress = False
@@ -1365,7 +1371,14 @@ class TextToSpeech:
         finally:
             self._stop_lock.release()
 
-    def _do_stop(self, stop_timeout: float = 0.100, ramp_timeout: float = 0.030) -> bool:
+    def _do_stop(
+        self,
+        stop_timeout: float = 0.100,
+        ramp_timeout: float = 0.030,
+        expected_epoch: int | None = None,
+    ) -> bool:
+        if expected_epoch is not None and getattr(self, "_session_activation_epoch", 0) > expected_epoch:
+            return True
         clean_stop = True
         stop_deadline = time.monotonic() + max(0.0, float(stop_timeout))
 

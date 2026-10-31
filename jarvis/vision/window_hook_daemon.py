@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import queue
 import sys
 import threading
 from collections.abc import Callable
@@ -60,6 +61,8 @@ class WinEventHookDaemon:
         self._listener_lock = threading.Lock()
         self._running = False
         self._thread: threading.Thread | None = None
+        self._dispatch_thread: threading.Thread | None = None
+        self._event_queue: queue.SimpleQueue[tuple[int, int, str] | None] = queue.SimpleQueue()
         self._hook_thread_id: int | None = None
         self._hook1: int | None = None
         self._hook2: int | None = None
@@ -83,6 +86,10 @@ class WinEventHookDaemon:
         if sys.platform != "win32" or not hwnd:
             return ""
         try:
+            # Guard against querying hung windows which can block the thread
+            if getattr(ctypes.windll.user32, "IsHungAppWindow", None):
+                if ctypes.windll.user32.IsHungAppWindow(hwnd):
+                    return ""
             length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
             if length > 0:
                 buf = ctypes.create_unicode_buffer(length + 1)
@@ -112,14 +119,36 @@ class WinEventHookDaemon:
             return
 
         title = self._get_window_title(hwnd)
-        with self._listener_lock:
-            listeners = list(self._listeners)
+        if self._running:
+            # Offload listener execution from the native Win32 message pump thread
+            self._event_queue.put((hwnd, event, title))
+        else:
+            # Direct synchronous dispatch when daemon background worker is not running (e.g. unit tests)
+            with self._listener_lock:
+                listeners = list(self._listeners)
+            for listener in listeners:
+                try:
+                    listener(hwnd, event, title)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("Error in window event listener: %s", e)
 
-        for listener in listeners:
+    def _dispatch_worker_loop(self) -> None:
+        """Background worker executing subscriber callbacks off the native Win32 hook pump."""
+        while self._running:
             try:
-                listener(hwnd, event, title)
-            except Exception as e:  # noqa: BLE001 - Protect WinEvent pump thread against subscriber callback failures
-                logger.debug("Error in window event listener: %s", e)
+                item = self._event_queue.get(timeout=0.2)
+            except Exception:
+                continue
+            if item is None:
+                break
+            hwnd, event, title = item
+            with self._listener_lock:
+                listeners = list(self._listeners)
+            for listener in listeners:
+                try:
+                    listener(hwnd, event, title)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("Error in window event listener: %s", e)
 
     def _pump_loop(self) -> None:
         """Dedicated message pump thread pinned to E-Cores with EcoQoS."""
@@ -196,6 +225,12 @@ class WinEventHookDaemon:
             return True
 
         self._running = True
+        self._dispatch_thread = threading.Thread(
+            target=self._dispatch_worker_loop,
+            name="Jarvis-WinEventDispatch",
+            daemon=True,
+        )
+        self._dispatch_thread.start()
         self._thread = threading.Thread(
             target=self._pump_loop,
             name="Jarvis-WinEventHookPump",
@@ -210,6 +245,7 @@ class WinEventHookDaemon:
             return
 
         self._running = False
+        self._event_queue.put(None)
         if sys.platform == "win32" and self._hook_thread_id:
             try:
                 # Mandatory constraint: Post WM_QUIT (0x0012) to hook thread to cleanly unblock GetMessageW
@@ -219,6 +255,9 @@ class WinEventHookDaemon:
 
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=timeout)
+        if self._dispatch_thread and self._dispatch_thread.is_alive():
+            self._dispatch_thread.join(timeout=timeout)
         self._thread = None
+        self._dispatch_thread = None
         self._hook_thread_id = None
         self._win_event_proc = None

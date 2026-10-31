@@ -310,96 +310,154 @@ class ObsidianContextSyncEngine:
         """Triggers an immediate out-of-band incremental sync pass."""
         self._sync_trigger.set()
 
-    def _init_db_schema(self, conn: sqlite3.Connection):
+    def _init_db_schema(self, conn: sqlite3.Connection | None = None):
         """Initializes WAL mode and schemas for delta tracking and note chunks."""
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA busy_timeout=5000;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
+        def _schema_defs(c: sqlite3.Connection):
+            c.execute("PRAGMA journal_mode=WAL;")
+            c.execute("PRAGMA busy_timeout=5000;")
+            c.execute("PRAGMA synchronous=NORMAL;")
 
-        # Delta sync state table
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS obsidian_sync_state (
-                file_path TEXT PRIMARY KEY,
-                file_hash TEXT NOT NULL,
-                mtime REAL NOT NULL,
-                chunk_count INTEGER DEFAULT 0,
-                last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        # Structured chunk storage for episodic memory
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS obsidian_chunks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_path TEXT NOT NULL,
-                note_title TEXT NOT NULL,
-                breadcrumb TEXT,
-                content TEXT NOT NULL,
-                tags TEXT,
-                wiki_links TEXT,
-                frontmatter TEXT,
-                chunk_index INTEGER DEFAULT 0,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_obsidian_chunks_path ON obsidian_chunks(file_path)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_obsidian_chunks_title ON obsidian_chunks(note_title)")
-
-        # Schema metadata table
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS schema_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-
-        # SQLite FTS5 Virtual Table & Real-Time Sync Triggers for Obsidian Chunks
-        try:
-            conn.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS obsidian_chunks_fts USING fts5(
-                    note_title,
-                    breadcrumb,
-                    content,
-                    tags,
-                    wiki_links,
-                    content='obsidian_chunks',
-                    content_rowid='id'
+            # Delta sync state table
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS obsidian_sync_state (
+                    file_path TEXT PRIMARY KEY,
+                    file_hash TEXT NOT NULL,
+                    mtime REAL NOT NULL,
+                    chunk_count INTEGER DEFAULT 0,
+                    last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            conn.execute("""
-                CREATE TRIGGER IF NOT EXISTS obsidian_chunks_ai AFTER INSERT ON obsidian_chunks BEGIN
-                    INSERT INTO obsidian_chunks_fts(rowid, note_title, breadcrumb, content, tags, wiki_links)
-                    VALUES (new.id, new.note_title, new.breadcrumb, new.content, new.tags, new.wiki_links);
-                END;
-            """)
-            conn.execute("""
-                CREATE TRIGGER IF NOT EXISTS obsidian_chunks_ad AFTER DELETE ON obsidian_chunks BEGIN
-                    INSERT INTO obsidian_chunks_fts(obsidian_chunks_fts, rowid, note_title, breadcrumb, content, tags, wiki_links)
-                    VALUES ('delete', old.id, old.note_title, old.breadcrumb, old.content, old.tags, old.wiki_links);
-                END;
-            """)
-            conn.execute("""
-                CREATE TRIGGER IF NOT EXISTS obsidian_chunks_au AFTER UPDATE ON obsidian_chunks BEGIN
-                    INSERT INTO obsidian_chunks_fts(obsidian_chunks_fts, rowid, note_title, breadcrumb, content, tags, wiki_links)
-                    VALUES ('delete', old.id, old.note_title, old.breadcrumb, old.content, old.tags, old.wiki_links);
-                    INSERT INTO obsidian_chunks_fts(rowid, note_title, breadcrumb, content, tags, wiki_links)
-                    VALUES (new.id, new.note_title, new.breadcrumb, new.content, new.tags, new.wiki_links);
-                END;
+
+            # Structured chunk storage for episodic memory
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS obsidian_chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_path TEXT NOT NULL,
+                    note_title TEXT NOT NULL,
+                    breadcrumb TEXT,
+                    content TEXT NOT NULL,
+                    tags TEXT,
+                    wiki_links TEXT,
+                    frontmatter TEXT,
+                    chunk_index INTEGER DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
             """)
 
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1 FROM schema_meta WHERE key = 'obsidian_fts5_initialized'")
-            if not cursor.fetchone():
+            c.execute("CREATE INDEX IF NOT EXISTS idx_obsidian_chunks_path ON obsidian_chunks(file_path)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_obsidian_chunks_title ON obsidian_chunks(note_title)")
+
+            # Schema metadata table
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS schema_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+
+            # SQLite FTS5 Virtual Table & Real-Time Sync Triggers for Obsidian Chunks
+            try:
+                c.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS obsidian_chunks_fts USING fts5(
+                        note_title,
+                        breadcrumb,
+                        content,
+                        tags,
+                        wiki_links,
+                        content='obsidian_chunks',
+                        content_rowid='id'
+                    )
+                """)
+                c.execute("""
+                    CREATE TRIGGER IF NOT EXISTS obsidian_chunks_ai AFTER INSERT ON obsidian_chunks BEGIN
+                        INSERT INTO obsidian_chunks_fts(rowid, note_title, breadcrumb, content, tags, wiki_links)
+                        VALUES (new.id, new.note_title, new.breadcrumb, new.content, new.tags, new.wiki_links);
+                    END;
+                """)
+                c.execute("""
+                    CREATE TRIGGER IF NOT EXISTS obsidian_chunks_ad AFTER DELETE ON obsidian_chunks BEGIN
+                        INSERT INTO obsidian_chunks_fts(obsidian_chunks_fts, rowid, note_title, breadcrumb, content, tags, wiki_links)
+                        VALUES ('delete', old.id, old.note_title, old.breadcrumb, old.content, old.tags, old.wiki_links);
+                    END;
+                """)
+                c.execute("""
+                    CREATE TRIGGER IF NOT EXISTS obsidian_chunks_au AFTER UPDATE ON obsidian_chunks BEGIN
+                        INSERT INTO obsidian_chunks_fts(obsidian_chunks_fts, rowid, note_title, breadcrumb, content, tags, wiki_links)
+                        VALUES ('delete', old.id, old.note_title, old.breadcrumb, old.content, old.tags, old.wiki_links);
+                        INSERT INTO obsidian_chunks_fts(rowid, note_title, breadcrumb, content, tags, wiki_links)
+                        VALUES (new.id, new.note_title, new.breadcrumb, new.content, new.tags, new.wiki_links);
+                    END;
+                """)
+
+                cursor = c.cursor()
+                cursor.execute("SELECT 1 FROM schema_meta WHERE key = 'obsidian_fts5_initialized'")
+                if not cursor.fetchone():
+                    try:
+                        c.execute("INSERT INTO obsidian_chunks_fts(obsidian_chunks_fts) VALUES('rebuild')")
+                        c.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('obsidian_fts5_initialized', '1')")
+                    except Exception as rb_err:
+                        logger.debug("Obsidian FTS5 initial rebuild notice: %s", rb_err)
+            except Exception as fts_err:
+                logger.warning("Obsidian FTS5 virtual table could not be initialized: %s", fts_err)
+
+        try:
+            from jarvis.core.memory.sqlite_base import SingleWriterActor
+            SingleWriterActor.get_or_create(self.db_path).execute_write(_schema_defs)
+        except Exception:
+            if conn is not None:
+                _schema_defs(conn)
+            else:
+                c = sqlite3.connect(str(self.db_path), check_same_thread=False)
                 try:
-                    conn.execute("INSERT INTO obsidian_chunks_fts(obsidian_chunks_fts) VALUES('rebuild')")
-                    conn.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('obsidian_fts5_initialized', '1')")
-                except Exception as rb_err:
-                    logger.debug("Obsidian FTS5 initial rebuild notice: %s", rb_err)
-        except Exception as fts_err:
-            logger.warning("Obsidian FTS5 virtual table could not be initialized: %s", fts_err)
+                    with c:
+                        _schema_defs(c)
+                finally:
+                    c.close()
 
-        conn.commit()
+    def _apply_ops_to_conn(self, conn: sqlite3.Connection, ops: list[dict[str, Any]]) -> None:
+        """Applies a batch of obsidian sync operations to SQLite."""
+        for op in ops:
+            action = op.get("action")
+            if action == "UPSERT_NOTE":
+                f_path = op["file_path"]
+                f_hash = op["file_hash"]
+                mtime = op["mtime"]
+                chunks: list[ObsidianChunk] = op["chunks"]
+
+                conn.execute("DELETE FROM obsidian_chunks WHERE file_path = ?", (f_path,))
+                insert_rows = [
+                    (
+                        c.file_path,
+                        c.note_title,
+                        c.breadcrumb,
+                        c.content,
+                        json.dumps(c.tags),
+                        json.dumps(c.wiki_links),
+                        json.dumps(c.frontmatter),
+                        c.chunk_index,
+                    )
+                    for c in chunks
+                ]
+                conn.executemany("""
+                    INSERT INTO obsidian_chunks
+                    (file_path, note_title, breadcrumb, content, tags, wiki_links, frontmatter, chunk_index)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, insert_rows)
+
+                conn.execute("""
+                    INSERT INTO obsidian_sync_state (file_path, file_hash, mtime, chunk_count, last_synced)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(file_path) DO UPDATE SET
+                        file_hash = excluded.file_hash,
+                        mtime = excluded.mtime,
+                        chunk_count = excluded.chunk_count,
+                        last_synced = CURRENT_TIMESTAMP
+                """, (f_path, f_hash, mtime, len(chunks)))
+
+            elif action == "DELETE_NOTE":
+                f_path = op["file_path"]
+                conn.execute("DELETE FROM obsidian_chunks WHERE file_path = ?", (f_path,))
+                conn.execute("DELETE FROM obsidian_sync_state WHERE file_path = ?", (f_path,))
 
     def _load_persisted_state(self, conn: sqlite3.Connection):
         """Pre-populates the in-memory delta cache from SQLite on startup."""
@@ -412,9 +470,12 @@ class ObsidianContextSyncEngine:
 
     def _db_writer_loop(self):
         """Dedicated thread executing batched SQLite transactions without touching cognitive loops."""
-        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        self._init_db_schema(conn)
-        self._load_persisted_state(conn)
+        self._init_db_schema()
+        ro_conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        try:
+            self._load_persisted_state(ro_conn)
+        finally:
+            ro_conn.close()
 
         batch_ops: list[dict[str, Any]] = []
 
@@ -422,58 +483,15 @@ class ObsidianContextSyncEngine:
             nonlocal batch_ops
             if not batch_ops:
                 return
+            current_ops = list(batch_ops)
+            batch_ops = []
             try:
-                with conn:
-                    for op in batch_ops:
-                        action = op["action"]
-                        if action == "UPSERT_NOTE":
-                            f_path = op["file_path"]
-                            f_hash = op["file_hash"]
-                            mtime = op["mtime"]
-                            chunks: list[ObsidianChunk] = op["chunks"]
-
-                            # Delete existing chunks for this note
-                            conn.execute("DELETE FROM obsidian_chunks WHERE file_path = ?", (f_path,))
-
-                            # Insert newly parsed chunks
-                            insert_rows = [
-                                (
-                                    c.file_path,
-                                    c.note_title,
-                                    c.breadcrumb,
-                                    c.content,
-                                    json.dumps(c.tags),
-                                    json.dumps(c.wiki_links),
-                                    json.dumps(c.frontmatter),
-                                    c.chunk_index,
-                                )
-                                for c in chunks
-                            ]
-                            conn.executemany("""
-                                INSERT INTO obsidian_chunks
-                                (file_path, note_title, breadcrumb, content, tags, wiki_links, frontmatter, chunk_index)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """, insert_rows)
-
-                            # Update sync state
-                            conn.execute("""
-                                INSERT INTO obsidian_sync_state (file_path, file_hash, mtime, chunk_count, last_synced)
-                                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                                ON CONFLICT(file_path) DO UPDATE SET
-                                    file_hash = excluded.file_hash,
-                                    mtime = excluded.mtime,
-                                    chunk_count = excluded.chunk_count,
-                                    last_synced = CURRENT_TIMESTAMP
-                            """, (f_path, f_hash, mtime, len(chunks)))
-
-                        elif action == "DELETE_NOTE":
-                            f_path = op["file_path"]
-                            conn.execute("DELETE FROM obsidian_chunks WHERE file_path = ?", (f_path,))
-                            conn.execute("DELETE FROM obsidian_sync_state WHERE file_path = ?", (f_path,))
+                from jarvis.core.memory.sqlite_base import SingleWriterActor
+                SingleWriterActor.get_or_create(self.db_path).execute_write(
+                    lambda c: self._apply_ops_to_conn(c, current_ops)
+                )
             except Exception as e:
                 logger.error("Obsidian DB batch commit error: %s", e)
-            finally:
-                batch_ops = []
 
         while not self._stop_event.is_set():
             try:
@@ -492,7 +510,6 @@ class ObsidianContextSyncEngine:
                     _flush_batch()
 
         _flush_batch()
-        conn.close()
 
     def _scanner_loop(self):
         """Main non-blocking scanner loop executing incremental differential sweeps."""
@@ -578,63 +595,24 @@ class ObsidianContextSyncEngine:
 
     def _flush_pending_db_queue(self):
         """Flushes queued operations synchronously when background DB thread is inactive."""
-        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        self._init_db_schema(conn)
-        try:
-            with conn:
-                while not self._db_queue.empty():
-                    try:
-                        op = self._db_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    if op is None:
-                        continue
-                    action = op.get("action")
-                    if action == "UPSERT_NOTE":
-                        f_path = op["file_path"]
-                        f_hash = op["file_hash"]
-                        mtime = op["mtime"]
-                        chunks: list[ObsidianChunk] = op["chunks"]
-
-                        conn.execute("DELETE FROM obsidian_chunks WHERE file_path = ?", (f_path,))
-                        insert_rows = [
-                            (
-                                c.file_path,
-                                c.note_title,
-                                c.breadcrumb,
-                                c.content,
-                                json.dumps(c.tags),
-                                json.dumps(c.wiki_links),
-                                json.dumps(c.frontmatter),
-                                c.chunk_index,
-                            )
-                            for c in chunks
-                        ]
-                        conn.executemany("""
-                            INSERT INTO obsidian_chunks
-                            (file_path, note_title, breadcrumb, content, tags, wiki_links, frontmatter, chunk_index)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """, insert_rows)
-
-                        conn.execute("""
-                            INSERT INTO obsidian_sync_state (file_path, file_hash, mtime, chunk_count, last_synced)
-                            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                            ON CONFLICT(file_path) DO UPDATE SET
-                                file_hash = excluded.file_hash,
-                                mtime = excluded.mtime,
-                                chunk_count = excluded.chunk_count,
-                                last_synced = CURRENT_TIMESTAMP
-                        """, (f_path, f_hash, mtime, len(chunks)))
-
-                    elif action == "DELETE_NOTE":
-                        f_path = op["file_path"]
-                        conn.execute("DELETE FROM obsidian_chunks WHERE file_path = ?", (f_path,))
-                        conn.execute("DELETE FROM obsidian_sync_state WHERE file_path = ?", (f_path,))
-                    self._db_queue.task_done()
-        except Exception as e:
-            logger.error("Sync direct DB flush error: %s", e)
-        finally:
-            conn.close()
+        self._init_db_schema()
+        ops = []
+        while not self._db_queue.empty():
+            try:
+                op = self._db_queue.get_nowait()
+                if op is not None:
+                    ops.append(op)
+                self._db_queue.task_done()
+            except queue.Empty:
+                break
+        if ops:
+            try:
+                from jarvis.core.memory.sqlite_base import SingleWriterActor
+                SingleWriterActor.get_or_create(self.db_path).execute_write(
+                    lambda c: self._apply_ops_to_conn(c, ops)
+                )
+            except Exception as e:
+                logger.error("Sync direct DB flush error: %s", e)
 
     def _process_file_delta(self, rel_path: str, full_path: Path, mtime: float, stats: SyncStats):
         """Evaluates mtime and inline SHA-256 to only ingest new or altered Markdown files."""
