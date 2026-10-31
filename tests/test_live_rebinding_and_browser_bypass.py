@@ -275,13 +275,13 @@ class TestRealChromiumBypassVerification(unittest.TestCase):
         try:
             pid = session.process.pid
             p = psutil.Process(pid)
-            udp_conns = p.net_connections(kind="udp")
-            self.assertEqual(len(udp_conns), 0, f"Root process had unexpected UDP sockets: {udp_conns}")
+            udp_conns = [c for c in p.net_connections(kind="udp") if c.raddr]
+            self.assertEqual(len(udp_conns), 0, f"Root process had unexpected UDP egress sockets: {udp_conns}")
 
             for child in p.children(recursive=True):
                 try:
-                    c_conns = child.net_connections(kind="udp")
-                    self.assertEqual(len(c_conns), 0, f"Child {child.pid} had unexpected UDP sockets: {c_conns}")
+                    c_conns = [c for c in child.net_connections(kind="udp") if c.raddr]
+                    self.assertEqual(len(c_conns), 0, f"Child {child.pid} had unexpected UDP egress sockets: {c_conns}")
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
         finally:

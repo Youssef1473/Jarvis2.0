@@ -264,17 +264,19 @@ def list_photos(limit: int = 10) -> str:
     """Returns a formatted list of recently archived photos from SQLite."""
     try:
         conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        _init_photos_table(conn)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT photo_id, file_name, dimensions, file_size, caption, created_at
-            FROM photos
-            ORDER BY created_at DESC
-            LIMIT ?
-        """, (max(1, min(limit, 50)),))
-        rows = cursor.fetchall()
-        conn.close()
+        try:
+            conn.row_factory = sqlite3.Row
+            _init_photos_table(conn)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT photo_id, file_name, dimensions, file_size, caption, created_at
+                FROM photos
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (max(1, min(limit, 50)),))
+            rows = cursor.fetchall()
+        finally:
+            conn.close()
 
         if not rows:
             return "No photos are currently archived in your gallery, Sir."
@@ -302,13 +304,15 @@ def describe_photo(photo_id: str) -> str:
     target_path = None
     try:
         conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT file_path FROM photos WHERE photo_id = ? OR file_name = ?", (clean_id, clean_id))
-        row = cursor.fetchone()
-        conn.close()
-        if row:
-            target_path = Path(row["file_path"])
+        try:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT file_path FROM photos WHERE photo_id = ? OR file_name = ?", (clean_id, clean_id))
+            row = cursor.fetchone()
+            if row:
+                target_path = Path(row["file_path"])
+        finally:
+            conn.close()
     except Exception:
         pass
 

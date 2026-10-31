@@ -1,17 +1,16 @@
 """Unit tests for Zero-VRAM Native Photo Archival Skill."""
-import io
-import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
+
 from PIL import Image
 
 import jarvis.skills.photo_manager as pm
 from jarvis.skills.photo_manager import (
-    save_photo,
-    save_clipboard_photo,
-    list_photos,
     describe_photo,
+    list_photos,
+    save_clipboard_photo,
+    save_photo,
 )
 
 
@@ -39,7 +38,10 @@ class TestPhotoManager(unittest.TestCase):
         pm.DB_PATH = self.orig_db_path
         import gc
         gc.collect()
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except (PermissionError, OSError):
+            pass
 
     def test_save_valid_photo(self):
         """Valid image must be verified, sanitized, and saved into photos dir."""
