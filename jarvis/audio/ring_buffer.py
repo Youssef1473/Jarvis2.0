@@ -8,6 +8,7 @@ fade-out ramps to eliminate speaker pop DC transients on interruption.
 from __future__ import annotations
 
 import ctypes
+import itertools
 import threading
 from typing import Any
 
@@ -237,6 +238,7 @@ class AudioRingBuffer:
         self._fade_out_ramp = _get_cos2_window(self.ramp_samples)
 
         # Monotonic barge-in epochs for lock-free epoch-based truncation
+        self._epoch_counter = itertools.count(1)
         self._barge_in_epoch = 0
         self._consumer_epoch = 0
         self._ramp_temp = np.zeros(self.ramp_samples, dtype=np.float32)
@@ -249,20 +251,30 @@ class AudioRingBuffer:
         cfloat_ptr = ctypes.cast(raw_ptr, _c_float_p)
         return raw_ptr, cfloat_ptr
 
-    def barge_in(self) -> None:
+    def barge_in(self, blocking: bool = True) -> None:
         """Signals clickless barge-in interruption.
 
-        Increments barge_in_epoch in <100ns. The WASAPI consumer read period
+        Increments barge_in_epoch atomically in <100ns. The WASAPI consumer read period
         will apply a cos^2 anti-click ramp to active audio before zeroing,
         eliminating speaker pop transients.
         """
+        if not blocking:
+            if self._lock.acquire(blocking=False):
+                try:
+                    self._barge_in_epoch = next(self._epoch_counter)
+                finally:
+                    self._lock.release()
+            else:
+                self._barge_in_epoch = next(self._epoch_counter)
+            return
+
         with self._lock:
-            self._barge_in_epoch += 1
+            self._barge_in_epoch = next(self._epoch_counter)
 
     def stop(self) -> None:
         """Instantly terminates playback, advances barge-in epoch, and zeroes indices in <1us."""
         with self._lock:
-            self._barge_in_epoch += 1
+            self._barge_in_epoch = next(self._epoch_counter)
             self._write_pos = 0
             self._read_pos = 0
             self._available = 0
@@ -300,12 +312,13 @@ class AudioRingBuffer:
             n = arr.shape[0]
 
         with self._lock:
+            current_epoch = self._barge_in_epoch
             # Stale stream aborted by barge-in
-            if producer_epoch is not None and producer_epoch != self._barge_in_epoch:
+            if producer_epoch is not None and producer_epoch != current_epoch:
                 return 0
 
             # New write resets unconsumed barge-in epoch so new speech plays cleanly
-            self._consumer_epoch = self._barge_in_epoch
+            self._consumer_epoch = current_epoch
 
             # If incoming data exceeds capacity, take the most recent capacity elements
             src_offset = 0

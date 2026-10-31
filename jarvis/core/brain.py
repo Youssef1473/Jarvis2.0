@@ -464,6 +464,15 @@ class JarvisBrain(
             except Exception as e:
                 logger.debug("Service manager shutdown notice: %s", e)
 
+        if hasattr(self, "tts") and self.tts:
+            try:
+                if hasattr(self.tts, "close"):
+                    self.tts.close(timeout=timeout_seconds)
+                elif hasattr(self.tts, "stop"):
+                    self.tts.stop()
+            except Exception as e:
+                logger.debug("TTS shutdown notice during brain teardown: %s", e)
+
     def __del__(self):
         """Ensures spawned processes are not orphaned when the brain instance is collected."""
         try:

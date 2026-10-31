@@ -11,8 +11,10 @@ import ctypes
 import logging
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger("Jarvis.Core.Cancellation")
 
@@ -63,8 +65,63 @@ class BargeInCancellationToken:
 
 CancellationToken = BargeInCancellationToken
 
-_FLUSH_CALLBACKS: list[Callable[[], None]] = []
+def _is_bound_method(cb: Any) -> bool:
+    return hasattr(cb, "__self__") and getattr(cb, "__self__", None) is not None
+
+
+class _CallbackWrapper:
+    __slots__ = ("_func_name", "_method_ref", "_self_id", "_strong_callback")
+
+    def __init__(self, cb: Callable[[], None]) -> None:
+        if _is_bound_method(cb):
+            try:
+                self._method_ref = weakref.WeakMethod(cb)
+                self._strong_callback = None
+            except TypeError:
+                # Slotted classes without __weakref__ or non-weakref receivers fall back to strong retention
+                self._method_ref = None
+                self._strong_callback = cb
+            self._self_id = id(getattr(cb, "__self__", None))
+            self._func_name = getattr(cb, "__name__", "")
+        else:
+            self._method_ref = None
+            self._strong_callback = cb
+            self._self_id = 0
+            self._func_name = getattr(cb, "__name__", "")
+
+    def get(self) -> Callable[[], None] | None:
+        if self._method_ref is not None:
+            return self._method_ref()
+        return self._strong_callback
+
+    def matches(self, cb: Callable[[], None]) -> bool:
+        live = self.get()
+        if live is None:
+            return False
+        # Normalize bound methods (including built-ins like threading.Event.set) by receiver identity and name
+        if _is_bound_method(cb) and _is_bound_method(live):
+            return (
+                getattr(live, "__self__", None) is getattr(cb, "__self__", None)
+                and getattr(live, "__name__", "") == getattr(cb, "__name__", "")
+            )
+        return live is cb
+
+
+_CALLBACK_LOCK = threading.Lock()
+_CALLBACK_COND = threading.Condition(_CALLBACK_LOCK)
+_FLUSH_CALLBACKS: list[_CallbackWrapper] = []
+_IN_FLIGHT_SUPPRESSED_KEYS: set[tuple[int, str] | int] = set()
+_CURRENTLY_EXECUTING_KEY: tuple[int, str] | int | None = None
+_CURRENTLY_EXECUTING_THREAD_ID: int | None = None
 _BARGE_IN_ACTIVE: bool = False
+_IS_RUNNING_FLUSH: bool = False
+
+
+def _get_callback_key(cb: Callable[[], None]) -> tuple[int, str] | int:
+    """Returns an immutable identity key: (id(__self__), __name__) for bound methods, or id(cb)."""
+    if _is_bound_method(cb):
+        return (id(getattr(cb, "__self__", None)), getattr(cb, "__name__", ""))
+    return id(cb)
 
 
 def is_barge_in_active() -> bool:
@@ -79,33 +136,104 @@ def reset_global_barge_in() -> None:
 
 
 def register_audio_flush_callback(cb: Callable[[], None]) -> None:
-    """Registers a callback (e.g. KokoroSynthWorker.stop, RingBuffer.stop) to run on barge-in."""
-    if cb not in _FLUSH_CALLBACKS:
-        _FLUSH_CALLBACKS.append(cb)
+    """Registers a callback (e.g. KokoroSynthWorker.stop, RingBuffer.stop) to run on barge-in.
 
-
-def unregister_audio_flush_callback(cb: Callable[[], None]) -> None:
-    """Unregisters an audio flush callback."""
-    if cb in _FLUSH_CALLBACKS:
-        _FLUSH_CALLBACKS.remove(cb)
-
-
-_IS_RUNNING_FLUSH: bool = False
-
-
-def _run_flush_callbacks() -> None:
-    global _IS_RUNNING_FLUSH
-    if _IS_RUNNING_FLUSH:
+    Bound methods (including built-ins) are weak-referenced via weakref.WeakMethod when supported
+    to avoid leaking owning instances. Ordinary functions and lambdas are strongly retained.
+    Thread-safe under _CALLBACK_LOCK.
+    """
+    if not callable(cb):
         return
-    _IS_RUNNING_FLUSH = True
+    with _CALLBACK_LOCK:
+        for w in _FLUSH_CALLBACKS:
+            if w.matches(cb):
+                return
+        _FLUSH_CALLBACKS.append(_CallbackWrapper(cb))
+
+
+def unregister_audio_flush_callback(cb: Callable[[], None], timeout: float = 2.0) -> bool:
+    """Unregisters an audio flush callback with guaranteed linearization. Thread-safe under _CALLBACK_LOCK.
+
+    Removes the callback from future dispatches. If a flush is currently in-flight:
+    1. Suppresses the exact callback by (id(__self__), __name__) if not yet invoked.
+    2. If this exact callback is currently executing on another dispatch thread, waits for it
+       to complete (bounded by timeout) before returning. Skips waiting if called from
+       within the callback itself on the active dispatch thread.
+
+    Returns:
+        bool: True if cleanly removed/quiescent, False if timed out waiting on an in-flight execution.
+    """
+    if not callable(cb):
+        return True
+    cb_key = _get_callback_key(cb)
+    current_tid = threading.get_ident()
+    with _CALLBACK_LOCK:
+        _FLUSH_CALLBACKS[:] = [w for w in _FLUSH_CALLBACKS if not w.matches(cb)]
+        if _IS_RUNNING_FLUSH:
+            _IN_FLIGHT_SUPPRESSED_KEYS.add(cb_key)
+            if _CURRENTLY_EXECUTING_THREAD_ID != current_tid:
+                deadline = time.monotonic() + max(0.0, float(timeout))
+                while _CURRENTLY_EXECUTING_KEY == cb_key:
+                    rem = deadline - time.monotonic()
+                    if rem <= 0:
+                        return False
+                    _CALLBACK_COND.wait(timeout=rem)
+    return True
+
+
+def _run_flush_callbacks(exclude: Any = None) -> None:
+    global _IS_RUNNING_FLUSH, _CURRENTLY_EXECUTING_KEY, _CURRENTLY_EXECUTING_THREAD_ID
+    with _CALLBACK_LOCK:
+        if _IS_RUNNING_FLUSH:
+            return
+        _IS_RUNNING_FLUSH = True
+        _IN_FLIGHT_SUPPRESSED_KEYS.clear()
+        _CURRENTLY_EXECUTING_KEY = None
+        _CURRENTLY_EXECUTING_THREAD_ID = None
+
+        active_cbs: list[Callable[[], None]] = []
+        surviving_wrappers: list[_CallbackWrapper] = []
+        for w in _FLUSH_CALLBACKS:
+            if exclude is not None and w.matches(exclude):
+                surviving_wrappers.append(w)
+                continue
+            c = w.get()
+            if c is not None:
+                active_cbs.append(c)
+                surviving_wrappers.append(w)
+        _FLUSH_CALLBACKS[:] = surviving_wrappers
+
     try:
-        for cb in _FLUSH_CALLBACKS:
+        for cb in active_cbs:
+            cb_key = _get_callback_key(cb)
+            with _CALLBACK_LOCK:
+                if cb_key in _IN_FLIGHT_SUPPRESSED_KEYS:
+                    continue
+                _CURRENTLY_EXECUTING_KEY = cb_key
+                _CURRENTLY_EXECUTING_THREAD_ID = threading.get_ident()
+
             try:
                 cb()
             except Exception as e:  # noqa: BLE001
                 logger.debug("Error in flush callback: %s", e)
+            finally:
+                with _CALLBACK_LOCK:
+                    _CURRENTLY_EXECUTING_KEY = None
+                    _CURRENTLY_EXECUTING_THREAD_ID = None
+                    _CALLBACK_COND.notify_all()
     finally:
-        _IS_RUNNING_FLUSH = False
+        with _CALLBACK_LOCK:
+            _IN_FLIGHT_SUPPRESSED_KEYS.clear()
+            _CURRENTLY_EXECUTING_KEY = None
+            _CURRENTLY_EXECUTING_THREAD_ID = None
+            _IS_RUNNING_FLUSH = False
+            _CALLBACK_COND.notify_all()
+
+
+def is_in_cancellation_flush() -> bool:
+    """Returns True if the current thread is executing inside cancellation flush dispatch."""
+    with _CALLBACK_LOCK:
+        return _CURRENTLY_EXECUTING_THREAD_ID == threading.get_ident()
 
 
 def get_global_cancellation_token() -> BargeInCancellationToken:
@@ -113,13 +241,27 @@ def get_global_cancellation_token() -> BargeInCancellationToken:
     return BargeInCancellationToken(GLOBAL_EPOCH_STATE)
 
 
-def signal_global_barge_in() -> int:
-    """Atomically advances the global barge-in epoch, invalidating all outstanding tokens in <10ns."""
+def signal_global_barge_in(async_callbacks: bool = False, exclude: Any = None) -> int:
+    """Atomically advances the global barge-in epoch, invalidating all outstanding tokens in <10ns.
+
+    Args:
+        async_callbacks: When True, dispatches registered flush callbacks on a background daemon
+                         thread so the caller's real-time critical path is not blocked by slow callbacks.
+        exclude: Optional callback or object to exclude from this dispatch round (e.g. self-invoked flush).
+    """
     global _BARGE_IN_ACTIVE
     _BARGE_IN_ACTIVE = True
     GLOBAL_EPOCH_STATE.barge_in_epoch += 1
     logger.debug("Signaled global barge-in: epoch -> %d", GLOBAL_EPOCH_STATE.barge_in_epoch)
-    _run_flush_callbacks()
+    if async_callbacks:
+        threading.Thread(
+            target=_run_flush_callbacks,
+            args=(exclude,),
+            name="Jarvis-AsyncBargeInCallbacks",
+            daemon=True,
+        ).start()
+    else:
+        _run_flush_callbacks(exclude=exclude)
     return int(GLOBAL_EPOCH_STATE.barge_in_epoch)
 
 
@@ -253,6 +395,7 @@ __all__ = [
     "bind_tool_cancellation_token",
     "get_current_tool_cancellation_token",
     "get_global_cancellation_token",
+    "is_in_cancellation_flush",
     "register_audio_flush_callback",
     "reset_tool_cancellation_token",
     "signal_execution_abort",

@@ -1020,6 +1020,8 @@ class JarvisUIService:
         self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._ready_event = threading.Event()
+        self._stopped_event = threading.Event()
         self.template_path = Path(__file__).parent / "templates" / "hud.html"
         self._pending_approvals: dict[str, dict[str, Any]] = {}
         self._approval_lock = threading.Lock()
@@ -1211,7 +1213,10 @@ class JarvisUIService:
             }
             if hasattr(mem, "get_all_memory_nodes"):
                 try:
-                    res = mem.get_all_memory_nodes(category=category, search=search, limit=limit)
+                    def _fetch_nodes():
+                        return mem.get_all_memory_nodes(category=category, search=search, limit=limit)
+
+                    res = await anyio.to_thread.run_sync(_fetch_nodes)
                     if isinstance(res, dict):
                         for k in default_nodes:
                             if k not in res:
@@ -1255,7 +1260,10 @@ class JarvisUIService:
                 mem = _get_memory()
 
             if hasattr(mem, "delete_memory_node"):
-                success = mem.delete_memory_node(node_type, node_id)
+                def _delete_node():
+                    return mem.delete_memory_node(node_type, node_id)
+
+                success = await anyio.to_thread.run_sync(_delete_node)
                 if success:
                     return JSONResponse({"status": "deleted", "type": node_type, "id": node_id})
                 return JSONResponse({"error": "Record not found or failed to delete"}, status_code=404)
@@ -1283,11 +1291,13 @@ class JarvisUIService:
                 from jarvis.skills.productivity import _get_memory
                 mem = _get_memory()
 
-            if node_type in ("preference", "user_preference"):
-                msg = mem.update_user_preference(key, value)
-            else:
+            def _update_node():
+                if node_type in ("preference", "user_preference"):
+                    return mem.update_user_preference(key, value)
                 cat = category or "general"
-                msg = mem.remember_fact(key, value, category=cat)
+                return mem.remember_fact(key, value, category=cat)
+
+            msg = await anyio.to_thread.run_sync(_update_node)
 
             return JSONResponse({"status": "success", "message": str(msg), "key": str(key), "value": str(value)})
         except Exception as e:
@@ -2205,7 +2215,7 @@ class JarvisUIService:
             coro.close()
             logger.debug("Unexpected error scheduling broadcast_binary: %s", e)
 
-    def start(self):
+    def start(self, timeout: float = 10.0) -> bool:
         """Starts the Uvicorn server in a background daemon thread with continuous live telemetry streaming."""
         if self.host not in ("127.0.0.1", "localhost", "::1"):
             allow_remote = os.environ.get("JARVIS_ALLOW_REMOTE") == "1"
@@ -2217,7 +2227,9 @@ class JarvisUIService:
                 )
 
         if self._thread and self._thread.is_alive():
-            return
+            if self._ready_event.is_set():
+                return True
+            return self._ready_event.wait(timeout=timeout)
 
         async def _telemetry_broadcast_loop():
             # Prime CPU counter baseline
@@ -2242,9 +2254,20 @@ class JarvisUIService:
 
         async def _serve_all():
             telemetry_task = self._loop.create_task(_telemetry_broadcast_loop())
+
+            async def _notify_ready():
+                for _ in range(100):
+                    if getattr(self._server, "started", False):
+                        break
+                    await asyncio.sleep(0.02)
+                self._ready_event.set()
+
+            ready_task = self._loop.create_task(_notify_ready())
             try:
                 await self._server.serve()
             finally:
+                self._ready_event.set()
+                ready_task.cancel()
                 telemetry_task.cancel()
                 try:
                     await telemetry_task
@@ -2283,24 +2306,34 @@ class JarvisUIService:
                 if not self._loop.is_closed():
                     self._loop.close()
 
+        self._ready_event.clear()
+        self._stopped_event.clear()
         self._thread = threading.Thread(target=_run_server, daemon=True, name="Jarvis-HUD-Server")
         self._thread.start()
-        time.sleep(0.4)
+        is_ready = self._ready_event.wait(timeout=timeout)
+        if not is_ready:
+            logger.warning("Jarvis HUD Web Server did not signal readiness within %.1fs", timeout)
+        return is_ready
 
-    def stop(self):
+    def stop(self, timeout: float = 5.0) -> bool:
         """Stops the Uvicorn server cleanly and shuts down native NVML session."""
         if self._server:
             self._server.should_exit = True
         if self._thread:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                logger.warning("Jarvis HUD Web Server thread did not terminate within %.1fs", timeout)
+                return False
             self._thread = None
         self._server = None
+        self._stopped_event.set()
         try:
             from jarvis.core.security_boundaries import DualKeyApprovalManager
             DualKeyApprovalManager.get_instance().set_approval_handler(None)
         except (ImportError, AttributeError) as exc:
             logger.debug("Approval handler teardown notice: %s", exc)
         WorkstationMetricsCollector.shutdown_nvml()
+        return True
 
 
 async def broadcast_ambient_telemetry(type: str, data: dict[str, Any]):
