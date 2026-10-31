@@ -21,20 +21,24 @@ class DocumentVaultMixin:
 
     def stage_document(self, filename: str, file_path: str, file_hash: str = "", file_size: int = 0) -> dict[str, Any]:
         """Registers an uploaded document into the staged queue awaiting user context."""
-        with self._get_connection() as conn:
+        clean_name = filename.strip()
+        clean_path = file_path.strip()
+
+        def _write(conn: sqlite3.Connection) -> int:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO staged_documents (filename, file_path, file_hash, file_size, status)
                 VALUES (?, ?, ?, ?, 'PENDING_CONTEXT')
-            """, (filename.strip(), file_path.strip(), file_hash, file_size))
-            conn.commit()
-            doc_id = cursor.lastrowid
-            return {
-                "id": doc_id,
-                "filename": filename.strip(),
-                "file_path": file_path.strip(),
-                "status": "PENDING_CONTEXT",
-            }
+            """, (clean_name, clean_path, file_hash, file_size))
+            return cursor.lastrowid
+
+        doc_id = self.execute_write(_write)
+        return {
+            "id": doc_id,
+            "filename": clean_name,
+            "file_path": clean_path,
+            "status": "PENDING_CONTEXT",
+        }
 
     def get_staged_documents(self, status: str = "PENDING_CONTEXT") -> list[dict[str, Any]]:
         """Retrieves documents waiting in the staged queue."""
@@ -64,14 +68,15 @@ class DocumentVaultMixin:
 
     def mark_document_processed(self, doc_id: int, user_context: str = "") -> None:
         """Marks a staged document as processed with the provided context."""
-        with self._get_connection() as conn:
+        def _write(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE staged_documents
                 SET status = 'PROCESSED', user_context = ?, processed_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (user_context, doc_id))
-            conn.commit()
+
+        self.execute_write(_write)
 
     def save_document_knowledge(
         self,
@@ -86,34 +91,50 @@ class DocumentVaultMixin:
         from jarvis.core.security_boundaries import TurnTaintTracker
         norm_prov = TurnTaintTracker.normalize_document_provenance(source_provenance)
 
-        with self._get_connection() as conn:
+        clean_title = title.strip()
+        clean_cat = category.lower().strip()
+        clean_summary = summary.strip()
+        clean_raw = raw_content.strip()
+        clean_path = file_path.strip()
+
+        # Step 1: Pre-compute ONNX dense embedding OUTSIDE write transaction
+        blob = None
+        try:
+            import sqlite_vec
+            raw_snippet = (clean_raw or "")[:500]
+            embed_text = f"{clean_title} {clean_cat} {clean_summary} {raw_snippet}"
+            vec = self.vector_engine.dense_vectorize(embed_text)
+            blob = sqlite_vec.serialize_float32(vec)
+        except Exception as e:
+            logger.warning("sqlite-vec document vectorization failed (%s); continuing without vector index.", e)
+
+        # Step 2: Route SQLite write strictly through SingleWriterActor
+        def _write(conn: sqlite3.Connection) -> int:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO documents (title, category, summary, raw_content, file_path, source_provenance)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (
-                title.strip(),
-                category.lower().strip(),
-                summary.strip(),
-                raw_content.strip(),
-                file_path.strip(),
+                clean_title,
+                clean_cat,
+                clean_summary,
+                clean_raw,
+                clean_path,
                 norm_prov,
             ))
             doc_id = cursor.lastrowid
 
-            # Index into documents_vec
-            try:
-                import sqlite_vec
-                raw_snippet = (raw_content or "")[:500]
-                text = f"{title} {category} {summary} {raw_snippet}"
-                vec = self.vector_engine.dense_vectorize(text)
-                blob = sqlite_vec.serialize_float32(vec)
-                cursor.execute("INSERT OR REPLACE INTO documents_vec(doc_id, embedding) VALUES (?, ?)", (doc_id, blob))
-            except Exception as e:
-                logger.warning("sqlite-vec document indexing failed (%s); continuing without vector index.", e)
+            if blob is not None:
+                try:
+                    cursor.execute("INSERT OR REPLACE INTO documents_vec(doc_id, embedding) VALUES (?, ?)", (doc_id, blob))
+                except Exception as e:
+                    logger.warning("sqlite-vec document indexing failed (%s); continuing without vector index.", e)
 
-            conn.commit()
             return doc_id
+
+        return self.execute_write(_write)
+
+    save_document = save_document_knowledge
 
     def search_documents(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         """Searches archived document summaries and titles using FTS5 BM25 with LIKE fallback."""

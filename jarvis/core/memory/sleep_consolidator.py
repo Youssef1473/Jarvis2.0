@@ -395,17 +395,22 @@ class SleepPhaseConsolidator:
         duplicates_merged = 0
         edges_promoted = 0
 
-        # Ensure knowledge_edges table exists
+        # Ensure knowledge_edges table exists matching canonical schema
         conn.execute("""
             CREATE TABLE IF NOT EXISTS knowledge_edges (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_entity TEXT NOT NULL,
-                relation TEXT NOT NULL,
-                target_entity TEXT NOT NULL,
-                valid_from REAL,
-                valid_until REAL,
-                confidence REAL DEFAULT 1.0,
-                created_at REAL DEFAULT (unixepoch())
+                edge_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject         TEXT NOT NULL COLLATE NOCASE,
+                predicate       TEXT NOT NULL COLLATE NOCASE,
+                object          TEXT NOT NULL,
+                is_functional   INTEGER NOT NULL DEFAULT 1,
+                confidence      REAL NOT NULL DEFAULT 1.0,
+                access_count    INTEGER NOT NULL DEFAULT 1,
+                decay_lambda    REAL NOT NULL DEFAULT 0.01,
+                valid_from      REAL NOT NULL,
+                valid_until     REAL DEFAULT NULL,
+                last_accessed   REAL NOT NULL,
+                superseded_by   INTEGER DEFAULT NULL REFERENCES knowledge_edges(edge_id),
+                source_context  TEXT DEFAULT NULL
             )
         """)
 
@@ -453,14 +458,18 @@ class SleepPhaseConsolidator:
                 val = (dr["value"] or "").strip()
                 if subj and pred and val:
                     cursor.execute("""
-                        SELECT id FROM knowledge_edges
-                        WHERE source_entity = ? AND relation = ? AND target_entity = ? AND valid_until IS NULL
+                        SELECT edge_id FROM knowledge_edges
+                        WHERE subject = ? AND predicate = ? AND object = ? AND valid_until IS NULL
                     """, (subj, pred, val))
                     if not cursor.fetchone():
+                        now_ts = time.time()
                         conn.execute("""
-                            INSERT INTO knowledge_edges (source_entity, relation, target_entity, valid_from, valid_until)
-                            VALUES (?, ?, ?, unixepoch(), NULL)
-                        """, (subj, pred, val))
+                            INSERT INTO knowledge_edges (
+                                subject, predicate, object, is_functional,
+                                confidence, access_count, decay_lambda,
+                                valid_from, valid_until, last_accessed, source_context
+                            ) VALUES (?, ?, ?, 1, 1.0, 1, 0.01, ?, NULL, ?, 'sleep_consolidation_pass_a')
+                        """, (subj, pred, val, now_ts, now_ts))
                         edges_promoted += 1
 
         return duplicates_merged, edges_promoted
@@ -524,7 +533,7 @@ class SleepPhaseConsolidator:
                         seq = tuple(tools_in_turn[start_idx : start_idx + length])
                         if any(t in FORBIDDEN_REFLEX_TOOLS for t in seq):
                             continue
-                        if any(SkillRegistry.get_risk_level(t) >= 1 for t in seq):
+                        if any(SkillRegistry.get_risk_level(t) >= 2 for t in seq):
                             continue
                         sequence_counts[seq] += 1
 

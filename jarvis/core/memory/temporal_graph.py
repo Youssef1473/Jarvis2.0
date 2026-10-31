@@ -26,7 +26,22 @@ class TemporalGraphMixin:
     ) -> int:
         """Stores a bi-temporal knowledge edge with automatic functional supersession."""
         now = time.time()
-        with self._get_connection() as conn:
+        clean_subj = subject.strip()
+        clean_pred = predicate.strip()
+        clean_obj = str(object_val).strip()
+
+        # Step 1: Pre-compute ONNX dense embedding OUTSIDE write transaction
+        blob = None
+        try:
+            import sqlite_vec
+            embed_text = f"{clean_subj} {clean_pred} {clean_obj}"
+            vec = self.vector_engine.dense_vectorize(embed_text)
+            blob = sqlite_vec.serialize_float32(vec)
+        except Exception as e:
+            logger.warning("sqlite-vec knowledge edge vectorization failed (%s); continuing without vector index.", e)
+
+        # Step 2: Route SQLite write strictly through SingleWriterActor
+        def _write(conn: sqlite3.Connection) -> int:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO knowledge_edges (
@@ -35,9 +50,9 @@ class TemporalGraphMixin:
                     valid_from, valid_until, last_accessed, source_context
                 ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, NULL, ?, ?)
             """, (
-                subject.strip(),
-                predicate.strip(),
-                str(object_val).strip(),
+                clean_subj,
+                clean_pred,
+                clean_obj,
                 1 if is_functional else 0,
                 float(confidence),
                 float(decay_lambda),
@@ -46,15 +61,16 @@ class TemporalGraphMixin:
                 source_context,
             ))
             edge_id = cursor.lastrowid
-            try:
-                import sqlite_vec
-                embed_text = f"{subject} {predicate} {object_val}"
-                vec = self.vector_engine.dense_vectorize(embed_text)
-                blob = sqlite_vec.serialize_float32(vec)
-                cursor.execute("INSERT OR REPLACE INTO kg_edges_vec(edge_id, embedding) VALUES (?, ?)", (edge_id, blob))
-            except Exception as e:
-                logger.warning("sqlite-vec knowledge edge indexing failed (%s); continuing without vector index.", e)
+            if blob is not None:
+                try:
+                    cursor.execute("INSERT OR REPLACE INTO kg_edges_vec(edge_id, embedding) VALUES (?, ?)", (edge_id, blob))
+                except Exception as e:
+                    logger.warning("sqlite-vec knowledge edge indexing failed (%s); continuing without vector index.", e)
             return edge_id
+
+        return self.execute_write(_write)
+
+    insert_edge = remember_edge
 
     def query_active_edges(
         self,
@@ -86,18 +102,19 @@ class TemporalGraphMixin:
                 decay_rate = float(r.get("decay_lambda", 0.01))
                 r["temporal_score"] = round(float(r.get("confidence", 1.0)) * math.exp(-decay_rate * delta_days), 4)
 
-        # Update access tracking via writer connection
+        # Update access tracking via writer actor
         if rows:
+            def _write_access(wconn: sqlite3.Connection) -> None:
+                wcursor = wconn.cursor()
+                ids = [r["edge_id"] for r in rows]
+                placeholders = ",".join("?" * len(ids))
+                wcursor.execute(
+                    f"UPDATE knowledge_edges SET last_accessed = ?, access_count = access_count + 1 WHERE edge_id IN ({placeholders})",
+                    [now] + ids
+                )
+
             try:
-                with self._get_connection() as wconn:
-                    wcursor = wconn.cursor()
-                    ids = [r["edge_id"] for r in rows]
-                    placeholders = ",".join("?" * len(ids))
-                    wcursor.execute(
-                        f"UPDATE knowledge_edges SET last_accessed = ?, access_count = access_count + 1 WHERE edge_id IN ({placeholders})",
-                        [now] + ids
-                    )
-                    wconn.commit()
+                self.execute_write(_write_access)
             except Exception as e:
                 logger.debug("knowledge_edges access tracking update notice: %s", e)
 
@@ -116,7 +133,7 @@ class TemporalGraphMixin:
         w = is_weekend if is_weekend is not None else (1 if now_dt.weekday() >= 5 else 0)
         now = time.time()
 
-        with self._get_connection() as conn:
+        def _write_habit(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO habit_transitions (src_event, dst_event, hour_bucket, is_weekend, decayed_weight, sample_count, last_observed)
@@ -126,6 +143,8 @@ class TemporalGraphMixin:
                     decayed_weight = decayed_weight + 1.0,
                     last_observed = excluded.last_observed
             """, (src_event.strip(), dst_event.strip(), h, w, now))
+
+        self.execute_write(_write_habit)
 
     def predict_next_action(
         self,
@@ -172,16 +191,18 @@ class TemporalGraphMixin:
     ) -> None:
         """Logs a Level-1 reversible desktop mutation to the action journal for instant undo."""
         now = time.time()
-        with self._get_connection() as conn:
+        def _write_action(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT OR REPLACE INTO action_journal (action_id, timestamp, skill_name, risk_level, inverse_skill, inverse_payload, reverted)
                 VALUES (?, ?, ?, ?, ?, ?, 0)
             """, (action_id, now, skill_name, risk_level, inverse_skill, json.dumps(inverse_payload)))
 
+        self.execute_write(_write_action)
+
     def revert_action(self, action_id: str | None = None) -> tuple[bool, str]:
         """Reverts the latest non-reverted action (or specified action_id)."""
-        with self._get_connection() as conn:
+        with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             if action_id:
                 cursor.execute("SELECT * FROM action_journal WHERE action_id = ? AND reverted = 0", (action_id,))
@@ -190,18 +211,22 @@ class TemporalGraphMixin:
             row = cursor.fetchone()
             if not row:
                 return False, "No active reversible action found to undo."
-
             act_dict = dict(row)
-            inv_skill = act_dict["inverse_skill"]
-            try:
-                inv_args = json.loads(act_dict["inverse_payload"])
-            except Exception:
-                inv_args = {}
 
-            from jarvis.skills.base import SkillRegistry
-            try:
-                res = SkillRegistry.execute(inv_skill, **inv_args)
-                cursor.execute("UPDATE action_journal SET reverted = 1 WHERE action_id = ?", (act_dict["action_id"],))
-                return True, f"Successfully reverted action '{act_dict['skill_name']}': {res}"
-            except Exception as e:
-                return False, f"Failed to revert action '{act_dict['skill_name']}': {e}"
+        inv_skill = act_dict["inverse_skill"]
+        try:
+            inv_args = json.loads(act_dict["inverse_payload"])
+        except Exception:
+            inv_args = {}
+
+        from jarvis.skills.base import SkillRegistry
+        try:
+            res = SkillRegistry.execute(inv_skill, **inv_args)
+
+            def _mark_reverted(wconn: sqlite3.Connection) -> None:
+                wconn.execute("UPDATE action_journal SET reverted = 1 WHERE action_id = ?", (act_dict["action_id"],))
+
+            self.execute_write(_mark_reverted)
+            return True, f"Successfully reverted action '{act_dict['skill_name']}': {res}"
+        except Exception as e:
+            return False, f"Failed to revert action '{act_dict['skill_name']}': {e}"

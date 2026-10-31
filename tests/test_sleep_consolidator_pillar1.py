@@ -93,12 +93,12 @@ class TestSleepConsolidatorPillar1(unittest.TestCase):
         self.assertEqual(cur.fetchone()["cnt"], 2)
 
         # Verify knowledge_edges received the promoted relation
-        cur.execute("SELECT source_entity, relation, target_entity FROM knowledge_edges")
+        cur.execute("SELECT subject, predicate, object FROM knowledge_edges")
         edge = cur.fetchone()
         self.assertIsNotNone(edge)
-        self.assertEqual(edge["source_entity"], "user")
-        self.assertEqual(edge["relation"], "favorite_shell")
-        self.assertEqual(edge["target_entity"], "PowerShell 7")
+        self.assertEqual(edge["subject"], "user")
+        self.assertEqual(edge["predicate"], "favorite_shell")
+        self.assertEqual(edge["object"], "PowerShell 7")
 
     def test_pass_b_workflow_distillation(self):
         """Pass B must distill 3-step tool sequences repeated >= 3 times, rejecting forbidden tools."""
