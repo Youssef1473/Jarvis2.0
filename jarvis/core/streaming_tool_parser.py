@@ -435,6 +435,59 @@ class NonceGuardedStreamParser:
         return speech, tools
 
 
+def extract_tool_call_json(text: str) -> tuple[str, dict[str, Any], int, int] | None:
+    """Finds and decodes the first JSON object containing tool invocation schema,
+    properly balancing nested curly braces via json.JSONDecoder.raw_decode.
+
+    Supports both formats:
+    - {"tool": "tool_name", "arguments": {...}}
+    - {"name": "tool_name", "arguments": {...}} / {"function": {"name": ...}}
+
+    Returns:
+        (tool_name, arguments_dict, start_char_idx, end_char_idx) or None if no valid tool call is found.
+    """
+    if not text or "{" not in text:
+        return None
+
+    decoder = json.JSONDecoder()
+    pos = 0
+    text_len = len(text)
+    while pos < text_len:
+        idx = text.find("{", pos)
+        if idx == -1:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, idx)
+            if isinstance(obj, dict):
+                tool = (
+                    obj.get("tool")
+                    or obj.get("name")
+                    or (obj.get("function", {}).get("name") if isinstance(obj.get("function"), dict) else None)
+                )
+                if tool and isinstance(tool, str):
+                    raw_args = (
+                        obj.get("arguments")
+                        or obj.get("args")
+                        or obj.get("parameters")
+                        or (obj.get("function", {}).get("arguments") if isinstance(obj.get("function"), dict) else None)
+                        or {}
+                    )
+                    if isinstance(raw_args, str):
+                        try:
+                            args = json.loads(raw_args)
+                        except Exception:
+                            args = {}
+                    elif isinstance(raw_args, dict):
+                        args = raw_args
+                    else:
+                        args = {}
+                    return (tool.strip(), args, idx, end)
+            pos = idx + 1
+        except json.JSONDecodeError:
+            pos = idx + 1
+    return None
+
+
 __all__ = [
     "DEFAULT_IDEMPOTENT_READ_TOOLS",
     "STATE_ACCUMULATING_TOOL_CALL",
@@ -443,4 +496,5 @@ __all__ = [
     "NonceGuardedStreamParser",
     "ParsedToolCall",
     "StreamingToolCallParser",
+    "extract_tool_call_json",
 ]

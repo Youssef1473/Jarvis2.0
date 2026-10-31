@@ -356,21 +356,15 @@ class AntigravityProviderMixin:
                 logger.info("Antigravity turn cancelled by user interrupt after generation.")
                 return "Command cancelled, Sir."
 
-            tool_call_match = re.search(
-                r'\{[\s\r\n]*"tool"[\s\r\n]*:[\s\r\n]*"([^"]+)"[\s\r\n]*,[\s\r\n]*"arguments"[\s\r\n]*:[\s\r\n]*(\{.*?\})[\s\r\n]*\}',
-                reply_text,
-                re.DOTALL
-            )
-            if not tool_call_match:
+            from jarvis.core.streaming_tool_parser import extract_tool_call_json
+
+            tool_call_info = extract_tool_call_json(reply_text)
+            if not tool_call_info:
                 reply = reply_text
                 break
 
             had_tool_call = True
-            fn_name = tool_call_match.group(1).strip()
-            try:
-                fn_args = json.loads(tool_call_match.group(2))
-            except Exception:
-                fn_args = {}
+            fn_name, fn_args, _start_idx, _end_idx = tool_call_info
 
             logger.info("ANTIGRAVITY Tool call [%d/%d]: %s(%s)", iterations, max_tool_iterations, fn_name, fn_args)
             try:

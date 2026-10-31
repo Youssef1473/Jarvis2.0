@@ -294,6 +294,12 @@ class JarvisBrain(
         self.reflex_engine = DynamicReflexEngine(db_path=db_path)
         import jarvis.skills.self_evolution as self_evo
         self_evo.set_reflex_engine(self.reflex_engine)
+        try:
+            from jarvis.routing.cascade import RoutingCascade
+            self.routing_cascade = RoutingCascade(reflex_engine=self.reflex_engine)
+        except Exception as e:
+            logger.debug("RoutingCascade initialization notice: %s", e)
+            self.routing_cascade = None
         self._current_turn_executed_tools: list[tuple[str, dict[str, Any]]] = []
         self._current_turn_resolved_tool_outputs: dict[str, Any] = {}
         self.tts = None
@@ -829,8 +835,38 @@ class JarvisBrain(
         self.active_task_mode = "code" if is_code else "general"
         self.active_tool_names = self._select_tools_for_query(user_text)
 
+        # RoutingCascade evaluation (Tier 0 habit, Tier 1 local skill, Tier 2 LLM with speculative pre-warm)
+        if getattr(self, "routing_cascade", None) is not None:
+            try:
+                candidate_skills = list(self.active_tool_names) if self.active_tool_names else None
+                decision = self.routing_cascade.route_query(norm_text, candidate_skills=candidate_skills)
+                if decision.tier in (0, 1) and decision.execute_locally and decision.skill_name:
+                    tool_res, ok = self._dispatch_tool_pipeline(
+                        decision.skill_name,
+                        decision.kwargs,
+                        sentence_callback=sentence_callback,
+                    )
+                    reply = str(tool_res)
+                    if hasattr(self, "latency_profiler") and self.latency_profiler:
+                        self.latency_profiler.mark(self._current_turn_id, "route_complete_ns")
+                        self.latency_profiler.mark(self._current_turn_id, "llm_first_token_ns")
+                        self.latency_profiler.complete_turn(self._current_turn_id)
+                    if sentence_callback:
+                        sentence_callback(reply)
+                    self.memory.log_interaction(user_text, reply, None)
+                    return reply
+            except Exception as cascade_err:
+                logger.debug("RoutingCascade evaluation notice: %s", cascade_err)
+
         # Smart Tri-Tier Hybrid Dispatch & Model Execution
-        reply = self._dispatch_llm_query(user_text, sentence_callback)
+        try:
+            reply = self._dispatch_llm_query(user_text, sentence_callback)
+        finally:
+            try:
+                from jarvis.speculative.engine import SpeculativeExecutionEngine
+                SpeculativeExecutionEngine.get_instance().discard_unclaimed()
+            except Exception:
+                pass
         if hasattr(self, "latency_profiler") and self.latency_profiler:
             self.latency_profiler.mark(self._current_turn_id, "llm_first_token_ns")
             self.latency_profiler.complete_turn(self._current_turn_id)

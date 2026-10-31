@@ -218,35 +218,43 @@ class ReasoningBookmarkStack:
         if top is None:
             return ""
 
+        import html
+
         if intent == "CLARIFY_AND_RESUME":
             # Pop so we consume the bookmark on this resumption turn
             self.pop_valid()
+            escaped_topic = html.escape(str(top.topic_label))
+            escaped_spoken = html.escape(' '.join(top.spoken_clauses_completed))
+            escaped_remaining = html.escape(str(top.remaining_speech_text))
+            escaped_tools = html.escape(str(top.resolved_tool_outputs))
             if self.is_resumption_intent(utterance):
                 directive = (
-                    f"Sir requested to resume. Immediately bridge with: 'Continuing with {top.topic_label}...' "
+                    f"Sir requested to resume. Immediately bridge with: 'Continuing with {escaped_topic}...' "
                     "and deliver the remaining explanation."
                 )
             else:
                 directive = (
                     "Answer Sir's clarifying question in 1 crisp sentence, then immediately "
-                    f"bridge with: 'Continuing with {top.topic_label}...' and deliver the remaining explanation."
+                    f"bridge with: 'Continuing with {escaped_topic}...' and deliver the remaining explanation."
                 )
             return (
                 '<active_resumption_bookmark mode="CLARIFY_AND_RESUME">\n'
-                f"  <suspended_topic>{top.topic_label}</suspended_topic>\n"
-                f"  <already_spoken>{' '.join(top.spoken_clauses_completed)}</already_spoken>\n"
-                f"  <remaining_to_speak>{top.remaining_speech_text}</remaining_to_speak>\n"
-                f"  <cached_tool_results>{top.resolved_tool_outputs}</cached_tool_results>\n"
+                f"  <suspended_topic>{escaped_topic}</suspended_topic>\n"
+                f"  <already_spoken>{escaped_spoken}</already_spoken>\n"
+                f"  <remaining_to_speak>{escaped_remaining}</remaining_to_speak>\n"
+                f"  <cached_tool_results>{escaped_tools}</cached_tool_results>\n"
                 f"  <directive>{directive}</directive>\n"
                 "</active_resumption_bookmark>"
             )
 
         # For a pivot ("No, use Option B"), keep resolved tool outputs hot without repeating speech
         self.pop_valid()
+        escaped_query = html.escape(str(top.original_query))
+        escaped_tools = html.escape(str(top.resolved_tool_outputs))
         return (
             '<active_resumption_bookmark mode="PIVOT_WITH_CACHED_TOOLS">\n'
-            f"  <prior_query>{top.original_query}</prior_query>\n"
-            f"  <cached_tool_results>{top.resolved_tool_outputs}</cached_tool_results>\n"
+            f"  <prior_query>{escaped_query}</prior_query>\n"
+            f"  <cached_tool_results>{escaped_tools}</cached_tool_results>\n"
             "  <directive>Sir pivoted direction. Reuse the cached tool results above without "
             "re-executing read-only tools.</directive>\n"
             "</active_resumption_bookmark>"

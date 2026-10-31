@@ -3,10 +3,8 @@
 Provides single-turn generation via Google GenAI SDK and Antigravity CLI bridge.
 All tool-loop recursion is stripped and delegated to UnifiedRunner.
 """
-import json
 import logging
 import os
-import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -30,7 +28,8 @@ class GeminiProvider(BaseProvider):
         super().__init__(name="gemini", model=model, config=config)
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", "").strip()
         self.use_antigravity = use_antigravity
-        self.antigravity_bridge = AntigravityBridge(configured_model=model)
+        bridge_config = config or {"llm": {"antigravity_model": model}}
+        self.antigravity_bridge = AntigravityBridge(config=bridge_config)
         self.client = None
 
         if self.api_key:
@@ -168,24 +167,18 @@ class GeminiProvider(BaseProvider):
 
         # Parse tool calls from output
         tool_calls: list[ToolCall] = []
-        tool_match = re.search(
-            r'\{[\s\r\n]*"tool"[\s\r\n]*:[\s\r\n]*"([^"]+)"[\s\r\n]*,[\s\r\n]*"arguments"[\s\r\n]*:[\s\r\n]*(\{.*?\})[\s\r\n]*\}',
-            raw_text,
-            re.DOTALL
-        )
-        if tool_match:
-            fn_name = tool_match.group(1).strip()
-            try:
-                fn_args = json.loads(tool_match.group(2))
-            except Exception:
-                fn_args = {}
+        from jarvis.core.streaming_tool_parser import extract_tool_call_json
+
+        tool_match_info = extract_tool_call_json(raw_text)
+        if tool_match_info:
+            fn_name, fn_args, start_idx, _end_idx = tool_match_info
             tool_calls.append(ToolCall(
                 id=f"call_{int(time.time()*1000)}",
                 name=fn_name,
                 arguments=fn_args,
             ))
             # Clean JSON out of spoken text
-            clean_text = raw_text[:tool_match.start()].strip()
+            clean_text = raw_text[:start_idx].strip()
         else:
             clean_text = raw_text
 

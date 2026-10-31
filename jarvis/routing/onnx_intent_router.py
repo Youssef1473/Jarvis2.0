@@ -181,6 +181,37 @@ class ONNXIntentRouter:
 
         logits = np.array(logits_list, dtype=np.float32)
 
+        # Execute ONNX session inference if compiled model is available
+        if self.session is not None:
+            try:
+                input_meta = self.session.get_inputs()
+                input_names = [inp.name for inp in input_meta]
+                seq_len = DEFAULT_MAX_SEQ_LEN
+                token_ids = [ord(c) % 256 for c in query_lower[:seq_len]]
+                if len(token_ids) < seq_len:
+                    token_ids.extend([0] * (seq_len - len(token_ids)))
+                feed_dict = {}
+                arr_ids = np.array([token_ids], dtype=np.int64)
+                if "input_ids" in input_names:
+                    feed_dict["input_ids"] = arr_ids
+                if "attention_mask" in input_names:
+                    feed_dict["attention_mask"] = np.array([[1 if tid != 0 else 0 for tid in token_ids]], dtype=np.int64)
+                if "token_type_ids" in input_names:
+                    feed_dict["token_type_ids"] = np.zeros((1, seq_len), dtype=np.int64)
+                if not feed_dict and input_names:
+                    feed_dict[input_names[0]] = arr_ids
+
+                outputs = self.session.run(None, feed_dict)
+                if outputs and len(outputs) > 0:
+                    onnx_out = np.squeeze(outputs[0])
+                    if onnx_out.ndim == 1 and len(onnx_out) == len(skills):
+                        logits = onnx_out.astype(np.float32)
+                    elif onnx_out.ndim == 1 and len(onnx_out) > 0:
+                        dim = min(len(logits), len(onnx_out))
+                        logits[:dim] += onnx_out[:dim].astype(np.float32)
+            except Exception as ort_err:
+                logger.debug("ONNX inference session execution failed: %s; using heuristic logits", ort_err)
+
         # Apply temperature-scaled softmax
         t = max(self.temperature, 1e-4)
         scaled_logits = logits / t

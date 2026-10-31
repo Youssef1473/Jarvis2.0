@@ -268,18 +268,24 @@ class ContextOrchestrator:
         user_text: str,
         memory: Any | None = None,
         cognitive_twin: Any | None = None,
+        max_bytes: int = 1536,
     ) -> str:
         """Wraps user turn with query-biased RRF memory, past lessons, and live telemetry envelope.
 
         Preserves 100% prefix KV cache hits on Google AI Studio / Gemini server-side prompt
-        cache by keeping the system prompt static and injecting dynamic context at the turn tail.
+        cache by keeping the system prompt static and injecting dynamic context at the turn tail,
+        enforcing a strict <1.5KB (1536 bytes) working memory ceiling with XML tag escaping.
         """
+        import html
+
         envelope_parts: list[str] = []
 
         # 1. Live Telemetry / Cognitive State if available
         if cognitive_twin:
             try:
-                envelope_parts.append(cognitive_twin.build_persona_telemetry_envelope())
+                raw_twin = cognitive_twin.build_persona_telemetry_envelope()
+                if raw_twin:
+                    envelope_parts.append(raw_twin)
             except Exception:
                 pass
 
@@ -288,7 +294,8 @@ class ContextOrchestrator:
             try:
                 mem_summary = memory.get_context_summary(query=user_text) if user_text else memory.get_context_summary()
                 if mem_summary:
-                    envelope_parts.append(f"<jit_recalled_memory>\n{mem_summary}\n</jit_recalled_memory>")
+                    escaped_summary = html.escape(str(mem_summary))
+                    envelope_parts.append(f"<jit_recalled_memory>\n{escaped_summary}\n</jit_recalled_memory>")
             except Exception as e:
                 logger.debug("JIT memory recall notice: %s", e)
 
@@ -297,7 +304,7 @@ class ContextOrchestrator:
                 past_lessons = memory.recall_episodic_lessons(query=user_text, top_k=2)
                 if past_lessons:
                     lesson_bullets = "\n".join(
-                        f"- When executing '{l.get('tool_name', 'tool')}': {l.get('lesson', '')}"
+                        f"- When executing '{html.escape(str(l.get('tool_name', 'tool')))}': {html.escape(str(l.get('lesson', '')))}"
                         for l in past_lessons
                         if l.get("lesson")
                     )
@@ -308,7 +315,29 @@ class ContextOrchestrator:
 
         # 4. Actual User Utterance
         envelope_parts.append(user_text)
-        return "\n\n".join(envelope_parts)
+        result = "\n\n".join(envelope_parts)
+
+        # 5. Enforce <1.5KB budget ceiling
+        if len(result.encode("utf-8")) > max_bytes:
+            user_bytes = len(user_text.encode("utf-8"))
+            available_for_context = max(0, max_bytes - user_bytes - 20)
+            trimmed_parts: list[str] = []
+            curr_bytes = 0
+            for part in envelope_parts[:-1]:
+                p_bytes = len(part.encode("utf-8"))
+                if curr_bytes + p_bytes <= available_for_context:
+                    trimmed_parts.append(part)
+                    curr_bytes += p_bytes
+                else:
+                    budget_left = available_for_context - curr_bytes
+                    if budget_left > 60:
+                        part_trimmed = part[:budget_left].rsplit("\n", 1)[0] + "\n...[truncated]</" + part.split("</")[-1] if "</" in part else "\n...[truncated]"
+                        trimmed_parts.append(part_trimmed)
+                    break
+            trimmed_parts.append(user_text)
+            result = "\n\n".join(trimmed_parts)
+
+        return result
 
     def assemble_system_prompt(
         self,
