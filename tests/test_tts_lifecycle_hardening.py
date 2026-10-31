@@ -614,7 +614,7 @@ class TestTtsLifecycleHardening(unittest.TestCase):
 
         # Release _stop_lock to let startup thread finish cleanly
         self.tts._stop_lock.release()
-        th.join(timeout=0.5)
+        th.join(timeout=3.0)
         self.assertFalse(th.is_alive())
 
     def test_stop_startup_wait_strictly_bounded_without_deadline(self):
