@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import queue
 import sqlite3
 import threading
@@ -30,7 +31,7 @@ class SingleWriterActor:
     @classmethod
     def get_or_create(cls, db_path: Path | str) -> SingleWriterActor:
         """Retrieves or instantiates a singleton SingleWriterActor for the given database path."""
-        resolved_key = str(Path(db_path).resolve())
+        resolved_key = os.path.normcase(str(Path(db_path).resolve()))
         with cls._registry_lock:
             existing = cls._instances.get(resolved_key)
             if existing is not None and existing._running:
@@ -42,7 +43,7 @@ class SingleWriterActor:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         with self._registry_lock:
-            self._instances[str(self.db_path.resolve())] = self
+            self._instances[os.path.normcase(str(self.db_path.resolve()))] = self
         self._queue: queue.Queue[tuple[Callable[[sqlite3.Connection], Any], threading.Event, list, list, threading.Event, dict, threading.Lock] | None] = queue.Queue()
         self._state = self.STATE_RUNNING
         self._state_lock = threading.Lock()
@@ -295,7 +296,7 @@ class SingleWriterActor:
                 )
 
         with self._registry_lock:
-            resolved_key = str(self.db_path.resolve())
+            resolved_key = os.path.normcase(str(self.db_path.resolve()))
             if self._instances.get(resolved_key) is self:
                 self._instances.pop(resolved_key, None)
 

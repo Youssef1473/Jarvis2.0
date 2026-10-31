@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -24,7 +25,7 @@ class TestMilestone6ResidualHardening(unittest.TestCase):
         try:
             from jarvis.core.memory.sqlite_base import SingleWriterActor
             with SingleWriterActor._registry_lock:
-                actor = SingleWriterActor._instances.pop(str(self.db_path.resolve()), None)
+                actor = SingleWriterActor._instances.pop(os.path.normcase(str(self.db_path.resolve())), None)
                 if actor:
                     actor.stop(drain=False, timeout=1.0)
         except Exception:  # noqa: S110, BLE001
@@ -448,6 +449,39 @@ class TestMilestone6ResidualHardening(unittest.TestCase):
             )
         finally:
             conn.close()
+
+
+    # -------------------------------------------------------------------------
+    # Operational Deployment Hardening Recommendations
+    # -------------------------------------------------------------------------
+    def test_single_writer_actor_normcase_resolution(self):
+        """Verifies SingleWriterActor.get_or_create resolves case-insensitively on Windows."""
+        from jarvis.core.memory.sqlite_base import SingleWriterActor
+
+        str_path = str(self.db_path)
+        varied_path = Path(str_path.upper() if str_path.islower() else str_path.lower())
+        actor1 = SingleWriterActor.get_or_create(self.db_path)
+        actor2 = SingleWriterActor.get_or_create(varied_path)
+        self.assertIs(actor1, actor2, "Actors created with different casing must resolve to the identical singleton")
+
+    def test_flow_state_principal_sid_binding(self):
+        """Verifies FlowStateBridgeListener resolves principal with SID or username and persists token."""
+        from jarvis.context.bridges.pipe_listener import FlowStateBridgeListener
+
+        with patch.object(FlowStateBridgeListener, "TOKEN_PATH", Path(self.tmp_dir.name) / ".jarvis_sec" / "flow_state_sid.token"):
+            listener = FlowStateBridgeListener(port=31498)
+            token_path = FlowStateBridgeListener.TOKEN_PATH
+            self.assertTrue(token_path.exists())
+            self.assertEqual(token_path.read_text(encoding="utf-8").strip(), listener.auth_token)
+
+    def test_health_check_sqlite_version_validation(self):
+        """Verifies run_system_health_check validates SQLite runtime version >= 3.31.0 for virtual columns."""
+        from jarvis.core.health_check import run_system_health_check
+
+        report = run_system_health_check()
+        mem_db = report.get("subsystems", {}).get("memory_db", {})
+        if "sqlite_version" in mem_db:
+            self.assertTrue(mem_db.get("virtual_columns_supported"), "SQLite runtime version must support virtual columns")
 
 
 if __name__ == "__main__":
