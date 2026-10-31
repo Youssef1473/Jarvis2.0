@@ -190,7 +190,8 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
 
             conn.close()
 
-            is_intact = integrity == [("ok",)] and quick == [("ok",)]
+            sqlite_ver_ok = sqlite3.sqlite_version_info >= (3, 31, 0)
+            is_intact = integrity == [("ok",)] and quick == [("ok",)] and sqlite_ver_ok
             if not is_intact:
                 subsystem_status = "FAIL"
             elif not vec_ok:
@@ -200,8 +201,10 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
 
             report["subsystems"]["memory_db"] = {
                 "status": subsystem_status,
+                "sqlite_version": sqlite3.sqlite_version,
+                "virtual_columns_supported": sqlite_ver_ok,
                 "journal_mode": mode.upper(),
-                "integrity_check": "PASSED" if is_intact else "CORRUPT",
+                "integrity_check": "PASSED" if (integrity == [("ok",)] and quick == [("ok",)]) else "CORRUPT",
                 "table_count": tables,
                 "sqlite_vec": f"v{vec_ver}" if vec_ok else "UNAVAILABLE",
                 "vector_search": "OPERATIONAL" if vec_ok else "DEGRADED_LEXICAL_FALLBACK",

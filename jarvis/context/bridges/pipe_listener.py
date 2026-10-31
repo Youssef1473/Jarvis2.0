@@ -65,10 +65,24 @@ class FlowStateBridgeListener:
             else:
                 try:
                     import subprocess
-                    username = os.environ.get("USERNAME")
-                    if username:
+                    user_principal = os.environ.get("USERNAME")
+                    try:
+                        who = subprocess.run(
+                            ["whoami", "/user", "/fo", "csv", "/nh"],
+                            capture_output=True,
+                            text=True,
+                            timeout=1.0,
+                            check=False,
+                        )
+                        if who.returncode == 0 and who.stdout.strip():
+                            parts = [p.strip(' "\r\n') for p in who.stdout.strip().split(",")]
+                            if len(parts) >= 2 and parts[1].startswith("S-1-"):
+                                user_principal = f"*{parts[1]}"
+                    except Exception as sid_err:
+                        logger.debug("SID lookup note: %s", sid_err)
+                    if user_principal:
                         subprocess.run(
-                            ["icacls", str(token_file), "/inheritance:r", "/grant:r", f"{username}:(R,W)"],
+                            ["icacls", str(token_file), "/inheritance:r", "/grant:r", f"{user_principal}:(R,W)"],
                             capture_output=True,
                             timeout=2.0,
                             check=False,
