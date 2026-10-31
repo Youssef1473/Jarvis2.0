@@ -78,7 +78,8 @@ class ShmAudioRingTransport:
         self.sample_rate = int(sample_rate)
         self._is_owner = bool(create)
         self._closed = False
-        self._trigger_lock = threading.Lock()  # serialises in-process triggers only
+        self._publish_lock = threading.Lock()  # serialises publication with barge-in cuts
+        self._trigger_lock = self._publish_lock
         # Overflow resync keeps this many samples of headroom below capacity so
         # the consumer does not immediately get lapped again.
         self._guard = max(1, self.capacity // 8)
@@ -150,17 +151,25 @@ class ShmAudioRingTransport:
         return int(self._hdr[_EPOCH])
 
     @property
+    def epoch(self) -> int:
+        """Alias for barge_in_epoch to ensure API compatibility across callers."""
+        return self.barge_in_epoch
+
+    @property
     def stats(self) -> dict[str, int]:
         """Consumer-side counters: overrun resyncs and samples dropped by barge-in."""
         return {"overruns": self._overruns, "barge_in_dropped": self._barge_in_dropped}
 
     # --------------------------------------------------------------- producer
-    def write_pcm(self, samples: np.ndarray) -> int:
+    def write_pcm(self, samples: np.ndarray, producer_epoch: int | None = None) -> int:
         """Writes float32 PCM into shared memory without pickle/pipe copies.
 
         Writes only write_idx / claim_idx.  If the consumer falls more than a
         full buffer behind, the oldest unread audio is overwritten and the
         consumer skips forward on its own side.
+
+        If `producer_epoch` is provided, publication is atomic and fenced: if
+        a barge-in cut modified the shared epoch, write is aborted and 0 is returned.
         """
         pcm = np.asarray(samples, dtype=np.float32).ravel()
         n = int(pcm.shape[0])
@@ -172,6 +181,10 @@ class ShmAudioRingTransport:
             n = cap
 
         hdr = self._hdr
+        initial_epoch = int(hdr[_EPOCH])
+        if producer_epoch is not None and initial_epoch != producer_epoch:
+            return 0
+
         write_idx = int(hdr[_WRITE_IDX])
         hdr[_CLAIM_IDX] = write_idx + n  # 1) announce the region about to be overwritten
 
@@ -182,7 +195,12 @@ class ShmAudioRingTransport:
         if first < n:
             view[0 : n - first] = pcm[first:n]
 
-        hdr[_WRITE_IDX] = write_idx + n  # 3) publish
+        # Fenced commit: serialize publication with barge-in cut and verify epoch stability
+        with self._publish_lock:
+            current_epoch = int(hdr[_EPOCH])
+            if current_epoch != initial_epoch or (producer_epoch is not None and current_epoch != producer_epoch):
+                return 0
+            hdr[_WRITE_IDX] = write_idx + n  # 3) publish
         return n
 
     # --------------------------------------------------------------- consumer
@@ -253,7 +271,7 @@ class ShmAudioRingTransport:
         return 0
 
     # ---------------------------------------------------------------- control
-    def trigger_barge_in_clear(self) -> int:
+    def trigger_barge_in_clear(self, blocking: bool = True) -> int:
         """Flush all audio queued before this call (callable from either side).
 
         Touches neither write_idx nor read_idx: it records the current write
@@ -263,8 +281,22 @@ class ShmAudioRingTransport:
         coalesce into one epoch bump, which is harmless.
         """
         hdr = self._hdr
-        with self._trigger_lock:
-            hdr[_CUT_IDX] = int(hdr[_WRITE_IDX])  # cut first ...
+        if not blocking:
+            if not self._publish_lock.acquire(blocking=False):
+                hdr[_CUT_IDX] = max(int(hdr[_WRITE_IDX]), int(hdr[_CLAIM_IDX]))
+                epoch = int(hdr[_EPOCH]) + 1
+                hdr[_EPOCH] = epoch
+                return epoch
+            try:
+                hdr[_CUT_IDX] = max(int(hdr[_WRITE_IDX]), int(hdr[_CLAIM_IDX]))
+                epoch = int(hdr[_EPOCH]) + 1
+                hdr[_EPOCH] = epoch
+                return epoch
+            finally:
+                self._publish_lock.release()
+
+        with self._publish_lock:
+            hdr[_CUT_IDX] = max(int(hdr[_WRITE_IDX]), int(hdr[_CLAIM_IDX]))  # cut first ...
             epoch = int(hdr[_EPOCH]) + 1
             hdr[_EPOCH] = epoch  # ... then epoch, so a consumer seeing the epoch sees the cut
         return epoch

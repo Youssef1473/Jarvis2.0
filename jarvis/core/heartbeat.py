@@ -573,12 +573,24 @@ class JarvisHeartbeat:
             time.sleep(0.35)
 
             # Start streaming speech
-            self.orchestrator.tts.start_streaming_session()
-            import re
-            sentences = [s.strip() for s in re.split(r"(?<!\d)(?<=[.!?])(?!\d)\s+", text) if s.strip()]
-            for s in sentences:
-                self.orchestrator.tts.queue_sentence(s)
-            self.orchestrator.tts.finish_streaming_session()
+            tts_started = self.orchestrator.tts.start_streaming_session()
+            if not tts_started:
+                logger.warning("Proactive speech delivery: TTS stream failed to start; attempting reconciliation.")
+                if (
+                    hasattr(self.orchestrator.tts, "reconcile_stream_lifecycle")
+                    and self.orchestrator.tts.reconcile_stream_lifecycle(force=True)
+                ):
+                    tts_started = self.orchestrator.tts.start_streaming_session()
+
+            if tts_started:
+                import re
+                sentences = [s.strip() for s in re.split(r"(?<!\d)(?<=[.!?])(?!\d)\s+", text) if s.strip()]
+                for s in sentences:
+                    self.orchestrator.tts.queue_sentence(s)
+                self.orchestrator.tts.finish_streaming_session()
+            else:
+                logger.error("Proactive speech delivery: unable to start TTS streaming session; falling back to speak_sync.")
+                self.orchestrator.tts.speak_sync(text)
 
             self.orchestrator.sfx.play_done()
             self.orchestrator.hud.set_state("idle")

@@ -684,7 +684,13 @@ class JarvisOrchestrator:
             self.sfx.play_think()
 
             # Start streaming pipelined speech session
-            self.tts.start_streaming_session()
+            tts_started = self.tts.start_streaming_session()
+            if not tts_started:
+                logger.warning("TTS streaming session failed to start; attempting stream lifecycle reconciliation.")
+                if hasattr(self.tts, "reconcile_stream_lifecycle") and self.tts.reconcile_stream_lifecycle(force=True):
+                    tts_started = self.tts.start_streaming_session()
+                if not tts_started:
+                    logger.error("TTS streaming session could not be established; audio output will fail closed or run synchronously.")
 
             # Format active resumption bookmark and flow state XML
             bookmark_xml = self.bookmarks.format_prompt_injection(query) if hasattr(self, "bookmarks") and self.bookmarks else ""
@@ -931,7 +937,9 @@ class JarvisOrchestrator:
             if component is None:
                 continue
             try:
-                if hasattr(component, "stop"):
+                if hasattr(component, "close"):
+                    component.close()
+                elif hasattr(component, "stop"):
                     component.stop()
                 elif hasattr(component, "stop_all"):
                     component.stop_all()
