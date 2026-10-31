@@ -1033,6 +1033,7 @@ class JarvisUIService:
         self._command_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=4, thread_name_prefix="Jarvis-WSCommand"
         )
+        self._command_semaphore = threading.Semaphore(4)
         try:
             from jarvis.core.security_boundaries import DualKeyApprovalManager
             DualKeyApprovalManager.get_instance().set_approval_handler(self.handle_approval_request)
@@ -2133,7 +2134,20 @@ class JarvisUIService:
                     if msg_type == "command":
                         cmd = payload.get("text", "").strip()
                         if cmd and self.orchestrator:
-                            self._command_executor.submit(self.orchestrator.handle_command, cmd)
+                            if not self._command_semaphore.acquire(blocking=False):
+                                await websocket.send_text(
+                                    json.dumps({
+                                        "type": "busy",
+                                        "message": "Jarvis is currently processing maximum concurrent commands. Please wait a moment, Sir.",
+                                    })
+                                )
+                            else:
+                                def _run_ws_command(c_text: str):
+                                    try:
+                                        self.orchestrator.handle_command(c_text)
+                                    finally:
+                                        self._command_semaphore.release()
+                                self._command_executor.submit(_run_ws_command, cmd)
 
                     elif msg_type == "action":
                         action = payload.get("action", "")

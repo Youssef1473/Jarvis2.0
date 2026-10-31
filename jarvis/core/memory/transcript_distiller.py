@@ -108,7 +108,7 @@ class TranscriptDistiller:
         conn = sqlite3.connect(
             uri,
             uri=True,
-            timeout=5.0 if read_only else 0.05,
+            timeout=5.0,
             isolation_level=None,
             check_same_thread=False,
         )
@@ -116,7 +116,7 @@ class TranscriptDistiller:
         if not read_only:
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("PRAGMA synchronous=NORMAL;")
-            conn.execute("PRAGMA busy_timeout=50;")
+            conn.execute("PRAGMA busy_timeout=5000;")
         try:
             import sqlite_vec
             conn.enable_load_extension(True)
@@ -130,6 +130,9 @@ class TranscriptDistiller:
         conn = self._connect(read_only=True)
         try:
             cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'")
+            if not cursor.fetchone():
+                return 0
             cursor.execute("SELECT value FROM schema_meta WHERE key = 'last_distilled_interaction_id'")
             row = cursor.fetchone()
             if row and str(row["value"]).isdigit():
@@ -140,15 +143,28 @@ class TranscriptDistiller:
 
     def set_last_distilled_id(self, last_id: int) -> None:
         """Updates the highest distilled interaction ID in schema_meta."""
-        conn = self._connect(read_only=False)
-        try:
+        def _write(conn: sqlite3.Connection) -> None:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS schema_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
             conn.execute(
                 "INSERT INTO schema_meta (key, value) VALUES ('last_distilled_interaction_id', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (str(last_id),),
             )
-        finally:
-            conn.close()
+
+        try:
+            from jarvis.core.memory.sqlite_base import SingleWriterActor
+            SingleWriterActor.get_or_create(self.db_path).execute_write(_write)
+        except Exception:
+            conn = self._connect(read_only=False)
+            try:
+                _write(conn)
+            finally:
+                conn.close()
 
     def get_unprocessed_interactions(
         self, limit: int = 25

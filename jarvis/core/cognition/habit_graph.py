@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from jarvis.core.memory.sqlite_base import SingleWriterActor
+
 logger = logging.getLogger("Jarvis.Cognition.HabitGraph")
 
 # Causal Horizon: If elapsed time between actions exceeds 120.0s, reset sequence
@@ -92,31 +94,38 @@ class TemporalHabitGraph:
 
     def _init_db(self) -> None:
         """Initializes action_transitions schema with WITHOUT ROWID and last_decay_ts."""
-        conn = self._get_connection()
+        def _write(conn: sqlite3.Connection) -> None:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS action_transitions (
+                    source_action TEXT NOT NULL,
+                    context_state TEXT NOT NULL,
+                    target_action TEXT NOT NULL,
+                    transition_count INTEGER NOT NULL DEFAULT 1,
+                    last_transition_ts REAL NOT NULL,
+                    last_decay_ts REAL NOT NULL,
+                    weight REAL NOT NULL DEFAULT 1.0,
+                    PRIMARY KEY (source_action, context_state, target_action)
+                ) WITHOUT ROWID;
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_transitions_source_context 
+                ON action_transitions(source_action, context_state);
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_transitions_weight 
+                ON action_transitions(weight);
+            """)
+
         try:
-            with conn:
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS action_transitions (
-                        source_action TEXT NOT NULL,
-                        context_state TEXT NOT NULL,
-                        target_action TEXT NOT NULL,
-                        transition_count INTEGER NOT NULL DEFAULT 1,
-                        last_transition_ts REAL NOT NULL,
-                        last_decay_ts REAL NOT NULL,
-                        weight REAL NOT NULL DEFAULT 1.0,
-                        PRIMARY KEY (source_action, context_state, target_action)
-                    ) WITHOUT ROWID;
-                """)
-                conn.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_transitions_source_context 
-                    ON action_transitions(source_action, context_state);
-                """)
-                conn.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_transitions_weight 
-                    ON action_transitions(weight);
-                """)
-        finally:
-            conn.close()
+            SingleWriterActor.get_or_create(self.db_path).execute_write(_write)
+        except Exception as e:
+            logger.debug("HabitGraph _init_db note: %s", e)
+            conn = self._get_connection()
+            try:
+                with conn:
+                    _write(conn)
+            finally:
+                conn.close()
 
     @staticmethod
     def get_time_of_day_bin(hour: int | None = None) -> str:
@@ -203,41 +212,40 @@ class TemporalHabitGraph:
         self, source_action: str, context_state: str, target_action: str, now: float
     ) -> None:
         """Applies lazy decay and upserts the transition row in SQLite."""
-        conn = self._get_connection()
-        try:
-            with conn:
-                cursor = conn.cursor()
+        def _write(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT transition_count, last_decay_ts, weight
+                FROM action_transitions
+                WHERE source_action = ? AND context_state = ? AND target_action = ?
+            """, (source_action, context_state, target_action))
+            row = cursor.fetchone()
+
+            if row:
+                count, last_decay_ts, old_weight = row["transition_count"], row["last_decay_ts"], row["weight"]
+                # Apply lazy decay to current time before incrementing
+                elapsed = max(0.0, now - last_decay_ts)
+                decay_factor = 2.0 ** (-elapsed / HABIT_HALF_LIFE_SECONDS)
+                new_weight = (old_weight * decay_factor) + 1.0
+                new_count = count + 1
+
                 cursor.execute("""
-                    SELECT transition_count, last_decay_ts, weight
-                    FROM action_transitions
+                    UPDATE action_transitions
+                    SET transition_count = ?, last_transition_ts = ?, last_decay_ts = ?, weight = ?
                     WHERE source_action = ? AND context_state = ? AND target_action = ?
-                """, (source_action, context_state, target_action))
-                row = cursor.fetchone()
+                """, (new_count, now, now, new_weight, source_action, context_state, target_action))
+            else:
+                cursor.execute("""
+                    INSERT INTO action_transitions (
+                        source_action, context_state, target_action,
+                        transition_count, last_transition_ts, last_decay_ts, weight
+                    ) VALUES (?, ?, ?, 1, ?, ?, 1.0)
+                """, (source_action, context_state, target_action, now, now))
 
-                if row:
-                    count, last_decay_ts, old_weight = row["transition_count"], row["last_decay_ts"], row["weight"]
-                    # Apply lazy decay to current time before incrementing
-                    elapsed = max(0.0, now - last_decay_ts)
-                    decay_factor = 2.0 ** (-elapsed / HABIT_HALF_LIFE_SECONDS)
-                    new_weight = (old_weight * decay_factor) + 1.0
-                    new_count = count + 1
-
-                    cursor.execute("""
-                        UPDATE action_transitions
-                        SET transition_count = ?, last_transition_ts = ?, last_decay_ts = ?, weight = ?
-                        WHERE source_action = ? AND context_state = ? AND target_action = ?
-                    """, (new_count, now, now, new_weight, source_action, context_state, target_action))
-                else:
-                    cursor.execute("""
-                        INSERT INTO action_transitions (
-                            source_action, context_state, target_action,
-                            transition_count, last_transition_ts, last_decay_ts, weight
-                        ) VALUES (?, ?, ?, 1, ?, ?, 1.0)
-                    """, (source_action, context_state, target_action, now, now))
+        try:
+            SingleWriterActor.get_or_create(self.db_path).execute_write(_write)
         except Exception as e:
-            logger.debug("Error recording habit transition: %s", e)
-        finally:
-            conn.close()
+            logger.debug("Error recording habit transition via actor: %s", e)
 
     def predict_next_action(
         self,

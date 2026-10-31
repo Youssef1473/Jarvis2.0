@@ -13,6 +13,7 @@ import logging
 import re
 import sqlite3
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -102,9 +103,20 @@ class DynamicReflexEngine:
         finally:
             conn.close()
 
+    def execute_write(self, func: Callable[[sqlite3.Connection], Any], timeout: float = 30.0) -> Any:
+        """Executes a write operation serialized through SingleWriterActor."""
+        try:
+            from jarvis.core.memory.sqlite_base import SingleWriterActor
+            return SingleWriterActor.get_or_create(self.db_path).execute_write(func, timeout=timeout)
+        except Exception:
+            with self._get_connection() as conn:
+                res = func(conn)
+                conn.commit()
+                return res
+
     def _init_db(self):
         """Initializes learned_habits schema in SQLite."""
-        with self._get_connection() as conn:
+        def _write(conn: sqlite3.Connection):
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS learned_habits (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,7 +131,7 @@ class DynamicReflexEngine:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_habits_phrase ON learned_habits(trigger_phrase)")
-            conn.commit()
+        self.execute_write(_write)
 
     def _load_cache(self):
         """Loads all active habits and compiled macros from SQLite into fast in-memory dictionary."""
@@ -234,7 +246,7 @@ class DynamicReflexEngine:
         kwargs_json = json.dumps(clean_kwargs, sort_keys=True)
 
         try:
-            with self._get_connection() as conn:
+            def _write(conn: sqlite3.Connection) -> int:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO learned_habits (
@@ -248,8 +260,9 @@ class DynamicReflexEngine:
                         turn1_latency_ms = CASE WHEN learned_habits.turn1_latency_ms <= 0 THEN excluded.turn1_latency_ms ELSE learned_habits.turn1_latency_ms END,
                         last_executed = CURRENT_TIMESTAMP
                 """, (norm_key, skill_name, kwargs_json, round(turn1_latency_ms, 2)))
-                conn.commit()
-                habit_id = cursor.lastrowid
+                return cursor.lastrowid or 0
+
+            habit_id = self.execute_write(_write)
 
             with self._lock:
                 self._cache[norm_key] = {
@@ -303,7 +316,7 @@ class DynamicReflexEngine:
         kwargs_json = json.dumps(clean_steps, sort_keys=True)
 
         try:
-            with self._get_connection() as conn:
+            def _write(conn: sqlite3.Connection) -> int:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO learned_habits (
@@ -317,8 +330,9 @@ class DynamicReflexEngine:
                         turn1_latency_ms = CASE WHEN learned_habits.turn1_latency_ms <= 0 THEN excluded.turn1_latency_ms ELSE learned_habits.turn1_latency_ms END,
                         last_executed = CURRENT_TIMESTAMP
                 """, (norm_key, kwargs_json, round(turn1_latency_ms, 2)))
-                conn.commit()
-                habit_id = cursor.lastrowid
+                return cursor.lastrowid or 0
+
+            habit_id = self.execute_write(_write)
 
             with self._lock:
                 self._cache[norm_key] = {
@@ -343,7 +357,7 @@ class DynamicReflexEngine:
     def record_hit(self, habit_id: int, reflex_latency_ms: float = 0.0):
         """Updates habit execution telemetry after a fast-path reflex hit."""
         try:
-            with self._get_connection() as conn:
+            def _write(conn: sqlite3.Connection) -> None:
                 conn.execute("""
                     UPDATE learned_habits
                     SET hit_count = hit_count + 1,
@@ -351,7 +365,7 @@ class DynamicReflexEngine:
                         last_executed = CURRENT_TIMESTAMP
                     WHERE id = ?
                 """, (round(reflex_latency_ms, 2), habit_id))
-                conn.commit()
+            self.execute_write(_write)
 
             with self._lock:
                 for h in self._cache.values():
@@ -371,11 +385,11 @@ class DynamicReflexEngine:
 
     def clear_habits(self) -> int:
         """Clears all learned habits from database and cache."""
-        with self._get_connection() as conn:
+        def _write(conn: sqlite3.Connection) -> int:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM learned_habits")
-            conn.commit()
-            count = cursor.rowcount
+            return cursor.rowcount
+        count = self.execute_write(_write)
         with self._lock:
             self._cache.clear()
         return count

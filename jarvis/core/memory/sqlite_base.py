@@ -24,8 +24,25 @@ class SingleWriterActor:
     STATE_STOPPING = "stopping"
     STATE_STOPPED = "stopped"
 
+    _instances: dict[str, SingleWriterActor] = {}
+    _registry_lock: threading.RLock = threading.RLock()
+
+    @classmethod
+    def get_or_create(cls, db_path: Path | str) -> SingleWriterActor:
+        """Retrieves or instantiates a singleton SingleWriterActor for the given database path."""
+        resolved_key = str(Path(db_path).resolve())
+        with cls._registry_lock:
+            existing = cls._instances.get(resolved_key)
+            if existing is not None and existing._running:
+                return existing
+            actor = cls(Path(db_path))
+            cls._instances[resolved_key] = actor
+            return actor
+
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
+        with self._registry_lock:
+            self._instances[str(self.db_path.resolve())] = self
         self._queue: queue.Queue[tuple[Callable[[sqlite3.Connection], Any], threading.Event, list, list, threading.Event, dict, threading.Lock] | None] = queue.Queue()
         self._state = self.STATE_RUNNING
         self._state_lock = threading.Lock()
@@ -84,6 +101,7 @@ class SingleWriterActor:
         c.execute("PRAGMA mmap_size=268435456;")
         c.execute("PRAGMA cache_size=-64000;")
         c.execute("PRAGMA temp_store=MEMORY;")
+        c.execute("PRAGMA recursive_triggers=ON;")
         c.row_factory = sqlite3.Row
         try:
             import sqlite_vec
@@ -276,6 +294,11 @@ class SingleWriterActor:
                     self.STATE_STOPPING,
                 )
 
+        with self._registry_lock:
+            resolved_key = str(self.db_path.resolve())
+            if self._instances.get(resolved_key) is self:
+                self._instances.pop(resolved_key, None)
+
 
 class SqliteBaseMixin:
     """Provides SQLite database connection management, pool access, and schema initialization."""
@@ -380,6 +403,9 @@ class SqliteBaseMixin:
         falling back to a direct connection context if the actor is unavailable.
         """
         actor = getattr(self, "_writer_actor", None)
+        if actor is None or getattr(actor, "state", None) != SingleWriterActor.STATE_RUNNING:
+            actor = SingleWriterActor.get_or_create(self.db_path)
+            self._writer_actor = actor
         if actor is not None and getattr(actor, "state", None) == SingleWriterActor.STATE_RUNNING:
             return actor.execute_write(func, timeout=timeout)
         with self._get_connection() as conn:
@@ -388,6 +414,9 @@ class SqliteBaseMixin:
     async def execute_write_async(self, func: Callable[[sqlite3.Connection], Any]) -> Any:
         """Asynchronously dispatches a write operation through the Single-Writer Actor queue."""
         actor = getattr(self, "_writer_actor", None)
+        if actor is None or getattr(actor, "state", None) != SingleWriterActor.STATE_RUNNING:
+            actor = SingleWriterActor.get_or_create(self.db_path)
+            self._writer_actor = actor
         if actor is not None and getattr(actor, "state", None) == SingleWriterActor.STATE_RUNNING:
             return await actor.execute_write_async(func)
         return await asyncio.to_thread(self.execute_write, func)
@@ -738,6 +767,22 @@ class SqliteBaseMixin:
                     )
                 """)
 
+                # Compiled Reflex Macros (Canonical Deterministic Workflow Schema)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS compiled_reflex_macros (
+                        macro_name TEXT PRIMARY KEY,
+                        trigger_regex TEXT NOT NULL,
+                        steps_json TEXT NOT NULL,
+                        success_count INTEGER NOT NULL DEFAULT 0,
+                        failure_count INTEGER NOT NULL DEFAULT 0,
+                        created_at REAL NOT NULL,
+                        macro_id TEXT GENERATED ALWAYS AS (macro_name) VIRTUAL,
+                        tool_sequence TEXT DEFAULT '',
+                        occurrence_count INTEGER DEFAULT 0,
+                        last_compiled_ts REAL DEFAULT 0.0
+                    ) WITHOUT ROWID
+                """)
+
                 # One-time rebuild to backfill any pre-existing rows into FTS indexes
                 cursor.execute("SELECT 1 FROM schema_meta WHERE key = 'fts5_initialized'")
                 if not cursor.fetchone():
@@ -827,6 +872,27 @@ class SqliteBaseMixin:
                 cursor.execute("""
                     CREATE TRIGGER IF NOT EXISTS kg_edges_vec_ad AFTER DELETE ON knowledge_edges BEGIN
                         DELETE FROM kg_edges_vec WHERE edge_id = old.edge_id;
+                    END;
+                """)
+                cursor.execute("""
+                    CREATE TRIGGER IF NOT EXISTS kg_edges_vec_au AFTER UPDATE OF valid_until ON knowledge_edges
+                    WHEN new.valid_until IS NOT NULL AND old.valid_until IS NULL
+                    BEGIN
+                        DELETE FROM kg_edges_vec WHERE edge_id = old.edge_id;
+                    END;
+                """)
+                cursor.execute("""
+                    CREATE TRIGGER IF NOT EXISTS trg_kg_supersede_functional_vec
+                    BEFORE INSERT ON knowledge_edges
+                    WHEN NEW.is_functional = 1 AND NEW.valid_until IS NULL
+                    BEGIN
+                        DELETE FROM kg_edges_vec WHERE edge_id IN (
+                            SELECT edge_id FROM knowledge_edges
+                            WHERE subject = NEW.subject
+                              AND predicate = NEW.predicate
+                              AND valid_until IS NULL
+                              AND object != NEW.object
+                        );
                     END;
                 """)
 

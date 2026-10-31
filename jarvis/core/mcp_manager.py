@@ -277,6 +277,8 @@ class MCPClientSession:
         self._job_handle: int | None = None
         self._stderr_buffer: collections.deque = collections.deque(maxlen=200)
         self._stdout_queue: queue.Queue = queue.Queue()
+        self._pending_requests: dict[Any, queue.Queue] = {}
+        self._pending_lock = threading.Lock()
         self._stderr_thread: threading.Thread | None = None
         self._stdout_thread: threading.Thread | None = None
 
@@ -518,7 +520,24 @@ class MCPClientSession:
                         line = proc.stdout.readline()
                         if not line or not isinstance(line, str):
                             break
-                        self._stdout_queue.put(line.rstrip())
+                        trimmed = line.rstrip()
+                        if not trimmed:
+                            continue
+                        try:
+                            msg = json.loads(trimmed)
+                        except Exception:
+                            self._stdout_queue.put(trimmed)
+                            continue
+
+                        req_id = msg.get("id") if isinstance(msg, dict) else None
+                        if req_id is not None:
+                            with self._pending_lock:
+                                resp_q = self._pending_requests.get(req_id)
+                            if resp_q is not None:
+                                resp_q.put(msg)
+                                continue
+
+                        self._stdout_queue.put(trimmed)
                     except Exception:
                         break
 
@@ -526,30 +545,52 @@ class MCPClientSession:
             self._stdout_thread.start()
 
     def _send_stdio_request(self, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
-        """Transmits JSON-RPC payload over stdio framing and waits for response line."""
+        """Transmits JSON-RPC payload over stdio framing and waits for correlated response."""
         self._ensure_stdio_process()
 
-        with self._lock:
-            if not self._proc or self._proc.poll() is not None:
-                raise RuntimeError(f"MCP stdio subprocess for '{self.name}' is not running.")
+        req_id = payload.get("id")
+        resp_q: queue.Queue | None = None
+        if req_id is not None:
+            resp_q = queue.Queue(maxsize=1)
+            with self._pending_lock:
+                self._pending_requests[req_id] = resp_q
 
-            raw_req = json.dumps(payload) + "\n"
-            try:
-                self._proc.stdin.write(raw_req)
-                self._proc.stdin.flush()
-            except Exception as e:
-                raise RuntimeError(f"Failed to write request to MCP stdin: {e}") from e
-
-        # Wait for JSON-RPC response from stdout queue
         try:
-            line = self._stdout_queue.get(timeout=timeout)
-            return json.loads(line)
-        except queue.Empty:
-            recent_err = " | ".join(list(self._stderr_buffer)[-3:]) if self._stderr_buffer else "No stderr available."
-            raise TimeoutError(
-                f"MCP stdio server '{self.name}' timed out after {timeout}s waiting for response. "
-                f"Stderr tail: {recent_err}"
-            )
+            with self._lock:
+                if not self._proc or self._proc.poll() is not None:
+                    raise RuntimeError(f"MCP stdio subprocess for '{self.name}' is not running.")
+
+                raw_req = json.dumps(payload) + "\n"
+                try:
+                    self._proc.stdin.write(raw_req)
+                    self._proc.stdin.flush()
+                except Exception as e:
+                    raise RuntimeError(f"Failed to write request to MCP stdin: {e}") from e
+
+            # Wait for correlated JSON-RPC response by request ID if available
+            if resp_q is not None:
+                try:
+                    return resp_q.get(timeout=timeout)
+                except queue.Empty:
+                    recent_err = " | ".join(list(self._stderr_buffer)[-3:]) if self._stderr_buffer else "No stderr available."
+                    raise TimeoutError(
+                        f"MCP stdio server '{self.name}' timed out after {timeout}s waiting for response to request ID {req_id}. "
+                        f"Stderr tail: {recent_err}"
+                    )
+            else:
+                try:
+                    line = self._stdout_queue.get(timeout=timeout)
+                    return json.loads(line) if isinstance(line, str) else line
+                except queue.Empty:
+                    recent_err = " | ".join(list(self._stderr_buffer)[-3:]) if self._stderr_buffer else "No stderr available."
+                    raise TimeoutError(
+                        f"MCP stdio server '{self.name}' timed out after {timeout}s waiting for response. "
+                        f"Stderr tail: {recent_err}"
+                    )
+        finally:
+            if req_id is not None:
+                with self._pending_lock:
+                    self._pending_requests.pop(req_id, None)
 
     def close(self) -> None:
         """Closes session, terminates stdio process and cleans up Job Object."""
@@ -558,6 +599,11 @@ class MCPClientSession:
                 return
             self._is_closed = True
             self._tool_cache = None
+
+            with self._pending_lock:
+                for q in self._pending_requests.values():
+                    q.put({"error": {"code": -32000, "message": "MCP session closed"}})
+                self._pending_requests.clear()
 
             if self._proc:
                 try:

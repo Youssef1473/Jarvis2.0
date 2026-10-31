@@ -12,8 +12,10 @@ import logging
 import os
 import secrets
 import socket
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from jarvis.context.flow_state_mirror import FlowStateMirror
@@ -27,13 +29,54 @@ DEFAULT_UDP_PORT = 31415
 class FlowStateBridgeListener:
     """UDP and socket bridge listener for IDE and Shell telemetry with HMAC authentication."""
 
+    TOKEN_PATH = Path.home() / ".jarvis_sec" / "flow_state.token"
+
     def __init__(self, port: int = DEFAULT_UDP_PORT, auth_token: str | None = None):
         self.port = port
-        self.auth_token = auth_token or os.environ.get("JARVIS_FLOW_STATE_TOKEN") or secrets.token_hex(32)
+        token = auth_token or os.environ.get("JARVIS_FLOW_STATE_TOKEN")
+        if not token:
+            try:
+                if self.TOKEN_PATH.exists():
+                    saved = self.TOKEN_PATH.read_text(encoding="utf-8").strip()
+                    if len(saved) >= 32:
+                        token = saved
+            except Exception:
+                pass
+        if not token:
+            token = secrets.token_hex(32)
+        self.auth_token = token
+        self._persist_token()
         self.running = False
         self._thread: threading.Thread | None = None
         self._sock: socket.socket | None = None
         self._last_cursor_ts = 0.0
+
+    def _persist_token(self) -> None:
+        """Persists the session auth token with user-restricted permissions."""
+        try:
+            token_file = self.TOKEN_PATH
+            token_file.parent.mkdir(parents=True, exist_ok=True)
+            token_file.write_text(self.auth_token, encoding="utf-8")
+            if sys.platform != "win32":
+                try:
+                    os.chmod(token_file, 0o600)
+                except Exception:
+                    pass
+            else:
+                try:
+                    import subprocess
+                    username = os.environ.get("USERNAME")
+                    if username:
+                        subprocess.run(
+                            ["icacls", str(token_file), "/inheritance:r", "/grant:r", f"{username}:(R,W)"],
+                            capture_output=True,
+                            timeout=2.0,
+                            check=False,
+                        )
+                except Exception as acl_err:
+                    logger.debug("Could not restrict token file ACL: %s", acl_err)
+        except Exception as e:
+            logger.debug("Failed to persist flow-state token: %s", e)
 
     def get_auth_token(self) -> str:
         """Returns the active session authentication token."""
