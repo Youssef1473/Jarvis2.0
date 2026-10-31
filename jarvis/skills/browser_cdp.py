@@ -1087,7 +1087,7 @@ def execute_cdp_javascript(
                     "returnByValue": True,
                     "awaitPromise": True,
                 },
-                timeout_sec=1.0,
+                timeout_sec=5.0,
             )
             return resp.get("result", {}).get("result", {}).get("value")
 
@@ -1109,7 +1109,7 @@ def execute_cdp_javascript(
                 }
             }
             ws.send(json.dumps(cmd))
-            resp = recv_cdp_response(ws, 202, timeout_sec=1.0)
+            resp = recv_cdp_response(ws, 202, timeout_sec=5.0)
             return resp.get("result", {}).get("result", {}).get("value")
 
     except Exception as e:
