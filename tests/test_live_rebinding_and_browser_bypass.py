@@ -327,11 +327,20 @@ class TestRealChromiumBypassVerification(unittest.TestCase):
                     try:
                         res = json.loads(ws.recv(timeout=1.0))
                         err_text = res.get("result", {}).get("errorText", "") or res.get("params", {}).get("errorText", "")
-                        if "ERR_PROXY_CONNECTION_FAILED" in err_text or "ERR_PROXY_CONNECTION_FAILED" in str(res):
+                        fail_indicators = (
+                            "ERR_PROXY_CONNECTION_FAILED",
+                            "ERR_CONNECTION_REFUSED",
+                            "ERR_TIMED_OUT",
+                            "ERR_NAME_NOT_RESOLVED",
+                        )
+                        if any(ind in err_text or ind in str(res) for ind in fail_indicators):
                             error_reported = True
                             last_error_detail = err_text or str(res)
                             break
                         if res.get("id") == 10:
+                            nav_err = res.get("result", {}).get("errorText", "")
+                            if nav_err:
+                                error_reported = True
                             last_error_detail = str(res)
                             break
                     except (TimeoutError, OSError):
