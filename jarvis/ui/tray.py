@@ -168,7 +168,10 @@ class SystemTrayApp:
         """Opens the Holographic Web HUD in default browser."""
         try:
             import webbrowser
-            webbrowser.open("http://127.0.0.1:20129")
+            from jarvis.ui.server import JarvisUIService
+            srv = JarvisUIService.get_instance()
+            url = srv.get_authenticated_url() if srv else "http://127.0.0.1:20129"
+            webbrowser.open(url)
         except Exception:
             pass
 

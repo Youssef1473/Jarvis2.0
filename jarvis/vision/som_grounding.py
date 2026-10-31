@@ -10,6 +10,7 @@ import ctypes
 import logging
 import sys
 import threading
+import time
 import warnings
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -149,27 +150,46 @@ MarkedUIElement = MarkElement
 class MarkRegistry:
     """Thread-safe registry for the most recently computed Set-of-Mark elements."""
     _current_marks: dict[int, MarkElement] = {}
+    _timestamp: float = 0.0
     _lock = threading.Lock()
+    TTL_SECONDS: float = 60.0
 
     @classmethod
     def set_marks(cls, marks: dict[int, MarkElement]) -> None:
         with cls._lock:
             cls._current_marks = dict(marks)
+            cls._timestamp = time.time()
 
     @classmethod
     def get_mark(cls, mark_id: int) -> MarkElement | None:
         with cls._lock:
+            if time.time() - cls._timestamp > cls.TTL_SECONDS:
+                cls._current_marks.clear()
+                return None
             return cls._current_marks.get(mark_id)
 
     @classmethod
     def get_all_marks(cls) -> dict[int, MarkElement]:
         with cls._lock:
+            if time.time() - cls._timestamp > cls.TTL_SECONDS:
+                cls._current_marks.clear()
+                return {}
             return dict(cls._current_marks)
+
+    @classmethod
+    def evict_for_hwnd(cls, hwnd: int) -> int:
+        """Evicts cached elements belonging to a closed or destroyed window HWND."""
+        with cls._lock:
+            to_remove = [mid for mid, mark in cls._current_marks.items() if getattr(mark, "hwnd", 0) == hwnd]
+            for mid in to_remove:
+                cls._current_marks.pop(mid, None)
+            return len(to_remove)
 
     @classmethod
     def clear(cls) -> None:
         with cls._lock:
             cls._current_marks.clear()
+            cls._timestamp = 0.0
 
     @classmethod
     def format_manifest(cls, window_title: str = "Active Window") -> str:

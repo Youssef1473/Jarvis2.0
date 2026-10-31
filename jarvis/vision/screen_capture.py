@@ -51,7 +51,7 @@ class ScreenPerception:
             if screenshot.width > max_width:
                 scale = max_width / float(screenshot.width)
                 new_size = (max_width, int(screenshot.height * scale))
-                screenshot = screenshot.resize(new_size, Image.Resampling.LANCZOS)
+                screenshot = screenshot.resize(new_size, Image.Resampling.BILINEAR)
             return screenshot
         except Exception as e:
             logger.error(f"Failed to capture screen: {e}")

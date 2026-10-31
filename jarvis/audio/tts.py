@@ -520,6 +520,7 @@ class TextToSpeech:
                 opts.log_severity_level = 3
                 opts.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
                 opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+                opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
 
                 available = rt.get_available_providers()
                 providers = []

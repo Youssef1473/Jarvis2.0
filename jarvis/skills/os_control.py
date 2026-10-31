@@ -614,7 +614,8 @@ def shutdown_jarvis() -> str:
 CRITICAL_PROCESS_DENYLIST = {
     "explorer.exe", "python.exe", "pythonw.exe", "svchost.exe", "csrss.exe",
     "winlogon.exe", "lsass.exe", "dwm.exe", "services.exe", "system", "smss.exe",
-    "runtimebroker.exe", "sihost.exe", "taskhostw.exe", "audiodg.exe"
+    "runtimebroker.exe", "sihost.exe", "taskhostw.exe", "audiodg.exe",
+    "agy.exe", "ollama.exe", "wininit.exe"
 }
 
 

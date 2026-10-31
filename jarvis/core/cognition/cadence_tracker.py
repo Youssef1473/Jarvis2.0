@@ -87,6 +87,7 @@ class MotorCadenceTracker:
         self._thread: threading.Thread | None = None
         self._thread_id: int | None = None
         self._hook = None
+        self._hook_ready = threading.Event()
         # Persistent reference to C callback preventing Python GC collection
         self._hook_proc: Any | None = None
 
@@ -101,14 +102,14 @@ class MotorCadenceTracker:
             return True
 
         self._running = True
+        self._hook_ready.clear()
         self._thread = threading.Thread(
             target=self._hook_message_loop,
             name="JarvisMotorCadenceHook",
             daemon=True,
         )
         self._thread.start()
-        # Brief pause to allow hook initialization
-        time.sleep(0.05)
+        self._hook_ready.wait(timeout=1.0)
         return self._hook is not None
 
     def stop(self) -> None:
@@ -133,6 +134,7 @@ class MotorCadenceTracker:
             self._thread.join(timeout=1.0)
             self._thread = None
 
+        self._held_keys.clear()
         self._hook_proc = None
         logger.info("MotorCadenceTracker cleanly terminated.")
 
@@ -235,11 +237,15 @@ class MotorCadenceTracker:
             err = kernel32.GetLastError()
             logger.warning("Failed to install WH_KEYBOARD_LL hook (Error: %s).", err)
             self._running = False
+            self._hook_ready.set()
             return
 
-        logger.info("MotorCadenceTracker WH_KEYBOARD_LL hook online on E-Cores.")
-
         msg = wintypes.MSG()
+        # Force message queue initialization before signaling readiness
+        user32.PeekMessageW(ctypes.byref(msg), 0, 0, 0, 0)
+        self._hook_ready.set()
+
+        logger.info("MotorCadenceTracker WH_KEYBOARD_LL hook online on E-Cores.")
         while self._running:
             ret = user32.GetMessageW(ctypes.byref(msg), 0, 0, 0)
             if ret <= 0:

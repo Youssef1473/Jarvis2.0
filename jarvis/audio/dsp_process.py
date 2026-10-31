@@ -71,7 +71,7 @@ def _close_event_handle(handle) -> None:
             pass
 
 
-def _elevate_companion_process(pcore_mask: int = 0x0F) -> None:
+def _elevate_companion_process(pcore_mask: int = 0xFF) -> None:
     """Sets companion process priority to HIGH_PRIORITY_CLASS and pins to P-cores."""
     if sys.platform != "win32":
         return
@@ -93,7 +93,7 @@ def _elevate_companion_process(pcore_mask: int = 0x0F) -> None:
 
 def dsp_companion_main(shm_name: str, event_name: str, shutdown_event: mp.Event):
     """Companion process entry point: owns nothing, attaches to the ring and flushes it on barge-in."""
-    _elevate_companion_process(pcore_mask=0x0F)
+    _elevate_companion_process(pcore_mask=0xFF)
     barge_in_h = _create_or_open_event(event_name)
 
     try:
@@ -110,24 +110,26 @@ def dsp_companion_main(shm_name: str, event_name: str, shutdown_event: mp.Event)
 
     logger.info("DSP Companion Process online (PID: %d)", os.getpid())
 
+    k32 = None
+    if sys.platform == "win32" and barge_in_h:
+        try:
+            from ctypes import wintypes
+            k32 = ctypes.windll.kernel32
+            k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            k32.WaitForSingleObject.restype = wintypes.DWORD
+        except Exception:
+            k32 = None
+
     try:
         while not shutdown_event.is_set():
-            # Check for atomic barge-in
-            if sys.platform == "win32" and barge_in_h:
-                try:
-                    from ctypes import wintypes
-                    k32 = ctypes.windll.kernel32
-                    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-                    k32.WaitForSingleObject.restype = wintypes.DWORD
-                    # 0ms check
-                    if k32.WaitForSingleObject(barge_in_h, 0) == 0:
-                        # Barge-in signaled: flush through the SPSC protocol (never raw header writes)
-                        transport.trigger_barge_in_clear()
-                        _reset_named_event(barge_in_h)
-                except Exception:
-                    pass
-
-            time.sleep(0.005)
+            if k32 and barge_in_h:
+                # Kernel wait up to 50ms with sub-microsecond wakeup on atomic signal
+                res = k32.WaitForSingleObject(barge_in_h, 50)
+                if res == 0:
+                    transport.trigger_barge_in_clear()
+                    _reset_named_event(barge_in_h)
+            else:
+                time.sleep(0.05)
     finally:
         transport.close()
         _close_event_handle(barge_in_h)

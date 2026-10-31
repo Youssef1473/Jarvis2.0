@@ -155,6 +155,14 @@ class JarvisHUD:
         self.canvas.bind("<Button-1>", self._start_drag)
         self.canvas.bind("<B1-Motion>", self._on_drag)
 
+        try:
+            from jarvis.ui.win32_overlay import configure_stark_overlay_hwnd
+            hwnd = self.root.winfo_id()
+            if hwnd:
+                configure_stark_overlay_hwnd(hwnd)
+        except Exception:
+            pass
+
         self.running = True
         self._draw_hud()
         self.root.mainloop()

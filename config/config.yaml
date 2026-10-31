@@ -70,7 +70,7 @@ tts:
   kokoro_speed: 1.03              # Speech speed multiplier (0.8 - 1.5; 1.03x calibrated for Bettany diction)
   kokoro_lang: "en-gb"            # "en-gb" (British English)
   dsp_filter: true                # Cinematic MCU J.A.R.V.I.S. DSP chain (110Hz HPF + 7.5ms holographic sheen)
-  cpu_threads: 4                  # Limit Kokoro ONNX synthesis threads to prevent 100% CPU spikes
+  cpu_threads: 2                  # Limit Kokoro ONNX synthesis threads to prevent 100% CPU spikes and P-core starvation
   sapi_voice: "David"             # SAPI5 fallback voice
   sapi_rate: 1                    # SAPI5 fallback speech rate
 

@@ -151,7 +151,9 @@ class BackgroundDHashMonitor:
             if w <= 0 or h <= 0:
                 return None
             try:
-                return ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom), all_screens=True)
+                img = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom), all_screens=True)
+                from jarvis.vision.privacy_guard import ZOrderPrivacyGuard
+                return ZOrderPrivacyGuard.get_instance().redact_image_in_place(img)
             except Exception:
                 from jarvis.vision.screen_capture import ScreenPerception
                 return ScreenPerception.capture_screen()
