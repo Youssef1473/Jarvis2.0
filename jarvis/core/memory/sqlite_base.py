@@ -376,12 +376,21 @@ class SqliteBaseMixin:
             yield conn
 
     def execute_write(self, func: Callable[[sqlite3.Connection], Any], timeout: float = 30.0) -> Any:
-        """Executes a write operation serialized through the Single-Writer Actor queue."""
-        return self._writer_actor.execute_write(func, timeout=timeout)
+        """Executes a write operation serialized through the Single-Writer Actor queue,
+        falling back to a direct connection context if the actor is unavailable.
+        """
+        actor = getattr(self, "_writer_actor", None)
+        if actor is not None and getattr(actor, "state", None) == SingleWriterActor.STATE_RUNNING:
+            return actor.execute_write(func, timeout=timeout)
+        with self._get_connection() as conn:
+            return func(conn)
 
     async def execute_write_async(self, func: Callable[[sqlite3.Connection], Any]) -> Any:
         """Asynchronously dispatches a write operation through the Single-Writer Actor queue."""
-        return await self._writer_actor.execute_write_async(func)
+        actor = getattr(self, "_writer_actor", None)
+        if actor is not None and getattr(actor, "state", None) == SingleWriterActor.STATE_RUNNING:
+            return await actor.execute_write_async(func)
+        return await asyncio.to_thread(self.execute_write, func)
 
     def get_vector_pool(self, pool_size: int = 4):
         """Retrieves or lazily instantiates the async VectorMemoryPool."""

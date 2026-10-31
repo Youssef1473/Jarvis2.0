@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-import time
 from typing import Any
 
 from jarvis.core.memory.vector_engine import (
@@ -20,43 +19,47 @@ class FactsManagerMixin:
     """Provides atomic fact storage, core user preference self-editing, and hybrid fact search."""
 
     def remember_fact(self, key: str, value: str, category: str = "general") -> str:
-        """Stores or updates a persistent fact about the user or system."""
-        max_retries = 5
-        for attempt in range(max_retries):
-            try:
-                with self._get_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        INSERT INTO facts (category, key, value, updated_at)
-                        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                        ON CONFLICT(key) DO UPDATE SET
-                            value = excluded.value,
-                            category = excluded.category,
-                            updated_at = CURRENT_TIMESTAMP
-                    """, (category.lower().strip(), key.lower().strip(), value.strip()))
+        """Stores or updates a persistent fact about the user or system.
+        Runs ONNX embedding inference OUTSIDE the active write transaction and
+        serializes all database writes strictly through SingleWriterActor.
+        """
+        clean_cat = category.lower().strip()
+        clean_key = key.lower().strip()
+        clean_val = value.strip()
 
-                    # Index into sqlite-vec facts_vec
-                    try:
-                        import sqlite_vec
-                        cursor.execute("SELECT id FROM facts WHERE key = ?", (key.lower().strip(),))
-                        row = cursor.fetchone()
-                        if row:
-                            fact_id = row["id"]
-                            text = f"{category} {key} {value}"
-                            vec = self.vector_engine.dense_vectorize(text)
-                            blob = sqlite_vec.serialize_float32(vec)
-                            cursor.execute("INSERT OR REPLACE INTO facts_vec(fact_id, embedding) VALUES (?, ?)", (fact_id, blob))
-                    except Exception as e:
-                        logger.warning("sqlite-vec fact indexing failed (%s); continuing without vector index.", e)
+        # Step 1: Pre-compute ONNX dense embedding OUTSIDE write transaction
+        blob = None
+        try:
+            import sqlite_vec
+            embed_text = f"{clean_cat} {clean_key} {clean_val}"
+            vec = self.vector_engine.dense_vectorize(embed_text)
+            blob = sqlite_vec.serialize_float32(vec)
+        except Exception as e:
+            logger.warning("Fact vectorization failed (%s); continuing without vector index.", e)
 
-                    conn.commit()
-                break
-            except sqlite3.OperationalError as op_err:
-                err_str = str(op_err).lower()
-                if ("vtable constructor failed" in err_str or "busy" in err_str or "locked" in err_str) and attempt < max_retries - 1:
-                    time.sleep(0.015 * (attempt + 1))
-                    continue
-                raise
+        # Step 2: Route SQLite write strictly through SingleWriterActor
+        def _write(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO facts (category, key, value, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    category = excluded.category,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (clean_cat, clean_key, clean_val))
+
+            if blob is not None:
+                try:
+                    cursor.execute("SELECT id FROM facts WHERE key = ?", (clean_key,))
+                    row = cursor.fetchone()
+                    if row:
+                        cursor.execute("INSERT OR REPLACE INTO facts_vec(fact_id, embedding) VALUES (?, ?)", (row["id"], blob))
+                except Exception as e:
+                    logger.warning("sqlite-vec fact indexing failed (%s); continuing without vector index.", e)
+
+        self.execute_write(_write)
+
         with self._context_summary_lock:
             self._context_summary_cache = None
         return f"Remembered: '{key}' is '{value}'."
@@ -77,18 +80,20 @@ class FactsManagerMixin:
             return "Preference key and value cannot be empty, Sir."
 
         self.remember_fact(clean_key, clean_val, category="user_preference")
+        def _write_pref(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO user_preferences (pref_key, pref_value, dimension_id, locked_by_sir, updated_at_utc)
+                VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                ON CONFLICT(pref_key) DO UPDATE SET
+                    pref_value = excluded.pref_value,
+                    dimension_id = excluded.dimension_id,
+                    locked_by_sir = excluded.locked_by_sir,
+                    updated_at_utc = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            """, (clean_key, clean_val, dimension_id, locked))
+
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT INTO user_preferences (pref_key, pref_value, dimension_id, locked_by_sir, updated_at_utc)
-                    VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-                    ON CONFLICT(pref_key) DO UPDATE SET
-                        pref_value = excluded.pref_value,
-                        dimension_id = excluded.dimension_id,
-                        locked_by_sir = excluded.locked_by_sir,
-                        updated_at_utc = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                """, (clean_key, clean_val, dimension_id, locked))
+            self.execute_write(_write_pref)
         except Exception as e:
             logger.debug("user_preferences table update notice: %s", e)
 
@@ -444,24 +449,23 @@ class FactsManagerMixin:
     def delete_memory_node(self, node_type: str, node_id: Any) -> bool:
         """Deletes a memory record across facts, preferences, documents, or episodic lessons."""
         clean_type = str(node_type or "").lower().strip()
-        with self._get_connection() as conn:
+        def _delete(conn: sqlite3.Connection) -> bool:
             cursor = conn.cursor()
             if clean_type in ("fact", "facts", "preference", "user_preference"):
                 if isinstance(node_id, int) or (isinstance(node_id, str) and node_id.isdigit()):
                     cursor.execute("DELETE FROM facts WHERE id = ?", (int(node_id),))
                 else:
                     cursor.execute("DELETE FROM facts WHERE key = ?", (str(node_id).lower().strip(),))
-                deleted = cursor.rowcount > 0
+                return cursor.rowcount > 0
             elif clean_type in ("document", "documents"):
                 cursor.execute("DELETE FROM documents WHERE id = ?", (int(node_id),))
-                deleted = cursor.rowcount > 0
+                return cursor.rowcount > 0
             elif clean_type in ("lesson", "lessons", "episodic_lesson"):
                 cursor.execute("DELETE FROM episodic_lessons WHERE id = ?", (int(node_id),))
-                deleted = cursor.rowcount > 0
-            else:
-                return False
+                return cursor.rowcount > 0
+            return False
 
-            conn.commit()
+        deleted = bool(self.execute_write(_delete))
 
         with self._context_summary_lock:
             self._context_summary_cache = None

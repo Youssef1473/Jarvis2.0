@@ -22,14 +22,15 @@ class InteractionMemoryMixin:
     """Provides interaction turn recording, auto-learning heuristics, and episodic reflection."""
 
     def log_interaction(self, user_input: str, jarvis_reply: str, tool_calls: str | None = None):
-        """Logs a conversation turn."""
-        with self._get_connection() as conn:
+        """Logs a conversation turn serialized through SingleWriterActor."""
+        def _write(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO interactions (user_input, jarvis_reply, tool_calls)
                 VALUES (?, ?, ?)
             """, (user_input, jarvis_reply, tool_calls or ""))
-            conn.commit()
+
+        self.execute_write(_write)
 
     def get_recent_interactions(self, limit: int = 8) -> list[dict[str, Any]]:
         """Retrieves the most recent N interaction turns in chronological order."""
@@ -303,7 +304,18 @@ class InteractionMemoryMixin:
         if not t_clean or not l_clean:
             return 0
 
-        with self._get_connection() as conn:
+        # Step 1: Pre-compute ONNX dense embedding OUTSIDE write transaction
+        blob = None
+        try:
+            import sqlite_vec
+            embed_text = f"{t_clean} {c_clean} {f_clean} {l_clean}"
+            vec = self.vector_engine.dense_vectorize(embed_text)
+            blob = sqlite_vec.serialize_float32(vec)
+        except Exception as e:
+            logger.warning("sqlite-vec episodic lesson vectorization failed (%s); continuing without vector index.", e)
+
+        # Step 2: Route SQLite write strictly through SingleWriterActor
+        def _write(conn: sqlite3.Connection) -> int:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO episodic_lessons (
@@ -319,19 +331,17 @@ class InteractionMemoryMixin:
             row = cursor.fetchone()
             lesson_id = row["id"] if row else cursor.lastrowid
 
-            # Index into lessons_vec
-            try:
-                import sqlite_vec
-                embed_text = f"{t_clean} {c_clean} {f_clean} {l_clean}"
-                vec = self.vector_engine.dense_vectorize(embed_text)
-                blob = sqlite_vec.serialize_float32(vec)
-                cursor.execute("INSERT OR REPLACE INTO lessons_vec(lesson_id, embedding) VALUES (?, ?)", (lesson_id, blob))
-            except Exception as e:
-                logger.warning("sqlite-vec episodic lesson indexing failed (%s); continuing without vector index.", e)
+            if blob is not None:
+                try:
+                    cursor.execute("INSERT OR REPLACE INTO lessons_vec(lesson_id, embedding) VALUES (?, ?)", (lesson_id, blob))
+                except Exception as e:
+                    logger.warning("sqlite-vec episodic lesson indexing failed (%s); continuing without vector index.", e)
 
-            conn.commit()
-            logger.info(f"Recorded episodic lesson #{lesson_id} for tool '{t_clean}': {l_clean[:60]}...")
             return lesson_id
+
+        lesson_id = self.execute_write(_write)
+        logger.info(f"Recorded episodic lesson #{lesson_id} for tool '{t_clean}': {l_clean[:60]}...")
+        return lesson_id
 
     def recall_episodic_lessons(
         self,
