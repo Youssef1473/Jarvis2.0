@@ -8,9 +8,11 @@ architectures (e.g., Core i5-12500H with 4 P-Cores / 8 P-Threads and 8 E-Cores):
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sys
+import threading
 
 logger = logging.getLogger("Jarvis.Hardware.Affinity")
 
@@ -233,6 +235,35 @@ def elevate_thread_priority(thread_handle: int | None = None, priority: int = TH
         return False
 
 
+_THREAD_LOCAL_MMCSS = threading.local()
+
+
+def get_current_thread_mmcss_handle() -> int | None:
+    """Returns the MMCSS task handle registered on the current thread, or None."""
+    return getattr(_THREAD_LOCAL_MMCSS, "handle", None)
+
+
+def revert_current_thread_mmcss() -> bool:
+    """Reverts MMCSS registration on the calling thread if active."""
+    h = getattr(_THREAD_LOCAL_MMCSS, "handle", None)
+    if h:
+        res = revert_mmcss(h)
+        _THREAD_LOCAL_MMCSS.handle = None
+        return res
+    return False
+
+
+@contextlib.contextmanager
+def mmcss_scope(task_name: str = "Pro Audio"):
+    """Context manager guaranteeing MMCSS elevation is cleanly reverted on exit."""
+    h_task = elevate_to_pro_audio_mmcss(task_name)
+    try:
+        yield h_task
+    finally:
+        if h_task:
+            revert_mmcss(h_task)
+
+
 def elevate_to_pro_audio_mmcss(task_name: str = "Pro Audio") -> int | None:
     """Elevates calling thread to Windows Multimedia Class Scheduler Service (MMCSS)."""
     if sys.platform != "win32":
@@ -253,7 +284,9 @@ def elevate_to_pro_audio_mmcss(task_name: str = "Pro Audio") -> int | None:
         if h_task:
             avrt.AvSetMmThreadPriority(h_task, AVRT_PRIORITY_CRITICAL)
             logger.debug("Windows MMCSS '%s' task registered successfully (handle=%s)", task_name, h_task)
-            return int(h_task)
+            h_int = int(h_task)
+            _THREAD_LOCAL_MMCSS.handle = h_int
+            return h_int
         return None
     except Exception as e:
         logger.debug("Failed to set MMCSS thread characteristics: %s", e)
@@ -279,7 +312,10 @@ def revert_mmcss(h_task: int) -> bool:
         avrt = ctypes.windll.avrt
         avrt.AvRevertMmThreadCharacteristics.argtypes = [wintypes.HANDLE]
         avrt.AvRevertMmThreadCharacteristics.restype = wintypes.BOOL
-        return bool(avrt.AvRevertMmThreadCharacteristics(ctypes.c_void_p(h_task)))
+        success = bool(avrt.AvRevertMmThreadCharacteristics(ctypes.c_void_p(h_task)))
+        if getattr(_THREAD_LOCAL_MMCSS, "handle", None) == h_task:
+            _THREAD_LOCAL_MMCSS.handle = None
+        return success
     except Exception:
         return False
 

@@ -460,7 +460,7 @@ class TextToSpeech:
             try:
                 self._async_close_queue.put_nowait(None)
                 self._async_close_worker.join(timeout=0.1)
-            except Exception:  # noqa: BLE001, S110
+            except Exception:  # noqa: BLE001
                 pass
             raise RuntimeError(f"Barge-in callback registration failed: {e}") from e
 
@@ -494,10 +494,10 @@ class TextToSpeech:
                         try:
                             if getattr(self, "_library", None) and getattr(self._library, "_handle", None):
                                 _orig_del(self)
-                        except Exception:  # noqa: BLE001, S110
+                        except Exception:  # noqa: BLE001
                             pass
                     EspeakAPI._delete_win32 = _safe_del_win32
-            except Exception:  # noqa: BLE001, S110
+            except Exception:  # noqa: BLE001
                 pass
 
             if os.path.exists(self.kokoro_model_path) and os.path.exists(self.kokoro_voices_path):
@@ -1344,7 +1344,7 @@ class TextToSpeech:
             try:
                 from jarvis.core.cancellation import signal_global_barge_in
                 signal_global_barge_in(async_callbacks=True, exclude=self.on_barge_in_flush)
-            except Exception:  # noqa: BLE001, S110
+            except Exception:  # noqa: BLE001
                 pass
             self.on_barge_in_flush(force=True)
             return True
@@ -1405,7 +1405,7 @@ class TextToSpeech:
             )
             if not is_barge_in_active():
                 signal_global_barge_in(async_callbacks=True, exclude=self.on_barge_in_flush)
-        except Exception:  # noqa: BLE001, S110
+        except Exception:  # noqa: BLE001
             pass
 
         while not self._sentence_queue.empty():
@@ -1672,14 +1672,28 @@ class TextToSpeech:
         return cleaned
 
     @staticmethod
+    @staticmethod
+    def _calculate_pause_samples(chunk_text: str, sr: int) -> int:
+        stripped = (chunk_text or "").strip()
+        if re.search(r'[.!?\n]$', stripped):
+            pause_duration = 0.24
+        elif re.search(r'[,;:—–]$', stripped):
+            pause_duration = 0.13
+        else:
+            pause_duration = 0.04
+        return int(sr * pause_duration)
+
+    @classmethod
     def _smooth_and_pad_audio(
+        cls,
         samples: np.ndarray,
         sr: int,
         chunk_text: str,
         apply_dsp: bool = True,
+        pad_silence: bool = True,
     ) -> np.ndarray:
         """Applies signature MCU J.A.R.V.I.S. DSP filter, 5ms Hann window smoothing,
-        peak limiting, and natural acoustic silence pauses."""
+        peak limiting, and optional natural acoustic silence pauses."""
         if samples is None or len(samples) == 0:
             return samples
 
@@ -1696,15 +1710,10 @@ class TextToSpeech:
         if max_val > 0.95:
             samples = samples * (0.95 / max_val)
 
-        stripped = (chunk_text or "").strip()
-        if re.search(r'[.!?\n]$', stripped):
-            pause_duration = 0.24
-        elif re.search(r'[,;:—–]$', stripped):
-            pause_duration = 0.13
-        else:
-            pause_duration = 0.04
+        if not pad_silence:
+            return samples
 
-        pause_samples = int(sr * pause_duration)
+        pause_samples = cls._calculate_pause_samples(chunk_text, sr)
         if pause_samples > 0:
             silence = np.zeros(pause_samples, dtype=np.float32)
             return np.concatenate([samples, silence])
@@ -2012,11 +2021,11 @@ class TextToSpeech:
                 stream_startup_done.set()
                 try:
                     self._sentence_queue.put_nowait(None)
-                except Exception:  # noqa: BLE001, S110
+                except Exception:  # noqa: BLE001
                     pass
                 try:
                     self._audio_queue.put_nowait(None)
-                except Exception:  # noqa: BLE001, S110
+                except Exception:  # noqa: BLE001
                     pass
                 if getattr(self, "_synth_thread", None) and self._synth_thread.is_alive():
                     self._synth_thread.join(timeout=0.05)
@@ -2091,15 +2100,29 @@ class TextToSpeech:
                                     self._resampler.reset()
                                 break
 
-                            padded_samples = self._smooth_and_pad_audio(
-                                samples, sr, chunk, apply_dsp=self.dsp_filter
+                            # 1. Smooth active audio waveform without zero padding
+                            smoothed_samples = self._smooth_and_pad_audio(
+                                samples, sr, chunk, apply_dsp=self.dsp_filter, pad_silence=False
                             )
 
+                            # 2. Upsample active speech through polyphase filter so _tail_24k preserves real waveform
                             if getattr(self, "_stream_sample_rate", 24000) == 48000:
                                 try:
-                                    padded_samples = self._resampler.process(padded_samples)
-                                except Exception:  # noqa: BLE001, S110
-                                    pass
+                                    out_samples = self._resampler.process(smoothed_samples)
+                                except Exception:  # noqa: BLE001
+                                    out_samples = smoothed_samples
+                                out_sr = 48000
+                            else:
+                                out_samples = smoothed_samples
+                                out_sr = sr
+
+                            # 3. Append trailing silence pause at target output sample rate
+                            pause_samples = self._calculate_pause_samples(chunk, out_sr)
+                            if pause_samples > 0:
+                                silence = np.zeros(pause_samples, dtype=np.float32)
+                                padded_samples = np.concatenate([out_samples, silence])
+                            else:
+                                padded_samples = out_samples
 
                             if (
                                 self._ring_buffer.barge_in_epoch != producer_epoch
@@ -2122,13 +2145,13 @@ class TextToSpeech:
                                 if getattr(self, "_shm_transport", None):
                                     try:
                                         self._shm_transport.write_pcm(padded_samples, producer_epoch=shm_producer_epoch)
-                                    except Exception:  # noqa: BLE001, S110
+                                    except Exception:  # noqa: BLE001
                                         pass
                                 self._audio_queue.put((padded_samples, sr))
                                 try:
                                     from jarvis.audio.dsp_tap import AudioDspTap
                                     AudioDspTap.get_instance().process_and_broadcast(padded_samples[:512])
-                                except Exception:  # noqa: BLE001, S110
+                                except Exception:  # noqa: BLE001
                                     pass
                         except Exception as e:  # noqa: BLE001
                             logger.error("Kokoro synth error: %s", e)
@@ -2179,7 +2202,7 @@ class TextToSpeech:
                                     if hasattr(sd, "get_stream"):
                                         with self._stream_claim_lock:
                                             self._default_stream = sd.get_stream()
-                                except Exception:  # noqa: BLE001, S110
+                                except Exception:  # noqa: BLE001
                                     pass
                             if started_play:
                                 sd.wait()
@@ -2462,7 +2485,7 @@ class TextToSpeech:
                     sapi_inst = None
                     try:
                         del v
-                    except Exception:  # noqa: BLE001, S110
+                    except Exception:  # noqa: BLE001
                         pass
                     if co_initialized:
                         try:
@@ -2820,7 +2843,7 @@ class TextToSpeech:
                             try:
                                 from jarvis.audio.dsp_tap import AudioDspTap
                                 AudioDspTap.get_instance().process_and_broadcast(padded_samples[:512])
-                            except Exception:  # noqa: BLE001, S110
+                            except Exception:  # noqa: BLE001
                                 pass
                             sd.play(padded_samples, sr)
                             started_play = True
@@ -2828,7 +2851,7 @@ class TextToSpeech:
                                 if hasattr(sd, "get_stream"):
                                     with self._stream_claim_lock:
                                         self._default_stream = sd.get_stream()
-                            except Exception:  # noqa: BLE001, S110
+                            except Exception:  # noqa: BLE001
                                 pass
                         if started_play:
                             try:

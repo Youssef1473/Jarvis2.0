@@ -241,12 +241,13 @@ def get_global_cancellation_token() -> BargeInCancellationToken:
     return BargeInCancellationToken(GLOBAL_EPOCH_STATE)
 
 
-def signal_global_barge_in(async_callbacks: bool = False, exclude: Any = None) -> int:
+def signal_global_barge_in(async_callbacks: bool = True, exclude: Any = None) -> int:
     """Atomically advances the global barge-in epoch, invalidating all outstanding tokens in <10ns.
 
     Args:
         async_callbacks: When True, dispatches registered flush callbacks on a background daemon
                          thread so the caller's real-time critical path is not blocked by slow callbacks.
+                         Defaults to True to guarantee non-blocking <10ns execution on real-time threads.
         exclude: Optional callback or object to exclude from this dispatch round (e.g. self-invoked flush).
     """
     global _BARGE_IN_ACTIVE
@@ -267,14 +268,15 @@ def signal_global_barge_in(async_callbacks: bool = False, exclude: Any = None) -
 
 def signal_execution_abort() -> int:
     """Atomically advances the global barge-in epoch, aborting in-flight tasks and tool runs."""
-    return signal_global_barge_in()
+    return signal_global_barge_in(async_callbacks=True)
 
 
 def trigger_speech_barge_in() -> int:
     """Invoked when user speech or wake word is detected while audio is active.
-    Advances the monotonic barge-in epoch and immediately triggers all audio flush callbacks.
+    Advances the monotonic barge-in epoch in <10ns and dispatches flush callbacks asynchronously
+    to eliminate stalls on the real-time audio input callback thread.
     """
-    return signal_global_barge_in()
+    return signal_global_barge_in(async_callbacks=True)
 
 
 def advance_active_tool_epoch() -> int:
