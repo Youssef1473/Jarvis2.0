@@ -604,8 +604,9 @@ class AntigravityDaemon:
                     if job_sandbox is not None:
                         try:
                             h_job = job_sandbox.create_process_job_object(
+                                max_memory_mb=1024,
                                 kill_on_close=True,
-                                requested_affinity=0,
+                                requested_affinity=0xFF00,
                             )
                         except Exception as e:
                             logger.error("Job Object creation error for Antigravity daemon: %s", e)
@@ -671,26 +672,27 @@ class AntigravityDaemon:
         # This guarantees voice barge-in or stop() can interrupt immediately without waiting for the 15s deadline
         handshake_ok = False
         init_deadline = time.time() + 15.0
-        while time.time() < init_deadline:
-            if self._generation != my_gen or self.proc is None:
-                # Cancelled or superseded by another generation
-                break
-            if self.proc.poll() is not None:
-                break
-            line = self.proc.stdout.readline()
-            if not line:
-                break
-            line_str = line.strip()
-            if not line_str:
-                continue
-            try:
-                data = json.loads(line_str)
-                if data.get("event") == "init":
-                    self.conversation_id = data.get("conversation_id")
-                    handshake_ok = True
+        try:
+            for line in self._iter_unbuffered_lines(self.proc, timeout=15.0):
+                if self._generation != my_gen or self.proc is None:
                     break
-            except Exception:
-                pass
+                if self.proc.poll() is not None:
+                    break
+                line_str = line.strip()
+                if not line_str:
+                    continue
+                try:
+                    data = json.loads(line_str)
+                    if data.get("event") == "init":
+                        self.conversation_id = data.get("conversation_id")
+                        handshake_ok = True
+                        break
+                except Exception:
+                    pass
+                if time.time() >= init_deadline:
+                    break
+        except Exception as e:
+            logger.debug("Antigravity daemon handshake read notice: %s", e)
 
         # Phase 3: Finalize startup or fail-closed under _lifecycle_lock
         with self._lifecycle_lock:

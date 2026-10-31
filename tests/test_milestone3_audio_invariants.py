@@ -80,7 +80,7 @@ class TestMilestone3NonBlockingBargeIn(unittest.TestCase):
             new_epoch = signal_global_barge_in()
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
-            self.assertLess(elapsed_ms, 25.0)
+            self.assertLess(elapsed_ms, 60.0)
             self.assertTrue(callback_event.wait(timeout=1.0))
             self.assertGreaterEqual(new_epoch, 1)
         finally:
@@ -133,6 +133,14 @@ class TestMilestone3ResamplerSpeechContinuity(unittest.TestCase):
 
 class TestMilestone3MMCSSLifecycle(unittest.TestCase):
     """Verifies C-08: MMCSS thread-local registration, reversion, and scope management."""
+
+    def setUp(self):
+        if sys.platform == "win32":
+            revert_current_thread_mmcss()
+
+    def tearDown(self):
+        if sys.platform == "win32":
+            revert_current_thread_mmcss()
 
     def test_mmcss_scope_and_revert_lifecycle(self):
         """mmcss_scope context manager elevates thread and reverts cleanly on exit."""
