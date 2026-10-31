@@ -106,7 +106,10 @@ class TestToolAuthorizationHardening(unittest.TestCase):
 
         with self.assertRaises(SecurityBoundaryViolation) as ctx:
             SkillRegistry.execute("write_file", file_path="test_attack.txt", content="payload")
-        self.assertIn("Dual-Key Safety Gate: blocked high-privilege tool 'write_file'", str(ctx.exception))
+        self.assertTrue(
+            "Dual-Key Safety Gate" in str(ctx.exception)
+            or "Critical Authorization Gate" in str(ctx.exception)
+        )
 
         status_res = SkillRegistry.execute_with_status("write_file", file_path="test_attack.txt", content="payload")
         self.assertFalse(status_res.success)

@@ -115,8 +115,14 @@ class TestResidualSecurityBoundaries(unittest.TestCase):
         # Inspect tool result in history
         tool_entry = next((m for m in history if m.get("role") == "tool"), None)
         self.assertIsNotNone(tool_entry, "Expected tool entry in conversation history")
-        self.assertIn("Dual-Key Safety Gate", tool_entry["content"])
-        self.assertIn("blocked high-privilege tool 'write_file'", tool_entry["content"])
+        self.assertTrue(
+            "Dual-Key Safety Gate" in tool_entry["content"]
+            or "Critical Authorization Gate" in tool_entry["content"]
+        )
+        self.assertTrue(
+            "blocked high-privilege tool 'write_file'" in tool_entry["content"]
+            or "Critical Authorization Gate: Tool 'write_file'" in tool_entry["content"]
+        )
 
         # Confirm the file was NEVER written to disk
         self.assertFalse(Path("test_probe_unauthorized.txt").exists())
@@ -216,15 +222,18 @@ class TestResidualSecurityBoundaries(unittest.TestCase):
             mock_proc.returncode = 0
             mock_popen.return_value = mock_proc
 
-            from jarvis.skills.job_object_sandbox import CREATE_SUSPENDED
-            _res = SkillSandbox.validate_and_promote(clean_name, valid_code)
+            try:
+                from jarvis.skills.job_object_sandbox import CREATE_SUSPENDED
+                _res = SkillSandbox.validate_and_promote(clean_name, valid_code, user_approved=True)
 
-            self.assertTrue(mock_popen.called)
-            called_flags = mock_popen.call_args[1].get("creationflags", 0)
-            self.assertTrue(
-                bool(called_flags & CREATE_SUSPENDED),
-                "FAIL: Canary process was NOT spawned with CREATE_SUSPENDED!",
-            )
+                self.assertTrue(mock_popen.called)
+                called_flags = mock_popen.call_args[1].get("creationflags", 0)
+                self.assertTrue(
+                    bool(called_flags & CREATE_SUSPENDED),
+                    "FAIL: Canary process was NOT spawned with CREATE_SUSPENDED!",
+                )
+            finally:
+                SkillSandbox.rollback_snapshot(clean_name, None)
 
     def test_canary_assignment_failure_terminates_child_and_fails_closed(self):
         """If Job Object assignment fails, child must be killed immediately without execution."""
@@ -242,7 +251,7 @@ class TestResidualSecurityBoundaries(unittest.TestCase):
             mock_proc = MagicMock()
             mock_popen.return_value = mock_proc
 
-            res = SkillSandbox.validate_and_promote(clean_name, valid_code)
+            res = SkillSandbox.validate_and_promote(clean_name, valid_code, user_approved=True)
 
             self.assertFalse(res.success)
             self.assertIn("Security failure: Win32 Job Object assignment failed", res.message)
@@ -265,7 +274,7 @@ class TestResidualSecurityBoundaries(unittest.TestCase):
             mock_proc = MagicMock()
             mock_popen.return_value = mock_proc
 
-            res = SkillSandbox.validate_and_promote(clean_name, valid_code)
+            res = SkillSandbox.validate_and_promote(clean_name, valid_code, user_approved=True)
 
             self.assertFalse(res.success)
             self.assertIn("Failed to resume suspended canary process", res.message)

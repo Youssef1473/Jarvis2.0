@@ -244,10 +244,10 @@ def verify_custom_skill_signature(
         return False
 
 
-def _create_sandboxed_tool_proxy(clean_name: str, tool_name: str, tool_meta: dict[str, Any]) -> Callable:
+def _create_sandboxed_tool_proxy(clean_name: str, tool_name: str, tool_meta: dict[str, Any], use_appcontainer: bool | None = None) -> Callable:
     """Creates a callable proxy function executing the tool out-of-process under Job Object sandboxing."""
     def sandboxed_tool_proxy(**kwargs):
-        return SkillSandbox.execute_sandboxed_custom_skill(clean_name, tool_name, kwargs)
+        return SkillSandbox.execute_sandboxed_custom_skill(clean_name, tool_name, kwargs, use_appcontainer=use_appcontainer)
 
     sandboxed_tool_proxy.__name__ = tool_name
     description = tool_meta.get("description", "")
@@ -598,6 +598,7 @@ class SkillSandbox:
     def generate_canary_script(cls, clean_name: str, scratch_path: Path) -> str:
         """Generates an automated semantic canary verification script for the subprocess."""
         escaped_path = str(scratch_path).replace("\\", "\\\\")
+        escaped_scratch_dir = str(scratch_path.parent).replace("\\", "\\\\")
         escaped_ws = str(WORKSPACE_DIR).replace("\\", "\\\\")
         return f"""import builtins
 import io
@@ -653,6 +654,44 @@ try:
 
     mod = importlib.util.module_from_spec(spec)
 
+    from jarvis.skills.base import SkillRegistry
+
+    stdlib_dir = os.path.realpath(os.path.normcase(os.path.dirname(os.__file__)))
+    base_prefix = getattr(sys, "base_prefix", sys.prefix)
+    dlls_dir = os.path.realpath(os.path.normcase(os.path.join(base_prefix, "DLLs")))
+    scratch_dir = os.path.realpath(os.path.normcase(r'{escaped_scratch_dir}'))
+    skill_file = os.path.realpath(os.path.normcase(r'{escaped_path}'))
+    canary_allowlist = [stdlib_dir, dlls_dir, scratch_dir, skill_file]
+
+    def _normalize_path(path_candidate):
+        if isinstance(path_candidate, (int, float)):
+            return None
+        if isinstance(path_candidate, bytes):
+            try:
+                path_candidate = path_candidate.decode("utf-8", errors="replace")
+            except Exception:
+                return None
+        if not isinstance(path_candidate, (str, getattr(os, "PathLike", str))):
+            return None
+        try:
+            norm_target = os.path.realpath(os.path.normcase(os.path.abspath(str(path_candidate))))
+            return norm_target.removeprefix(r"\\?\" if os.name == "nt" else "")
+        except Exception:
+            return None
+
+    def _is_path_allowed(path_candidate):
+        if isinstance(path_candidate, int):
+            return False
+        norm = _normalize_path(path_candidate)
+        if not norm:
+            return False
+        if "site-packages" in norm or "dist-packages" in norm:
+            return False
+        for root in canary_allowlist:
+            if norm == root or norm.startswith(root + os.sep):
+                return True
+        return False
+
     def _canary_audit_guard(event, args):
         blocked_events = {{
             "os.system", "os.spawn", "os.exec", "os.fork", "os.posix_spawn",
@@ -665,18 +704,27 @@ try:
         if event in blocked_events:
             raise PermissionError("[Gate-2 AuditHook] Access to event '" + str(event) + "' is blocked inside the canary sandbox.")
         if event == "open":
+            target_path = args[0] if len(args) > 0 else None
             mode = args[1] if len(args) > 1 else None
             flags = args[2] if len(args) > 2 else 0
+
+            if isinstance(target_path, int):
+                raise PermissionError("[Gate-2 AuditHook] Direct integer file descriptor access is prohibited inside the canary sandbox.")
             if mode and isinstance(mode, str) and any(m in mode for m in ("w", "a", "+", "x")):
-                raise PermissionError("[Gate-2 AuditHook] Blocked filesystem write open: mode='" + str(mode) + "' on path '" + str(args[0]) + "'")
+                raise PermissionError("[Gate-2 AuditHook] Blocked filesystem write open: mode='" + str(mode) + "' on path '" + str(target_path) + "'")
             if isinstance(flags, int) and (flags & 0x030B):
-                raise PermissionError("[Gate-2 AuditHook] Blocked filesystem write open: flags=" + hex(flags) + " on path '" + str(args[0]) + "'")
+                raise PermissionError("[Gate-2 AuditHook] Blocked filesystem write open: flags=" + hex(flags) + " on path '" + str(target_path) + "'")
+            if target_path is not None and not _is_path_allowed(target_path):
+                raise PermissionError("[Gate-2 AuditHook] Read access denied: '" + str(target_path) + "' is outside allowlist.")
+        if event in ("os.listdir", "os.scandir"):
+            target_path = args[0] if len(args) > 0 else "."
+            if not _is_path_allowed(target_path):
+                raise PermissionError("[Gate-2 AuditHook] Directory listing denied: '" + str(target_path) + "' is outside allowlist.")
 
     sys.addaudithook(_canary_audit_guard)
 
     spec.loader.exec_module(mod)
 
-    from jarvis.skills.base import SkillRegistry
     tools = SkillRegistry.get_all_tools()
 
     module_tools = [
@@ -778,7 +826,10 @@ try:
 
         if smoke_exc:
             exc = smoke_exc[0]
-            err_msg = f"CANARY_ERROR: Tool '{{tool_name}}' failed smoke execution with {{type(exc).__name__}}: {{exc}}"
+            exc_str = str(exc)
+            if len(exc_str) > 120:
+                exc_str = exc_str[:120] + "... [truncated]"
+            err_msg = f"CANARY_ERROR: Tool '{{tool_name}}' failed smoke execution with {{type(exc).__name__}}: {{exc_str}}"
             sys.stdout.write(err_msg + "\\n")
             sys.stderr.write(err_msg + "\\n")
             sys.stdout.flush()
@@ -839,6 +890,16 @@ except Exception as e:
             logger.warning("Sandbox blocked skill '%s': %s", clean_name, sec_msg)
             cls._record_failure_lesson(clean_name, code, sec_msg, memory_manager)
             return SandboxResult(success=False, skill_name=clean_name, message=sec_msg)
+
+        # Gate 1.5: Explicit out-of-band user approval is mandatory BEFORE spawning canary execution
+        if not user_approved:
+            cls.rollback_snapshot(clean_name, snapshot_path)
+            logger.warning("Skill '%s' denied canary execution: explicit out-of-band user approval is required.", clean_name)
+            return SandboxResult(
+                success=False,
+                skill_name=clean_name,
+                message="Skill execution and promotion denied: explicit out-of-band user approval is required.",
+            )
 
         if "SkillRegistry" not in code:
             code = "from jarvis.skills.base import SkillRegistry\n\n" + code
@@ -1017,9 +1078,11 @@ except Exception as e:
         tool_name: str,
         kwargs: dict[str, Any],
         timeout_seconds: float = 10.0,
-        use_appcontainer: bool = False,
+        use_appcontainer: bool | None = None,
     ) -> Any:
         """Executes a custom skill out-of-process inside an E-core-pinned Win32 Job Object and optional AppContainer."""
+        if use_appcontainer is None:
+            use_appcontainer = (sys.platform == "win32" and os.environ.get("CI", "").lower() != "true")
         acquired = _SANDBOX_CONCURRENCY_SEMAPHORE.acquire(timeout=2.0)
         if not acquired:
             return "Error: Sandbox is busy executing concurrent tasks; try again shortly."

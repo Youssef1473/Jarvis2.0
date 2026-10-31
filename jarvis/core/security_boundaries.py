@@ -609,6 +609,17 @@ def compute_action_hash(tool_name: str, arguments: dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+DEFAULT_PATH_ARG_NAMES: set[str] = {
+    "path",
+    "file_path",
+    "filepath",
+    "target_path",
+    "file_paths",
+    "destination",
+    "source",
+}
+
+
 def format_action_summary(tool_name: str, arguments: dict) -> str:
     """Generates an intuitive, readable summary of a proposed tool execution for human review."""
     clean_args = {
@@ -634,6 +645,12 @@ def format_action_summary(tool_name: str, arguments: dict) -> str:
         return f"Terminate process PID={clean_args.get('pid')} / Name={clean_args.get('process_name')}"
     elif tool_name == "delete_file":
         return f"Delete file from filesystem: {clean_args.get('path') or clean_args.get('file_path')}"
+    elif tool_name in ("write_file", "patch_file"):
+        fp = clean_args.get("file_path") or clean_args.get("path")
+        return f"{tool_name.replace('_', ' ').capitalize()}: {fp}"
+    elif tool_name == "read_multiple_files":
+        fps = clean_args.get("file_paths", "")
+        return f"Read multiple files: {fps[:100]}"
     else:
         import json
         arg_preview = json.dumps(clean_args, sort_keys=True)
@@ -1480,6 +1497,8 @@ class TurnTaintTracker:
         "execute_browser_javascript",
         "run_background_task",
         "release_file_lock",
+        "write_file",
+        "patch_file",
     }
 
     # Verified Level-0 read-only query and inspection tools safe on tainted turns

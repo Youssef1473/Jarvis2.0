@@ -30,18 +30,33 @@ def _resolve_workspace_path(file_path: str, for_write: bool = False) -> Path:
         raise ValueError(f"Path must stay inside the Jarvis workspace: {err}") from err
     resolved = Path(safe_path)
     if for_write:
+        resolved_norm = resolved.resolve()
         custom_dir = (WORKSPACE_DIR / "jarvis" / "skills" / "custom").resolve()
-        try:
-            if resolved.resolve() == custom_dir or custom_dir in resolved.resolve().parents:
+        core_dir = (WORKSPACE_DIR / "jarvis" / "core").resolve()
+        git_dir = (WORKSPACE_DIR / ".git").resolve()
+        run_file = (WORKSPACE_DIR / "run.py").resolve()
+
+        if resolved_norm == custom_dir or custom_dir in resolved_norm.parents:
+            raise ValueError(
+                "Security Violation: Direct modification of 'jarvis/skills/custom/' via generic file tools is prohibited. "
+                "Custom skills must go through the dedicated self-evolution pipeline."
+            )
+
+        if resolved_norm == git_dir or git_dir in resolved_norm.parents:
+            raise ValueError("Security Violation: Direct modification of '.git/' is prohibited.")
+
+        if resolved_norm == run_file or resolved_norm == core_dir or core_dir in resolved_norm.parents:
+            from jarvis.core.security_boundaries import (
+                DualKeyApprovalManager,
+                _active_auth_context,
+            )
+            mgr = DualKeyApprovalManager.get_instance()
+            token = getattr(mgr, "_local", None) and getattr(mgr._local, "authorized_token", None)
+            active_ctx = _active_auth_context.get()
+            if not active_ctx and not token:
                 raise ValueError(
-                    "Security Violation: Direct modification of 'jarvis/skills/custom/' via generic file tools is prohibited. "
-                    "Custom skills must go through the dedicated self-evolution pipeline."
+                    f"Security Violation: Modifying core system file or directory '{resolved_norm.name}' requires explicit DualKey human authorization."
                 )
-        except ValueError:
-            raise
-        except Exception as e:
-            if "Security Violation" in str(e):
-                raise
     return resolved
 
 
@@ -230,7 +245,13 @@ def read_multiple_files(
         if remaining_chars <= 0:
             sections.append("[Output limit reached; read the remaining files in another call.]")
             break
-        target = _resolve_workspace_path(fp)
+        try:
+            target = _resolve_workspace_path(fp)
+        except ValueError as err:
+            section = f"=== {fp} ===\n[Security Violation: {err}]"
+            sections.append(section[:remaining_chars])
+            remaining_chars -= len(section)
+            continue
         if not target.exists() or not target.is_file():
             section = f"=== {fp} ===\n[File does not exist: {target}]"
             sections.append(section[:remaining_chars])
@@ -266,7 +287,8 @@ def read_multiple_files(
 
 @SkillRegistry.register(
     name="write_file",
-    description="Creates a new file or completely overwrites an existing file in the workspace with new content."
+    description="Creates a new file or completely overwrites an existing file in the workspace with new content.",
+    risk_level=2,
 )
 def write_file(file_path: str, content: str, overwrite: bool = False) -> str:
     """Writes content to a file in the workspace."""
@@ -296,7 +318,8 @@ def write_file(file_path: str, content: str, overwrite: bool = False) -> str:
 
 @SkillRegistry.register(
     name="patch_file",
-    description="Surgically replaces a unique code snippet with new code inside an existing file."
+    description="Surgically replaces a unique code snippet with new code inside an existing file.",
+    risk_level=2,
 )
 def patch_file(file_path: str, target_snippet: str, replacement_snippet: str) -> str:
     """Replaces a unique target_snippet in a file with replacement_snippet."""
