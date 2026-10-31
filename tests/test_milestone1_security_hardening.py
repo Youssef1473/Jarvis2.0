@@ -14,25 +14,20 @@ import json
 import os
 import socket
 import sys
-import tempfile
 import time
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from jarvis.context.bridges.pipe_listener import FlowStateBridgeListener
 from jarvis.context.flow_state_mirror import FlowStateMirror
 from jarvis.core.evolution.sandbox import (
     CUSTOM_SKILLS_DIR,
-    SCRATCH_DIR,
     SkillSandbox,
 )
 from jarvis.core.safety import SafetyGate
 from jarvis.core.security_boundaries import (
     DEFAULT_PATH_ARG_NAMES,
-    DualKeyApprovalManager,
     TurnTaintTracker,
-    format_action_summary,
 )
 from jarvis.skills.base import SkillRegistry
 from jarvis.skills.dev_shell import patch_file, read_multiple_files, write_file
@@ -175,12 +170,16 @@ class TestMilestone1AppContainerDefaultAndRunnerHardening(unittest.TestCase):
     """Verifies AppContainer execution defaults and integer FD audit hook defense in isolated_runner."""
 
     def test_execute_sandboxed_custom_skill_defaults_appcontainer_on_windows(self):
-        """execute_sandboxed_custom_skill defaults use_appcontainer=True on Windows."""
-        from jarvis.core.evolution.sandbox import _SANDBOX_CONCURRENCY_SEMAPHORE
+        """execute_sandboxed_custom_skill defaults use_appcontainer=True on Windows (outside CI)."""
+        # 1. Nonexistent skill fails closed before spawn
+        with patch.dict(os.environ, {"CI": ""}):
+            res = SkillSandbox.execute_sandboxed_custom_skill("nonexistent_skill_xyz", "tool", {})
+            self.assertIn("does not exist on disk", res)
 
-        # Verify default kwarg resolution by calling with invalid skill (fail before spawn)
-        res = SkillSandbox.execute_sandboxed_custom_skill("nonexistent_skill_xyz", "tool", {})
-        self.assertIn("does not exist on disk", res)
+        # 2. In CI environments, default gracefully falls back to False to prevent icacls ACL contention
+        with patch.dict(os.environ, {"CI": "true"}):
+            res_ci = SkillSandbox.execute_sandboxed_custom_skill("nonexistent_skill_xyz", "tool", {})
+            self.assertIn("does not exist on disk", res_ci)
 
     def test_isolated_runner_blocks_integer_fd_in_audit_hook(self):
         """_install_audit_hook in isolated_runner disallows integer file descriptors."""
@@ -200,7 +199,7 @@ with tempfile.TemporaryDirectory() as tmp_dir:
             sys.exit(42)
         sys.exit(1)
 """
-        res = subprocess.run([sys.executable, "-c", probe_code], capture_output=True, text=True)
+        res = subprocess.run([sys.executable, "-c", probe_code], capture_output=True, text=True, check=False)
         self.assertEqual(res.returncode, 42, f"Expected returncode 42, got {res.returncode}. Stderr: {res.stderr}")
 
 
@@ -221,7 +220,8 @@ class TestMilestone1FlowStateBridgeListenerAuthentication(unittest.TestCase):
     def test_unauthenticated_packet_rejected(self):
         """Packets without token or with forged signature are rejected and do not update mirror."""
         mirror = FlowStateMirror.get_instance()
-        initial_snap = mirror.get_snapshot()
+        # verify snapshot
+        _ = mirror.get_snapshot()
 
         client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:

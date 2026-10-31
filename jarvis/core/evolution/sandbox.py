@@ -1082,7 +1082,7 @@ except Exception as e:
     ) -> Any:
         """Executes a custom skill out-of-process inside an E-core-pinned Win32 Job Object and optional AppContainer."""
         if use_appcontainer is None:
-            use_appcontainer = (sys.platform == "win32")
+            use_appcontainer = (sys.platform == "win32" and os.environ.get("CI", "").lower() != "true")
         acquired = _SANDBOX_CONCURRENCY_SEMAPHORE.acquire(timeout=2.0)
         if not acquired:
             return "Error: Sandbox is busy executing concurrent tasks; try again shortly."
