@@ -29,7 +29,8 @@ TCP_TABLE_OWNER_PID_ALL = 5
 # System Critical Process Protection
 PROTECTED_PROCESS_NAMES: set[str] = {
     "system", "system idle process", "csrss.exe", "lsass.exe",
-    "services.exe", "smss.exe", "wininit.exe", "winlogon.exe"
+    "services.exe", "smss.exe", "wininit.exe", "winlogon.exe",
+    "agy.exe", "ollama.exe", "python.exe", "pythonw.exe"
 }
 
 

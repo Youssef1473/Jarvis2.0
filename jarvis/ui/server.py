@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import collections
+import concurrent.futures
 import json
 import logging
 import os
@@ -1029,6 +1030,9 @@ class JarvisUIService:
         self._csp_report_timestamps: collections.deque = collections.deque(maxlen=100)
         self._csp_report_lock = threading.Lock()
         self._csp_dedup_cache: dict[str, float] = {}
+        self._command_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="Jarvis-WSCommand"
+        )
         try:
             from jarvis.core.security_boundaries import DualKeyApprovalManager
             DualKeyApprovalManager.get_instance().set_approval_handler(self.handle_approval_request)
@@ -1043,6 +1047,11 @@ class JarvisUIService:
     @property
     def connected_clients(self) -> set[WebSocket]:
         return self.telemetry_manager.connected_clients
+
+    def get_authenticated_url(self) -> str:
+        """Returns the HUD URL formatted with a single-use bootstrap token fragment."""
+        token = create_bootstrap_token(ttl_seconds=60.0)
+        return f"http://{self.host}:{self.port}/#bootstrap={token}"
 
     @classmethod
     def get_instance(cls) -> Optional["JarvisUIService"]:
@@ -2124,7 +2133,7 @@ class JarvisUIService:
                     if msg_type == "command":
                         cmd = payload.get("text", "").strip()
                         if cmd and self.orchestrator:
-                            threading.Thread(target=self.orchestrator.handle_command, args=(cmd,), daemon=True).start()
+                            self._command_executor.submit(self.orchestrator.handle_command, cmd)
 
                     elif msg_type == "action":
                         action = payload.get("action", "")
@@ -2325,6 +2334,11 @@ class JarvisUIService:
                 logger.warning("Jarvis HUD Web Server thread did not terminate within %.1fs", timeout)
                 return False
             self._thread = None
+        if hasattr(self, "_command_executor") and self._command_executor:
+            try:
+                self._command_executor.shutdown(wait=False)
+            except Exception:
+                pass
         self._server = None
         self._stopped_event.set()
         try:

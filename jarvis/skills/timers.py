@@ -67,16 +67,24 @@ def _announce_timer_completion(label: str, duration_str: str):
     except Exception as e:
         logger.debug(f"Chime playback notice: {e}")
 
+    co_inited = False
     try:
         import pythoncom
         import win32com.client
         pythoncom.CoInitialize()
+        co_inited = True
         sapi = win32com.client.Dispatch("SAPI.SpVoice")
         sapi.Rate = 1
         spoken_msg = f"Sir, your timer for {label} ({duration_str}) has finished."
         sapi.Speak(spoken_msg, 1)  # 1 = Async speak
     except Exception as e:
         logger.warning(f"Timer speech announcement notice: {e}")
+    finally:
+        if co_inited:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
 
 def _timer_worker(timer_id: str, label: str, duration_sec: int, cancel_event: threading.Event):

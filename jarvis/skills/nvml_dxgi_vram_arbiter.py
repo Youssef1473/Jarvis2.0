@@ -147,13 +147,22 @@ def audit_vram_and_thermal_budget(reclaim_if_pressured: bool = True) -> dict[str
 
         reclaimed_action = None
         if reclaim_if_pressured and free_mb < 650.0:
+            actions = []
             try:
                 import torch
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                    reclaimed_action = "flushed_cuda_allocator_cache"
-            except ImportError:
+                    actions.append("flushed_cuda_allocator_cache")
+            except (ImportError, Exception):
                 pass
+            try:
+                import gc
+                gc.collect()
+                actions.append("invoked_host_gc")
+            except Exception:
+                pass
+            if actions:
+                reclaimed_action = ";".join(actions)
 
         return {
             "status": "ok",

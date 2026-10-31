@@ -42,8 +42,16 @@ class WinEventFramePython:
 
 class UIADeltaWorker:
     """Background SPSC consumer reading WinEvent frames and updating live UIA state."""
+    _instance: Optional["UIADeltaWorker"] = None
+
+    @classmethod
+    def get_instance(cls) -> "UIADeltaWorker":
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
 
     def __init__(self, shm_name: str = SHM_NAME):
+        UIADeltaWorker._instance = self
         self.shm_name = shm_name
         self.running = False
         self._thread: threading.Thread | None = None
@@ -121,6 +129,14 @@ class UIADeltaWorker:
                 self.active_hwnd = hwnd
                 self.active_title = title
                 self.events_processed += 1
+
+            # Evict dead COM controls on EVENT_OBJECT_DESTROY (0x8001)
+            if event_id == 0x8001 and hwnd:
+                try:
+                    from jarvis.vision.som_grounding import MarkRegistry
+                    MarkRegistry.evict_for_hwnd(hwnd)
+                except Exception:
+                    pass
 
             read_idx += 1
             count += 1

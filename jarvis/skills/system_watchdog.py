@@ -41,15 +41,23 @@ def _speak_watchdog_alert(alert_message: str):
     except Exception as e:
         logger.debug(f"Watchdog chime notice: {e}")
 
+    co_inited = False
     try:
         import pythoncom
         import win32com.client
         pythoncom.CoInitialize()
+        co_inited = True
         sapi = win32com.client.Dispatch("SAPI.SpVoice")
         sapi.Rate = 1
         sapi.Speak(f"System alert, Sir: {alert_message}", 1)
     except Exception as e:
         logger.warning(f"Watchdog speech notice: {e}")
+    finally:
+        if co_inited:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
 
 def _query_gpu_telemetry() -> dict[str, Any] | None:

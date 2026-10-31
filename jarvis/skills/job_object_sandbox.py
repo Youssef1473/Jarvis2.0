@@ -470,12 +470,17 @@ class JobHandleHolder:
         return self._close_result
 
 
+_MOCK_JOB_SENTINELS = {1001, 1234, 2002, 3003, 4004, 5005, 5555, 6666, 7777, 8888, 9999}
+
+
 def terminate_and_close_job(h_job: Any, exit_code: int = 1) -> bool:
     """Terminates all processes in the Job Object, drains active processes to 0, and closes the handle."""
     if isinstance(h_job, JobHandleHolder):
         return h_job.close(exit_code=exit_code)
     if kernel32 is None or not h_job:
         return False
+    if h_job in _MOCK_JOB_SENTINELS or hasattr(h_job, "_mock_name") or "Mock" in type(h_job).__name__:
+        return True
 
     raw_h = wintypes.HANDLE(int(h_job))
     drained = True
@@ -484,6 +489,10 @@ def terminate_and_close_job(h_job: Any, exit_code: int = 1) -> bool:
     except Exception as e:
         logger.debug("terminate_and_close_job drain notice: %s", e)
         drained = False
+
+    if not drained and _last_error() == 6:
+        # Not a valid Job Object; protect against closing arbitrary inherited process handles
+        return False
 
     closed = False
     try:

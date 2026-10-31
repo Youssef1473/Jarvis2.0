@@ -29,6 +29,15 @@ def is_uia_supported() -> bool:
     return sys.platform == "win32"
 
 
+def get_active_uia_delta_worker():
+    """Returns the active UIADeltaWorker instance if initialized."""
+    try:
+        from jarvis.desktop.uia_delta_worker import UIADeltaWorker
+        return UIADeltaWorker.get_instance()
+    except Exception:
+        return None
+
+
 def is_hwnd_responsive(hwnd: int, timeout_ms: int = 50) -> bool:
     """Pre-probes target HWND to verify message pump responsiveness in <1ms.
 
