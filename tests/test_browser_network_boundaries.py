@@ -18,6 +18,7 @@ Contains two distinct test suites:
    - Verifies Chromium accepts authorized Origin headers and clients without Origin.
    - Verifies _ACTIVE_TAB_SESSIONS persistence keeps network guard active across operations.
 """
+import contextlib
 import http.server
 import json
 import os
@@ -640,26 +641,46 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
 
         class BlockedHandler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args): pass
+            def do_HEAD(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(b"BLOCKED_RESPONSE")))
+                self.send_header("Connection", "close")
+                self.end_headers()
             def do_GET(self):
                 cls.blocked_hits.append(self.path)
+                body = b"BLOCKED_RESPONSE"
                 self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
                 self.end_headers()
-                self.wfile.write(b"BLOCKED_RESPONSE")
+                self.wfile.write(body)
 
         class AllowedHandler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args): pass
-            def do_GET(self):
-                cls.allowed_hits.append(self.path)
+            def do_HEAD(self):
+                body = b"<html><body><h1>Allowed Page</h1></body></html>"
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
                 self.end_headers()
-                self.wfile.write(b"<html><body><h1>Allowed Page</h1></body></html>")
+            def do_GET(self):
+                cls.allowed_hits.append(self.path)
+                body = b"<html><body><h1>Allowed Page</h1></body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(body)
 
-        cls.blocked_srv = http.server.HTTPServer(("127.0.0.1", TEST_BLOCKED_PORT), BlockedHandler)
+        cls.blocked_srv = http.server.ThreadingHTTPServer(("127.0.0.1", TEST_BLOCKED_PORT), BlockedHandler)
         cls.t_blocked = threading.Thread(target=lambda: cls.blocked_srv.serve_forever(poll_interval=0.05), daemon=True)
         cls.t_blocked.start()
 
-        cls.allowed_srv = http.server.HTTPServer(("127.0.0.1", 0), AllowedHandler)
+        cls.allowed_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), AllowedHandler)
         cls.allowed_port = cls.allowed_srv.server_port
         cls.t_allowed = threading.Thread(target=lambda: cls.allowed_srv.serve_forever(poll_interval=0.05), daemon=True)
         cls.t_allowed.start()
@@ -702,17 +723,13 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             except (subprocess.SubprocessError, OSError):
                 pass
         if hasattr(cls, "blocked_srv"):
-            try:
+            with contextlib.suppress(Exception):
                 cls.blocked_srv.shutdown()
                 cls.blocked_srv.server_close()
-            except Exception:
-                pass
         if hasattr(cls, "allowed_srv"):
-            try:
+            with contextlib.suppress(Exception):
                 cls.allowed_srv.shutdown()
                 cls.allowed_srv.server_close()
-            except Exception:
-                pass
         if hasattr(cls, "temp_dir") and os.path.exists(cls.temp_dir):
             shutil.rmtree(cls.temp_dir, ignore_errors=True)
 

@@ -121,7 +121,7 @@ class TranscriptDistiller:
             import sqlite_vec
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
-        except Exception as e:
+        except (sqlite3.OperationalError, ImportError, AttributeError) as e:
             logger.warning("TranscriptDistiller: sqlite_vec extension unavailable (%s); semantic clustering degraded.", e)
         return conn
 
@@ -156,15 +156,12 @@ class TranscriptDistiller:
                 (str(last_id),),
             )
 
-        try:
-            from jarvis.core.memory.sqlite_base import SingleWriterActor
-            SingleWriterActor.get_or_create(self.db_path).execute_write(_write)
-        except Exception:
-            conn = self._connect(read_only=False)
-            try:
-                _write(conn)
-            finally:
-                conn.close()
+        from jarvis.core.memory.sqlite_base import SingleWriterActor
+        SingleWriterActor.execute_or_fallback(
+            self.db_path,
+            _write,
+            lambda: self._connect(read_only=False),
+        )
 
     def get_unprocessed_interactions(
         self, limit: int = 25
@@ -300,7 +297,7 @@ class TranscriptDistiller:
                     m = re.search(r"(\{.*\})", clean_json, re.DOTALL)
                     if m:
                         extracted_data = json.loads(m.group(1))
-        except Exception as ag_err:
+        except (json.JSONDecodeError, KeyError, ValueError, RuntimeError) as ag_err:
             logger.debug("AntigravityBridge trait distillation notice: %s", ag_err)
 
         # Adjustment 5: Check physical activity immediately after LLM invocation
@@ -329,7 +326,7 @@ class TranscriptDistiller:
                 m = re.search(r"(\{.*\})", clean_json, re.DOTALL)
                 if m:
                     extracted_data = json.loads(m.group(1))
-            except Exception as ol_err:
+            except (json.JSONDecodeError, KeyError, ValueError, RuntimeError) as ol_err:
                 logger.debug("Local Ollama trait distillation notice: %s", ol_err)
 
         if not extracted_data:
@@ -544,7 +541,7 @@ class TranscriptDistiller:
                 is_user_active_fn=is_user_active_fn,
                 extractor_fn=extractor_fn,
             )
-        except Exception as ex:
+        except Exception as ex:  # noqa: BLE001 - Extraction failure must be isolated without killing background consolidation
             # Adjustment 4: Never advance cursor on an LLM exception
             logger.warning("Transcript distillation LLM error; cursor NOT advanced: %s", ex)
             return {"status": "extraction_error", "error": str(ex), "turns_processed": 0, "traits_extracted": 0}
