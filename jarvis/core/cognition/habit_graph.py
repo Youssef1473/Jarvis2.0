@@ -116,16 +116,7 @@ class TemporalHabitGraph:
                 ON action_transitions(weight);
             """)
 
-        try:
-            SingleWriterActor.get_or_create(self.db_path).execute_write(_write)
-        except Exception as e:
-            logger.debug("HabitGraph _init_db note: %s", e)
-            conn = self._get_connection()
-            try:
-                with conn:
-                    _write(conn)
-            finally:
-                conn.close()
+        SingleWriterActor.execute_or_fallback(self.db_path, _write, self._get_connection)
 
     @staticmethod
     def get_time_of_day_bin(hour: int | None = None) -> str:
@@ -244,7 +235,7 @@ class TemporalHabitGraph:
 
         try:
             SingleWriterActor.get_or_create(self.db_path).execute_write(_write)
-        except Exception as e:
+        except (sqlite3.Error, RuntimeError, TimeoutError) as e:
             logger.debug("Error recording habit transition via actor: %s", e)
 
     def predict_next_action(
@@ -418,8 +409,8 @@ class TemporalHabitGraph:
         if self._worker_thread and self._worker_thread.is_alive():
             try:
                 self._write_queue.put_nowait(None)
-            except Exception:
-                pass
+            except (queue.Full, ValueError) as q_err:
+                logger.debug("Write queue teardown note: %s", q_err)
             self._worker_thread.join(timeout=1.0)
             self._worker_thread = None
 
@@ -435,5 +426,5 @@ class TemporalHabitGraph:
                 self._write_queue.task_done()
             except queue.Empty:
                 continue
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("HabitGraph writer worker exception: %s", e)

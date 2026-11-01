@@ -64,7 +64,7 @@ class MemoryManager(
         self.db_path = base_dir / db_rel_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.vector_engine = VectorMemoryEngine()
-        self._writer_actor = SingleWriterActor(self.db_path)
+        self._writer_actor = SingleWriterActor.get_or_create(self.db_path)
         self._ro_vector_pool: Any | None = None
         self._ro_pool_lock = threading.Lock()
         self._init_db()

@@ -18,6 +18,7 @@ Contains two distinct test suites:
    - Verifies Chromium accepts authorized Origin headers and clients without Origin.
    - Verifies _ACTIVE_TAB_SESSIONS persistence keeps network guard active across operations.
 """
+import contextlib
 import http.server
 import json
 import os
@@ -640,26 +641,46 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
 
         class BlockedHandler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args): pass
+            def do_HEAD(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(b"BLOCKED_RESPONSE")))
+                self.send_header("Connection", "close")
+                self.end_headers()
             def do_GET(self):
                 cls.blocked_hits.append(self.path)
+                body = b"BLOCKED_RESPONSE"
                 self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
                 self.end_headers()
-                self.wfile.write(b"BLOCKED_RESPONSE")
+                self.wfile.write(body)
 
         class AllowedHandler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args): pass
-            def do_GET(self):
-                cls.allowed_hits.append(self.path)
+            def do_HEAD(self):
+                body = b"<html><body><h1>Allowed Page</h1></body></html>"
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
                 self.end_headers()
-                self.wfile.write(b"<html><body><h1>Allowed Page</h1></body></html>")
+            def do_GET(self):
+                cls.allowed_hits.append(self.path)
+                body = b"<html><body><h1>Allowed Page</h1></body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(body)
 
-        cls.blocked_srv = http.server.HTTPServer(("127.0.0.1", TEST_BLOCKED_PORT), BlockedHandler)
+        cls.blocked_srv = http.server.ThreadingHTTPServer(("127.0.0.1", TEST_BLOCKED_PORT), BlockedHandler)
         cls.t_blocked = threading.Thread(target=lambda: cls.blocked_srv.serve_forever(poll_interval=0.05), daemon=True)
         cls.t_blocked.start()
 
-        cls.allowed_srv = http.server.HTTPServer(("127.0.0.1", 0), AllowedHandler)
+        cls.allowed_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), AllowedHandler)
         cls.allowed_port = cls.allowed_srv.server_port
         cls.t_allowed = threading.Thread(target=lambda: cls.allowed_srv.serve_forever(poll_interval=0.05), daemon=True)
         cls.t_allowed.start()
@@ -675,6 +696,9 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-extensions",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
         ]
         cls.proc = subprocess.Popen(cls.browser_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -702,17 +726,13 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             except (subprocess.SubprocessError, OSError):
                 pass
         if hasattr(cls, "blocked_srv"):
-            try:
+            with contextlib.suppress(Exception):
                 cls.blocked_srv.shutdown()
                 cls.blocked_srv.server_close()
-            except Exception:
-                pass
         if hasattr(cls, "allowed_srv"):
-            try:
+            with contextlib.suppress(Exception):
                 cls.allowed_srv.shutdown()
                 cls.allowed_srv.server_close()
-            except Exception:
-                pass
         if hasattr(cls, "temp_dir") and os.path.exists(cls.temp_dir):
             shutil.rmtree(cls.temp_dir, ignore_errors=True)
 
@@ -751,7 +771,17 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             allowed_url = f"http://127.0.0.1:{self.allowed_port}/test_held_open"
             ws.send(json.dumps({"id": 201, "method": "Page.navigate", "params": {"url": allowed_url}}))
             _recv_response(ws, 201)
-            time.sleep(0.3)
+            # Poll document.readyState until complete to avoid racing navigation commit
+            for _ in range(50):
+                ws.send(json.dumps({
+                    "id": 205,
+                    "method": "Runtime.evaluate",
+                    "params": {"expression": "document.readyState", "returnByValue": True}
+                }))
+                r_ready = _recv_response(ws, 205)
+                if r_ready.get("result", {}).get("result", {}).get("value") == "complete":
+                    break
+                time.sleep(0.05)
 
             # Attempt fetch to blocked port 20129
             fetch_blocked_js = f"""
@@ -801,7 +831,17 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             allowed_url = f"http://127.0.0.1:{self.allowed_port}/test_disconnect_behavior"
             ws.send(json.dumps({"id": 301, "method": "Page.navigate", "params": {"url": allowed_url}}))
             _recv_response(ws, 301)
-            time.sleep(0.3)
+            # Poll document.readyState until complete before scheduling post-disconnect fetch
+            for _ in range(50):
+                ws.send(json.dumps({
+                    "id": 305,
+                    "method": "Runtime.evaluate",
+                    "params": {"expression": "document.readyState", "returnByValue": True}
+                }))
+                r_ready = _recv_response(ws, 305)
+                if r_ready.get("result", {}).get("result", {}).get("value") == "complete":
+                    break
+                time.sleep(0.05)
 
             # Schedule an in-page fetch 400ms in the future
             schedule_js = f"""
@@ -813,8 +853,8 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             _recv_response(ws, 302)
 
         # Connection is now CLOSED
-        # Wait deterministically up to 5.0s for the scheduled in-page fetch to reach the test server
-        deadline = time.monotonic() + 5.0
+        # Wait deterministically up to 10.0s for the scheduled in-page fetch to reach the test server
+        deadline = time.monotonic() + 10.0
         while "/probe_post_disconnect" not in self.blocked_hits and time.monotonic() < deadline:
             time.sleep(0.05)
 

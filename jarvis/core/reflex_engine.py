@@ -104,15 +104,14 @@ class DynamicReflexEngine:
             conn.close()
 
     def execute_write(self, func: Callable[[sqlite3.Connection], Any], timeout: float = 30.0) -> Any:
-        """Executes a write operation serialized through SingleWriterActor."""
-        try:
-            from jarvis.core.memory.sqlite_base import SingleWriterActor
-            return SingleWriterActor.get_or_create(self.db_path).execute_write(func, timeout=timeout)
-        except Exception:
-            with self._get_connection() as conn:
-                res = func(conn)
-                conn.commit()
-                return res
+        """Executes a write operation serialized through SingleWriterActor with safe pre-queue fallback."""
+        from jarvis.core.memory.sqlite_base import SingleWriterActor
+        return SingleWriterActor.execute_or_fallback(
+            self.db_path,
+            func,
+            self._get_connection,
+            timeout=timeout,
+        )
 
     def _init_db(self):
         """Initializes learned_habits schema in SQLite."""
@@ -149,7 +148,7 @@ class DynamicReflexEngine:
                     for row in cursor.fetchall():
                         try:
                             kwargs = json.loads(row["skill_kwargs"])
-                        except Exception:
+                        except (json.JSONDecodeError, TypeError, ValueError):
                             kwargs = {}
                         is_compound = row["skill_name"] == "__compound__"
                         self._cache[row["trigger_phrase"]] = {
@@ -175,11 +174,11 @@ class DynamicReflexEngine:
                                     "macro_name": row["macro_name"],
                                     "regex": compiled_pat,
                                 }
-                            except Exception:
-                                pass
-                    except sqlite3.OperationalError:
-                        pass
-            except Exception as e:
+                            except re.error as re_err:
+                                logger.debug("Macro regex compilation note: %s", re_err)
+                    except sqlite3.OperationalError as db_err:
+                        logger.debug("Compiled macros query note: %s", db_err)
+            except (sqlite3.Error, OSError) as e:
                 logger.error(f"Error loading learned habits cache: {e}")
 
     def check_habit(self, query: str) -> dict[str, Any] | None:
@@ -279,7 +278,7 @@ class DynamicReflexEngine:
 
             logger.info(f"Learned habit promoted: '{norm_key}' -> {skill_name}({clean_kwargs}) [Turn 1: {turn1_latency_ms:.1f}ms]")
             return True
-        except Exception as e:
+        except (sqlite3.Error, RuntimeError, TimeoutError, ValueError) as e:
             logger.warning(f"Failed to record learned habit: {e}")
             return False
 
@@ -350,7 +349,7 @@ class DynamicReflexEngine:
 
             logger.info(f"Learned compound habit promoted: '{norm_key}' -> {len(clean_steps)} steps [Turn 1: {turn1_latency_ms:.1f}ms]")
             return True
-        except Exception as e:
+        except (sqlite3.Error, RuntimeError, TimeoutError, ValueError) as e:
             logger.warning(f"Failed to record compound habit: {e}")
             return False
 
@@ -373,7 +372,7 @@ class DynamicReflexEngine:
                         h["hit_count"] = h.get("hit_count", 0) + 1
                         h["reflex_latency_ms"] = round(reflex_latency_ms, 2)
                         break
-        except Exception as e:
+        except (sqlite3.Error, RuntimeError, TimeoutError, KeyError) as e:
             logger.debug(f"Error updating habit hit telemetry: {e}")
 
     def list_learned_habits(self) -> list[dict[str, Any]]:
