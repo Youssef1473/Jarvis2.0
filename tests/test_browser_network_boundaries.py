@@ -696,6 +696,9 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-extensions",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
         ]
         cls.proc = subprocess.Popen(cls.browser_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -768,7 +771,17 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             allowed_url = f"http://127.0.0.1:{self.allowed_port}/test_held_open"
             ws.send(json.dumps({"id": 201, "method": "Page.navigate", "params": {"url": allowed_url}}))
             _recv_response(ws, 201)
-            time.sleep(0.3)
+            # Poll document.readyState until complete to avoid racing navigation commit
+            for _ in range(50):
+                ws.send(json.dumps({
+                    "id": 205,
+                    "method": "Runtime.evaluate",
+                    "params": {"expression": "document.readyState", "returnByValue": True}
+                }))
+                r_ready = _recv_response(ws, 205)
+                if r_ready.get("result", {}).get("result", {}).get("value") == "complete":
+                    break
+                time.sleep(0.05)
 
             # Attempt fetch to blocked port 20129
             fetch_blocked_js = f"""
@@ -818,7 +831,17 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             allowed_url = f"http://127.0.0.1:{self.allowed_port}/test_disconnect_behavior"
             ws.send(json.dumps({"id": 301, "method": "Page.navigate", "params": {"url": allowed_url}}))
             _recv_response(ws, 301)
-            time.sleep(0.3)
+            # Poll document.readyState until complete before scheduling post-disconnect fetch
+            for _ in range(50):
+                ws.send(json.dumps({
+                    "id": 305,
+                    "method": "Runtime.evaluate",
+                    "params": {"expression": "document.readyState", "returnByValue": True}
+                }))
+                r_ready = _recv_response(ws, 305)
+                if r_ready.get("result", {}).get("result", {}).get("value") == "complete":
+                    break
+                time.sleep(0.05)
 
             # Schedule an in-page fetch 400ms in the future
             schedule_js = f"""
@@ -830,8 +853,8 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
             _recv_response(ws, 302)
 
         # Connection is now CLOSED
-        # Wait deterministically up to 5.0s for the scheduled in-page fetch to reach the test server
-        deadline = time.monotonic() + 5.0
+        # Wait deterministically up to 10.0s for the scheduled in-page fetch to reach the test server
+        deadline = time.monotonic() + 10.0
         while "/probe_post_disconnect" not in self.blocked_hits and time.monotonic() < deadline:
             time.sleep(0.05)
 
