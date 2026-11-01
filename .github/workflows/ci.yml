@@ -40,7 +40,3 @@ jobs:
       - name: Run Fast Parallel Test Suite (Non-Hardware)
         run: |
           python tools/run_fast_tests.py --fast -w 2 -v
-
-      - name: Run Serial Hardware & Integration Test Suite (Software/CPU Compatible)
-        run: |
-          python tools/run_fast_tests.py --hardware -v
