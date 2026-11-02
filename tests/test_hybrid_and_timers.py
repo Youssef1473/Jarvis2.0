@@ -35,7 +35,9 @@ def test_spoken_timers():
     print("List result:\n", list_res)
     assert "Coffee Break" in list_res
 
-    # Test canceling specific timer
+    # Test canceling specific timer in clean turn
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().reset_turn()
     cancel_res = SkillRegistry.execute("cancel_timer", label="Coffee Break")
     print("Cancel result:", cancel_res)
     assert "cancelled" in cancel_res.lower()

@@ -41,6 +41,11 @@ def inspect_ram_hogs() -> str:
         else:
             lines.append(f"• {proc_name.title()}: {int(mb)} MB")
 
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().mark_tainted(
+        source="os_telemetry:inspect_ram_hogs",
+        metadata={"count": len(sorted_hogs)},
+    )
     return "Top Memory Consumers, Sir:\n" + "\n".join(lines)
 
 

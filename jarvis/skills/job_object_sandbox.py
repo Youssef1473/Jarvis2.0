@@ -1219,6 +1219,18 @@ def run_job_sandboxed_process(
         else:
             status = "ok" if proc.returncode == 0 else "failed"
 
+        # CORE-SEC-03B: Establish untrusted subprocess output provenance before delivering result to caller/LLM
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        cmd_meta = " ".join(command[:3]) if isinstance(command, list) else str(command)[:64]
+        TurnTaintTracker.get_instance().mark_tainted(
+            source="subprocess_output:run_job_sandboxed_process",
+            metadata={
+                "command": cmd_meta,
+                "status": status,
+                "exit_code": proc.returncode,
+            }
+        )
+
         return {
             "status": status,
             "exit_code": proc.returncode,

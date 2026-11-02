@@ -264,6 +264,27 @@ def _get_active_or_matching_tab(tab_name_or_url: str = "") -> dict[str, Any] | N
     return tabs[0]
 
 
+def _record_browser_dom_taint(
+    tool_name: str,
+    element_name: str,
+    tab_or_url: str = "",
+    role: str = "",
+) -> None:
+    """Establishes DOM provenance and taints the active turn before delivering DOM-derived strings."""
+    from jarvis.core.security_boundaries import TurnTaintTracker
+
+    tracker = TurnTaintTracker.get_instance()
+    source_id = f"browser_dom:{tool_name}"
+    meta: dict[str, Any] = {}
+    if element_name:
+        meta["element_name"] = element_name[:64]
+    if role:
+        meta["role"] = role[:32]
+    if tab_or_url:
+        meta["tab"] = tab_or_url[:64]
+    tracker.mark_tainted(source=source_id, metadata=meta)
+
+
 @SkillRegistry.register(
     name="click_web_element_semantic",
     description="Clicks a web button, tab, link, or input across Shadow DOMs using CDP Accessibility Trees and layout centroid coordinates with physical post-action verification."
@@ -289,12 +310,15 @@ def click_web_element_semantic(
         with connect(ws_url, open_timeout=0.3, close_timeout=0.2) as ws:
             target = locate_semantic_target(ws, target_name, role_filter=role_filter if role_filter else None)
             if not target:
-                return f"Could not locate an accessible web element matching '{target_name}' in tab '{target_tab.get('title')}', Sir."
+                tab_desc = f"tab '{tab_name_or_url}'" if tab_name_or_url else "active tab"
+                return f"Could not locate an accessible web element matching '{target_name}' in {tab_desc}, Sir."
 
             if target.is_canvas_opaque:
+                _record_browser_dom_taint("click_web_element_semantic", target.name, tab_name_or_url, role=target.role)
                 return f"Element '{target.name}' is hosted inside an opaque <canvas> surface, Sir. Recommending visual Set-of-Mark coordinate inspection."
 
             report = actuate_with_verification(ws, target, click=True, cancel_token=cancel_token)
+            _record_browser_dom_taint("click_web_element_semantic", target.name, tab_name_or_url, role=target.role)
             if report["status"] == "verified":
                 return f"Successfully clicked accessible element '{target.name}' [{target.role}] at layout centroid {target.center_x, target.center_y} with verified DOM focus shift, Sir."
             return f"Clicked element '{target.name}' at {target.center_x, target.center_y}, Sir (DOM focus shift unverified; may have triggered modal navigation)."
@@ -332,9 +356,11 @@ def type_into_web_element_semantic(
                 target = locate_semantic_target(ws, target_name)
 
             if not target:
-                return f"Could not locate an accessible input element matching '{target_name}' in tab '{target_tab.get('title')}', Sir."
+                tab_desc = f"tab '{tab_name_or_url}'" if tab_name_or_url else "active tab"
+                return f"Could not locate an accessible input element matching '{target_name}' in {tab_desc}, Sir."
 
             actuate_with_verification(ws, target, text_to_type=text, click=True, cancel_token=cancel_token)
+            _record_browser_dom_taint("type_into_web_element_semantic", target.name, tab_name_or_url, role=target.role)
             return f"Successfully typed text into accessible field '{target.name}' [{target.role}] at {target.center_x, target.center_y} with closed-loop verification, Sir."
 
     except Exception as err:

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 from collections.abc import Callable
@@ -21,14 +22,17 @@ logger = logging.getLogger("Jarvis.Memory.InteractionMemory")
 class InteractionMemoryMixin:
     """Provides interaction turn recording, auto-learning heuristics, and episodic reflection."""
 
-    def log_interaction(self, user_input: str, jarvis_reply: str, tool_calls: str | None = None):
+    def log_interaction(self, user_input: str, jarvis_reply: str, tool_calls: str | None = None, source_provenance: str | None = None):
         """Logs a conversation turn serialized through SingleWriterActor."""
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        source_provenance = TurnTaintTracker.resolve_write_provenance(source_provenance, default_if_clean="user_supplied")
+
         def _write(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO interactions (user_input, jarvis_reply, tool_calls)
-                VALUES (?, ?, ?)
-            """, (user_input, jarvis_reply, tool_calls or ""))
+                INSERT INTO interactions (user_input, jarvis_reply, tool_calls, source_provenance)
+                VALUES (?, ?, ?, ?)
+            """, (user_input, jarvis_reply, tool_calls or "", source_provenance))
 
         self.execute_write(_write)
 
@@ -37,7 +41,7 @@ class InteractionMemoryMixin:
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT user_input, jarvis_reply, tool_calls, created_at
+                SELECT id, user_input, jarvis_reply, tool_calls, source_provenance, created_at
                 FROM interactions
                 ORDER BY id DESC
                 LIMIT ?
@@ -53,7 +57,7 @@ class InteractionMemoryMixin:
                 with self._get_ro_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
-                        SELECT i.id, i.user_input, i.jarvis_reply, i.tool_calls, i.created_at
+                        SELECT i.id, i.user_input, i.jarvis_reply, i.tool_calls, i.source_provenance, i.created_at
                         FROM interactions_fts inf
                         JOIN interactions i ON inf.rowid = i.id
                         WHERE interactions_fts MATCH ?
@@ -79,7 +83,7 @@ class InteractionMemoryMixin:
 
         where_clause = " OR ".join(conditions)
         sql = f"""
-            SELECT id, user_input, jarvis_reply, tool_calls, created_at
+            SELECT id, user_input, jarvis_reply, tool_calls, source_provenance, created_at
             FROM interactions
             WHERE {where_clause}
             ORDER BY id DESC
@@ -97,7 +101,7 @@ class InteractionMemoryMixin:
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, user_input, jarvis_reply, tool_calls, created_at
+                SELECT id, user_input, jarvis_reply, tool_calls, source_provenance, created_at
                 FROM interactions
                 ORDER BY id DESC
                 LIMIT 150
@@ -294,6 +298,7 @@ class InteractionMemoryMixin:
         trigger_context: str,
         failure_signature: str,
         lesson: str,
+        source_provenance: str | None = None,
     ) -> int:
         """Records an episodic failure post-mortem or heuristic lesson in SQLite WAL."""
         t_clean = sanitize_memory_taint((tool_name or "").strip())
@@ -303,6 +308,9 @@ class InteractionMemoryMixin:
 
         if not t_clean or not l_clean:
             return 0
+
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        source_provenance = TurnTaintTracker.resolve_write_provenance(source_provenance, default_if_clean="unknown")
 
         # Step 1: Pre-compute ONNX dense embedding OUTSIDE write transaction
         blob = None
@@ -319,14 +327,15 @@ class InteractionMemoryMixin:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO episodic_lessons (
-                    tool_name, trigger_context, failure_signature, lesson, hit_count, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    tool_name, trigger_context, failure_signature, lesson, hit_count, source_provenance, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT(tool_name, failure_signature) DO UPDATE SET
                     hit_count = episodic_lessons.hit_count + 1,
                     lesson = excluded.lesson,
                     trigger_context = excluded.trigger_context,
+                    source_provenance = excluded.source_provenance,
                     updated_at = CURRENT_TIMESTAMP
-            """, (t_clean, c_clean, f_clean, l_clean))
+            """, (t_clean, c_clean, f_clean, l_clean, source_provenance))
             cursor.execute("SELECT id FROM episodic_lessons WHERE tool_name = ? AND failure_signature = ?", (t_clean, f_clean))
             row = cursor.fetchone()
             lesson_id = row["id"] if row else cursor.lastrowid
@@ -363,7 +372,7 @@ class InteractionMemoryMixin:
                 with self._get_ro_connection() as conn:
                     cursor = conn.cursor()
                     sql = """
-                        SELECT l.id, l.tool_name, l.trigger_context, l.failure_signature, l.lesson, l.hit_count
+                        SELECT l.id, l.tool_name, l.trigger_context, l.failure_signature, l.lesson, l.hit_count, l.source_provenance
                         FROM episodic_lessons_fts lf
                         JOIN episodic_lessons l ON lf.rowid = l.id
                         WHERE episodic_lessons_fts MATCH ?
@@ -387,7 +396,7 @@ class InteractionMemoryMixin:
             with self._get_ro_connection() as conn:
                 cursor = conn.cursor()
                 sql = """
-                    SELECT l.id, l.tool_name, l.trigger_context, l.failure_signature, l.lesson, l.hit_count, lv.distance
+                    SELECT l.id, l.tool_name, l.trigger_context, l.failure_signature, l.lesson, l.hit_count, l.source_provenance, lv.distance
                     FROM lessons_vec lv
                     JOIN episodic_lessons l ON lv.lesson_id = l.id
                     WHERE lv.embedding MATCH ? AND k = ?

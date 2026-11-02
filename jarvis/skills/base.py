@@ -113,6 +113,7 @@ class SkillMetadata:
     path_arg_names: tuple[str, ...] = ()
     default_timeout_ms: int = 1500
     origin: str = "builtin"
+    data_provenance: str = "unspecified"
 
 
 class ExecutionCapability:
@@ -307,6 +308,7 @@ class SkillRegistry:
         path_arg_names: tuple[str, ...] = (),
         default_timeout_ms: int = 1500,
         origin: str = "builtin",
+        data_provenance: str = "unspecified",
     ):
         """Decorator to register a Python function as a Jarvis skill tool.
         
@@ -342,6 +344,10 @@ class SkillRegistry:
                     raise PermissionError(
                         f"Security Violation: Custom or dynamically executed skill '{t_name}' cannot claim origin='builtin'."
                     )
+            if origin != "builtin" and data_provenance in ("trusted_system", "trusted_internal"):
+                raise PermissionError(
+                    f"Security Violation: Custom or dynamic skill '{t_name}' with origin='{origin}' cannot declare trusted data provenance."
+                )
 
         def _check_collision(t_name: str, incoming_origin: str):
             existing_meta = cls._metadata.get(t_name)
@@ -417,6 +423,7 @@ class SkillRegistry:
                 path_arg_names=tuple(path_arg_names),
                 default_timeout_ms=default_timeout_ms,
                 origin=origin,
+                data_provenance=data_provenance,
             )
             cls._openai_tools_cache.clear()
             return func
@@ -443,6 +450,7 @@ class SkillRegistry:
                 path_arg_names=tuple(path_arg_names),
                 default_timeout_ms=default_timeout_ms,
                 origin=origin,
+                data_provenance=data_provenance,
             )
             cls._openai_tools_cache.clear()
             return func
@@ -465,7 +473,7 @@ class SkillRegistry:
             return meta
         func = cls.get_tool(canonical)
         if func is not None:
-            return SkillMetadata(name=canonical, func=func, read_only=False, external_ingestion=False)
+            return SkillMetadata(name=canonical, func=func, read_only=False, external_ingestion=False, data_provenance="unspecified")
         return None
 
     @classmethod
@@ -612,6 +620,19 @@ class SkillRegistry:
                     error_type="security_violation",
                     error_message=str(sec_err),
                 )
+
+            # Model/untrusted tool calls cannot forge trusted provenance
+        if "source_provenance" in kwargs:
+            from jarvis.core.security_boundaries import TurnTaintTracker
+            prov_val = str(kwargs["source_provenance"]).strip().lower()
+            if prov_val in TurnTaintTracker.TRUSTED_PROVENANCES:
+                import logging
+                logging.getLogger("Jarvis.SkillRegistry").warning(
+                    "Blocked attempt to supply trusted provenance '%s' via tool call '%s'; downgrading to 'user_supplied'.",
+                    prov_val,
+                    name,
+                )
+                kwargs["source_provenance"] = "user_supplied"
 
         try:
             output = tool(**kwargs)

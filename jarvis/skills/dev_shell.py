@@ -103,6 +103,14 @@ def execute_powershell(command: str, timeout_seconds: int = 25) -> str:
         tail_chars=POWERSHELL_OUTPUT_TAIL_CHARS,
     )
     status = res.get("status")
+    has_output = bool((res.get("stdout_tail") or "").strip() or (res.get("stderr_tail") or "").strip())
+    if status in ("ok", "failed", "timeout", "cancelled") or has_output:
+        # Subprocess output boundary: Taint active turn before returning stdout/stderr/diagnostics to LLM
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        TurnTaintTracker.get_instance().mark_tainted(
+            source="subprocess_output:execute_powershell",
+            metadata={"command": command[:64], "status": status}
+        )
     if status == "timeout":
         timeout_disp = int(effective_timeout) if float(effective_timeout).is_integer() else f"{effective_timeout:.1f}"
         return f"Error: Command timed out after {timeout_disp} seconds."
@@ -164,6 +172,15 @@ def execute_sandboxed_powershell(command: str, max_memory_mb: int = 1536, timeou
         timeout_sec=effective_timeout,
         cancel_token=token,
     )
+    status = res.get("status")
+    has_output = bool((res.get("stdout_tail") or "").strip() or (res.get("stderr_tail") or "").strip())
+    if status in ("ok", "failed", "timeout", "cancelled") or has_output:
+        # Subprocess output boundary: Taint active turn before returning stdout/stderr/diagnostics to LLM
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        TurnTaintTracker.get_instance().mark_tainted(
+            source="subprocess_output:execute_sandboxed_powershell",
+            metadata={"command": command[:64], "status": status}
+        )
     if res.get("status") == "ok":
         out = []
         if res.get("stdout_tail"):
@@ -503,6 +520,14 @@ def run_project_tests(
             tail_chars=POWERSHELL_OUTPUT_TAIL_CHARS,
         )
         status = res.get("status")
+        has_output = bool((res.get("stdout_tail") or "").strip() or (res.get("stderr_tail") or "").strip())
+        if status in ("ok", "failed", "timeout", "cancelled") or has_output:
+            # Subprocess output boundary: Taint active turn before returning test output to LLM
+            from jarvis.core.security_boundaries import TurnTaintTracker
+            TurnTaintTracker.get_instance().mark_tainted(
+                source="subprocess_output:run_project_tests",
+                metadata={"test_file": test_file[:64], "status": status}
+            )
         if status == "timeout":
             return f"Error: Test run timed out after {effective_timeout:.1f} seconds, Sir."
         if status == "cancelled":
@@ -560,10 +585,23 @@ def run_project_tests(
                 "[WARNING: UNCONTAINED EXECUTION — Windows Job Object process-tree containment is DISABLED. "
                 "Descendant processes will not be tracked or automatically reaped on timeout/cancel.]\n"
             )
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        TurnTaintTracker.get_instance().mark_tainted(
+            source="subprocess_output:run_project_tests",
+            metadata={"test_file": test_file[:64], "status": "fallback"}
+        )
         return f"{warning_banner}Test Run [{run_status}]:\n{out}"
     except subprocess.TimeoutExpired:
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        TurnTaintTracker.get_instance().mark_tainted(
+            source="subprocess_output:run_project_tests",
+            metadata={"test_file": test_file[:64], "status": "timeout"}
+        )
         return f"Error: Test run timed out after {timeout_seconds} seconds, Sir."
     except Exception as e:
+        from jarvis.core.security_boundaries import SecurityBoundaryViolation
+        if isinstance(e, SecurityBoundaryViolation):
+            raise
         return f"Error executing tests: {e}"
 
 

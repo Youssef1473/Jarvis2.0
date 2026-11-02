@@ -1,6 +1,7 @@
 """Closed-Loop Security Boundaries, SSRF Protection, Path Confinement, and Taint Tracking for Jarvis 2.0."""
 import contextlib
 import contextvars
+import enum
 import hashlib
 import hmac
 import http.client
@@ -19,9 +20,17 @@ import urllib.request
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 logger = logging.getLogger("Jarvis.SecurityBoundaries")
+
+
+class IngestionTrustClassification(enum.Enum):
+    """Accurately distinguishes tool ingestion trust domains for fail-closed governance."""
+    KNOWN_TRUSTED = "known_trusted"
+    KNOWN_UNTRUSTED = "known_untrusted"
+    UNKNOWN = "unknown"
+    CLASSIFICATION_FAILURE = "classification_failure"
 
 
 class SecurityBoundaryViolation(PermissionError):
@@ -109,16 +118,16 @@ def resolve_and_validate_destination(
 
     try:
         hostname = parsed.hostname
-    except Exception:
-        raise SecurityBoundaryViolation("Malformed hostname in URL.")
+    except Exception as err:
+        raise SecurityBoundaryViolation("Malformed hostname in URL.") from err
 
     if not hostname:
         raise SecurityBoundaryViolation("Egress URL must contain a valid hostname.")
 
     try:
         port = parsed.port or (443 if scheme in ("https", "wss") else 80)
-    except Exception:
-        raise SecurityBoundaryViolation("Malformed port in URL.")
+    except Exception as err:
+        raise SecurityBoundaryViolation("Malformed port in URL.") from err
 
     pinned_ip, _family, _port = resolve_and_validate_host_port(
         hostname=hostname,
@@ -185,13 +194,12 @@ def resolve_and_validate_host_port(
     # Loopback permission is strictly restricted to explicitly configured local destinations.
     # Arbitrary remote hostnames resolving to loopback via DNS must never receive loopback permission.
     permit_loopback = (allow_local_mcp or allow_localhost) and is_explicit_local
-    if not permit_loopback:
-        if (
-            hostname_lower == "localhost"
-            or hostname_lower.endswith(".localhost")
-            or hostname_lower in ("127.0.0.1", "::1", "0.0.0.0")
-            or is_explicit_local
-        ):
+    if not permit_loopback and (
+        hostname_lower == "localhost"
+        or hostname_lower.endswith(".localhost")
+        or hostname_lower in ("127.0.0.1", "::1", "0.0.0.0")
+        or is_explicit_local
+    ):
             raise SecurityBoundaryViolation(f"Egress to localhost '{clean_host}' is blocked.")
 
     # DNS Resolution (Fail Closed)
@@ -199,7 +207,7 @@ def resolve_and_validate_host_port(
         addr_info = socket.getaddrinfo(clean_host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as err:
         raise SecurityBoundaryViolation(f"DNS resolution failed for host '{clean_host}': {err}")
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001
         raise SecurityBoundaryViolation(f"Unexpected error resolving host '{clean_host}': {err}")
 
     if not addr_info:
@@ -256,8 +264,8 @@ def resolve_and_validate_host_port(
             selected_family = socket.AF_INET6
         else:
             selected_family = socket.AF_INET
-    except Exception:
-        pass
+    except Exception as err:  # noqa: BLE001
+        logger.debug("Socket family fallback error: %s", err)
 
     return pinned_ip, selected_family, port
 
@@ -319,7 +327,7 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
             )
 
         # Validate destination hop through SSRF filter (never authorize loopback/private for redirect hops)
-        clean_url, parsed_dest, pinned_ip = resolve_and_validate_destination(
+        clean_url, _parsed_dest, pinned_ip = resolve_and_validate_destination(
             resolved_url,
             allowed_schemes=self.allowed_schemes,
             allow_local_mcp=False,
@@ -427,7 +435,7 @@ class PinnedHTTPHandler(urllib.request.HTTPHandler):
     def http_open(self, req):
         pinned_ip = getattr(req, "_pinned_ip", None)
         if not pinned_ip:
-            clean_url, _, pinned_ip = resolve_and_validate_destination(
+            _clean_url, _, pinned_ip = resolve_and_validate_destination(
                 req.full_url,
                 allowed_schemes=("http", "https"),
                 allow_local_mcp=self.allow_local_mcp,
@@ -460,7 +468,7 @@ class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
     def https_open(self, req):
         pinned_ip = getattr(req, "_pinned_ip", None)
         if not pinned_ip:
-            clean_url, _, pinned_ip = resolve_and_validate_destination(
+            _clean_url, _, pinned_ip = resolve_and_validate_destination(
                 req.full_url,
                 allowed_schemes=("http", "https"),
                 allow_local_mcp=self.allow_local_mcp,
@@ -542,9 +550,7 @@ def is_prohibited_network_or_device_path(path_str: str) -> bool:
     # Prohibit URL schemes masquerading as paths (e.g. smb://, file://, cifs://)
     if any(s_upper.startswith(prefix) for prefix in ("SMB:", "FILE:", "HTTP:", "HTTPS:", "FTP:", "CIFS:", "NFS:", "DAV:")):
         return True
-    if re.match(r"^[A-Z][A-Z0-9+.-]*://", s_upper):
-        return True
-    return False
+    return bool(re.match(r"^[A-Z][A-Z0-9+.-]*://", s_upper))
 
 
 def validate_confined_path(target_path: str, allowed_root_dir: str) -> str:
@@ -670,8 +676,11 @@ class DualKeyAuthorization:
     confirmed: bool = True
     status: str = "pending"  # "pending", "gate_consumed", "active", "consumed", "invalidated", "expired"
     summary: str = ""
+    turn_id: str | None = None
 
-    def is_valid_for(self, tool_name: str, payload_hash: str) -> bool:
+    def is_valid_for(self, tool_name: str, payload_hash: str, turn_id: str | None = None) -> bool:
+        if self.turn_id is not None and turn_id is not None and self.turn_id != turn_id:
+            return False
         return (
             self.confirmed
             and self.tool_name == tool_name
@@ -731,10 +740,9 @@ class _ActiveAuthToken:
         with self._lock:
             if self._consumed or self._invalidated:
                 return False
-            if self.manager is not None:
-                if not self.manager._mark_grant_consumed(self.grant_id, self.grant_token):
-                    self._invalidated = True
-                    return False
+            if self.manager is not None and not self.manager._mark_grant_consumed(self.grant_id, self.grant_token):
+                self._invalidated = True
+                return False
             self._consumed = True
             return True
 
@@ -803,9 +811,8 @@ class DualKeyApprovalManager:
     def _mark_grant_invalidated(self, grant_id: str, grant_token: str) -> None:
         with self._lock:
             auth = self._grants_by_id.get(grant_id)
-            if auth and hmac.compare_digest(auth.token, grant_token):
-                if auth.status == "active":
-                    auth.status = "invalidated"
+            if auth and hmac.compare_digest(auth.token, grant_token) and auth.status == "active":
+                auth.status = "invalidated"
 
     def set_approval_handler(self, handler: Callable[[dict[str, Any]], bool] | None) -> None:
         """Sets a trusted local UI or CLI approval handler to prompt human operators."""
@@ -818,8 +825,9 @@ class DualKeyApprovalManager:
         arguments: dict[str, Any],
         ttl_seconds: float = 60.0,
         summary: str = "",
+        turn_id: str | None = None,
     ) -> DualKeyAuthorization:
-        """Grants an out-of-band authorization bound to the exact tool and arguments."""
+        """Grants an out-of-band authorization bound to the exact tool, arguments, and logical turn."""
         try:
             ttl_val = float(ttl_seconds)
         except (TypeError, ValueError):
@@ -838,6 +846,9 @@ class DualKeyApprovalManager:
         token = secrets.token_hex(16)
         if not summary:
             summary = format_action_summary(tool_name, clean_args)
+        if turn_id is None:
+            state = _turn_taint_context.get()
+            turn_id = state.turn_id if state is not None else None
         auth = DualKeyAuthorization(
             grant_id=grant_id,
             tool_name=tool_name,
@@ -847,6 +858,7 @@ class DualKeyApprovalManager:
             confirmed=True,
             status="pending",
             summary=summary,
+            turn_id=turn_id,
         )
         with self._lock:
             self._grants[action_hash] = auth
@@ -856,8 +868,11 @@ class DualKeyApprovalManager:
         logger.info("Dual-Key authorization granted for tool '%s' (id: %s, hash: %s, ttl: %.0fs)", tool_name, grant_id[:8], action_hash[:12], ttl_seconds)
         return auth
 
-    def has_valid_grant(self, tool_name: str, arguments: dict[str, Any]) -> bool:
+    def has_valid_grant(self, tool_name: str, arguments: dict[str, Any], turn_id: str | None = None) -> bool:
         """Checks if a valid, unexpired grant exists without consuming it."""
+        if turn_id is None:
+            state = _turn_taint_context.get()
+            turn_id = state.turn_id if state is not None else None
         clean_args = {
             k: v for k, v in (arguments or {}).items()
             if k not in IGNORED_MODEL_AUTH_FIELDS
@@ -865,12 +880,17 @@ class DualKeyApprovalManager:
         action_hash = compute_action_hash(tool_name, clean_args)
         with self._lock:
             auth = self._grants.get(action_hash)
-            return bool(auth and auth.is_valid_for(tool_name, action_hash) and auth.status == "pending")
+            return bool(auth and auth.is_valid_for(tool_name, action_hash, turn_id=turn_id) and auth.status == "pending")
 
-    def consume_grant_object(self, tool_name: str, arguments: dict[str, Any]) -> DualKeyAuthorization | None:
-        """Validates and consumes an existing pre-grant for the given tool and arguments (single-use),
+    def consume_grant_object(
+        self, tool_name: str, arguments: dict[str, Any], turn_id: str | None = None
+    ) -> DualKeyAuthorization | None:
+        """Validates and consumes an existing pre-grant for the given tool, arguments, and logical turn (single-use),
         returning the DualKeyAuthorization if valid.
         """
+        if turn_id is None:
+            state = _turn_taint_context.get()
+            turn_id = state.turn_id if state is not None else None
         clean_args = {
             k: v for k, v in (arguments or {}).items()
             if k not in IGNORED_MODEL_AUTH_FIELDS
@@ -878,10 +898,16 @@ class DualKeyApprovalManager:
         action_hash = compute_action_hash(tool_name, clean_args)
         with self._lock:
             auth = self._grants.get(action_hash)
-            if auth and auth.is_valid_for(tool_name, action_hash) and auth.status == "pending":
+            if auth and auth.is_valid_for(tool_name, action_hash, turn_id=turn_id) and auth.status == "pending":
                 auth.status = "gate_consumed"
                 del self._grants[action_hash]
-                logger.info("Dual-Key authorization consumed at gate for tool '%s' (id: %s, hash: %s)", tool_name, auth.grant_id[:8], action_hash[:12])
+                logger.info(
+                    "Dual-Key authorization consumed at gate for tool '%s' (id: %s, hash: %s, turn: %s)",
+                    tool_name,
+                    auth.grant_id[:8],
+                    action_hash[:12],
+                    turn_id,
+                )
                 return auth
             # Clean up stale/expired grant if present
             if auth and (time.time() > auth.expires_at or auth.status != "pending"):
@@ -1005,7 +1031,7 @@ class DualKeyApprovalManager:
             if pre_hook is not None:
                 try:
                     pre_hook()
-                except Exception as hook_err:
+                except Exception as hook_err:  # noqa: BLE001
                     logger.debug("Pre-grant hook error: %s", hook_err)
 
             if approved:
@@ -1018,6 +1044,8 @@ class DualKeyApprovalManager:
                         return None
                     grant_id = secrets.token_hex(16)
                     token = secrets.token_hex(16)
+                    state = _turn_taint_context.get()
+                    req_turn_id = state.turn_id if state is not None else None
                     auth = DualKeyAuthorization(
                         grant_id=grant_id,
                         tool_name=tool_name,
@@ -1027,6 +1055,7 @@ class DualKeyApprovalManager:
                         confirmed=True,
                         status="gate_consumed",
                         summary=summary,
+                        turn_id=req_turn_id,
                     )
                     self._grants_by_id[grant_id] = auth
                     if cancel_event is not None:
@@ -1036,7 +1065,7 @@ class DualKeyApprovalManager:
                 if post_hook is not None:
                     try:
                         post_hook(auth)
-                    except Exception as hook_err:
+                    except Exception as hook_err:  # noqa: BLE001
                         logger.debug("Post-grant hook error: %s", hook_err)
 
                 logger.info("Human operator approved action '%s' (id: %s, hash: %s, token: %s)", tool_name, grant_id[:8], action_hash[:12], token[:8])
@@ -1044,7 +1073,7 @@ class DualKeyApprovalManager:
             else:
                 logger.warning("Human operator denied action '%s' (hash: %s)", tool_name, action_hash[:12])
                 return None
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error("Error during human approval request for '%s': %s", tool_name, e)
             return None
         finally:
@@ -1286,6 +1315,19 @@ class DualKeyApprovalManager:
             return True
         return False
 
+    def revoke_turn_grants(self, turn_id: str) -> int:
+        """Revokes all pending or active authorization grants bound to the specified turn ID."""
+        if not turn_id:
+            return 0
+        revoked = 0
+        with self._lock:
+            for grant in list(self._grants_by_id.values()):
+                if grant.turn_id == turn_id and grant.status in ("pending", "active"):
+                    grant.status = "invalidated"
+                    self._grants.pop(grant.action_hash, None)
+                    revoked += 1
+        return revoked
+
     def reset(self) -> None:
         """Clears all pending and active authorization grants."""
         with self._lock:
@@ -1322,7 +1364,7 @@ class IngestionRecord:
 
 class _TurnTaintState:
     """Thread-safe turn-scoped taint state holder enforcing monotonic taint within a logical turn."""
-    __slots__ = ("_is_tainted", "_lock", "_provenance_records", "_tainting_sources", "turn_id")
+    __slots__ = ("_is_compromised", "_is_tainted", "_lock", "_provenance_records", "_tainting_sources", "turn_id")
 
     MAX_SOURCES_PER_TURN: int = 128
     MAX_SOURCE_LENGTH: int = 128
@@ -1330,6 +1372,7 @@ class _TurnTaintState:
     def __init__(self, turn_id: str | None = None) -> None:
         self.turn_id = turn_id or secrets.token_hex(8)
         self._is_tainted: bool = False
+        self._is_compromised: bool = False
         self._tainting_sources: list[str] = []
         self._provenance_records: list[IngestionRecord] = []
         self._lock = threading.Lock()
@@ -1337,7 +1380,21 @@ class _TurnTaintState:
     @property
     def is_tainted(self) -> bool:
         with self._lock:
-            return self._is_tainted
+            return self._is_tainted or self._is_compromised
+
+    @property
+    def is_compromised(self) -> bool:
+        with self._lock:
+            return self._is_compromised
+
+    def mark_compromised(self, reason: str = "failed_taint_operation") -> None:
+        """Forces fail-closed turn state when taint recording or classification encounters an unrecoverable failure."""
+        clean_source = self._sanitize_source(reason)
+        with self._lock:
+            self._is_compromised = True
+            self._is_tainted = True
+            if clean_source not in self._tainting_sources and len(self._tainting_sources) < self.MAX_SOURCES_PER_TURN:
+                self._tainting_sources.append(clean_source)
 
     @property
     def tainting_sources(self) -> tuple[str, ...]:
@@ -1366,7 +1423,7 @@ class _TurnTaintState:
         else:
             try:
                 clean = str(source)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 clean = ""
         clean = clean.strip()
         clean = re.sub(r"[\r\n\x00-\x1f]", "", clean)
@@ -1405,17 +1462,15 @@ class _TurnTaintState:
         clean_meta = self._sanitize_metadata(metadata)
         with self._lock:
             self._is_tainted = True
-            if clean_source not in self._tainting_sources:
-                if len(self._tainting_sources) < self.MAX_SOURCES_PER_TURN:
-                    self._tainting_sources.append(clean_source)
+            if clean_source not in self._tainting_sources and len(self._tainting_sources) < self.MAX_SOURCES_PER_TURN:
+                self._tainting_sources.append(clean_source)
 
             # Record provenance for each distinct ingestion event up to MAX_SOURCES_PER_TURN
-            if len(self._provenance_records) < self.MAX_SOURCES_PER_TURN:
-                if (
-                    not self._provenance_records
-                    or self._provenance_records[-1].source != clean_source
-                    or self._provenance_records[-1].metadata != clean_meta
-                ):
+            if len(self._provenance_records) < self.MAX_SOURCES_PER_TURN and (
+                not self._provenance_records
+                or self._provenance_records[-1].source != clean_source
+                or self._provenance_records[-1].metadata != clean_meta
+            ):
                     self._provenance_records.append(
                         IngestionRecord(source=clean_source, timestamp=time.time(), metadata=clean_meta)
                     )
@@ -1436,7 +1491,7 @@ class TurnTaintTracker:
     _instance: Optional["TurnTaintTracker"] = None
     _lock = threading.Lock()
 
-    UNTRUSTED_INGESTION_TOOLS: set[str] = {
+    UNTRUSTED_INGESTION_TOOLS: ClassVar[set[str]] = {
         "web_search",
         "deep_research",
         "browser_navigate",
@@ -1470,9 +1525,115 @@ class TurnTaintTracker:
         "save_clipboard_photo",
         "process_staged_document",
         "capture_webpage_screenshot",
+        "list_open_browser_tabs",
+        "get_active_window",
+        "inspect_window_controls",
+        "get_background_task_output",
+        "morning_protocol",
+        "list_running_applications",
+        "list_directory",
+        "get_recent_workspace_mutations",
+        "list_custom_skills",
+        "inspect_file_locks",
+        "inspect_port_holders",
+        "list_staged_documents",
+        "list_photos",
+        "check_code_diagnostics",
+        "list_background_tasks",
+        "list_active_timers",
+        "list_compiled_reflex_macros",
+        "inspect_ram_hogs",
+        "profile_runtime",
+        "verify_learned_habits",
+        "run_system_troubleshooting",
+        "jarvis_doctor",
+        "execute_protocol",
+        "compile_workflow_reflex",
+        "delete_compiled_reflex_macro",
+        "record_workspace_mutation",
     }
 
-    HIGH_PRIVILEGE_MUTATION_TOOLS: set[str] = {
+    TRUSTED_SYSTEM_DATA_TOOLS: ClassVar[set[str]] = {
+        "get_battery_status",
+        "get_current_time_and_date",
+        "get_system_vitals",
+        "get_pipeline_latency_stats",
+        "get_voice_settings",
+        "check_hardware_health",
+        "audit_memory_heap",
+        "audit_vram_and_thermal_budget",
+        "list_audio_devices",
+        "get_gemini_live_architecture_overview",
+        "remember_fact",
+        "delete_stored_fact",
+        "update_user_preference",
+        "delete_user_preference",
+        "launch_application",
+        "close_application",
+        "launch_or_focus_application",
+        "focus_window",
+        "minimize_all_windows",
+        "lock_workstation",
+        "adjust_volume",
+        "control_media",
+        "start_timer",
+        "cancel_timer",
+        "complete_task",
+        "add_task_or_reminder",
+        "schedule_calendar_event",
+        "cancel_calendar_event",
+        "delete_calendar",
+        "open_project",
+        "open_user_folder",
+        "open_browser_tab",
+        "close_browser_tab",
+        "switch_to_browser_tab",
+        "open_url_in_desktop_browser",
+        "launch_debug_browser",
+        "start_hardware_watchdog",
+        "stop_hardware_watchdog",
+        "optimize_workstation",
+        "set_audio_output_device",
+        "set_speech_rate",
+        "set_voice_profile",
+        "cancel_background_task",
+        "run_background_task",
+        "save_photo",
+        "type_text",
+        "press_hotkey",
+        "click_marked_element",
+        "click_web_element_semantic",
+        "type_into_web_element_semantic",
+        "copy_to_clipboard",
+        "take_quick_note",
+        "write_file",
+        "patch_file",
+        "send_email",
+        "shutdown_jarvis",
+        "record_episodic_lesson",
+    }
+
+    DYNAMIC_DOCUMENT_PROVENANCE_TOOLS: ClassVar[set[str]] = {
+        "read_archived_document",
+        "search_archived_documents",
+        "recall_fact",
+        "recall_episodic_lessons",
+        "recall_past_conversation",
+        "semantic_search_memory",
+        "list_pending_tasks",
+        "list_calendar_events",
+        "read_recent_notes",
+        "search_notes",
+        "get_user_preferences",
+        "execute_powershell",
+        "execute_sandboxed_powershell",
+        "run_job_sandboxed_process",
+        "run_project_tests",
+        "execute_workflow_reflex",
+    }
+    DYNAMIC_PROVENANCE_TOOLS: ClassVar[set[str]] = DYNAMIC_DOCUMENT_PROVENANCE_TOOLS
+
+    HIGH_PRIVILEGE_MUTATION_TOOLS: ClassVar[set[str]] = {
         "execute_powershell",
         "execute_sandboxed_powershell",
         "execute_browser_javascript",
@@ -1490,7 +1651,7 @@ class TurnTaintTracker:
         "delete_custom_skill",
     }
 
-    CRITICAL_PRIVILEGE_TOOLS: set[str] = {
+    CRITICAL_PRIVILEGE_TOOLS: ClassVar[set[str]] = {
         "create_or_update_custom_skill",
         "delete_custom_skill",
         "execute_powershell",
@@ -1504,38 +1665,75 @@ class TurnTaintTracker:
     # Verified Level-0 read-only query and inspection tools safe on tainted turns
     from jarvis.skills.base import KNOWN_READ_ONLY_TOOLS
 
-    TRUSTED_DOCUMENT_PROVENANCES: set[str] = {"trusted_internal", "system"}
-    KNOWN_DOCUMENT_PROVENANCES: set[str] = {
+    TRUSTED_PROVENANCES: ClassVar[set[str]] = {"trusted_internal", "system"}
+    KNOWN_PROVENANCES: ClassVar[set[str]] = {
         "trusted_internal",
         "system",
+        "user_supplied",
         "web_scrape",
         "staged_upload",
         "external",
         "unknown",
     }
+    TRUSTED_DOCUMENT_PROVENANCES: ClassVar[set[str]] = TRUSTED_PROVENANCES
+    KNOWN_DOCUMENT_PROVENANCES: ClassVar[set[str]] = KNOWN_PROVENANCES
 
     def __init__(self) -> None:
         self._dynamic_ingestion_tools: set[str] = set()
 
     @classmethod
-    def normalize_document_provenance(cls, provenance: Any) -> str:
-        """Validates and normalizes document provenance labels according to policy.
+    def normalize_provenance(cls, provenance: Any) -> str:
+        """Validates and normalizes provenance labels according to policy.
         Missing, empty, non-string, or unrecognized values fail closed to 'unknown'."""
         if not provenance or not isinstance(provenance, str):
             return "unknown"
         clean = provenance.strip().lower()
-        if clean in cls.KNOWN_DOCUMENT_PROVENANCES:
+        if clean in cls.KNOWN_PROVENANCES:
             return clean
         return "unknown"
 
     @classmethod
-    def is_untrusted_document_provenance(cls, provenance: Any) -> bool:
-        """Determines if a document provenance classification is untrusted.
+    def normalize_document_provenance(cls, provenance: Any) -> str:
+        return cls.normalize_provenance(provenance)
+
+    @classmethod
+    def is_untrusted_provenance(cls, provenance: Any) -> bool:
+        """Determines if a data provenance classification is untrusted.
         Fails closed: Any provenance other than explicitly trusted internal/system labels is untrusted."""
         if not provenance or not isinstance(provenance, str):
             return True
         clean = provenance.strip().lower()
-        return clean not in cls.TRUSTED_DOCUMENT_PROVENANCES
+        return clean not in cls.TRUSTED_PROVENANCES
+
+    @classmethod
+    def is_untrusted_document_provenance(cls, provenance: Any) -> bool:
+        return cls.is_untrusted_provenance(provenance)
+
+    @classmethod
+    def resolve_write_provenance(cls, explicit_provenance: Any = None, default_if_clean: str = "unknown") -> str:
+        """Resolves authoritative provenance for persistent data writes.
+
+        Enforces security invariants:
+        1. If the current turn is tainted, the record CANNOT be classified as trusted,
+           and inherits untrusted provenance ('external' or normalized untrusted provenance).
+        2. If explicit provenance is provided and valid, it is preserved, provided it does
+           not claim trusted status during a tainted turn.
+        3. If no explicit provenance is provided, it defaults to 'external' (if tainted)
+           or default_if_clean ('unknown' or 'user_supplied'). It NEVER defaults to trusted_internal
+           merely because the turn is clean.
+        4. Model or unverified callers cannot forge 'trusted_internal' or 'system'.
+        """
+        tracker = cls.get_instance()
+        if tracker.is_tainted:
+            if explicit_provenance and isinstance(explicit_provenance, str):
+                norm = cls.normalize_provenance(explicit_provenance)
+                return norm if norm not in cls.TRUSTED_PROVENANCES else "external"
+            return "external"
+
+        if explicit_provenance is not None:
+            return cls.normalize_provenance(explicit_provenance)
+
+        return cls.normalize_provenance(default_if_clean)
 
     @staticmethod
     def _get_context_state(create_if_missing: bool = True) -> _TurnTaintState | None:
@@ -1548,7 +1746,12 @@ class TurnTaintTracker:
     @property
     def is_tainted(self) -> bool:
         state = _turn_taint_context.get()
-        return state.is_tainted if state is not None else False
+        return (state.is_tainted or state.is_compromised) if state is not None else False
+
+    @property
+    def is_compromised(self) -> bool:
+        state = _turn_taint_context.get()
+        return state.is_compromised if state is not None else False
 
     @is_tainted.setter
     def is_tainted(self, value: bool) -> None:
@@ -1593,25 +1796,87 @@ class TurnTaintTracker:
                 cls._instance = cls()
             return cls._instance
 
-    def is_untrusted_ingestion(self, tool_name: str) -> bool:
-        """Determines if a tool represents an untrusted external data ingestion boundary."""
-        if not tool_name:
-            return False
+    def classify_tool_ingestion(self, tool_name: str) -> IngestionTrustClassification:
+        """Accurately classifies a tool into one of four trust domains:
+        - KNOWN_TRUSTED: Verified local builtin tool with no external ingestion.
+        - KNOWN_UNTRUSTED: Explicitly registered untrusted ingestion or MCP tool.
+        - UNKNOWN: Unregistered or dynamic tool with unverified trust boundary.
+        - CLASSIFICATION_FAILURE: Classifier or registry encountered an unexpected error.
+        """
+        if not tool_name or not isinstance(tool_name, str):
+            return IngestionTrustClassification.KNOWN_TRUSTED
+
         clean_name = tool_name.strip()
-        if clean_name.startswith("mcp_") or clean_name == "mcp_call_tool":
-            return True
-        if clean_name in self.UNTRUSTED_INGESTION_TOOLS:
-            return True
-        with self._lock:
-            if clean_name in self._dynamic_ingestion_tools:
-                return True
+        if not clean_name:
+            return IngestionTrustClassification.KNOWN_TRUSTED
+
         try:
+            # 1. Dynamic / MCP tool prefixes or explicit MCP generic runner
+            if clean_name.startswith("mcp_") or clean_name == "mcp_call_tool":
+                return IngestionTrustClassification.KNOWN_UNTRUSTED
+
+            # 2. Static untrusted ingestion tool catalog
+            if clean_name in self.UNTRUSTED_INGESTION_TOOLS:
+                return IngestionTrustClassification.KNOWN_UNTRUSTED
+
+            # 3. Dynamic ingestion tool registry
+            with self._lock:
+                if clean_name in self._dynamic_ingestion_tools:
+                    return IngestionTrustClassification.KNOWN_UNTRUSTED
+
+            # 4. Check SkillRegistry metadata
             from jarvis.skills.base import SkillRegistry
             if SkillRegistry.is_ingestion_tool(clean_name):
-                return True
-        except Exception:
-            pass
-        return False
+                return IngestionTrustClassification.KNOWN_UNTRUSTED
+
+            meta = SkillRegistry.get_metadata(clean_name)
+            if meta is not None:
+                if getattr(meta, "external_ingestion", False):
+                    return IngestionTrustClassification.KNOWN_UNTRUSTED
+                origin = getattr(meta, "origin", None)
+                provenance = getattr(meta, "data_provenance", "unspecified")
+
+                # Authoritative trusted data provenance requires BOTH builtin code origin AND trusted declaration/review
+                if origin == "builtin":
+                    if provenance in ("trusted_system", "trusted_internal") or clean_name in self.TRUSTED_SYSTEM_DATA_TOOLS:
+                        return IngestionTrustClassification.KNOWN_TRUSTED
+                    if provenance in ("document_dynamic", "dynamic_provenance") or clean_name in self.DYNAMIC_DOCUMENT_PROVENANCE_TOOLS:
+                        return IngestionTrustClassification.KNOWN_TRUSTED
+
+                # Unspecified, unverified, or non-builtin data provenance fails closed to UNKNOWN
+                return IngestionTrustClassification.UNKNOWN
+
+            # 5. Fallback for un-registered query names
+            if clean_name in self.TRUSTED_SYSTEM_DATA_TOOLS or clean_name in self.DYNAMIC_DOCUMENT_PROVENANCE_TOOLS:
+                return IngestionTrustClassification.KNOWN_TRUSTED
+
+            return IngestionTrustClassification.UNKNOWN
+        except Exception as err:  # noqa: BLE001
+            logger.error("Unexpected exception during tool ingestion classification for '%s': %s", clean_name, err)
+            return IngestionTrustClassification.CLASSIFICATION_FAILURE
+
+    def mark_compromised(self, reason: str = "security_boundary_failure") -> None:
+        """Authoritatively marks the current turn context as compromised, locking down privileged actions."""
+        state = self._get_context_state(create_if_missing=True)
+        if state is not None:
+            state.mark_compromised(reason)
+        logger.error("Turn context marked as COMPROMISED: %s", reason)
+
+    def is_untrusted_ingestion(self, tool_name: str) -> bool:
+        """Determines if a tool represents an untrusted external data ingestion boundary.
+        Fails closed on unexpected classification failure by marking turn compromised and raising SecurityBoundaryViolation.
+        Handles unknown external tools conservatively by returning True.
+        """
+        classification = self.classify_tool_ingestion(tool_name)
+        if classification == IngestionTrustClassification.CLASSIFICATION_FAILURE:
+            self.mark_compromised(f"classification_failure:{tool_name}")
+            raise SecurityBoundaryViolation(
+                f"Classification Failure: Unable to establish ingestion trust boundary for tool '{tool_name}'."
+            )
+        return classification in (
+            IngestionTrustClassification.KNOWN_UNTRUSTED,
+            IngestionTrustClassification.UNKNOWN,
+        )
 
     def register_ingestion_tool(self, tool_name: Any) -> None:
         """Registers a dynamic tool name as an untrusted external ingestion source."""
@@ -1633,7 +1898,7 @@ class TurnTaintTracker:
             url_val = arguments.get("url")
             if not url_val and "tab_name_or_url" in arguments:
                 cand = arguments["tab_name_or_url"]
-                if isinstance(cand, str) and (cand.startswith("http://") or cand.startswith("https://")):
+                if isinstance(cand, str) and cand.startswith(("http://", "https://")):
                     url_val = cand
             if url_val and isinstance(url_val, str):
                 try:
@@ -1645,8 +1910,8 @@ class TurnTaintTracker:
                         host = netloc_clean.split(":")[0]
                     if host:
                         meta["host"] = host[:64]
-                except Exception:
-                    pass
+                except Exception as host_err:  # noqa: BLE001
+                    logger.debug("Failed parsing host for ingestion provenance: %s", host_err)
             if "query" in arguments and isinstance(arguments["query"], str):
                 meta["query_length"] = len(arguments["query"])
             if "topic" in arguments and isinstance(arguments["topic"], str):
@@ -1668,7 +1933,14 @@ class TurnTaintTracker:
 
     def reset_turn(self) -> None:
         """Resets the taint tracking state for the current conversational turn context."""
+        state = _turn_taint_context.get()
+        old_turn_id = state.turn_id if state is not None else None
         _turn_taint_context.set(_TurnTaintState())
+        if old_turn_id:
+            try:
+                DualKeyApprovalManager.get_instance().revoke_turn_grants(old_turn_id)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Failed to revoke grants on turn reset: %s", e)
 
     def evaluate_tool_execution(
         self,
@@ -1686,11 +1958,36 @@ class TurnTaintTracker:
         args_dict = arguments if isinstance(arguments, dict) else {}
 
         state = _turn_taint_context.get()
-        prior_tainted = (state.is_tainted) if state is not None else False
+        prior_tainted = (state.is_tainted or state.is_compromised) if state is not None else False
 
         # 1. Untrusted ingestion tools or dynamic MCP tools mark the turn tainted immediately with provenance
-        if self.is_untrusted_ingestion(clean_name):
-            self.record_ingestion(clean_name, args_dict)
+        classification = self.classify_tool_ingestion(clean_name)
+        if classification == IngestionTrustClassification.CLASSIFICATION_FAILURE:
+            if state is not None:
+                state.mark_compromised(f"classification_failure:{clean_name}")
+            raise SecurityBoundaryViolation(
+                f"Security Boundary Violation: Ingestion trust classification failed for tool '{clean_name}'. "
+                "Execution aborted to prevent untrusted data bypass."
+            )
+
+        if classification in (IngestionTrustClassification.KNOWN_UNTRUSTED, IngestionTrustClassification.UNKNOWN):
+            try:
+                self.record_ingestion(clean_name, args_dict)
+            except Exception as taint_err:
+                if state is not None:
+                    state.mark_compromised(f"failed_taint_recording:{clean_name}")
+                raise SecurityBoundaryViolation(
+                    f"Security Boundary Violation: Failed to record taint provenance for tool '{clean_name}': {taint_err}. "
+                    "Execution aborted to prevent untainted bypass."
+                ) from taint_err
+
+            if not self.is_tainted:
+                if state is not None:
+                    state.mark_compromised(f"unverified_taint:{clean_name}")
+                raise SecurityBoundaryViolation(
+                    f"Security Boundary Violation: Turn taint could not be established for ingestion tool '{clean_name}'. "
+                    "Execution aborted to prevent untainted bypass."
+                )
             # CRITICAL CORE-SEC-04D: Do NOT return early. Ingestion classification marks turn taint,
             # but must never exempt execution-capable or mutating tools from authorization.
 
@@ -1723,7 +2020,7 @@ class TurnTaintTracker:
 
         # SEC-H2-02: An uninitialized context has no provenance; treat as tainted for privileged mutations
         # CORE-SEC-04D: Check if the turn was already tainted prior to this tool, or if context is missing
-        is_tainted = (prior_tainted) if state is not None else True
+        is_tainted = (prior_tainted or (state.is_compromised if state is not None else False)) if state is not None else True
         is_tainted_mutation = is_tainted and is_privileged_mutation
 
         approval_mgr = DualKeyApprovalManager.get_instance()

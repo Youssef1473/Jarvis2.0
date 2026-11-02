@@ -18,7 +18,7 @@ logger = logging.getLogger("Jarvis.Memory.FactsManager")
 class FactsManagerMixin:
     """Provides atomic fact storage, core user preference self-editing, and hybrid fact search."""
 
-    def remember_fact(self, key: str, value: str, category: str = "general") -> str:
+    def remember_fact(self, key: str, value: str, category: str = "general", source_provenance: str | None = None) -> str:
         """Stores or updates a persistent fact about the user or system.
         Runs ONNX embedding inference OUTSIDE the active write transaction and
         serializes all database writes strictly through SingleWriterActor.
@@ -26,6 +26,9 @@ class FactsManagerMixin:
         clean_cat = category.lower().strip()
         clean_key = key.lower().strip()
         clean_val = value.strip()
+
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        source_provenance = TurnTaintTracker.resolve_write_provenance(source_provenance, default_if_clean="unknown")
 
         # Step 1: Pre-compute ONNX dense embedding OUTSIDE write transaction
         blob = None
@@ -41,13 +44,14 @@ class FactsManagerMixin:
         def _write(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO facts (category, key, value, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO facts (category, key, value, source_provenance, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(key) DO UPDATE SET
                     value = excluded.value,
                     category = excluded.category,
+                    source_provenance = excluded.source_provenance,
                     updated_at = CURRENT_TIMESTAMP
-            """, (clean_cat, clean_key, clean_val))
+            """, (clean_cat, clean_key, clean_val, source_provenance))
 
             if blob is not None:
                 try:
@@ -72,6 +76,25 @@ class FactsManagerMixin:
             row = cursor.fetchone()
             return row["value"] if row else None
 
+    def get_fact_with_provenance(self, key: str) -> tuple[str | None, str]:
+        """Retrieves a specific stored fact along with its source provenance.
+        Fails closed to 'unknown' provenance if column is missing or query fails."""
+        with self._get_ro_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT value, source_provenance FROM facts WHERE key = ?", (key.lower().strip(),))
+                row = cursor.fetchone()
+                if not row:
+                    return None, "unknown"
+                prov = row["source_provenance"] if "source_provenance" in set(row.keys()) else "unknown"
+                return row["value"], prov
+            except sqlite3.OperationalError:
+                cursor.execute("SELECT value FROM facts WHERE key = ?", (key.lower().strip(),))
+                row = cursor.fetchone()
+                if not row:
+                    return None, "unknown"
+                return row["value"], "unknown"
+
     def update_user_preference(self, key: str, value: str, dimension_id: str = "custom", locked: int = 1) -> str:
         """Stores or updates a core user preference or behavioral calibration."""
         clean_key = sanitize_memory_taint(str(key or "").lower().strip().replace(" ", "_"))
@@ -79,7 +102,7 @@ class FactsManagerMixin:
         if not clean_key or not clean_val:
             return "Preference key and value cannot be empty, Sir."
 
-        self.remember_fact(clean_key, clean_val, category="user_preference")
+        self.remember_fact(clean_key, clean_val, category="user_preference", source_provenance="user_supplied")
         def _write_pref(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute("""
@@ -142,7 +165,7 @@ class FactsManagerMixin:
         lines = [f"- {k}: {v}" for k, v in sorted(prefs.items())]
         return "Core User Profile & Preferences (Always adhere to these directives):\n" + "\n".join(lines)
 
-    def search_facts(self, query: str) -> list[dict[str, str]]:
+    def search_facts(self, query: str) -> list[dict[str, Any]]:
         """Searches remembered facts matching a query keyword using FTS5 BM25 with LIKE fallback."""
         sanitized = sanitize_fts5_query(query)
         if sanitized:
@@ -150,7 +173,7 @@ class FactsManagerMixin:
                 with self._get_ro_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
-                        SELECT f.category, f.key, f.value
+                        SELECT f.category, f.key, f.value, f.source_provenance
                         FROM facts_fts ft
                         JOIN facts f ON ft.rowid = f.id
                         WHERE facts_fts MATCH ?
@@ -166,19 +189,31 @@ class FactsManagerMixin:
         q = f"%{query.lower().strip()}%"
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT category, key, value FROM facts
-                WHERE key LIKE ? OR value LIKE ? OR category LIKE ?
-                ORDER BY category, key
-            """, (q, q, q))
-            return [dict(row) for row in cursor.fetchall()]
+            try:
+                cursor.execute("""
+                    SELECT category, key, value, source_provenance FROM facts
+                    WHERE key LIKE ? OR value LIKE ? OR category LIKE ?
+                    ORDER BY category, key
+                """, (q, q, q))
+                return [dict(row) for row in cursor.fetchall()]
+            except sqlite3.OperationalError:
+                cursor.execute("""
+                    SELECT category, key, value FROM facts
+                    WHERE key LIKE ? OR value LIKE ? OR category LIKE ?
+                    ORDER BY category, key
+                """, (q, q, q))
+                return [{**dict(row), "source_provenance": "unknown"} for row in cursor.fetchall()]
 
-    def get_all_facts(self) -> list[dict[str, str]]:
+    def get_all_facts(self) -> list[dict[str, Any]]:
         """Retrieves all stored facts."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT category, key, value FROM facts ORDER BY category, key")
-            return [dict(row) for row in cursor.fetchall()]
+            try:
+                cursor.execute("SELECT category, key, value, source_provenance FROM facts ORDER BY category, key")
+                return [dict(row) for row in cursor.fetchall()]
+            except sqlite3.OperationalError:
+                cursor.execute("SELECT category, key, value FROM facts ORDER BY category, key")
+                return [{**dict(row), "source_provenance": "unknown"} for row in cursor.fetchall()]
 
     def semantic_search_facts(self, query: str, top_k: int = 5, min_score: float = 0.12) -> list[dict[str, Any]]:
         """Finds stored facts semantically relevant to query using sqlite-vec KNN search with TF-IDF fallback."""
@@ -190,7 +225,7 @@ class FactsManagerMixin:
             with self._get_ro_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT f.category, f.key, f.value, v.distance
+                    SELECT f.category, f.key, f.value, f.source_provenance, v.distance
                     FROM facts_vec v
                     JOIN facts f ON v.fact_id = f.id
                     WHERE v.embedding MATCH ? AND k = ?
@@ -207,6 +242,7 @@ class FactsManagerMixin:
                                 "category": row["category"],
                                 "key": row["key"],
                                 "value": row["value"],
+                                "source_provenance": row["source_provenance"] if "source_provenance" in set(row.keys()) else "unknown",
                                 "relevance_score": round(sim, 3),
                                 "distance": round(dist, 4),
                             })
@@ -255,7 +291,7 @@ class FactsManagerMixin:
                 def _fts_query(conn: sqlite3.Connection):
                     cursor = conn.cursor()
                     cursor.execute("""
-                        SELECT f.category, f.key, f.value
+                        SELECT f.category, f.key, f.value, f.source_provenance
                         FROM facts_fts ft
                         JOIN facts f ON ft.rowid = f.id
                         WHERE facts_fts MATCH ?
@@ -273,7 +309,7 @@ class FactsManagerMixin:
         def _like_query(conn: sqlite3.Connection):
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT category, key, value FROM facts
+                SELECT category, key, value, source_provenance FROM facts
                 WHERE key LIKE ? OR value LIKE ? OR category LIKE ?
                 ORDER BY category, key
             """, (q, q, q))
@@ -294,7 +330,7 @@ class FactsManagerMixin:
             def _knn_query(conn: sqlite3.Connection):
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT f.category, f.key, f.value, v.distance
+                    SELECT f.category, f.key, f.value, f.source_provenance, v.distance
                     FROM facts_vec v
                     JOIN facts f ON v.fact_id = f.id
                     WHERE v.embedding MATCH ? AND k = ?

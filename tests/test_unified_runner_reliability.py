@@ -55,47 +55,63 @@ class TestUnifiedRunnerReliability(unittest.TestCase):
     """Tests for accurate completion reporting in UnifiedRunner."""
 
     def setUp(self):
+        from jarvis.core.security_boundaries import (
+            DualKeyApprovalManager,
+            TurnTaintTracker,
+        )
+        DualKeyApprovalManager.get_instance().reset()
+        TurnTaintTracker.get_instance().reset_turn()
+
         # Register test skills
-        @SkillRegistry.register(name="test_timeout_tool", description="Tool that exceeds timeout")
+        @SkillRegistry.register(name="test_timeout_tool", description="Tool that exceeds timeout", read_only=True, data_provenance="trusted_system")
         def test_timeout_tool():
             import time
             time.sleep(0.5)
             return "done"
 
-        @SkillRegistry.register(name="test_failing_tool", description="Tool that raises an exception")
+        @SkillRegistry.register(name="test_failing_tool", description="Tool that raises an exception", read_only=True, data_provenance="trusted_system")
         def test_failing_tool():
             raise RuntimeError("Hardware connection lost")
 
         @SkillRegistry.register(
             name="test_search_logs_tool",
             description="Tool that legitimately returns an error message as clean output",
+            read_only=True,
+            data_provenance="trusted_system",
         )
         def test_search_logs_tool():
             return "Error: No log entries found"
 
-        @SkillRegistry.register(name="test_successful_tool", description="Normal succeeding tool")
+        @SkillRegistry.register(name="test_successful_tool", description="Normal succeeding tool", read_only=True, data_provenance="trusted_system")
         def test_successful_tool(step: int = 0):
             return f"CPU temperature is 45C (step {step})"
 
-        @SkillRegistry.register(name="test_mimic_security_denial", description="Tool mimicking security denial")
+        @SkillRegistry.register(name="test_mimic_security_denial", description="Tool mimicking security denial", read_only=True, data_provenance="trusted_system")
         def test_mimic_security_denial():
             return "Error: Security gate denied execution of tool 'simulated'."
 
-        @SkillRegistry.register(name="test_mimic_loop_cycle", description="Tool mimicking loop cycle")
+        @SkillRegistry.register(name="test_mimic_loop_cycle", description="Tool mimicking loop cycle", read_only=True, data_provenance="trusted_system")
         def test_mimic_loop_cycle():
             return "Loop cycle detected on tool 'simulated' with identical arguments. Halting recursion."
 
-        @SkillRegistry.register(name="test_mimic_cancellation", description="Tool mimicking cancellation")
+        @SkillRegistry.register(name="test_mimic_cancellation", description="Tool mimicking cancellation", read_only=True, data_provenance="trusted_system")
         def test_mimic_cancellation():
             return "Action cancelled: Operation was aborted by user interrupt."
 
-        @SkillRegistry.register(name="test_mimic_exception", description="Tool mimicking exception")
+        @SkillRegistry.register(name="test_mimic_exception", description="Tool mimicking exception", read_only=True, data_provenance="trusted_system")
         def test_mimic_exception():
             return "Error executing tool 'simulated': simulated error message"
 
-        @SkillRegistry.register(name="test_mimic_not_found", description="Tool mimicking tool not found")
+        @SkillRegistry.register(name="test_mimic_not_found", description="Tool mimicking tool not found", read_only=True, data_provenance="trusted_system")
         def test_mimic_not_found():
             return "Error: Tool 'simulated' not found."
+
+        for t in [
+            "test_timeout_tool", "test_failing_tool", "test_search_logs_tool", "test_successful_tool",
+            "test_mimic_security_denial", "test_mimic_loop_cycle", "test_mimic_cancellation",
+            "test_mimic_exception", "test_mimic_not_found",
+        ]:
+            SkillRegistry.certify_test_read_only_tool(t)
 
     def test_tool_timeout_reports_timeout_failure_not_completed(self):
         """1. When a tool exceeds execution timeout, UnifiedRunner must report timeout failure

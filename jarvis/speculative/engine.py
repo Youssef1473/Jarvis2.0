@@ -24,6 +24,10 @@ from jarvis.core.cancellation import (
     bind_tool_cancellation_token,
     reset_tool_cancellation_token,
 )
+from jarvis.core.security_boundaries import (
+    SecurityBoundaryViolation,
+    TurnTaintTracker,
+)
 from jarvis.core.thread_affinity import init_speculative_worker_thread
 from jarvis.skills.base import SkillMetadata, SkillRegistry, SpeculationForbiddenError
 
@@ -74,8 +78,8 @@ class EnvironmentEpochTracker:
             from jarvis.context.flow_state_mirror import ResourceScope
             with FlowEpochTracker._lock:
                 FlowEpochTracker._epochs[ResourceScope.FILESYSTEM] = FlowEpochTracker._epochs.get(ResourceScope.FILESYSTEM, 0) + 1
-        except Exception:
-            pass
+        except Exception as err:  # noqa: BLE001
+            logger.debug("FlowEpochTracker bump fs error: %s", err)
 
     def update_git_head(self, head_ref: str) -> None:
         digest = hashlib.blake2b(head_ref.encode("utf-8"), digest_size=4).digest()
@@ -87,8 +91,8 @@ class EnvironmentEpochTracker:
             from jarvis.context.flow_state_mirror import ResourceScope
             with FlowEpochTracker._lock:
                 FlowEpochTracker._epochs[ResourceScope.GIT] = FlowEpochTracker._epochs.get(ResourceScope.GIT, 0) + 1
-        except Exception:
-            pass
+        except Exception as err:  # noqa: BLE001
+            logger.debug("FlowEpochTracker bump git error: %s", err)
 
     def bump_terminal_seq(self) -> None:
         self._terminal_seq += 1
@@ -99,8 +103,8 @@ class EnvironmentEpochTracker:
             from jarvis.context.flow_state_mirror import ResourceScope
             with FlowEpochTracker._lock:
                 FlowEpochTracker._epochs[ResourceScope.TERMINAL] = FlowEpochTracker._epochs.get(ResourceScope.TERMINAL, 0) + 1
-        except Exception:
-            pass
+        except Exception as err:  # noqa: BLE001
+            logger.debug("FlowEpochTracker bump term error: %s", err)
 
     def set_active_hwnd(self, hwnd: int) -> None:
         self._active_hwnd = int(hwnd)
@@ -258,8 +262,8 @@ class SpeculativeExecutionEngine:
                             mtime_ns=getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)),
                             size_bytes=st.st_size,
                         ))
-                    except Exception:
-                        pass
+                    except Exception as err:  # noqa: BLE001
+                        logger.debug("Stat failed for file %s: %s", p, err)
         return ValidationSnapshot(
             scope_epochs=scope_epochs,
             file_stamps=tuple(file_stamps),
@@ -273,8 +277,11 @@ class SpeculativeExecutionEngine:
         # 1. Verify resource scope epochs
         current_epochs = EnvironmentEpochTracker.get_snapshot()
         for scope_flag in ResourceScope:
-            if scope_flag != ResourceScope.NONE and (meta.scopes & scope_flag):
-                if current_epochs.get(scope_flag, 0) != snap.scope_epochs.get(scope_flag, 0):
+            if (
+                scope_flag != ResourceScope.NONE
+                and (meta.scopes & scope_flag)
+                and (current_epochs.get(scope_flag, 0) != snap.scope_epochs.get(scope_flag, 0))
+            ):
                     logger.debug("Speculative cache invalidated: scope %s changed (%d -> %d)",
                                  scope_flag, snap.scope_epochs.get(scope_flag, 0), current_epochs.get(scope_flag, 0))
                     return False
@@ -301,7 +308,8 @@ class SpeculativeExecutionEngine:
                 if current_mtime != stamp.mtime_ns or st.st_size != stamp.size_bytes:
                     logger.debug("Speculative cache invalidated: file %s modified", stamp.path)
                     return False
-            except Exception:
+            except Exception as err:  # noqa: BLE001
+                logger.debug("ValidationSnapshot file stamp verification error for %s: %s", stamp.path, err)
                 return False
 
         return True
@@ -403,17 +411,28 @@ class SpeculativeExecutionEngine:
                                      skill_name, saved_ms, was_done)
                         # Monotonically propagate taint to claiming turn if this is an ingestion tool
                         try:
-                            from jarvis.core.security_boundaries import TurnTaintTracker
                             tracker = TurnTaintTracker.get_instance()
                             if tracker.is_untrusted_ingestion(skill_name) or getattr(meta, "external_ingestion", False):
                                 tracker.record_ingestion(skill_name, bound_args)
-                        except Exception as e:  # noqa: BLE001
-                            logger.debug("Failed to record speculative ingestion taint for %s: %s", skill_name, e)
+                        except Exception as e:
+                            self.metrics.stale_invalidations += 1
+                            entry.cancel()
+                            logger.error("Failed to propagate speculative ingestion taint for %s: %s", skill_name, e)
+                            try:
+                                tracker = TurnTaintTracker.get_instance()
+                                tracker.mark_compromised(f"speculative_taint_failure:{skill_name}")
+                            except Exception as comp_err:  # noqa: BLE001
+                                logger.debug("Failed to mark turn compromised during speculative error: %s", comp_err)
+                            raise SecurityBoundaryViolation(
+                                f"Security Boundary Violation: Failed to propagate speculative taint for '{skill_name}': {e}"
+                            ) from e
                         return result
                     else:
                         self.metrics.stale_invalidations += 1
                         entry.cancel()
                         logger.debug("Speculative result discarded: modified mid-flight (%s)", skill_name)
+                except SecurityBoundaryViolation:
+                    raise
                 except TimeoutError:
                     self.metrics.stale_invalidations += 1
                     entry.cancel()

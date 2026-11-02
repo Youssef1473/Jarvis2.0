@@ -21,22 +21,28 @@ from jarvis.core.safety import SafetyGate
 
 
 def test_protocols():
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().reset_turn()
     print("\n--- 1. Testing Multi-Action Protocols ---")
     res_work = SkillRegistry.execute("execute_protocol", protocol_name="work")
     print("Work protocol:", res_work)
     assert "Work protocol initiated" in res_work
 
+    TurnTaintTracker.get_instance().reset_turn()
     res_night = SkillRegistry.execute("execute_protocol", protocol_name="night")
     print("Night protocol:", res_night)
     assert "Night protocol engaged" in res_night
 
 
 def test_system_maintenance():
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().reset_turn()
     print("\n--- 2. Testing System Maintenance & RAM Hogs ---")
     hogs = SkillRegistry.execute("inspect_ram_hogs")
     print("RAM Hogs excerpt:\n", hogs[:150])
     assert "Top Memory Consumers" in hogs
 
+    TurnTaintTracker.get_instance().reset_turn()
     opt = SkillRegistry.execute("optimize_workstation")
     print("Optimization result:", opt)
     assert "optimization complete" in opt.lower()
