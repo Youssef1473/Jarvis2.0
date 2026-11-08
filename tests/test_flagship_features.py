@@ -68,9 +68,11 @@ def test_project_manager():
     print("Project open result:", p_res)
     assert "opened in Visual Studio Code" in p_res or "Jarvis_2.0" in p_res
 
-    f_res = SkillRegistry.execute("open_user_folder", folder_name="downloads")
-    print("Folder open result:", f_res)
-    assert "Opened your downloads folder" in f_res
+    from unittest.mock import patch
+    with patch("os.startfile"):
+        f_res = SkillRegistry.execute("open_user_folder", folder_name="downloads")
+        print("Folder open result:", f_res)
+        assert "Opened your downloads folder" in f_res
 
 
 def test_intent_routing_coverage():
@@ -79,7 +81,7 @@ def test_intent_routing_coverage():
         cfg = yaml.safe_load(f)
     cfg["llm"]["provider"] = "hybrid"
 
-    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg))
+    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg), antigravity_resolver=lambda: None)
 
     queries = {
         "Jarvis, initiate work protocol": "execute_protocol",

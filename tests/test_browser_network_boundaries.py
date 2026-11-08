@@ -34,6 +34,34 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+try:
+    import pytest
+except ImportError:  # pragma: no cover
+    # Restricted fallback shim for running under Python standard library unittest.
+    # Strictly limited to known harmless custom marker tags.
+    # Control markers (e.g. skip, skipif, xfail, parametrize) fail loudly
+    # to prevent silent omission of test control flow when pytest is absent.
+    _ALLOWED_CUSTOM_MARKERS = frozenset({"browser_integration", "loopback"})
+
+    class _DummyPytestMark:
+        def __getattr__(self, name: str):
+            if name not in _ALLOWED_CUSTOM_MARKERS:
+                raise AttributeError(
+                    f"Unsupported pytest marker: {name}. Control markers "
+                    f"like skip/skipif/parametrize require native pytest."
+                )
+
+            def identity_marker(*args, **kwargs):
+                if len(args) == 1 and callable(args[0]) and not kwargs:
+                    return args[0]
+                return lambda fn: fn
+
+            return identity_marker
+
+    class _DummyPytest:
+        mark = _DummyPytestMark()
+
+    pytest = _DummyPytest()  # type: ignore[assignment]
 from websockets.sync.client import connect
 
 # Add project root to path
@@ -161,6 +189,7 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
     def tearDown(self):
         self._managed_port_patcher.stop()
 
+    @pytest.mark.loopback
     def test_redirect_to_protected_localhost_port_rejected(self):
         """Verifies pre-flight detects and blocks redirect hops targeting protected localhost ports."""
         target_url = f"http://127.0.0.1:{self.mock_srv.port}/to-hud"
@@ -168,6 +197,7 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
         self.assertFalse(is_valid)
         self.assertIn("20129", str(err_msg))
 
+    @pytest.mark.loopback
     def test_redirect_to_cloud_metadata_rejected(self):
         """Verifies redirect hop to 169.254.169.254 is rejected."""
         target_url = f"http://127.0.0.1:{self.mock_srv.port}/to-metadata"
@@ -175,6 +205,7 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
         self.assertFalse(is_valid)
         self.assertIn("169.254.169.254", str(err_msg))
 
+    @pytest.mark.loopback
     def test_redirect_to_private_rfc1918_rejected_from_remote(self):
         """Verifies redirect hop to private RFC 1918 is rejected when initial URL is remote."""
         target_url = f"http://127.0.0.1:{self.mock_srv.port}/to-private-rfc1918"
@@ -191,6 +222,7 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
             validator.redirect_request(req, None, 302, "Found", {}, "http://insecure.example.com/checkout")
         self.assertIn("Insecure redirect downgrade from HTTPS to HTTP blocked", str(ctx.exception))
 
+    @pytest.mark.loopback
     def test_redirect_loop_detected_and_aborted(self):
         """Verifies cyclical redirects (A -> B -> A) are aborted immediately."""
         target_url = f"http://127.0.0.1:{self.mock_srv.port}/loop-a"
@@ -198,6 +230,7 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
         self.assertFalse(is_valid)
         self.assertIn("Redirect loop detected", str(err_msg))
 
+    @pytest.mark.loopback
     def test_max_hop_limit_exceeded_aborted(self):
         """Verifies redirect chains exceeding maximum 4 hops are terminated."""
         target_url = f"http://127.0.0.1:{self.mock_srv.port}/chain-1"
@@ -231,6 +264,7 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
         self.assertTrue(any("javascript:*" in pat for pat in patterns))
         self.assertTrue(any("file://*" in pat for pat in patterns))
 
+    @pytest.mark.loopback
     def test_cdp_navigation_installs_network_guards(self):
         """Verifies open_or_navigate_tab_cdp configures Network.enable and Network.setBlockedURLs."""
         fake_tab = {
@@ -259,6 +293,7 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
             self.assertIn("Network.setBlockedURLs", methods)
             self.assertIn("Page.navigate", methods)
 
+    @pytest.mark.loopback
     def test_cdp_new_tab_guard_failure_fails_closed(self):
         """Verifies creating a new tab fails closed if guard initialization encounters error."""
         fake_new_tab_resp = json.dumps({
@@ -310,6 +345,7 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
             self.assertIn("http://localhost:20129", allow_orig_arg)
             self.assertIn("chrome-devtools://devtools", allow_orig_arg)
 
+    @pytest.mark.loopback
     def test_legitimate_local_dev_redirect_allowed(self):
         """Verifies local developer redirects within permitted ports succeed."""
         target_url = f"http://127.0.0.1:{self.mock_srv.port}/safe-hop-1"
@@ -318,6 +354,7 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
         self.assertIsNone(err_msg)
         self.assertIn("/safe-hop-2", final_url)
 
+    @pytest.mark.loopback
     def test_head_method_rejected_falls_back_to_get_cleanly(self):
         """Verifies that servers rejecting HEAD (405) safely fall back to GET without error."""
         target_url = f"http://127.0.0.1:{self.mock_srv.port}/head-rejected"
@@ -352,6 +389,7 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
             self.assertIn("Network.setBlockedURLs", methods)
             self.assertIn("Runtime.evaluate", methods)
 
+    @pytest.mark.loopback
     def test_os_control_open_browser_tab_blocks_redirect_to_disallowed(self):
         """Verifies open_browser_tab blocks navigation when redirect pre-flight fails."""
         bad_redirect_url = f"http://127.0.0.1:{self.mock_srv.port}/to-hud"
@@ -359,6 +397,7 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
         self.assertIn("Navigation blocked: Destination URL redirected to disallowed address", res)
         self.assertIn("20129", res)
 
+    @pytest.mark.loopback
     def test_existing_tab_guard_failure_aborts_navigation(self):
         """Verifies open_or_navigate_tab_cdp fails closed if guard setup fails on reused tab."""
         fake_tabs = [
@@ -581,27 +620,51 @@ class TestBrowserNetworkBoundaries(unittest.TestCase):
         self.assertFalse(session._reader_thread.is_alive())
 
 
-def _find_browser_exe():
-    from jarvis.skills.os_control import _build_app_index
-    apps = _build_app_index()
-    for b in ("brave", "chrome"):
-        if apps.get(b) and os.path.exists(apps[b]):
-            return apps[b]
-    candidates = [
-        os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
-        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
-    ]
-    # Check Playwright-managed headless Chromium before system Edge
-    import glob
-    playwright_candidates = glob.glob(os.path.expandvars(r"%LOCALAPPDATA%\ms-playwright\chromium-*\chrome-win\chrome.exe"))
-    candidates.extend(playwright_candidates)
-    if apps.get("msedge") and os.path.exists(apps["msedge"]):
-        candidates.append(apps["msedge"])
-    candidates.append(os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"))
+def _find_browser_exe(environ: dict[str, str] | None = None) -> str | None:
+    """Discovers a supported Chromium browser executable for CDP testing.
 
-    for p in candidates:
-        if os.path.exists(p):
-            return p
+    Resolution order:
+    1. Explicit BROWSER_EXE environment override, if supplied and valid.
+    2. Canonical installed Playwright Chromium location (preferring newest chrome-win64, then chrome-win).
+
+    Returns:
+        Absolute normalized path to the executable if found, otherwise None.
+    """
+    import glob
+    import re
+
+    env = os.environ if environ is None else environ
+
+    # 1. Explicit BROWSER_EXE override (if supplied and valid)
+    override = env.get("BROWSER_EXE")
+    if override:
+        candidate = os.path.expandvars(override)
+        if os.path.isfile(candidate):
+            return os.path.abspath(candidate)
+
+    # 2. Canonical installed Playwright Chromium locations (preferring newest chrome-win64, then chrome-win)
+    pw_patterns = [
+        os.path.expandvars(r"%LOCALAPPDATA%\ms-playwright\chromium-*\chrome-win64\chrome.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\ms-playwright\chromium-*\chrome-win\chrome.exe"),
+    ]
+    pw_candidates: list[str] = []
+    for pat in pw_patterns:
+        matches = glob.glob(pat)
+
+        def _rev_num(path_str: str) -> int:
+            m = re.search(r"chromium-(\d+)", path_str)
+            return int(m.group(1)) if m else 0
+
+        matches.sort(key=_rev_num, reverse=True)
+        pw_candidates.extend(matches)
+
+    for p in pw_candidates:
+        if os.path.isfile(p):
+            return os.path.abspath(p)
+
+    # Note: Unrelated system browsers (Brave, Chrome, Edge) are NOT automatically selected
+    # as fallbacks to prevent silent substitution. Developers desiring a system browser
+    # must explicitly specify it via the BROWSER_EXE environment variable.
     return None
 
 
@@ -628,13 +691,19 @@ def _recv_response(ws, expected_id, timeout=15.0):
     raise TimeoutError(f"Timed out waiting for response id {expected_id}")
 
 
+@pytest.mark.browser_integration
 class TestLiveChromiumNetworkGuards(unittest.TestCase):
     """GENUINE CHROMIUM INTEGRATION SUITE: Isolated real browser process on non-standard port 9998."""
 
     @classmethod
     def setUpClass(cls):
-        if not BROWSER_EXE:
-            raise unittest.SkipTest("No supported Chromium browser executable located on host.")
+        exe = _find_browser_exe()
+        if not exe:
+            raise unittest.SkipTest(
+                "No supported Chromium browser executable located on host. "
+                "Ensure Playwright Chromium is installed or set BROWSER_EXE environment variable."
+            )
+        cls.browser_exe = exe
 
         cls.blocked_hits = []
         cls.allowed_hits = []
@@ -687,7 +756,7 @@ class TestLiveChromiumNetworkGuards(unittest.TestCase):
 
         cls.temp_dir = tempfile.mkdtemp(prefix="live_cdp_test_")
         cls.browser_cmd = [
-            BROWSER_EXE,
+            cls.browser_exe,
             f"--remote-debugging-port={LIVE_CDP_PORT}",
             "--remote-debugging-address=127.0.0.1",
             "--remote-allow-origins=http://127.0.0.1:20129,http://localhost:20129,chrome-devtools://devtools,devtools://devtools",

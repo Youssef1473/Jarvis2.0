@@ -58,7 +58,10 @@ class FactsManagerMixin:
                     cursor.execute("SELECT id FROM facts WHERE key = ?", (clean_key,))
                     row = cursor.fetchone()
                     if row:
-                        cursor.execute("INSERT OR REPLACE INTO facts_vec(fact_id, embedding) VALUES (?, ?)", (row["id"], blob))
+                        # sqlite-vec vec0 tables do not support INSERT OR REPLACE conflict resolution;
+                        # explicitly delete existing entry before inserting updated embedding vector.
+                        cursor.execute("DELETE FROM facts_vec WHERE fact_id = ?", (row["id"],))
+                        cursor.execute("INSERT INTO facts_vec(fact_id, embedding) VALUES (?, ?)", (row["id"], blob))
                 except Exception as e:
                     logger.warning("sqlite-vec fact indexing failed (%s); continuing without vector index.", e)
 

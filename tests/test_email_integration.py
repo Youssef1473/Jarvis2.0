@@ -142,7 +142,7 @@ def test_send_email_pipeline():
 def test_intent_routing_coverage():
     print("\n--- 4. Testing Brain Intent Routing for Email Skills ---")
     cfg = load_config()
-    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg))
+    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg), antigravity_resolver=lambda: None)
 
     queries = {
         "Jarvis, check my unread emails": "check_unread_emails",

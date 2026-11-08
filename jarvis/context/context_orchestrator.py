@@ -269,6 +269,7 @@ class ContextOrchestrator:
         memory: Any | None = None,
         cognitive_twin: Any | None = None,
         max_bytes: int = 1536,
+        active_task_mode: str = "general",
     ) -> str:
         """Wraps user turn with query-biased RRF memory, past lessons, and live telemetry envelope.
 
@@ -289,29 +290,60 @@ class ContextOrchestrator:
             except Exception:
                 pass
 
-        # 2. Query-biased Dynamic Memory Summary
+        # 2. Query-biased Dynamic Memory Summary (Strictly Relevant Facts Only)
         if memory:
             try:
-                mem_summary = memory.get_context_summary(query=user_text) if user_text else memory.get_context_summary()
-                if mem_summary:
-                    escaped_summary = html.escape(str(mem_summary))
-                    envelope_parts.append(f"<jit_recalled_memory>\n{escaped_summary}\n</jit_recalled_memory>")
+                if user_text:
+                    # In query mode: strictly scope memory to query-matched facts to protect user privacy
+                    # and ensure unrelated personal memories are never leaked to external cloud LLM providers.
+                    if hasattr(memory, "hybrid_search_facts"):
+                        matched = memory.hybrid_search_facts(user_text, top_k=5, max_l2_distance=0.75)
+                        if matched:
+                            top_score = matched[0].get("rrf_score", 0.0)
+                            filtered = [
+                                m for m in matched
+                                if m.get("rrf_score", 0.0) >= 0.025
+                                or (top_score > 0 and m.get("rrf_score", 0.0) >= top_score * 0.75)
+                            ]
+                            if filtered:
+                                lines = [f"• {m['key'].replace('_', ' ').capitalize()}: {m['value']}" for m in filtered]
+                                rel_text = "[Directly Relevant Knowledge to Current Context]\n" + "\n".join(lines)
+                                escaped_summary = html.escape(rel_text)
+                                envelope_parts.append(f"<jit_recalled_memory>\n{escaped_summary}\n</jit_recalled_memory>")
+                    else:
+                        mem_summary = memory.get_context_summary(query=user_text)
+                        if mem_summary and "[Directly Relevant Knowledge to Current Context]" in mem_summary:
+                            rel_text = mem_summary.split("\n\n[")[0].strip()
+                            escaped_summary = html.escape(rel_text)
+                            envelope_parts.append(f"<jit_recalled_memory>\n{escaped_summary}\n</jit_recalled_memory>")
+                else:
+                    mem_summary = memory.get_context_summary()
+                    if mem_summary:
+                        escaped_summary = html.escape(str(mem_summary))
+                        envelope_parts.append(f"<jit_recalled_memory>\n{escaped_summary}\n</jit_recalled_memory>")
             except Exception as e:
                 logger.debug("JIT memory recall notice: %s", e)
 
-            # 3. Past Episodic Lessons
-            try:
-                past_lessons = memory.recall_episodic_lessons(query=user_text, top_k=2)
-                if past_lessons:
-                    lesson_bullets = "\n".join(
-                        f"- When executing '{html.escape(str(l.get('tool_name', 'tool')))}': {html.escape(str(l.get('lesson', '')))}"
-                        for l in past_lessons
-                        if l.get("lesson")
-                    )
-                    if lesson_bullets:
-                        envelope_parts.append(f"<episodic_lessons>\n{lesson_bullets}\n</episodic_lessons>")
-            except Exception as e:
-                logger.debug("Episodic lesson recall notice: %s", e)
+            # 3. Past Episodic Lessons: ONLY include when relevant to code or tool execution intent.
+            # Never attach unrelated tool-failure lessons to ordinary conversational/factual questions.
+            is_tool_intent = (
+                active_task_mode == "code"
+                or any(user_text.lower().startswith(p) for p in ("run ", "execute ", "launch ", "start ", "create ", "make ", "build "))
+            )
+            is_factual_query = any(user_text.lower().startswith(q) for q in ("what ", "who ", "where ", "when ", "why ", "how ", "is ", "are ", "can you tell me", "do you know"))
+            if is_tool_intent and not is_factual_query:
+                try:
+                    past_lessons = memory.recall_episodic_lessons(query=user_text, top_k=2)
+                    if past_lessons:
+                        lesson_bullets = "\n".join(
+                            f"- When executing '{html.escape(str(l.get('tool_name', 'tool')))}': {html.escape(str(l.get('lesson', '')))}"
+                            for l in past_lessons
+                            if l.get("lesson") and float(l.get("distance", 0.0) or 0.0) <= 0.75
+                        )
+                        if lesson_bullets:
+                            envelope_parts.append(f"<episodic_lessons>\n{lesson_bullets}\n</episodic_lessons>")
+                except Exception as e:
+                    logger.debug("Episodic lesson recall notice: %s", e)
 
         # 4. Actual User Utterance
         envelope_parts.append(user_text)

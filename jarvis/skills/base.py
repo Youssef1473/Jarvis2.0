@@ -87,6 +87,8 @@ KNOWN_READ_ONLY_TOOLS: set[str] = {
     "inspect_screen_with_marks",
     "inspect_ram_hogs",
     "inspect_window_controls",
+    "get_focused_element",
+    "retrieve_element_patterns",
     "check_unread_emails",
     "check_hardware_health",
     "check_code_diagnostics",

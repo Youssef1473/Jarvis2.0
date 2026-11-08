@@ -65,7 +65,7 @@ def test_hybrid_brain_initialization_and_dispatch():
 
     memory = MemoryManager(cfg)
     safety = SafetyGate(cfg)
-    brain = JarvisBrain(cfg, memory, safety)
+    brain = JarvisBrain(cfg, memory, safety, antigravity_resolver=lambda: None)
 
     print("Active provider:", brain.provider)
     print("Ollama client available:", brain.ollama_client is not None)

@@ -69,6 +69,8 @@ from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Brain")
 
+_LAST_ACTIVE_BRAIN: Any | None = None
+
 
 class JarvisBrain(
     OpenAIProviderMixin,
@@ -82,15 +84,8 @@ class JarvisBrain(
 
     GEMINI_CANDIDATE_MODELS = [
         "gemini-3.8-flash",
-        "gemini-3.7-flash",
-        "gemini-3.5-flash",
-        "gemini-flash-latest",
+        "gemini-3.6-flash",
         "gemini-3.1-flash-lite",
-        "gemini-3.5-flash-lite",
-        "gemini-flash-lite-latest",
-        "gemini-3-flash-preview",
-        "gemini-2.5-pro",
-        "gemini-pro-latest",
     ]
 
     GROQ_CANDIDATE_MODELS = [
@@ -138,6 +133,49 @@ class JarvisBrain(
         "inspect_screen",
         "see_screen",
     }
+
+    READ_ONLY_TOOL_NAMES = frozenset({
+        "get_current_time_and_date",
+        "list_directory",
+        "read_file",
+        "read_multiple_files",
+        "search_codebase",
+        "search_everything",
+        "get_weather",
+        "get_battery_status",
+        "list_running_applications",
+        "get_active_window",
+        "check_unread_emails",
+        "read_email_details",
+        "get_user_preferences",
+        "recall_fact",
+        "recall_past_conversation",
+        "recall_episodic_lessons",
+        "list_pending_tasks",
+        "list_calendar_events",
+        "get_system_vitals",
+        "get_tech_news_headlines",
+        "inspect_ram_hogs",
+        "inspect_screen",
+        "see_screen",
+        "take_desktop_screenshot",
+        "list_photos",
+        "list_open_browser_tabs",
+        "list_active_timers",
+        "get_voice_settings",
+        "list_audio_devices",
+        "inspect_file_locks",
+        "inspect_port_holders",
+        "audit_vram_and_thermal_budget",
+        "get_recent_workspace_mutations",
+        "list_compiled_reflex_macros",
+        "list_custom_skills",
+        "jarvis_doctor",
+        "profile_runtime",
+        "audit_memory_heap",
+        "verify_learned_habits",
+        "web_search",
+    })
 
     TOOL_INTENT_GROUPS = (
         (("add feature", "create feature", "build yourself", "create a skill", "add a skill", "create command", "add command", "build a command", "create tool", "add tool", "new tool", "new skill", "evolve", "self build", "teach yourself", "learn to", "learn this skill", "learn a skill", "learn skill", "custom skill", "edit yourself", "modify yourself", "enhance yourself", "optimize yourself", "improve yourself", "upgrade yourself", "inspect your code", "check your code", "look at your code", "fix yourself", "refactor yourself", "your codebase", "your files", "jarvis 2.0", "jarvis_2.0", "self edit", "self optimize", "self improve", "self enhance"), {"read_file", "read_multiple_files", "patch_file", "write_file", "search_codebase", "list_directory", "execute_powershell", "run_project_tests", "git_diff", "git_status", "create_or_update_custom_skill", "list_custom_skills", "delete_custom_skill"}),
@@ -199,8 +237,15 @@ class JarvisBrain(
         memory_manager: MemoryManager,
         safety_gate: SafetyGate,
         service_manager: ManagedServiceManager | None = None,
+        *,
+        antigravity_bridge: AntigravityBridge | None = None,
+        antigravity_resolver: Callable[[], str | None] | None = None,
     ):
         self.config = config
+        global _LAST_ACTIVE_BRAIN
+        _LAST_ACTIVE_BRAIN = self
+        self._gemini_last_verified_timestamp = None
+        self._gemini_last_error = None
         self.memory = memory_manager
         self.safety = safety_gate
         self.service_manager = service_manager or ManagedServiceManager()
@@ -237,7 +282,23 @@ class JarvisBrain(
         self.gemini_tool_names: frozenset[str] = frozenset()
 
         # Antigravity CLI Bridge (Google AI Pro integration)
-        self.antigravity_bridge = AntigravityBridge(config)
+        if antigravity_bridge is not None:
+            self.antigravity_bridge = antigravity_bridge
+        else:
+            resolver = (
+                antigravity_resolver
+                or config.get("llm", {}).get("antigravity_resolver")
+                or config.get("llm", {}).get("antigravity_executable_resolver")
+            )
+            explicit_agy_path = (
+                config.get("llm", {}).get("antigravity_path")
+                or config.get("llm", {}).get("agy_path")
+            )
+            self.antigravity_bridge = AntigravityBridge(
+                config,
+                executable_resolver=resolver,
+                agy_path=explicit_agy_path,
+            )
         configured_ag_model = config.get("llm", {}).get("antigravity_model", "gemini-3.8-flash-medium")
         self.antigravity_candidates = [configured_ag_model] + [
             m for m in self.ANTIGRAVITY_CANDIDATE_MODELS if m != configured_ag_model
@@ -260,6 +321,12 @@ class JarvisBrain(
             "github": 0.0,
             "openrouter": 0.0,
         }
+
+        # Turn-scoped execution tracking and idempotency ledger
+        self._current_turn_executed_tools: list[Any] = []
+        self._current_turn_resolved_tool_outputs: dict[str, Any] = {}
+        self._current_turn_idempotency_ledger: dict[str, Any] = {}
+        self._is_turn_retry: bool = False
 
         # Monotonic cancellation token for preempting in-flight tool actuation on speech barge-in
         self._active_cancel_token: Any | None = None
@@ -392,6 +459,14 @@ class JarvisBrain(
             except Exception as e:
                 logger.debug("TTS stop notice during barge-in flush: %s", e)
 
+    def _compute_tool_call_signature(self, tool_name: str, tool_args: dict[str, Any]) -> str:
+        """Computes a deterministic canonical signature for a tool invocation."""
+        try:
+            args_str = json.dumps(tool_args or {}, sort_keys=True, default=str)
+        except Exception:
+            args_str = str(sorted((tool_args or {}).items()))
+        return f"{tool_name}::{args_str}"
+
     def _dispatch_tool_pipeline(
         self,
         tool_name: str,
@@ -406,6 +481,37 @@ class JarvisBrain(
             (tool_result, is_success): tool_result is the output or error string;
             is_success is True if executed without safety halts or cancellation.
         """
+        # 0. Deterministic Idempotency Ledger & Side-Effect Replay Prevention
+        if not hasattr(self, "_current_turn_idempotency_ledger"):
+            self._current_turn_idempotency_ledger = {}
+
+        call_sig = self._compute_tool_call_signature(tool_name, tool_args)
+        if call_sig in self._current_turn_idempotency_ledger:
+            logger.warning(
+                "Idempotency ledger hit: tool '%s' with identical arguments already executed in turn %s. "
+                "Returning recorded result without re-executing side effects.",
+                tool_name,
+                getattr(self, "_current_turn_id", "active"),
+            )
+            return self._current_turn_idempotency_ledger[call_sig], True
+
+        # Prevent unconfirmed side-effecting replay during provider retry
+        is_side_effecting = tool_name not in self.READ_ONLY_TOOL_NAMES
+        if getattr(self, "_is_turn_retry", False) and is_side_effecting:
+            had_prior_side_effects = any(
+                t[0] not in self.READ_ONLY_TOOL_NAMES
+                for t in getattr(self, "_current_turn_executed_tools", [])
+            )
+            if had_prior_side_effects:
+                halt_msg = (
+                    f"Action halted: Tool '{tool_name}' carries potential side effects and cannot be "
+                    f"automatically replayed during a provider failover retry when prior side effects already completed."
+                )
+                logger.warning(halt_msg)
+                if sentence_callback:
+                    sentence_callback(halt_msg)
+                return halt_msg, False
+
         # 1. Narrate action to UI and audio
         if sentence_callback:
             try:
@@ -430,6 +536,7 @@ class JarvisBrain(
         tool_result = self._execute_tool_with_orchestrator(
             tool_name, tool_args, step_index=step_index, dual_key_confirmed=dual_key_confirmed
         )
+        self._current_turn_idempotency_ledger[call_sig] = tool_result
         self._record_tool_execution(tool_name, tool_args, tool_result)
         return tool_result, True
 
@@ -631,6 +738,7 @@ class JarvisBrain(
             user_text=user_text,
             memory=getattr(self, "memory", None),
             cognitive_twin=getattr(self, "cognitive_twin", None),
+            active_task_mode=getattr(self, "active_task_mode", "general"),
         )
 
     load_curated_prompt = staticmethod(ContextOrchestrator.load_curated_prompt)
@@ -734,6 +842,8 @@ class JarvisBrain(
             self.latency_profiler.mark(self._current_turn_id, "stt_final_ns")
         self._current_turn_executed_tools = []
         self._current_turn_resolved_tool_outputs = {}
+        self._current_turn_idempotency_ledger = {}
+        self._is_turn_retry = False
         self._current_turn_flow_xml = flow_state_xml
         self._current_turn_bookmark_xml = bookmark_context
         from jarvis.core.security_boundaries import TurnTaintTracker
@@ -981,7 +1091,34 @@ class JarvisBrain(
                 return self._process_gemini_query(user_text, sentence_callback)
 
         if self.provider in ("antigravity", "agy"):
-            return self._process_antigravity_query(user_text, sentence_callback)
+            if getattr(self, "antigravity_bridge", None) and self.antigravity_bridge.is_available():
+                return self._process_antigravity_query(user_text, sentence_callback)
+
+            # Antigravity is unavailable — check for secondary Gemini failover
+            if self._is_gemini_configured():
+                status = getattr(self.antigravity_bridge, "availability_status", "UNAVAILABLE")
+                logger.info(
+                    "Primary reasoning provider ('antigravity') is unavailable (%s). "
+                    "Seamlessly failing over to secondary reasoning provider: Gemini API.",
+                    status,
+                )
+                return self._process_gemini_query(user_text, sentence_callback)
+
+            # Neither reasoning provider is available — explain unavailability
+            status = getattr(self.antigravity_bridge, "availability_status", "UNAVAILABLE")
+            diag = getattr(
+                self.antigravity_bridge,
+                "availability_diagnostic",
+                "Antigravity CLI ('agy') executable is not installed or accessible in PATH.",
+            )
+            reply = (
+                f"My apologies, Sir. My primary reasoning provider ('antigravity') is unavailable ({status}: {diag}), "
+                f"and secondary Gemini reasoning is not configured. Local deterministic reflexes remain operational for system commands."
+            )
+            if sentence_callback:
+                sentence_callback(reply)
+            return reply
+
         if self.provider in ("github", "github_copilot", "github-copilot", "copilot", "gh"):
             return self._process_github_query(user_text, sentence_callback)
         if self.provider == "ollama" and not self.openai_client:
@@ -990,15 +1127,86 @@ class JarvisBrain(
             return "Groq is not connected. Configure GROQ_API_KEY; I have not switched to another provider."
         if self.provider in ("ollama", "omniroute", "groq", "grok") and self.openai_client:
             return self._process_openai_compatible_query(user_text, sentence_callback)
-        if self.provider == "gemini" and not self.gemini_client:
-            return "Gemini is not connected. Configure GEMINI_API_KEY; I have not switched to another provider."
         if self.provider == "gemini":
+            if not self._is_gemini_configured():
+                return "My apologies, Sir. Gemini is configured as your primary provider, but no valid GEMINI_API_KEY was found in your environment or .env file."
             return self._process_gemini_query(user_text, sentence_callback)
         if self.provider in ("openrouter", "open_router", "or"):
             if not self.openrouter_provider or not self.openrouter_provider.is_available():
                 return "OpenRouter is not connected. Add OPENROUTER_API_KEY to .env, Sir."
             return self._process_openrouter_query(user_text, sentence_callback)
         return f"No active model is configured for provider '{self.provider}', Sir."
+
+    def _is_gemini_configured(self) -> bool:
+        """Returns True if a non-placeholder GEMINI_API_KEY is present in the environment or config."""
+        key = os.getenv("GEMINI_API_KEY", "").strip()
+        return bool(key and key != "your_gemini_api_key_here")
+
+    def get_provider_status(self) -> dict[str, Any]:
+        """Returns the operational availability status of active and configured reasoning providers."""
+        has_antigravity = bool(getattr(self, "antigravity_bridge", None) and self.antigravity_bridge.is_available())
+        has_gemini = self._is_gemini_configured()
+        has_copilot = bool(getattr(self, "github_bridge", None) and self.github_bridge.is_available())
+        has_ollama = bool(getattr(self, "ollama_client", None) is not None)
+        has_openrouter = bool(getattr(self, "openrouter_provider", None) and self.openrouter_provider.is_available())
+
+        ag_status = getattr(self.antigravity_bridge, "availability_status", "NOT_CONFIGURED") if hasattr(self, "antigravity_bridge") else "NOT_CONFIGURED"
+        ag_diag = getattr(self.antigravity_bridge, "availability_diagnostic", "") if hasattr(self, "antigravity_bridge") else ""
+
+        # Determine effective active routing
+        if self.provider in ("antigravity", "agy"):
+            if has_antigravity:
+                active_route = "antigravity"
+            elif has_gemini:
+                active_route = "gemini_fallback"
+            else:
+                active_route = "reflexes_only"
+        elif self.provider == "gemini":
+            active_route = "gemini" if has_gemini else "reflexes_only"
+        else:
+            active_route = self.provider
+
+        gemini_verified_ts = getattr(self, "_gemini_last_verified_timestamp", None)
+        gemini_last_err = getattr(self, "_gemini_last_error", None)
+        if not has_gemini:
+            gemini_status = "NOT_CONFIGURED"
+        elif gemini_last_err:
+            gemini_status = f"DEGRADED ({gemini_last_err})"
+        elif gemini_verified_ts:
+            ts_str = time.strftime("%H:%M:%S", time.localtime(gemini_verified_ts))
+            gemini_status = f"CONNECTION_VERIFIED (last verified: {ts_str})"
+        else:
+            gemini_status = "CONFIGURED"
+
+        return {
+            "active_provider": self.provider,
+            "active_route": active_route,
+            "providers": {
+                "antigravity": {
+                    "available": has_antigravity,
+                    "status": ag_status,
+                    "diagnostic": ag_diag,
+                },
+                "gemini": {
+                    "available": has_gemini,
+                    "status": gemini_status,
+                    "last_verified_timestamp": gemini_verified_ts,
+                    "last_error": gemini_last_err,
+                },
+                "github": {
+                    "available": has_copilot,
+                    "status": "AVAILABLE" if has_copilot else "NOT_FOUND",
+                },
+                "ollama": {
+                    "available": has_ollama,
+                    "status": "ONLINE" if has_ollama else "OFFLINE",
+                },
+                "openrouter": {
+                    "available": has_openrouter,
+                    "status": "CONFIGURED" if has_openrouter else "NO_API_KEY",
+                },
+            },
+        }
 
     def get_latencies(self) -> dict[str, float]:
         """Returns the most recent measured round-trip inference latencies in milliseconds."""

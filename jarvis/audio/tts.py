@@ -1957,10 +1957,14 @@ class TextToSpeech:
                 if prior_outcome in (self.SHUTDOWN_CLEAN_STOP, self.SHUTDOWN_RECOVERED_ABORT):
                     if self._shutdown_stream is not None:
                         self._closed_streams.add(self._shutdown_stream)
+                        self._closed_streams.add(id(self._shutdown_stream))
+                        self._unresolved_streams.discard(self._shutdown_stream)
+                        self._unresolved_streams.discard(id(self._shutdown_stream))
                     self._shutdown_worker = None
                     self._shutdown_stream = None
                     self._stream_shutdown_timed_out = False
-                    self._stream_cleanup_uncertain = False
+                    if not self._unresolved_streams:
+                        self._stream_cleanup_uncertain = False
                 else:
                     if self._shutdown_stream is not None:
                         self._unresolved_streams.add(self._shutdown_stream)
@@ -2013,7 +2017,13 @@ class TextToSpeech:
 
         self._stream_device, self._stream_sample_rate = self._resolve_output_stream_params()
 
-        if self.engine == "kokoro" and self._kokoro:
+        if self.engine == "kokoro":
+            if not self._kokoro:
+                logger.error("Cannot start streaming session: Kokoro engine requested but neural pipeline is not initialized.")
+                self._stream_active = False
+                self._is_speaking = False
+                return False
+
             while not self._sentence_queue.empty():
                 try:
                     self._sentence_queue.get_nowait()
@@ -2396,7 +2406,7 @@ class TextToSpeech:
             stream_startup_done.set()
             return True
 
-        else:
+        elif self.engine == "sapi5":
             if self._sapi_thread is not None and self._sapi_thread.is_alive():
                 logger.warning("Prior SAPI worker is still active; rejecting new SAPI session.")
                 return False
@@ -2530,6 +2540,15 @@ class TextToSpeech:
                         self._sapi_thread.join(timeout=0.05)
                     return False
             return True
+
+        else:
+            logger.error(
+                "Cannot start streaming session: unsupported or uninitialized engine '%s'",
+                self.engine,
+            )
+            self._stream_active = False
+            self._is_speaking = False
+            return False
 
     def feed_token(self, token: str, expected_gen: int | None = None) -> list[str]:
         """Streams an incremental LLM token into the speculative chunker."""

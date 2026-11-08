@@ -112,7 +112,7 @@ def test_brain_intent_routing():
     from jarvis.core.safety import SafetyGate
 
     cfg = load_config()
-    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg))
+    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg), antigravity_resolver=lambda: None)
 
     # Test 'open my browser'
     tools_browser = brain._select_tools_for_query("Can you please open my browser, Jarvis?")

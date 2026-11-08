@@ -126,7 +126,8 @@ class DocumentVaultMixin:
 
             if blob is not None:
                 try:
-                    cursor.execute("INSERT OR REPLACE INTO documents_vec(doc_id, embedding) VALUES (?, ?)", (doc_id, blob))
+                    cursor.execute("DELETE FROM documents_vec WHERE doc_id = ?", (doc_id,))
+                    cursor.execute("INSERT INTO documents_vec(doc_id, embedding) VALUES (?, ?)", (doc_id, blob))
                 except Exception as e:
                     logger.warning("sqlite-vec document indexing failed (%s); continuing without vector index.", e)
 

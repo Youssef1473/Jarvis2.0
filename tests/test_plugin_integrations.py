@@ -52,9 +52,10 @@ class TestPluginIntegrations(unittest.TestCase):
         self.assertIn("Modern Web Guidance: declarative-dialog-popover-control", res)
         self.assertIn("Use invoker commands to toggle dialogs.", res)
 
+    @patch("jarvis.core.mcp_manager.resolve_and_validate_destination", return_value=("https://gemini-api-docs-mcp.dev", 2, "93.184.216.34"))
     @patch("jarvis.core.mcp_manager.build_safe_url_opener")
     @patch("urllib.request.urlopen")
-    def test_gemini_docs_mcp_sse_parsing(self, mock_urlopen, mock_build_opener):
+    def test_gemini_docs_mcp_sse_parsing(self, mock_urlopen, mock_build_opener, mock_resolve):
         """Tests that MCPClientSession correctly parses SSE streams from gemini-api-docs-mcp.dev."""
         sse_body = (
             b"event: message\n"

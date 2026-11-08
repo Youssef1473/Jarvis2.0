@@ -414,7 +414,7 @@ class TestOneShotProcessContainment(unittest.TestCase):
         """16. Verify that multiple overlapping active streaming sandboxes are all terminated on abort."""
         from jarvis.core.antigravity_bridge import AntigravityBridge
 
-        bridge = AntigravityBridge()
+        bridge = AntigravityBridge(agy_path="dummy_agy.cmd")
         sandbox1 = MagicMock()
         sandbox2 = MagicMock()
 
@@ -436,7 +436,7 @@ class TestOneShotProcessContainment(unittest.TestCase):
         """17. Verify finishing one request removes only its own instance from active set."""
         from jarvis.core.antigravity_bridge import AntigravityBridge
 
-        bridge = AntigravityBridge()
+        bridge = AntigravityBridge(agy_path="dummy_agy.cmd")
         sandbox1 = MagicMock()
         sandbox2 = MagicMock()
 
@@ -456,7 +456,7 @@ class TestOneShotProcessContainment(unittest.TestCase):
         """18. Repeated abort_active_turn and stop calls remain safe and idempotent."""
         from jarvis.core.antigravity_bridge import AntigravityBridge
 
-        bridge = AntigravityBridge()
+        bridge = AntigravityBridge(agy_path="dummy_agy.cmd")
         sandbox = MagicMock()
 
         with bridge._pool_lock:
@@ -477,7 +477,7 @@ class TestOneShotProcessContainment(unittest.TestCase):
         """19. A failure terminating one sandbox does not prevent the others from being attempted."""
         from jarvis.core.antigravity_bridge import AntigravityBridge
 
-        bridge = AntigravityBridge()
+        bridge = AntigravityBridge(agy_path="dummy_agy.cmd")
         faulty_sandbox = MagicMock()
         faulty_sandbox.terminate_tree.side_effect = RuntimeError("Simulated Win32 handle fault")
         healthy_sandbox = MagicMock()
@@ -504,8 +504,7 @@ class TestOneShotProcessContainment(unittest.TestCase):
         """
         from jarvis.core.antigravity_bridge import AntigravityBridge
 
-        bridge = AntigravityBridge()
-        bridge.agy_path = "dummy_agy.cmd"
+        bridge = AntigravityBridge(agy_path="dummy_agy.cmd")
 
         mock_proc = _make_mock_proc(1001)
         mock_sandboxed = MagicMock()
@@ -543,8 +542,7 @@ class TestOneShotProcessContainment(unittest.TestCase):
         """21. Cancellation after registration targets the registered sandbox."""
         from jarvis.core.antigravity_bridge import AntigravityBridge
 
-        bridge = AntigravityBridge()
-        bridge.agy_path = "dummy_agy.cmd"
+        bridge = AntigravityBridge(agy_path="dummy_agy.cmd")
 
         mock_proc = _make_mock_proc(1002)
         lines = [
@@ -576,8 +574,7 @@ class TestOneShotProcessContainment(unittest.TestCase):
         """22. A new request starting after a completed cancellation is not incorrectly cancelled by a stale generation."""
         from jarvis.core.antigravity_bridge import AntigravityBridge
 
-        bridge = AntigravityBridge()
-        bridge.agy_path = "dummy_agy.cmd"
+        bridge = AntigravityBridge(agy_path="dummy_agy.cmd")
 
         # Prior turn cancelled, advancing cancellation_generation
         bridge.abort_active_turn()
@@ -609,8 +606,7 @@ class TestOneShotProcessContainment(unittest.TestCase):
         """23. Exceptions during startup clean up resources and repeated cancellation remains safe."""
         from jarvis.core.antigravity_bridge import AntigravityBridge
 
-        bridge = AntigravityBridge()
-        bridge.agy_path = "dummy_agy.cmd"
+        bridge = AntigravityBridge(agy_path="dummy_agy.cmd")
 
         mock_sandboxed = MagicMock()
         mock_sandboxed.start.side_effect = OSError("Executable binary corrupt")

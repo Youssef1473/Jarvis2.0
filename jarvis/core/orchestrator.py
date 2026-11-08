@@ -658,12 +658,18 @@ class JarvisOrchestrator:
                 self.ui_service.broadcast_message("jarvis", farewell)
             self.sfx.play_done()
             self.set_state("speaking")
-            asyncio.run(self.tts.speak(farewell))
+            # Speak synchronously so audio finishes completely without requiring an event loop
+            self.tts.speak_sync(farewell)
             self.set_state("idle")
             self.stop()
-            import os
-            time.sleep(0.3)
-            os._exit(0)
+            if threading.current_thread() is threading.main_thread():
+                sys.exit(0)
+            else:
+                import _thread
+                try:
+                    _thread.interrupt_main()
+                except Exception:
+                    sys.exit(0)
             return
 
         from jarvis.core.cancellation import get_global_cancellation_token
@@ -797,9 +803,11 @@ class JarvisOrchestrator:
             from jarvis.skills.os_control import is_shutdown_requested
             if is_shutdown_requested():
                 self.stop()
-                import os
-                time.sleep(0.3)
-                os._exit(0)
+                import _thread
+                try:
+                    _thread.interrupt_main()
+                except Exception:
+                    sys.exit(0)
         finally:
             self._is_processing_command = False
 
@@ -883,8 +891,7 @@ class JarvisOrchestrator:
         except (KeyboardInterrupt, EOFError):
             print("\n[Jarvis]: Terminating session. Have a good day, Sir.")
             self.stop()
-            import os
-            os._exit(0)
+            sys.exit(0)
         finally:
             self.stop()
 
@@ -931,6 +938,7 @@ class JarvisOrchestrator:
             ("speech-to-text", self.stt),
             ("desktop HUD", self.hud),
             ("brain", getattr(self, "brain", None)),
+            ("memory", getattr(self, "memory", None)),
             ("background tasks", getattr(self, "task_manager", None)),
         ]
         for name, component in cleanup_steps:
@@ -967,3 +975,11 @@ class JarvisOrchestrator:
         # 5. Trim working set to prevent memory pressure
         trim_process_memory(aggressive=True)
         logger.info("Jarvis shutdown complete: All tools, child processes, and hardware threads terminated.")
+
+        # 6. Flush pending stdout/stderr and logging handlers for clean Python interpreter exit
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            logging.shutdown()
+        except Exception:
+            pass

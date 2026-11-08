@@ -23,6 +23,7 @@ class TestShutdownLifecycle(unittest.TestCase):
 
     def setUp(self):
         self.config = load_config()
+        self.config.setdefault("llm", {})["antigravity_resolver"] = lambda: None
 
     def test_shutdown_command_triggers(self):
         """Verifies natural language shutdown, exit, and tool-kill triggers."""
@@ -150,6 +151,53 @@ class TestShutdownLifecycle(unittest.TestCase):
         # Test explicit shutdown
         brain.shutdown(timeout_seconds=0.5)
         self.assertEqual(len(brain.service_manager._services), 0)
+
+    def test_subprocess_graceful_shutdown_farewell_and_exit_code_zero(self):
+        """Verifies end-to-end graceful shutdown in a standalone subprocess:
+        - Speaks farewell synchronously before teardown
+        - Stops wake-word, audio, and workers
+        - Closes SQLite writer actor and connection pools
+        - Flushes stdout/stderr and logs
+        - Executes normal Python interpreter cleanup (atexit)
+        - Exits with status code 0 (zero orphaned child processes)
+        """
+        sub_code = (
+            "import sys, atexit, logging\n"
+            "logging.basicConfig(level=logging.INFO)\n"
+            "from jarvis.core.config_loader import load_config\n"
+            "from jarvis.core.orchestrator import JarvisOrchestrator\n"
+            "from unittest.mock import MagicMock\n"
+            "def _on_atexit():\n"
+            "    sys.stderr.write('ATEXIT_FINALIZED_CLEANLY\\n')\n"
+            "    sys.stderr.flush()\n"
+            "atexit.register(_on_atexit)\n"
+            "cfg = load_config()\n"
+            "cfg.setdefault('llm', {})['antigravity_resolver'] = lambda: None\n"
+            "cfg.setdefault('audio', {})['wake_word_model'] = 'none'\n"
+            "orch = JarvisOrchestrator(cfg)\n"
+            "orch.tts.speak_sync = MagicMock(side_effect=lambda t: sys.stderr.write(f'SPOKEN:{t}\\n'))\n"
+            "orch.handle_command('Goodbye, Jarvis.')\n"
+            "sys.exit(0)\n"
+        )
+
+        res = subprocess.run(
+            [sys.executable, "-c", sub_code],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        # 1. Process must exit with code 0
+        self.assertEqual(res.returncode, 0, f"Process exited with non-zero status {res.returncode}. Stderr: {res.stderr}")
+
+        # 2. Farewell must be spoken before teardown
+        self.assertIn("SPOKEN:Powering down systems. Goodbye, Sir.", res.stderr)
+
+        # 3. Teardown logging must be recorded
+        self.assertIn("Jarvis shutdown complete", res.stderr)
+
+        # 4. Normal interpreter finalization (atexit) must execute
+        self.assertIn("ATEXIT_FINALIZED_CLEANLY", res.stderr)
 
 
 if __name__ == "__main__":

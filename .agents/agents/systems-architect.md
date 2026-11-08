@@ -2,6 +2,8 @@
 name: systems-architect
 description: Specialized systems architect reviewing concurrency, async event loops, thread safety, resource lifecycles, and subsystem invariants.
 subagent: true
+mainAgent: false
+model: flash
 tools:
   - read_file
   - search_web

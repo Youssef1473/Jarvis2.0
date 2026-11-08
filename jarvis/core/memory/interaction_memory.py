@@ -342,7 +342,8 @@ class InteractionMemoryMixin:
 
             if blob is not None:
                 try:
-                    cursor.execute("INSERT OR REPLACE INTO lessons_vec(lesson_id, embedding) VALUES (?, ?)", (lesson_id, blob))
+                    cursor.execute("DELETE FROM lessons_vec WHERE lesson_id = ?", (lesson_id,))
+                    cursor.execute("INSERT INTO lessons_vec(lesson_id, embedding) VALUES (?, ?)", (lesson_id, blob))
                 except Exception as e:
                     logger.warning("sqlite-vec episodic lesson indexing failed (%s); continuing without vector index.", e)
 

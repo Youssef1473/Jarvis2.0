@@ -20,9 +20,10 @@ from jarvis.skills.os_control import search_desktop_files_fast
 class TestEverythingSearchAndSelfEditing(unittest.TestCase):
     def setUp(self):
         self.config = load_config()
+        self.config.setdefault("llm", {})["antigravity_resolver"] = lambda: None
         self.memory = MemoryManager(self.config)
         self.safety = SafetyGate(self.config)
-        self.brain = JarvisBrain(self.config, self.memory, self.safety)
+        self.brain = JarvisBrain(self.config, self.memory, self.safety, antigravity_resolver=lambda: None)
 
     def test_everything_skill_registration(self):
         """Verifies search_everything is properly registered in SkillRegistry."""

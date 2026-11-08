@@ -13,6 +13,7 @@ class TestCuratedPromptsAndEpistemicGate(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.config = load_config()
+        cls.config.setdefault("llm", {})["antigravity_resolver"] = lambda: None
         cls.memory = MagicMock(spec=MemoryManager)
         cls.memory.get_context_summary.return_value = ""
         cls.memory.format_core_preferences_block.return_value = ""
@@ -21,7 +22,7 @@ class TestCuratedPromptsAndEpistemicGate(unittest.TestCase):
         cls.safety = MagicMock(spec=SafetyGate)
 
     def setUp(self):
-        self.brain = JarvisBrain(self.config, self.memory, self.safety)
+        self.brain = JarvisBrain(self.config, self.memory, self.safety, antigravity_resolver=lambda: None)
 
     def test_curated_prompts_exist_on_disk(self):
         """Verifies all five curated prompt arsenal files exist and are populated."""

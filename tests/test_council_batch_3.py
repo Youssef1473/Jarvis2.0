@@ -143,7 +143,7 @@ def test_chunked_tts_streaming():
 def test_dynamic_latency_telemetry():
     print("\n--- Testing Dynamic Model Latency Telemetry ---")
     cfg = load_config()
-    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg))
+    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg), antigravity_resolver=lambda: None)
     
     # 1. Verify latency getter initialized
     latencies = brain.get_latencies()

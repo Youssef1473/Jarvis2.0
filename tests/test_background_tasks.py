@@ -1,17 +1,15 @@
 """Unit tests for asynchronous BackgroundTaskManager, shell skills, and HUD endpoints."""
-import os
-import shutil
-import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
+import pytest
 from starlette.testclient import TestClient
 
-from jarvis.core.task_manager import BackgroundTaskManager, BackgroundTask
+from jarvis.core.task_manager import BackgroundTaskManager
+from jarvis.skills import dev_shell
 from jarvis.skills.base import SkillRegistry
-import jarvis.skills.dev_shell as dev_shell
 
 
 class TestBackgroundTasksSuite(unittest.TestCase):
@@ -126,6 +124,7 @@ class TestBackgroundTasksSuite(unittest.TestCase):
         cancel_out = dev_shell.cancel_background_task("invalid_task_999")
         self.assertIn("Unable to cancel task", cancel_out)
 
+    @pytest.mark.loopback
     def test_server_screenshot_and_tasks_endpoints(self):
         """Verifies Starlette server endpoints /api/screenshot/latest and /api/tasks."""
         from jarvis.ui.server import JarvisUIService, get_hud_session_token

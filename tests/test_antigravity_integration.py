@@ -23,7 +23,11 @@ class TestAntigravityIntegration(unittest.TestCase):
         self.config = load_config()
         self.memory = MemoryManager(self.config)
         self.safety = SafetyGate(self.config)
-        self.bridge = AntigravityBridge(self.config)
+        if os.environ.get("JARVIS_RUN_LIVE_INTEGRATION") == "1":
+            self.bridge = AntigravityBridge(self.config)
+        else:
+            self.config.setdefault("llm", {})["antigravity_resolver"] = lambda: None
+            self.bridge = AntigravityBridge(self.config, executable_resolver=lambda: None)
 
     def test_bridge_discovery_and_model_resolution(self):
         """Verifies Antigravity CLI model catalog mappings and alias resolution."""
@@ -51,12 +55,14 @@ class TestAntigravityIntegration(unittest.TestCase):
 
     def test_bridge_binary_discovery_mocked(self):
         """Verifies is_available behavior when binary is present vs absent."""
+        clean_cfg = {k: v for k, v in self.config.items() if k != "llm"}
+        clean_cfg["llm"] = {k: v for k, v in self.config.get("llm", {}).items() if k not in {"antigravity_resolver", "antigravity_executable_resolver"}}
         with patch.object(AntigravityBridge, "_find_agy_executable", return_value="mock_agy.exe"), \
              patch("os.path.exists", return_value=True):
-            mock_bridge = AntigravityBridge(self.config)
+            mock_bridge = AntigravityBridge(clean_cfg)
             self.assertTrue(mock_bridge.is_available())
         with patch.object(AntigravityBridge, "_find_agy_executable", return_value=None):
-            mock_bridge = AntigravityBridge(self.config)
+            mock_bridge = AntigravityBridge(clean_cfg)
             self.assertFalse(mock_bridge.is_available())
 
     def test_antigravity_batch_generation(self):

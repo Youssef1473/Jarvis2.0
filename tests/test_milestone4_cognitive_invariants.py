@@ -52,7 +52,12 @@ class TestMilestone4CognitiveInvariants(unittest.TestCase):
         """Verifies GeminiProvider parses tool call without truncation using extract_tool_call_json."""
         from jarvis.core.providers.gemini import GeminiProvider
 
-        provider = GeminiProvider(model="gemini-3.8-flash", api_key="test_key", use_antigravity=True)
+        provider = GeminiProvider(
+            model="gemini-3.8-flash",
+            api_key="test_key",
+            use_antigravity=True,
+            antigravity_resolver=lambda: None,
+        )
         nested_arg = json.dumps({"nested_key": "nested_val"})
         tool_payload = json.dumps({
             "tool": "patch_file",
@@ -165,7 +170,7 @@ class TestMilestone4CognitiveInvariants(unittest.TestCase):
         """Verifies JarvisBrain initializes RoutingCascade and processes Tier 1 local executions."""
         from jarvis.core.brain import JarvisBrain
 
-        mock_config = {"llm": {"provider": "ollama", "temperature": 0.5}}
+        mock_config = {"llm": {"provider": "ollama", "temperature": 0.5, "antigravity_resolver": lambda: None}}
         mock_memory = MagicMock()
         mock_safety = MagicMock()
         mock_safety.check_tool_call.return_value = (True, None)

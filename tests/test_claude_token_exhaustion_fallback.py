@@ -18,10 +18,11 @@ from jarvis.core.safety import SafetyGate
 class TestClaudeTokenExhaustionFallback(unittest.TestCase):
     def setUp(self):
         self.config = load_config()
-        self.bridge = AntigravityBridge(self.config)
+        self.config.setdefault("llm", {})["antigravity_resolver"] = lambda: None
+        self.bridge = AntigravityBridge(self.config, executable_resolver=lambda: None)
         self.memory = MemoryManager(self.config)
         self.safety = SafetyGate(self.config)
-        self.brain = JarvisBrain(self.config, self.memory, self.safety)
+        self.brain = JarvisBrain(self.config, self.memory, self.safety, antigravity_resolver=lambda: None)
 
     def test_exhaustion_state_lifecycle(self):
         """Verifies initial state, marking exhausted, and resetting exhaustion."""

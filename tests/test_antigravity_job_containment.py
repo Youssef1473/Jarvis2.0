@@ -325,8 +325,7 @@ class TestAntigravityJobContainmentMocked(unittest.TestCase):
 
     def test_lru_pool_eviction_terminates_evicted_job(self):
         """11. LRU daemon pool eviction cleans up the evicted daemon's Job Object tree."""
-        bridge = AntigravityBridge()
-        bridge.agy_path = "mock_agy.exe"
+        bridge = AntigravityBridge(agy_path="mock_agy.exe")
         bridge.use_daemon = True
         bridge.max_warm_daemons = 2
 

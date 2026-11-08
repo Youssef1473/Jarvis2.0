@@ -31,7 +31,7 @@ AVRT_PRIORITY_HIGH = 1
 AVRT_PRIORITY_CRITICAL = 2
 
 # Alder Lake i5-12500H Core Topology Constants (4 P-Cores = 0..7, 8 E-Cores = 8..15)
-MASK_PCORE_AUDIO_ISOLATED = 0x0003  # Logical CPUs 0-1 (P-Core 0: Exclusive WASAPI + WakeWord)
+MASK_PCORE_AUDIO_ISOLATED = 0x0003  # Logical CPUs 0-1 (P-Core 0: WASAPI playback; wake-word uses 0x0055 via get_physical_pcore_mask)
 MASK_PCORE_COMPUTE = 0x00FC         # Logical CPUs 2-7 (P-Cores 1-3: Kokoro ONNX, Whisper, Brain)
 MASK_ECORE_BACKGROUND = 0xFF00     # Logical CPUs 8-15 (All 8 E-Cores: SQLite, UIA, FastAPI, Sync)
 

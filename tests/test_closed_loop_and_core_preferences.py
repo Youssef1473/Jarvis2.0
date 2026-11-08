@@ -32,6 +32,7 @@ class TestClosedLoopAndCorePreferencesSuite(unittest.TestCase):
             "llm": {
                 "provider": "antigravity",
                 "antigravity_model": "gemini-3.8-flash-low",
+                "antigravity_resolver": lambda: None,
             },
             "safety": {"confirm_destructive": True},
         }
@@ -70,7 +71,7 @@ class TestClosedLoopAndCorePreferencesSuite(unittest.TestCase):
         """Verifies that JarvisBrain._build_system_instruction injects Core User Preferences into prompt."""
         self.memory.update_user_preference("preferred_browser", "brave")
         safety = MagicMock()
-        brain = JarvisBrain(self.config, self.memory, safety)
+        brain = JarvisBrain(self.config, self.memory, safety, antigravity_resolver=lambda: None)
 
         prompt = brain._get_system_instruction(user_text="help me search something")
         self.assertIn("Core User Profile & Preferences", prompt)

@@ -1,0 +1,92 @@
+[
+  {
+    "scenario_id": "SCENARIO-01",
+    "scenario_type": "MATCHING",
+    "description": "Matching task for LES-001: sandbox socket limitation in pytest",
+    "prompt": "Investigate pytest failure in test_milestone1_security_hardening.py where UDP and TCP loopback sockets fail with WinError 10013 in sandbox",
+    "expected_categories": ["TESTING_VERIFICATION", "SECURITY_BOUNDARY"],
+    "relevant_lessons": ["LES-001"],
+    "rationale": "Exact match for LES-001: Antigravity sandbox network isolation causing WinError 10013 and socket timeouts during pytest execution."
+  },
+  {
+    "scenario_id": "SCENARIO-02",
+    "scenario_type": "CLOSELY_RELATED",
+    "description": "Closely related task for LES-001: loopback network mock transport in unit tests",
+    "prompt": "Refactor test suite to use mock transports instead of binding real 127.0.0.1 loopback network sockets in pytest unit tests",
+    "expected_categories": ["TESTING_VERIFICATION"],
+    "relevant_lessons": ["LES-001"],
+    "rationale": "Directly addresses Prevention Rule 1 of LES-001: decouple unit test logic from real OS network sockets using mock transports."
+  },
+  {
+    "scenario_id": "SCENARIO-03",
+    "scenario_type": "UNRELATED_DOMAIN",
+    "description": "Unrelated domain task: audio WASAPI playback underrun",
+    "prompt": "Investigate WASAPI playback worker underrun and tune ring buffer size during Kokoro neural TTS synthesis",
+    "expected_categories": ["AUDIO_THREADING"],
+    "relevant_lessons": [],
+    "rationale": "Audio DSP and WASAPI ring buffer tuning is entirely orthogonal to sandbox network socket limitations; LES-001 must not be retrieved."
+  },
+  {
+    "scenario_id": "SCENARIO-04",
+    "scenario_type": "AMBIGUOUS",
+    "description": "Ambiguous task: network telemetry in audio worker",
+    "prompt": "Evaluate sending telemetry packet over loopback socket from audio worker thread",
+    "expected_categories": ["AUDIO_THREADING", "SECURITY_BOUNDARY"],
+    "relevant_lessons": [],
+    "rationale": "Runtime audio worker telemetry is outside the applicability boundary of LES-001 (which strictly governs unit tests under Antigravity sandbox)."
+  },
+  {
+    "scenario_id": "SCENARIO-05",
+    "scenario_type": "MISLEADING_KEYWORD",
+    "description": "Task with misleading keywords: socket in CPU socket context",
+    "prompt": "Inspect physical CPU socket core topography and thread allocation for Alder Lake hybrid processor",
+    "expected_categories": ["AUDIO_THREADING", "ARCHITECTURE"],
+    "relevant_lessons": [],
+    "rationale": "The word 'socket' refers to CPU socket topography, not network sockets. Lexical matching on 'socket' without semantic filtering would be a false positive."
+  },
+  {
+    "scenario_id": "SCENARIO-06",
+    "scenario_type": "APPLICABILITY_VIOLATED",
+    "description": "Task where applicability is violated: host execution without sandbox",
+    "prompt": "Run standalone integration test on dedicated Windows host outside Antigravity sandbox with unrestricted network loopback",
+    "expected_categories": ["TESTING_VERIFICATION"],
+    "relevant_lessons": [],
+    "rationale": "Host execution outside sandbox (BypassSandbox: true) explicitly violates the applicability boundary of LES-001 (Antigravity Standard Sandbox Mode)."
+  },
+  {
+    "scenario_id": "SCENARIO-07",
+    "scenario_type": "UNKNOWN_CATEGORY",
+    "description": "Unknown category task: unrelated general knowledge topic",
+    "prompt": "Explain the thermodynamic cycle of a high-bypass turbofan aircraft engine",
+    "expected_categories": ["UNKNOWN"],
+    "relevant_lessons": [],
+    "rationale": "General domain knowledge query unrelated to Jarvis engineering; no engineering lesson should be retrieved."
+  },
+  {
+    "scenario_id": "SCENARIO-08",
+    "scenario_type": "UNRELATED_ARCHITECTURE",
+    "description": "Unrelated architecture task: ADR documentation format",
+    "prompt": "Update ADR index in docs/adr/README.md and ensure architectural decision record schema compliance",
+    "expected_categories": ["ARCHITECTURE", "DOCUMENTATION"],
+    "relevant_lessons": [],
+    "rationale": "Architectural documentation maintenance is unrelated to sandbox socket boundaries; no lessons should be retrieved."
+  },
+  {
+    "scenario_id": "SCENARIO-09",
+    "scenario_type": "MULTI_CATEGORY",
+    "description": "Multi-category matching task: testing + security + socket mock assertions",
+    "prompt": "Run fast tests for security boundary egress validation and check socket IP pinning mock assertions",
+    "expected_categories": ["TESTING_VERIFICATION", "SECURITY_BOUNDARY"],
+    "relevant_lessons": ["LES-001"],
+    "rationale": "Matches both test verification and security boundary domains with mock assertions for socket transport under sandbox."
+  },
+  {
+    "scenario_id": "SCENARIO-10",
+    "scenario_type": "GENERAL_NO_LESSON",
+    "description": "General engineering task that should receive no lesson context",
+    "prompt": "Refactor SkillRegistry public API to preserve backward compatibility for downstream callers in skills/base.py",
+    "expected_categories": ["API_COMPATIBILITY"],
+    "relevant_lessons": [],
+    "rationale": "Public API backward compatibility in Python skills does not relate to LES-001; no lesson should be injected."
+  }
+]

@@ -1,17 +1,18 @@
 """Automated tests for Chrome DevTools Protocol (CDP) silent browser control."""
 import json
+import socket
+import sys
 import unittest
 from pathlib import Path
-import sys
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.skills.base import SkillRegistry
-from jarvis.core.security_boundaries import TurnTaintTracker, DualKeyApprovalManager
 import jarvis.skills.browser_cdp as b_cdp
 import jarvis.skills.os_control as os_ctrl
+from jarvis.core.security_boundaries import DualKeyApprovalManager, TurnTaintTracker
+from jarvis.skills.base import SkillRegistry
 
 
 class TestBrowserCDPSuite(unittest.TestCase):
@@ -27,6 +28,17 @@ class TestBrowserCDPSuite(unittest.TestCase):
         self._managed_port_patcher.stop()
         TurnTaintTracker.get_instance().reset_turn()
         DualKeyApprovalManager.get_instance().reset()
+
+    @staticmethod
+    def _mock_public_dns():
+        orig_getaddrinfo = socket.getaddrinfo
+
+        def mock_gai(host, port, *args, **kwargs):
+            if host in ("github.com", "youtube.com", "example.com", "safe.com"):
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
+            return orig_getaddrinfo(host, port, *args, **kwargs)
+
+        return patch("socket.getaddrinfo", side_effect=mock_gai)
 
     def test_cdp_probe_safety_and_speed(self):
         """Verifies CDP probe rejects non-localhost addresses and responds in <60ms."""
@@ -72,7 +84,8 @@ class TestBrowserCDPSuite(unittest.TestCase):
 
         with patch.object(b_cdp, "is_cdp_available", return_value=True), \
              patch.object(b_cdp, "list_cdp_tabs", return_value=fake_tabs), \
-             patch.object(b_cdp, "validate_browser_navigation_chain", return_value=(True, "https://github.com", None)):
+             patch.object(b_cdp, "validate_browser_navigation_chain", return_value=(True, "https://github.com", None)), \
+             self._mock_public_dns():
             
             mock_ws = MagicMock()
             mock_ws_enter = MagicMock()
@@ -96,6 +109,7 @@ class TestBrowserCDPSuite(unittest.TestCase):
         """Verifies open_browser_tab falls back gracefully to Win32 when CDP is closed."""
         with patch.object(b_cdp, "is_cdp_available", return_value=False), \
              patch.object(b_cdp, "validate_browser_navigation_chain", return_value=(True, "https://example.com", None)), \
+             self._mock_public_dns(), \
              patch("subprocess.Popen"), \
              patch("webbrowser.open_new_tab"):
             # Should proceed into win32gui without throwing exception
@@ -281,64 +295,65 @@ class TestBrowserCDPSuite(unittest.TestCase):
         # Test sanitize_browser_url directly — it is the authoritative URL security boundary.
         from jarvis.skills.browser_cdp import sanitize_browser_url
 
-        # Dangerous execution schemes must be sanitized to about:blank.
-        self.assertEqual(sanitize_browser_url("javascript:alert(1)"), "about:blank")
-        self.assertEqual(sanitize_browser_url("data:text/html,<h1>xss</h1>"), "about:blank")
-        self.assertEqual(sanitize_browser_url("vbscript:msgbox(1)"), "about:blank")
-        self.assertEqual(sanitize_browser_url("file:///C:/sensitive.txt"), "about:blank")
+        with self._mock_public_dns():
+            # Dangerous execution schemes must be sanitized to about:blank.
+            self.assertEqual(sanitize_browser_url("javascript:alert(1)"), "about:blank")
+            self.assertEqual(sanitize_browser_url("data:text/html,<h1>xss</h1>"), "about:blank")
+            self.assertEqual(sanitize_browser_url("vbscript:msgbox(1)"), "about:blank")
+            self.assertEqual(sanitize_browser_url("file:///C:/sensitive.txt"), "about:blank")
 
-        # Destructive internal browser management URLs must be blocked.
-        self.assertEqual(sanitize_browser_url("chrome://restart"), "about:blank")
-        self.assertEqual(sanitize_browser_url("chrome://crash"), "about:blank")
-        self.assertEqual(sanitize_browser_url("brave://quit"), "about:blank")
-        self.assertEqual(sanitize_browser_url("chrome://settings/clearBrowserData"), "about:blank")
+            # Destructive internal browser management URLs must be blocked.
+            self.assertEqual(sanitize_browser_url("chrome://restart"), "about:blank")
+            self.assertEqual(sanitize_browser_url("chrome://crash"), "about:blank")
+            self.assertEqual(sanitize_browser_url("brave://quit"), "about:blank")
+            self.assertEqual(sanitize_browser_url("chrome://settings/clearBrowserData"), "about:blank")
 
-        # Unpermitted internal schemes must be blocked.
-        self.assertEqual(sanitize_browser_url("chrome://flags"), "about:blank")
-        self.assertEqual(sanitize_browser_url("brave://flags"), "about:blank")
+            # Unpermitted internal schemes must be blocked.
+            self.assertEqual(sanitize_browser_url("chrome://flags"), "about:blank")
+            self.assertEqual(sanitize_browser_url("brave://flags"), "about:blank")
 
-        # Safe navigation targets must pass through unmolested.
-        self.assertEqual(sanitize_browser_url("https://github.com"), "https://github.com")
-        self.assertEqual(sanitize_browser_url("http://localhost:8080"), "http://localhost:8080")
-        self.assertEqual(sanitize_browser_url("about:blank"), "about:blank")
-        self.assertEqual(sanitize_browser_url("youtube.com"), "https://youtube.com")
+            # Safe navigation targets must pass through unmolested.
+            self.assertEqual(sanitize_browser_url("https://github.com"), "https://github.com")
+            self.assertEqual(sanitize_browser_url("http://localhost:8080"), "http://localhost:8080")
+            self.assertEqual(sanitize_browser_url("about:blank"), "about:blank")
+            self.assertEqual(sanitize_browser_url("youtube.com"), "https://youtube.com")
 
-        # CRLF injection must be stripped.
-        self.assertEqual(sanitize_browser_url("https://safe.com\r\nX-Injected: header"), "https://safe.com")
+            # CRLF injection must be stripped.
+            self.assertEqual(sanitize_browser_url("https://safe.com\r\nX-Injected: header"), "https://safe.com")
 
-        # Shield internal Jarvis services (HUD and CDP debugging ports) on loopback.
-        self.assertEqual(sanitize_browser_url("http://localhost:20129"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://127.0.0.1:20129/api/status"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://localhost:9222"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://127.0.0.1:9222/json"), "about:blank")
+            # Shield internal Jarvis services (HUD and CDP debugging ports) on loopback.
+            self.assertEqual(sanitize_browser_url("http://localhost:20129"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://127.0.0.1:20129/api/status"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://localhost:9222"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://127.0.0.1:9222/json"), "about:blank")
 
-        # Legitimate local developer workflows remain allowed on non-Jarvis ports.
-        self.assertEqual(sanitize_browser_url("http://localhost:3000"), "http://localhost:3000")
-        self.assertEqual(sanitize_browser_url("http://127.0.0.1:5173/dev"), "http://127.0.0.1:5173/dev")
+            # Legitimate local developer workflows remain allowed on non-Jarvis ports.
+            self.assertEqual(sanitize_browser_url("http://localhost:3000"), "http://localhost:3000")
+            self.assertEqual(sanitize_browser_url("http://127.0.0.1:5173/dev"), "http://127.0.0.1:5173/dev")
 
-        # Non-global destinations (RFC 1918 private and link-local cloud metadata) are blocked.
-        self.assertEqual(sanitize_browser_url("http://169.254.169.254/latest/meta-data/"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://192.168.1.1/admin"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://10.0.0.1:8080/intranet"), "about:blank")
+            # Non-global destinations (RFC 1918 private and link-local cloud metadata) are blocked.
+            self.assertEqual(sanitize_browser_url("http://169.254.169.254/latest/meta-data/"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://192.168.1.1/admin"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://10.0.0.1:8080/intranet"), "about:blank")
 
-        # URLs with embedded user-info credentials must be rejected outright.
-        self.assertEqual(sanitize_browser_url("http://admin:secret123@example.com"), "about:blank")
-        self.assertEqual(sanitize_browser_url("https://user@example.com/api"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://:pass@example.com"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://admin%40corp.com:secret@example.com"), "about:blank")
+            # URLs with embedded user-info credentials must be rejected outright.
+            self.assertEqual(sanitize_browser_url("http://admin:secret123@example.com"), "about:blank")
+            self.assertEqual(sanitize_browser_url("https://user@example.com/api"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://:pass@example.com"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://admin%40corp.com:secret@example.com"), "about:blank")
 
-        # Shield sensitive background services on localhost (Ollama, Docker, PostgreSQL, Redis, K8s).
-        self.assertEqual(sanitize_browser_url("http://localhost:11434"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://127.0.0.1:11434/api/tags"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://localhost:2375"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://localhost:5432"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://localhost:6379"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://localhost:6443"), "about:blank")
+            # Shield sensitive background services on localhost (Ollama, Docker, PostgreSQL, Redis, K8s).
+            self.assertEqual(sanitize_browser_url("http://localhost:11434"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://127.0.0.1:11434/api/tags"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://localhost:2375"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://localhost:5432"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://localhost:6379"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://localhost:6443"), "about:blank")
 
-        # IPv6 loopback and link-local destinations
-        self.assertEqual(sanitize_browser_url("http://[::1]:9222"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://[::1]:11434"), "about:blank")
-        self.assertEqual(sanitize_browser_url("http://[fe80::1]/"), "about:blank")
+            # IPv6 loopback and link-local destinations
+            self.assertEqual(sanitize_browser_url("http://[::1]:9222"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://[::1]:11434"), "about:blank")
+            self.assertEqual(sanitize_browser_url("http://[fe80::1]/"), "about:blank")
 
     def test_url_sanitizer_credential_privacy_in_logs(self):
         """Verifies embedded credentials are never recorded in logger warnings during sanitization."""
@@ -390,7 +405,9 @@ class TestBrowserCDPSuite(unittest.TestCase):
 
         # Scenario E: Safe public HTTPS URL with CDP unavailable reaches subprocess with validated URL
         with patch("jarvis.skills.browser_cdp.is_cdp_available", return_value=False), \
+             patch("jarvis.skills.browser_cdp.validate_browser_navigation_chain", return_value=(True, "https://github.com/microsoft", None)), \
              patch("jarvis.skills.os_control._build_app_index", return_value={"brave.exe": "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"}), \
+             self._mock_public_dns(), \
              patch("subprocess.Popen") as mock_popen:
             res = os_ctrl.open_browser_tab("https://github.com/microsoft")
             self.assertIn("Opened", res)

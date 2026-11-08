@@ -85,7 +85,7 @@ class TestDiagnosticsSuite(unittest.TestCase):
         from jarvis.core.safety import SafetyGate
         
         cfg = load_config()
-        brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg))
+        brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg), antigravity_resolver=lambda: None)
         
         # Profile runtime reflex
         res = brain._try_fast_reflex("profile runtime")
@@ -121,7 +121,7 @@ class TestDiagnosticsSuite(unittest.TestCase):
         from jarvis.core.safety import SafetyGate
 
         cfg = load_config()
-        brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg))
+        brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg), antigravity_resolver=lambda: None)
 
         res_self = brain._try_fast_reflex("troubleshoot yourself")
         self.assertIsNotNone(res_self)
