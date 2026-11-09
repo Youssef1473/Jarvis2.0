@@ -234,52 +234,191 @@ def inspect_port_holders(port: int) -> dict[str, Any]:
     description="Surgically releases non-critical locks on a file or folder, strictly shielding OS critical PIDs.",
     risk_level=2,
 )
-def release_file_lock(file_path: str, allow_kill: bool = False) -> dict[str, Any]:
+def release_file_lock(
+    file_path: str,
+    allow_kill: bool = False,
+    target_pid: int | None = None,
+    create_time: float | None = None,
+    exe_path: str | None = None,
+    handle_id: str | None = None,
+) -> dict[str, Any]:
     """Inspects file locks and optionally terminates non-critical holder processes."""
-    inspection = inspect_file_locks(file_path)
-    if inspection.get("status") != "locked":
-        return inspection
+    if allow_kill:
+        import hmac
 
-    holders = inspection.get("holders", [])
-    current_pid = os.getpid()
+        from jarvis.core.security_boundaries import (
+            SecurityBoundaryViolation,
+            _active_auth_context,
+            compute_action_hash,
+        )
 
-    actions: list[dict[str, Any]] = []
-    for holder in holders:
-        pid = holder["pid"]
-        app_name = (holder.get("app_name") or "").lower()
+        active_token = _active_auth_context.get()
+        if active_token is None or not active_token.is_valid:
+            raise SecurityBoundaryViolation(
+                "Authorization Required: release_file_lock process termination requires explicit human approval."
+            )
 
-        # Critical Protection Checks
-        if pid in (0, 4, current_pid):
-            actions.append({"pid": pid, "action": "blocked", "reason": "Self or Core OS PID"})
-            continue
+        if active_token.tool_name != "release_file_lock":
+            raise SecurityBoundaryViolation(
+                f"Authorization Mismatch: Active authorization is for '{active_token.tool_name}', not 'release_file_lock'."
+            )
 
-        if any(crit in app_name for crit in PROTECTED_PROCESS_NAMES):
-            actions.append({"pid": pid, "action": "blocked", "reason": "Protected system process"})
-            continue
+        candidate_paths = [file_path]
+        norm_p = str(file_path).replace("\\", "/")
+        if norm_p != file_path:
+            candidate_paths.append(norm_p)
 
+        candidate_args = []
+        for p in candidate_paths:
+            full_c = {"file_path": p, "allow_kill": True}
+            if target_pid is not None:
+                full_c["target_pid"] = target_pid
+            if create_time is not None:
+                full_c["create_time"] = create_time
+            if exe_path is not None:
+                full_c["exe_path"] = exe_path
+            if handle_id is not None:
+                full_c["handle_id"] = handle_id
+            candidate_args.append(full_c)
+
+            if target_pid is not None:
+                candidate_args.append({"file_path": p, "allow_kill": True, "target_pid": target_pid})
+            candidate_args.append({"file_path": p, "allow_kill": True})
+
+        matched_hash = None
+        for cand in candidate_args:
+            cand_hash = compute_action_hash("release_file_lock", cand)
+            if hmac.compare_digest(active_token.action_hash, cand_hash):
+                matched_hash = cand_hash
+                break
+
+        if matched_hash is None:
+            raise SecurityBoundaryViolation(
+                "Action Hash Mismatch: File path, allow_kill, or process identity arguments do not match approved action hash."
+            )
+
+        if not active_token.consume("release_file_lock", matched_hash):
+            raise SecurityBoundaryViolation(
+                "Single-Use Authorization Violation: release_file_lock authorization grant was already consumed or invalidated."
+            )
+
+    try:
+        inspection = inspect_file_locks(file_path)
+        if inspection.get("status") != "locked":
+            return inspection
+
+        holders = inspection.get("holders", [])
+        if allow_kill and target_pid is not None:
+            from jarvis.core.security_boundaries import SecurityBoundaryViolation
+
+            matching_holders = [h for h in holders if h.get("pid") == target_pid]
+            if not matching_holders:
+                holder_pids = [h.get("pid") for h in holders]
+                raise SecurityBoundaryViolation(
+                    f"Process Identity Violation: Approved target PID {target_pid} is not a valid lock holder for '{file_path}' (found {holder_pids}). Process substitution rejected."
+                )
+            holders = matching_holders
+
+        current_pid = os.getpid()
+        from jarvis.skills.os_control import ProcessHandleRegistry
+
+        actions: list[dict[str, Any]] = []
         if not allow_kill:
-            actions.append({"pid": pid, "action": "pending_approval", "app_name": holder.get("app_name")})
-            continue
+            for holder in holders:
+                pid = holder["pid"]
+                app_name = (holder.get("app_name") or "").lower()
+                if pid in (0, 4, current_pid):
+                    actions.append({"pid": pid, "action": "blocked", "reason": "Self or Core OS PID"})
+                    continue
+                if any(crit in app_name for crit in PROTECTED_PROCESS_NAMES):
+                    actions.append({"pid": pid, "action": "blocked", "reason": "Protected system process"})
+                    continue
+                actions.append({"pid": pid, "action": "pending_approval", "app_name": holder.get("app_name")})
+            return {
+                "status": "processed",
+                "file_path": file_path,
+                "actions": actions,
+            }
 
-        # Surgical termination
-        PROCESS_TERMINATE = 0x0001
-        h_proc = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
-        if not h_proc:
-            actions.append({"pid": pid, "action": "failed", "win32_error": ctypes.get_last_error()})
-            continue
+        from jarvis.core.security_boundaries import SecurityBoundaryViolation
 
-        try:
-            terminated = kernel32.TerminateProcess(h_proc, 1)
-            actions.append({
-                "pid": pid,
-                "action": "terminated" if terminated else "failed",
-                "app_name": holder.get("app_name"),
-            })
-        finally:
-            kernel32.CloseHandle(h_proc)
+        with ProcessHandleRegistry.lease(handle_id=handle_id, pid=target_pid) as retained_entry:
+            if handle_id and not retained_entry:
+                raise SecurityBoundaryViolation(
+                    f"Process Identity Violation: Retained process handle '{handle_id}' is expired, invalid, or already released."
+                )
 
-    return {
-        "status": "processed",
-        "file_path": file_path,
-        "actions": actions,
-    }
+            for holder in holders:
+                pid = holder["pid"]
+                app_name = (holder.get("app_name") or "").lower()
+
+                # Critical Protection Checks
+                if pid in (0, 4, current_pid):
+                    actions.append({"pid": pid, "action": "blocked", "reason": "Self or Core OS PID"})
+                    continue
+
+                if any(crit in app_name for crit in PROTECTED_PROCESS_NAMES):
+                    actions.append({"pid": pid, "action": "blocked", "reason": "Protected system process"})
+                    continue
+
+                # Verify process creation time if specified or in retained handle
+                expected_ct = create_time if create_time is not None else (retained_entry.get("create_time") if retained_entry else None)
+                if expected_ct is not None:
+                    live_ct = holder.get("create_time")
+                    if live_ct is None:
+                        try:
+                            import psutil
+                            live_ct = psutil.Process(pid).create_time()
+                        except Exception:  # noqa: BLE001
+                            live_ct = None
+                    if live_ct is not None and abs(live_ct - expected_ct) > 1e-3:
+                        raise SecurityBoundaryViolation(
+                            f"Process Identity Violation: Target PID {pid} creation time mismatch (expected {expected_ct}, got {live_ct}). PID reuse attack detected; actuation aborted."
+                        )
+
+                # Verify executable image path if specified or in retained handle
+                expected_exe = exe_path if exe_path is not None else (retained_entry.get("exe_path") if retained_entry else None)
+                if expected_exe is not None:
+                    live_exe = holder.get("image_path") or holder.get("exe_path")
+                    if live_exe is None:
+                        try:
+                            import psutil
+                            live_exe = psutil.Process(pid).exe()
+                        except Exception:  # noqa: BLE001
+                            live_exe = None
+                    if live_exe and os.path.normcase(os.path.normpath(str(live_exe))) != os.path.normcase(os.path.normpath(str(expected_exe))):
+                        raise SecurityBoundaryViolation(
+                            f"Process Identity Violation: Target PID {pid} executable image mismatch (expected '{expected_exe}', got '{live_exe}'). Binary replacement detected; actuation aborted."
+                        )
+
+                # Surgical termination: Use retained handle strictly
+                if not retained_entry or not retained_entry.get("handle"):
+                    raise SecurityBoundaryViolation(
+                        f"Process Identity Violation: Termination of PID {pid} requires a valid retained process handle. PID reopening is strictly prohibited."
+                    )
+
+                h_proc = retained_entry["handle"]
+                try:
+                    terminated = kernel32.TerminateProcess(h_proc, 1)
+                    actions.append({
+                        "pid": pid,
+                        "action": "terminated" if terminated else "failed",
+                        "app_name": holder.get("app_name"),
+                        "via_retained_handle": True,
+                    })
+                except Exception as e:  # noqa: BLE001
+                    actions.append({"pid": pid, "action": "failed", "error": str(e)})
+
+            return {
+                "status": "processed",
+                "file_path": file_path,
+                "actions": actions,
+            }
+    finally:
+        if allow_kill:
+            from jarvis.skills.os_control import ProcessHandleRegistry
+
+            if handle_id:
+                ProcessHandleRegistry.release(handle_id)
+            if target_pid is not None:
+                ProcessHandleRegistry.release_for_pid(target_pid)

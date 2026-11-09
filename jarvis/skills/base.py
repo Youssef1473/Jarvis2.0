@@ -41,6 +41,7 @@ KNOWN_READ_ONLY_TOOLS: set[str] = {
     "list_open_browser_tabs",
     "list_pending_tasks",
     "list_running_applications",
+    "discover_application_processes",
     "list_background_tasks",
     "list_staged_documents",
     "list_photos",
@@ -251,6 +252,62 @@ class SkillExecutionResult:
     success: bool
     error_type: str | None = None  # "not_found", "exception"
     error_message: str | None = None
+
+
+def _resolve_json_schema_property(annotation: Any) -> dict[str, Any]:
+    """Converts a Python type annotation to an OpenAPI / JSON Schema property dictionary."""
+    if annotation == inspect.Parameter.empty or annotation is Any:
+        return {"type": "string"}
+
+    import types
+    import typing
+
+    origin = typing.get_origin(annotation)
+    args = typing.get_args(annotation)
+
+    # Unwrap Union / Optional (e.g. list[str] | None, Optional[int])
+    union_types = (typing.Union, getattr(types, "UnionType", None))
+    valid_union_types = tuple(u for u in union_types if u is not None)
+    if origin in valid_union_types:
+        non_none_args = [a for a in args if a not in (type(None), None)]
+        has_none = len(non_none_args) < len(args)
+        if non_none_args:
+            resolved = dict(_resolve_json_schema_property(non_none_args[0]))
+            if has_none:
+                # Under OpenAI Strict Mode (Structured Outputs), nullable types must use array format:
+                # e.g. type: ["string", "null"] or type: ["array", "null"]
+                orig_type = resolved.get("type", "string")
+                if isinstance(orig_type, list):
+                    if "null" not in orig_type:
+                        resolved["type"] = [*orig_type, "null"]
+                else:
+                    resolved["type"] = [orig_type, "null"]
+                resolved.pop("nullable", None)
+            return resolved
+        return {"type": ["string", "null"]} if has_none else {"type": "string"}
+
+    # Handle List / Sequence (e.g. list[str], list[int], list)
+    if origin in (list, tuple, set, typing.Sequence, typing.Iterable) or annotation in (list, tuple, set):
+        item_schema = {"type": "string"}
+        if args and args[0] is not Any:
+            item_schema = _resolve_json_schema_property(args[0])
+        return {"type": "array", "items": item_schema}
+
+    # Handle Dict / Mapping (e.g. dict[str, Any], dict)
+    if origin in (dict, typing.Mapping) or annotation in (dict,):
+        return {"type": "object"}
+
+    # Primitives
+    if annotation is str:
+        return {"type": "string"}
+    if annotation is int:
+        return {"type": "integer"}
+    if annotation is float:
+        return {"type": "number"}
+    if annotation is bool:
+        return {"type": "boolean"}
+
+    return {"type": "string"}
 
 
 class SkillRegistry:
@@ -515,14 +572,6 @@ class SkillRegistry:
             return cached
 
         openai_tools = []
-        type_map = {
-            str: "string",
-            int: "integer",
-            float: "number",
-            bool: "boolean",
-            list: "array",
-            dict: "object",
-        }
 
         for name in ordered_names:
             func = cls._tools[name]
@@ -544,13 +593,11 @@ class SkillRegistry:
                     or param.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
                 ):
                     continue
-                p_type = "string"
-                if param.annotation != inspect.Parameter.empty:
-                    p_type = type_map.get(param.annotation, "string")
 
-                props[p_name] = {"type": p_type}
-                if param.default == inspect.Parameter.empty:
-                    required.append(p_name)
+                props[p_name] = _resolve_json_schema_property(param.annotation)
+
+            # Under OpenAI Strict Mode (Structured Outputs), every declared property must be in required
+            required = list(props.keys())
 
             desc = cls._descriptions.get(name) or (func.__doc__ or name).strip()
             openai_tools.append({
@@ -558,10 +605,12 @@ class SkillRegistry:
                 "function": {
                     "name": name,
                     "description": desc,
+                    "strict": True,
                     "parameters": {
                         "type": "object",
                         "properties": props,
-                        "required": required
+                        "required": required,
+                        "additionalProperties": False,
                     }
                 }
             })
@@ -581,6 +630,21 @@ class SkillRegistry:
                 error_type="not_found",
                 error_message=f"Tool '{name}' not found.",
             )
+
+        # Enforce strict schema: reject undeclared arguments if tool does not accept **kwargs or is send_email
+        sig = inspect.signature(tool)
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        if not has_var_kw or resolved == "send_email":
+            allowed_params = set(sig.parameters.keys())
+            unexpected_args = set(kwargs.keys()) - allowed_params
+            if unexpected_args:
+                err_msg = f"Security Violation: Error executing tool '{name}': unexpected argument(s) {sorted(unexpected_args)} not accepted by '{resolved}'."
+                return SkillExecutionResult(
+                    result=err_msg,
+                    success=False,
+                    error_type="security_violation",
+                    error_message=err_msg,
+                )
 
         # CRITICAL SECURITY GATE: Direct execution boundary
         # Single-use authorization capability bound to exact tool authorized by orchestrator
@@ -636,6 +700,19 @@ class SkillRegistry:
                 )
                 kwargs["source_provenance"] = "user_supplied"
 
+        ctx_token = None
+        if not is_authorized_orchestrator_call and gate_decision.grant is not None:
+            from jarvis.core.security_boundaries import DualKeyApprovalManager
+            try:
+                ctx_token = DualKeyApprovalManager.get_instance().bind_active_grant(gate_decision.grant)
+            except Exception as bind_err:  # noqa: BLE001
+                return SkillExecutionResult(
+                    result=f"Security Violation: Failed to bind authorization grant: {bind_err}",
+                    success=False,
+                    error_type="security_violation",
+                    error_message=str(bind_err),
+                )
+
         try:
             output = tool(**kwargs)
             return SkillExecutionResult(
@@ -643,6 +720,14 @@ class SkillRegistry:
                 success=True,
             )
         except Exception as e:  # noqa: BLE001 - catch arbitrary skill execution failures to return structured status
+            from jarvis.core.security_boundaries import SecurityBoundaryViolation
+            if isinstance(e, SecurityBoundaryViolation):
+                return SkillExecutionResult(
+                    result=f"Security Violation: {e}",
+                    success=False,
+                    error_type="security_violation",
+                    error_message=str(e),
+                )
             err_msg = f"Error executing tool '{name}': {e}"
             return SkillExecutionResult(
                 result=err_msg,
@@ -650,6 +735,10 @@ class SkillRegistry:
                 error_type="exception",
                 error_message=str(e),
             )
+        finally:
+            if ctx_token is not None:
+                from jarvis.core.security_boundaries import DualKeyApprovalManager
+                DualKeyApprovalManager.get_instance().clear_active_authorized(ctx_token)
 
     @classmethod
     def execute(cls, name: str, **kwargs) -> Any:

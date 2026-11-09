@@ -1,4 +1,5 @@
 """Workstation diagnostics, RAM hog inspection, and safe system maintenance for Windows."""
+import hmac
 import logging
 import os
 import subprocess
@@ -51,16 +52,51 @@ def inspect_ram_hogs() -> str:
 
 @SkillRegistry.register(
     name="optimize_workstation",
-    description="Optimizes workstation health by safely cleaning stale temporary files and flushing Windows DNS cache."
+    description="Optimizes workstation health by safely cleaning stale temporary files and flushing Windows DNS cache.",
+    risk_level=1,
 )
 def optimize_workstation() -> str:
     """Flushes DNS cache and purges stale temp files older than 24 hours."""
+    from jarvis.core.security_boundaries import (
+        SecurityBoundaryViolation,
+        _active_auth_context,
+        compute_action_hash,
+    )
+
+    active_token = _active_auth_context.get()
+    if active_token is None or not active_token.is_valid:
+        raise SecurityBoundaryViolation(
+            "Authorization Required: optimize_workstation requires explicit human approval."
+        )
+
+    if active_token.tool_name != "optimize_workstation":
+        raise SecurityBoundaryViolation(
+            f"Authorization Mismatch: Active authorization is for '{active_token.tool_name}', not 'optimize_workstation'."
+        )
+
+    expected_hash = compute_action_hash("optimize_workstation", {})
+    if not hmac.compare_digest(active_token.action_hash, expected_hash):
+        raise SecurityBoundaryViolation(
+            "Action Hash Mismatch: Action arguments do not match approved action hash."
+        )
+
+    if not active_token.consume("optimize_workstation", expected_hash):
+        raise SecurityBoundaryViolation(
+            "Single-Use Authorization Violation: optimize_workstation authorization grant was already consumed or invalidated."
+        )
+
     # 1. Flush DNS cache
     dns_flushed = False
     try:
-        res = subprocess.run(["ipconfig", "/flushdns"], capture_output=True, text=True, timeout=3)
+        res = subprocess.run(
+            ["ipconfig", "/flushdns"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
         dns_flushed = res.returncode == 0
-    except Exception as e:
+    except (subprocess.SubprocessError, OSError) as e:
         logger.debug(f"DNS flush notice: {e}")
 
     # 2. Clean stale files in %TEMP% older than 24 hours
@@ -79,7 +115,7 @@ def optimize_workstation() -> str:
                         freed_bytes += st.st_size
                         os.remove(f_path)
                         cleaned_files += 1
-                except Exception:
+                except OSError:
                     # Stale file is locked by active process or permission denied
                     continue
 

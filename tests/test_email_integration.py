@@ -5,32 +5,24 @@
 4. Brain intent pruning coverage for email commands
 """
 import sys
-from pathlib import Path
-import os
-import unittest
-from unittest.mock import MagicMock, patch
-import email
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.skills.base import SkillRegistry
-import jarvis.skills.email_manager as email_mgr
-from jarvis.skills.email_manager import (
-    _sanitize_email_text,
-    _decode_str,
-    _get_email_body,
-    check_unread_emails,
-    search_emails,
-    read_email_details,
-    send_email,
-    get_unread_email_count,
-)
+from jarvis.core.brain import JarvisBrain
 from jarvis.core.config_loader import load_config
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
-from jarvis.core.brain import JarvisBrain
+from jarvis.skills.email_manager import (
+    _sanitize_email_text,
+    check_unread_emails,
+    read_email_details,
+    search_emails,
+    send_email,
+)
 
 
 def test_email_sanitization():
@@ -103,40 +95,57 @@ def test_unread_emails_formatting():
 
 def test_send_email_pipeline():
     print("\n--- 3. Testing Send Email Drafting & Mock SMTP Dispatch ---")
+    import pytest
+
+    from jarvis.core.security_boundaries import (
+        DualKeyApprovalManager,
+        SecurityBoundaryViolation,
+        TurnTaintTracker,
+    )
+
+    tracker = TurnTaintTracker.get_instance()
+    tracker.reset_turn()
+    mgr = DualKeyApprovalManager.get_instance()
+    mgr.reset()
+
+    to_addr = "col_rhodey@usaf.mil"
+    subj = "War Machine Upgrades"
+    body = "Rhodey, the new flight telemetry modules are staged at the hangar."
 
     with patch("jarvis.skills.email_manager._get_credentials", return_value=("tony@starkindustries.com", "dummy_password", "imap.gmail.com", "smtp.gmail.com", 465, True)):
-        
-        # 1. Test draft preview (confirm=False)
-        draft = send_email(
-            to_address="col_rhodey@usaf.mil",
-            subject="War Machine Upgrades",
-            body="Rhodey, the new flight telemetry modules are staged at the hangar.",
-            account="gmail",
-            confirm=False
-        )
-        print("Draft Output:\n", draft)
-        assert "Draft Email Prepared for Sir's Review" in draft
-        assert "col_rhodey@usaf.mil" in draft
-        assert "War Machine Upgrades" in draft
-        assert "Please confirm to send" in draft
-        print("Draft Preview Gate: PASSED")
 
-        # 2. Test verified dispatch (confirm=True) with mock SMTP
-        mock_smtp = MagicMock()
-        with patch("smtplib.SMTP_SSL", return_value=mock_smtp):
-            mock_smtp.__enter__.return_value = mock_smtp
-            res_send = send_email(
-                to_address="col_rhodey@usaf.mil",
-                subject="War Machine Upgrades",
-                body="Rhodey, the new flight telemetry modules are staged at the hangar.",
+        # 1. Direct unauthenticated invocation MUST fail closed
+        with pytest.raises(SecurityBoundaryViolation):
+            send_email(
+                to_address=to_addr,
+                subject=subj,
+                body=body,
                 account="gmail",
-                confirm=True
             )
-            print("Dispatch Output:\n", res_send)
-            assert "Email dispatched, Sir" in res_send
-            mock_smtp.login.assert_called_once_with("tony@starkindustries.com", "dummy_password")
-            mock_smtp.send_message.assert_called_once()
-            print("SMTP Dispatch Pipeline: PASSED")
+        print("Unauthenticated Fail-Closed Gate: PASSED")
+
+        # 2. Legitimate authorization permits mock SMTP dispatch
+        grant = mgr.grant_approval("send_email", {"to_address": to_addr, "subject": subj, "body": body})
+        token = mgr.bind_active_grant(grant)
+        try:
+            mock_smtp = MagicMock()
+            with patch("smtplib.SMTP_SSL", return_value=mock_smtp):
+                mock_smtp.__enter__.return_value = mock_smtp
+                res_send = send_email(
+                    to_address=to_addr,
+                    subject=subj,
+                    body=body,
+                    account="gmail",
+                )
+                print("Dispatch Output:\n", res_send)
+                assert "Email dispatched, Sir" in res_send
+                mock_smtp.login.assert_called_once_with("tony@starkindustries.com", "dummy_password")
+                mock_smtp.send_message.assert_called_once()
+                print("SMTP Dispatch Pipeline: PASSED")
+        finally:
+            mgr.clear_active_authorized(token)
+            tracker.reset_turn()
+            mgr.reset()
 
 
 def test_intent_routing_coverage():

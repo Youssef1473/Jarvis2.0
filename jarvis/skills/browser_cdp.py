@@ -1053,6 +1053,8 @@ def execute_cdp_javascript(
     host: str = "127.0.0.1",
     port: int | None = None,
     allow_unmanaged: bool = False,
+    execution_context_id: int | None = None,
+    unique_context_id: str | None = None,
 ) -> Any | None:
     """Evaluates JavaScript expression on the target tab via CDP Runtime.evaluate."""
     target_port = resolve_cdp_port(port, allow_unmanaged=allow_unmanaged)
@@ -1077,16 +1079,22 @@ def execute_cdp_javascript(
         if not target_tab:
             return None
 
+        eval_params: dict[str, Any] = {
+            "expression": expression,
+            "returnByValue": True,
+            "awaitPromise": True,
+        }
+        if unique_context_id:
+            eval_params["uniqueContextId"] = unique_context_id
+        elif execution_context_id is not None:
+            eval_params["contextId"] = execution_context_id
+
         tab_id = target_tab.get("id")
         active_session = get_tab_session(tab_id) if tab_id else None
         if active_session:
             resp = active_session.send_command(
                 "Runtime.evaluate",
-                {
-                    "expression": expression,
-                    "returnByValue": True,
-                    "awaitPromise": True,
-                },
+                eval_params,
                 timeout_sec=5.0,
             )
             return resp.get("result", {}).get("result", {}).get("value")
@@ -1102,11 +1110,7 @@ def execute_cdp_javascript(
             cmd = {
                 "id": 202,
                 "method": "Runtime.evaluate",
-                "params": {
-                    "expression": expression,
-                    "returnByValue": True,
-                    "awaitPromise": True,
-                }
+                "params": eval_params,
             }
             ws.send(json.dumps(cmd))
             resp = recv_cdp_response(ws, 202, timeout_sec=5.0)
@@ -1689,13 +1693,116 @@ def execute_browser_javascript(
     allow_unmanaged: bool = False,
     automated: bool = False,
     user_approved: bool = False,
+    expected_url: str | None = None,
+    target_id: str | None = None,
+    execution_context_id: int | None = None,
+    frame_id: str | None = None,
+    unique_context_id: str | None = None,
+    script_digest: str | None = None,
 ) -> str:
     """Executes JavaScript in the browser tab via CDP."""
+    import hashlib
+    import hmac
+
+    from jarvis.core.security_boundaries import (
+        SecurityBoundaryViolation,
+        _active_auth_context,
+        compute_action_hash,
+    )
+
+    if not unique_context_id or not isinstance(unique_context_id, str) or not unique_context_id.strip():
+        raise SecurityBoundaryViolation(
+            "Browser Context Violation: execute_browser_javascript requires a valid non-empty 'unique_context_id' at execution time."
+        )
+    if not script_digest or not isinstance(script_digest, str) or not script_digest.strip():
+        raise SecurityBoundaryViolation(
+            "Script Integrity Violation: execute_browser_javascript requires a valid 'script_digest' at execution time."
+        )
+
+    actual_digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(actual_digest, script_digest):
+        raise SecurityBoundaryViolation(
+            f"Script Integrity Violation: JavaScript content does not match approved script_digest (expected '{script_digest}', got '{actual_digest}'). Script tampering rejected."
+        )
+
+    active_token = _active_auth_context.get()
+    if active_token is None or not active_token.is_valid:
+        raise SecurityBoundaryViolation(
+            "Authorization Required: execute_browser_javascript requires explicit human approval."
+        )
+
+    if active_token.tool_name != "execute_browser_javascript":
+        raise SecurityBoundaryViolation(
+            f"Authorization Mismatch: Active authorization is for '{active_token.tool_name}', not 'execute_browser_javascript'."
+        )
+
+    approved_args = getattr(active_token, "arguments", {}) or {}
+    approved_unique_ctx = approved_args.get("unique_context_id")
+    if approved_unique_ctx and unique_context_id != approved_unique_ctx:
+        raise SecurityBoundaryViolation(
+            f"Browser Context Violation: unique_context_id '{unique_context_id}' does not match approved context '{approved_unique_ctx}'."
+        )
+
+    approved_script_digest = approved_args.get("script_digest")
+    if approved_script_digest and not hmac.compare_digest(script_digest, approved_script_digest):
+        raise SecurityBoundaryViolation(
+            f"Script Integrity Violation: script_digest '{script_digest}' does not match approved script_digest '{approved_script_digest}'."
+        )
+
+    full_cand = {
+        "script": script,
+        "tab_name": tab_name,
+        "allow_unmanaged": allow_unmanaged,
+        "unique_context_id": unique_context_id,
+        "script_digest": script_digest,
+    }
+    if expected_url is not None:
+        full_cand["expected_url"] = expected_url
+    if target_id is not None:
+        full_cand["target_id"] = target_id
+    if execution_context_id is not None:
+        full_cand["execution_context_id"] = execution_context_id
+    if frame_id is not None:
+        full_cand["frame_id"] = frame_id
+
+    candidate_args = [full_cand]
+    if not tab_name:
+        c1 = dict(full_cand)
+        c1.pop("tab_name", None)
+        candidate_args.append(c1)
+    if not allow_unmanaged:
+        c2 = dict(full_cand)
+        c2.pop("allow_unmanaged", None)
+        candidate_args.append(c2)
+    if not tab_name and not allow_unmanaged:
+        c3 = dict(full_cand)
+        c3.pop("tab_name", None)
+        c3.pop("allow_unmanaged", None)
+        candidate_args.append(c3)
+
+    matched_hash = None
+    for cand in candidate_args:
+        cand_hash = compute_action_hash("execute_browser_javascript", cand)
+        if hmac.compare_digest(active_token.action_hash, cand_hash):
+            matched_hash = cand_hash
+            break
+
+    if matched_hash is None:
+        raise SecurityBoundaryViolation(
+            "Action Hash Mismatch: Browser JavaScript execution arguments do not match approved action hash."
+        )
+
+    if not active_token.consume("execute_browser_javascript", matched_hash):
+        raise SecurityBoundaryViolation(
+            "Single-Use Authorization Violation: execute_browser_javascript authorization grant was already consumed or invalidated."
+        )
+
     # Record untrusted external web provenance for executed script results
     from jarvis.core.security_boundaries import TurnTaintTracker
+
     TurnTaintTracker.get_instance().record_ingestion(
         "execute_browser_javascript",
-        {"script": str(script or "")[:100], "tab_name": str(tab_name or "")}
+        {"script": str(script or "")[:100], "tab_name": str(tab_name or "")},
     )
 
     managed_port = get_managed_cdp_port()
@@ -1709,7 +1816,78 @@ def execute_browser_javascript(
     if target_port is None or not is_cdp_available(port=target_port, allow_unmanaged=allow_unmanaged):
         return "Browser DevTools Protocol is not currently attached (port is closed), Sir."
 
-    res = execute_cdp_javascript(expression=script, target_id_or_title=tab_name, port=target_port)
+    # Immediate pre-dispatch verification of active tab and context
+    tabs = list_cdp_tabs(port=target_port, allow_unmanaged=allow_unmanaged)
+    target_tab = None
+    if tabs:
+        if target_id:
+            for t in tabs:
+                if t.get("id") == target_id:
+                    target_tab = t
+                    break
+            if not target_tab:
+                raise SecurityBoundaryViolation(
+                    f"Browser Context Violation: Target session ID '{target_id}' was closed or substituted. Actuation aborted."
+                )
+        elif tab_name and tab_name.strip():
+            q_lower = tab_name.lower().strip()
+            for t in tabs:
+                if t.get("id") == tab_name or q_lower in t.get("title", "").lower() or q_lower in t.get("url", "").lower():
+                    target_tab = t
+                    break
+        else:
+            target_tab = tabs[0]
+    elif target_id:
+        raise SecurityBoundaryViolation(
+            f"Browser Context Violation: Target session ID '{target_id}' is not active. Actuation aborted."
+        )
+
+    if target_tab:
+        # Verify expected URL / origin
+        if expected_url is not None:
+            tab_url = target_tab.get("url", "")
+            if tab_url != expected_url and expected_url not in tab_url:
+                raise SecurityBoundaryViolation(
+                    f"Browser Context Violation: Active tab navigated away from approved URL (expected '{expected_url}', got '{tab_url}'). Navigation hijack rejected."
+                )
+
+        # Verify execution context ID if provided or present
+        if execution_context_id is not None:
+            live_ctx_id = target_tab.get("execution_context_id")
+            if live_ctx_id is not None and live_ctx_id != execution_context_id:
+                raise SecurityBoundaryViolation(
+                    f"Browser Context Violation: CDP execution context {execution_context_id} was destroyed or replaced (found {live_ctx_id}). Actuation aborted."
+                )
+
+        # Verify unique execution context ID if provided
+        if unique_context_id is not None:
+            live_uniq_id = target_tab.get("unique_context_id")
+            if live_uniq_id is not None and live_uniq_id != unique_context_id:
+                raise SecurityBoundaryViolation(
+                    f"Browser Context Violation: Unique execution context ID '{unique_context_id}' mismatch (found '{live_uniq_id}'). Actuation aborted."
+                )
+
+        # Verify frame identity if provided
+        if frame_id is not None:
+            live_frame_id = target_tab.get("frame_id")
+            if live_frame_id is not None and live_frame_id != frame_id:
+                raise SecurityBoundaryViolation(
+                    f"Browser Context Violation: Frame identity '{frame_id}' mismatch (found '{live_frame_id}'). Actuation aborted."
+                )
+
+    target_id_or_title = (target_tab.get("id") if target_tab else None) or target_id or tab_name
+    extra_cdp_kwargs: dict[str, Any] = {}
+    if execution_context_id is not None:
+        extra_cdp_kwargs["execution_context_id"] = execution_context_id
+    if unique_context_id is not None:
+        extra_cdp_kwargs["unique_context_id"] = unique_context_id
+
+    res = execute_cdp_javascript(
+        expression=script,
+        target_id_or_title=target_id_or_title,
+        port=target_port,
+        **extra_cdp_kwargs,
+    )
     if res is None:
         return "JavaScript execution returned no result or encountered an error, Sir."
     return f"JavaScript Evaluation Result, Sir:\n{res}"
@@ -1721,7 +1899,7 @@ def execute_browser_javascript(
 )
 def launch_debug_browser(browser: str = "brave", dedicated_profile: bool = True) -> str:
     """Starts browser with remote debugging port 9222."""
-    success, msg = bootstrap_cdp_browser(browser_name=browser, dedicated_profile=dedicated_profile)
+    _success, msg = bootstrap_cdp_browser(browser_name=browser, dedicated_profile=dedicated_profile)
     return msg
 
 

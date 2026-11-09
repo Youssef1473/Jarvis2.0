@@ -1,51 +1,68 @@
 """Verification test suite for Jarvis 2.0 Flagship Features Suite."""
-import os
 import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
-from jarvis.skills.base import SkillRegistry
-import jarvis.skills.protocols
-import jarvis.skills.system_maintenance
-import jarvis.skills.media_dj
-import jarvis.skills.briefing
-import jarvis.skills.project_manager
 import yaml
+
 from jarvis.core.brain import JarvisBrain
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
+from jarvis.skills.base import SkillRegistry
 
 
 def test_protocols():
+    from unittest.mock import patch
+
     from jarvis.core.security_boundaries import TurnTaintTracker
-    TurnTaintTracker.get_instance().reset_turn()
-    print("\n--- 1. Testing Multi-Action Protocols ---")
-    res_work = SkillRegistry.execute("execute_protocol", protocol_name="work")
-    print("Work protocol:", res_work)
-    assert "Work protocol initiated" in res_work
 
     TurnTaintTracker.get_instance().reset_turn()
-    res_night = SkillRegistry.execute("execute_protocol", protocol_name="night")
-    print("Night protocol:", res_night)
-    assert "Night protocol engaged" in res_night
+    print("\n--- 1. Testing Multi-Action Protocols ---")
+    with patch("jarvis.skills.protocols.launch_application", return_value="Application launched"):
+        res_work = SkillRegistry.execute("execute_protocol", protocol_name="work")
+        print("Work protocol:", res_work)
+        assert "Work protocol initiated" in res_work
+
+        TurnTaintTracker.get_instance().reset_turn()
+        res_night = SkillRegistry.execute("execute_protocol", protocol_name="night")
+        print("Night protocol:", res_night)
+        assert "Night protocol engaged" in res_night
 
 
 def test_system_maintenance():
-    from jarvis.core.security_boundaries import TurnTaintTracker
+    import pytest
+
+    from jarvis.core.security_boundaries import (
+        DualKeyApprovalManager,
+        SecurityBoundaryViolation,
+        TurnTaintTracker,
+    )
     TurnTaintTracker.get_instance().reset_turn()
     print("\n--- 2. Testing System Maintenance & RAM Hogs ---")
+    # Read-only diagnostics do not require authorization
     hogs = SkillRegistry.execute("inspect_ram_hogs")
     print("RAM Hogs excerpt:\n", hogs[:150])
     assert "Top Memory Consumers" in hogs
 
     TurnTaintTracker.get_instance().reset_turn()
-    opt = SkillRegistry.execute("optimize_workstation")
-    print("Optimization result:", opt)
-    assert "optimization complete" in opt.lower()
+    # 1. Unapproved optimize_workstation must fail closed
+    with pytest.raises(SecurityBoundaryViolation):
+        SkillRegistry.execute("optimize_workstation")
+
+    # 2. Approved optimize_workstation executes cleanly
+    approval_mgr = DualKeyApprovalManager.get_instance()
+    approval_mgr.set_approval_handler(lambda req: True)
+    try:
+        opt = SkillRegistry.execute("optimize_workstation")
+        print("Optimization result:", opt)
+        assert "optimization complete" in opt.lower()
+    finally:
+        approval_mgr.set_approval_handler(None)
 
 
 def test_media_dj():

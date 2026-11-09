@@ -69,6 +69,7 @@ IGNORED_MODEL_AUTH_FIELDS: set[str] = {
     "user_approved",
     "dual_key_confirmed",
     "confirmed",
+    "confirm",
     "_dual_key_token",
     "allow_uncontained",
     "_allow_uncontained",
@@ -605,12 +606,41 @@ def validate_confined_path(target_path: str, allowed_root_dir: str) -> str:
     return real_target
 
 
+def compute_attachments_digest(attachments: list[Any]) -> str:
+    """Computes a deterministic SHA-256 digest of email attachment files on disk."""
+    if not attachments:
+        return ""
+    if len(attachments) == 1:
+        att = attachments[0]
+        if isinstance(att, (str, Path)) and os.path.isfile(att):
+            try:
+                with open(att, "rb") as f:
+                    return hashlib.sha256(f.read()).hexdigest()
+            except Exception:  # noqa: BLE001
+                return "error_reading:" + str(att)
+        return "invalid:" + str(att)
+
+    parts: list[str] = []
+    for att in attachments:
+        if isinstance(att, (str, Path)) and os.path.isfile(att):
+            try:
+                with open(att, "rb") as f:
+                    parts.append(hashlib.sha256(f.read()).hexdigest())
+            except Exception:  # noqa: BLE001
+                parts.append("error_reading:" + str(att))
+        else:
+            parts.append("invalid:" + str(att))
+    return hashlib.sha256(":".join(parts).encode("utf-8")).hexdigest()
+
+
 def compute_action_hash(tool_name: str, arguments: dict[str, Any]) -> str:
     """Computes a deterministic SHA-256 hash of a tool call's payload, ignoring forged model auth fields."""
     clean_args = {
         k: v for k, v in (arguments or {}).items()
         if k not in IGNORED_MODEL_AUTH_FIELDS
     }
+    if tool_name == "send_email" and "attachments" in clean_args and "attachments_digest" not in clean_args:
+        clean_args["attachments_digest"] = compute_attachments_digest(clean_args["attachments"])
     raw = json.dumps({"tool": tool_name, "args": clean_args}, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -657,12 +687,92 @@ def format_action_summary(tool_name: str, arguments: dict) -> str:
     elif tool_name == "read_multiple_files":
         fps = clean_args.get("file_paths", "")
         return f"Read multiple files: {fps[:100]}"
+    elif tool_name == "optimize_workstation":
+        return "Optimize workstation: flush Windows DNS cache and purge stale temporary files"
+    elif tool_name == "close_application":
+        app = clean_args.get("app_name", "unspecified")
+        return f"Terminate running desktop application: '{app}'"
+    elif tool_name == "send_email":
+        to_addr = clean_args.get("to_address", "unknown")
+        subj = clean_args.get("subject", "No subject")
+        atts = clean_args.get("attachments") or []
+        att_details = []
+        for att in atts:
+            if isinstance(att, (str, Path)) and os.path.isfile(att):
+                try:
+                    size = os.path.getsize(att)
+                    att_details.append(f"'{os.path.basename(str(att))}' ({size} bytes)")
+                except OSError:
+                    att_details.append(f"'{os.path.basename(str(att))}'")
+            else:
+                att_details.append(f"'{os.path.basename(str(att))}'")
+        att_str = f" with {len(atts)} attachment(s): [{', '.join(att_details)}]" if att_details else ""
+        return f"Send outbound email to '{to_addr}' - Subject: '{subj}'{att_str}"
     else:
         import json
         arg_preview = json.dumps(clean_args, sort_keys=True)
         if len(arg_preview) > 120:
             arg_preview = arg_preview[:117] + "..."
         return f"Execute tool '{tool_name}' with arguments {arg_preview}"
+
+
+def classify_and_preview_attachment(filename: str, file_bytes: bytes) -> tuple[bool, str, bool]:
+    """Classifies attachment as text or binary, generating an escaped, inert, bounded preview.
+
+    Inert Rendering & Security Bounds:
+    - Never evaluates, executes, renders, or interprets document contents as instructions.
+    - Suppresses null bytes, ANSI control codes, and binary sequences.
+    - Limits plain text preview to at most 2,048 characters with explicit truncation notice.
+    - Binary content is represented as '[Binary content: X bytes]'.
+
+    Returns:
+        (is_text: bool, preview: str, is_truncated: bool)
+    """
+    if not file_bytes:
+        return True, "[Empty file]", False
+
+    # Detection 1: null byte presence is definitive binary indicator
+    if b"\x00" in file_bytes:
+        return False, f"[Binary content: {len(file_bytes)} bytes]", False
+
+    # Detection 2: known binary file extensions
+    lower_name = filename.lower()
+    known_binary_exts = (
+        ".exe", ".dll", ".so", ".dylib", ".bin", ".iso", ".zip", ".tar",
+        ".gz", ".7z", ".png", ".jpg", ".jpeg", ".gif", ".pdf", ".ico",
+        ".webp", ".bmp", ".wasm", ".pyc", ".pyd", ".woff", ".woff2",
+    )
+    for ext in known_binary_exts:
+        if lower_name.endswith(ext):
+            return False, f"[Binary content: {len(file_bytes)} bytes]", False
+
+    # Detection 3: Attempt UTF-8 decoding
+    try:
+        decoded = file_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return False, f"[Binary content: {len(file_bytes)} bytes]", False
+
+    # Neutralize control characters and ANSI escape sequences
+    sanitized = re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", decoded)
+    sanitized = sanitized.replace("\x00", "")
+
+    # Check non-printable control characters ratio (excluding standard whitespace \t, \n, \r)
+    non_printable = sum(1 for c in sanitized if ord(c) < 32 and c not in ("\t", "\n", "\r"))
+    if len(sanitized) > 0 and (non_printable / len(sanitized)) > 0.05:
+        return False, f"[Binary content: {len(file_bytes)} bytes]", False
+
+    # Bounded preview: maximum 2048 characters total
+    is_truncated = False
+    max_len = 2048
+    if len(sanitized) > max_len:
+        is_truncated = True
+        trunc_marker = f"\n... [Truncated: of {len(sanitized)} chars]"
+        slice_len = max(0, max_len - len(trunc_marker))
+        preview = sanitized[:slice_len] + trunc_marker
+    else:
+        preview = sanitized
+
+    return True, preview, is_truncated
 
 
 @dataclass
@@ -677,15 +787,20 @@ class DualKeyAuthorization:
     status: str = "pending"  # "pending", "gate_consumed", "active", "consumed", "invalidated", "expired"
     summary: str = ""
     turn_id: str | None = None
+    arguments: dict[str, Any] = field(default_factory=dict)
+    attachment_snapshots: dict[str, bytes] = field(default_factory=dict)
+    attachments_digest: str = ""
+    attachment_details: list[dict[str, Any]] = field(default_factory=list)
 
     def is_valid_for(self, tool_name: str, payload_hash: str, turn_id: str | None = None) -> bool:
         if self.turn_id is not None and turn_id is not None and self.turn_id != turn_id:
             return False
+        current_time = time.monotonic()
         return (
             self.confirmed
             and self.tool_name == tool_name
             and hmac.compare_digest(self.action_hash, payload_hash)
-            and time.time() <= self.expires_at
+            and current_time < self.expires_at
             and self.status not in ("consumed", "invalidated", "expired")
         )
 
@@ -704,7 +819,23 @@ class _ActiveAuthToken:
     """Thread-safe, single-use active authorization token propagating through ContextVar.
     Cryptographically derived from a validated, manager-issued DualKeyAuthorization grant.
     """
-    __slots__ = ("_consumed", "_disarmed", "_invalidated", "_lock", "action_hash", "expires_at", "grant_id", "grant_token", "manager", "tool_name")
+    __slots__ = (
+        "_consumed",
+        "_disarmed",
+        "_invalidated",
+        "_lock",
+        "_process_launched",
+        "action_hash",
+        "arguments",
+        "attachment_details",
+        "attachment_snapshots",
+        "attachments_digest",
+        "expires_at",
+        "grant_id",
+        "grant_token",
+        "manager",
+        "tool_name",
+    )
 
     def __init__(
         self,
@@ -715,6 +846,10 @@ class _ActiveAuthToken:
         expires_at: float = 0.0,
         disarmed: bool = False,
         manager: Optional["DualKeyApprovalManager"] = None,
+        attachment_snapshots: dict[str, bytes] | None = None,
+        attachments_digest: str = "",
+        attachment_details: list[dict[str, Any]] | None = None,
+        arguments: dict[str, Any] | None = None,
     ) -> None:
         self.grant_id = grant_id
         self.tool_name = tool_name
@@ -724,8 +859,13 @@ class _ActiveAuthToken:
         self._consumed = False
         self._invalidated = False
         self._disarmed = disarmed
+        self._process_launched = False
         self._lock = threading.Lock()
         self.manager = manager
+        self.attachment_snapshots = attachment_snapshots or {}
+        self.attachments_digest = attachments_digest
+        self.attachment_details = attachment_details or []
+        self.arguments = dict(arguments or {})
 
     def consume(self, tool_name: str, action_hash: str) -> bool:
         """Atomically checks and consumes the active authorization token.
@@ -735,7 +875,8 @@ class _ActiveAuthToken:
             return False
         if self.tool_name != tool_name or not hmac.compare_digest(self.action_hash, action_hash):
             return False
-        if time.time() > self.expires_at:
+        current_time = time.monotonic()
+        if current_time >= self.expires_at:
             return False
         with self._lock:
             if self._consumed or self._invalidated:
@@ -744,6 +885,37 @@ class _ActiveAuthToken:
                 self._invalidated = True
                 return False
             self._consumed = True
+            return True
+
+    def consume_for_process(self, allowed_tools: set[str]) -> bool:
+        """Atomically checks and consumes the active authorization token for process actuation.
+        Succeeds if token is valid, unexpired, matches one of the allowed tools,
+        and the underlying manager grant transitions to consumed.
+        """
+        if self._disarmed:
+            return False
+        if self.tool_name not in allowed_tools:
+            return False
+        current_time = time.monotonic()
+        if current_time >= self.expires_at:
+            return False
+        with self._lock:
+            if self._consumed or self._invalidated:
+                return False
+            if self.manager is not None and not self.manager._mark_grant_consumed(self.grant_id, self.grant_token):
+                self._invalidated = True
+                return False
+            self._consumed = True
+            return True
+
+    def mark_process_launched(self) -> bool:
+        """Marks that child process actuation has occurred under this authorization token.
+        Succeeds exactly once per token to prevent multiple process spawns.
+        """
+        with self._lock:
+            if self._disarmed or self._invalidated or self._process_launched:
+                return False
+            self._process_launched = True
             return True
 
     def invalidate(self) -> None:
@@ -760,8 +932,9 @@ class _ActiveAuthToken:
 
     @property
     def is_valid(self) -> bool:
+        current_time = time.monotonic()
         with self._lock:
-            return (not self._disarmed) and (not self._consumed) and (not self._invalidated) and (time.time() <= self.expires_at)
+            return (not self._disarmed) and (not self._consumed) and (not self._invalidated) and (current_time < self.expires_at)
 
 
 _DISARMED_TOKEN = _ActiveAuthToken(disarmed=True)
@@ -814,6 +987,53 @@ class DualKeyApprovalManager:
             if auth and hmac.compare_digest(auth.token, grant_token) and auth.status == "active":
                 auth.status = "invalidated"
 
+    @staticmethod
+    def _validate_tool_schema_and_integrity(tool_name: str, arguments: dict[str, Any]) -> None:
+        """Validates tool schema and integrity constraints at the approval boundary."""
+        if tool_name == "send_email":
+            allowed_email_keys = {"to_address", "subject", "body", "account", "attachments", "attachments_digest"}
+            raw_keys = set((arguments or {}).keys())
+            extra_keys = raw_keys - allowed_email_keys
+            if extra_keys:
+                raise SecurityBoundaryViolation(
+                    f"Security Schema Violation: send_email does not accept undeclared argument(s) {sorted(extra_keys)}."
+                )
+        elif tool_name == "execute_browser_javascript":
+            uniq_ctx = (arguments or {}).get("unique_context_id")
+            if not uniq_ctx or not isinstance(uniq_ctx, str) or not uniq_ctx.strip():
+                raise SecurityBoundaryViolation(
+                    "Security Approval Violation: execute_browser_javascript requires a valid non-empty 'unique_context_id' at approval creation."
+                )
+            approved_digest = (arguments or {}).get("script_digest")
+            if not approved_digest or not isinstance(approved_digest, str) or not approved_digest.strip():
+                raise SecurityBoundaryViolation(
+                    "Security Approval Violation: execute_browser_javascript requires a valid 'script_digest' at approval creation."
+                )
+            script_content = (arguments or {}).get("script") or ""
+            computed_digest = hashlib.sha256(script_content.encode("utf-8")).hexdigest()
+            if not hmac.compare_digest(approved_digest.strip(), computed_digest):
+                raise SecurityBoundaryViolation(
+                    f"Security Approval Violation: script_digest '{approved_digest}' does not match SHA-256 of script content '{computed_digest}'."
+                )
+
+    @staticmethod
+    def _release_associated_process_handles(auth: DualKeyAuthorization | None) -> None:
+        """Releases any retained OS process handles held in ProcessHandleRegistry for this authorization."""
+        if not auth:
+            return
+        args = getattr(auth, "arguments", {}) or {}
+        handle_id = args.get("handle_id")
+        target_pid = args.get("target_pid")
+        try:
+            from jarvis.skills.os_control import ProcessHandleRegistry
+
+            if handle_id:
+                ProcessHandleRegistry.release(handle_id)
+            if target_pid is not None:
+                ProcessHandleRegistry.release_for_pid(target_pid)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Error releasing process handles on grant invalidation: %s", e)
+
     def set_approval_handler(self, handler: Callable[[dict[str, Any]], bool] | None) -> None:
         """Sets a trusted local UI or CLI approval handler to prompt human operators."""
         with self._lock:
@@ -836,11 +1056,39 @@ class DualKeyApprovalManager:
         if not math.isfinite(ttl_val) or ttl_val <= 0:
             raise ValueError(f"Invalid TTL value: {ttl_seconds}. TTL must be a positive finite number.")
 
+        self._validate_tool_schema_and_integrity(tool_name, arguments)
+
         ttl_seconds = min(max(ttl_val, 0.05), 300.0)
         clean_args = {
             k: v for k, v in (arguments or {}).items()
             if k not in IGNORED_MODEL_AUTH_FIELDS
         }
+        snapshots: dict[str, bytes] = {}
+        attachments_digest = ""
+        attachment_details: list[dict[str, Any]] = []
+        if tool_name == "send_email" and isinstance(clean_args, dict) and "attachments" in clean_args:
+            attachments = clean_args.get("attachments") or []
+            attachments_digest = clean_args.get("attachments_digest") or compute_attachments_digest(attachments)
+            clean_args["attachments_digest"] = attachments_digest
+            for att in attachments:
+                if isinstance(att, (str, Path)) and os.path.isfile(att):
+                    with contextlib.suppress(Exception), open(att, "rb") as f:
+                        file_bytes = f.read()
+                        att_str = str(att)
+                        snapshots[att_str] = file_bytes
+                        is_text, preview, is_truncated = classify_and_preview_attachment(
+                            os.path.basename(att_str), file_bytes
+                        )
+                        attachment_details.append({
+                            "path": att_str,
+                            "filename": os.path.basename(att_str),
+                            "size_bytes": len(file_bytes),
+                            "sha256": hashlib.sha256(file_bytes).hexdigest(),
+                            "is_text": is_text,
+                            "preview": preview,
+                            "is_truncated": is_truncated,
+                        })
+
         action_hash = compute_action_hash(tool_name, clean_args)
         grant_id = secrets.token_hex(16)
         token = secrets.token_hex(16)
@@ -854,11 +1102,15 @@ class DualKeyApprovalManager:
             tool_name=tool_name,
             action_hash=action_hash,
             token=token,
-            expires_at=time.time() + ttl_seconds,
+            expires_at=time.monotonic() + ttl_seconds,
             confirmed=True,
             status="pending",
             summary=summary,
             turn_id=turn_id,
+            arguments=clean_args,
+            attachment_snapshots=snapshots,
+            attachments_digest=attachments_digest,
+            attachment_details=attachment_details,
         )
         with self._lock:
             self._grants[action_hash] = auth
@@ -910,7 +1162,8 @@ class DualKeyApprovalManager:
                 )
                 return auth
             # Clean up stale/expired grant if present
-            if auth and (time.time() > auth.expires_at or auth.status != "pending"):
+            current_time = time.monotonic()
+            if auth and (current_time >= auth.expires_at or auth.status != "pending"):
                 del self._grants[action_hash]
         return None
 
@@ -922,18 +1175,21 @@ class DualKeyApprovalManager:
         """Immediately revokes and permanently invalidates a grant so it cannot be bound or consumed."""
         if not grant or not isinstance(grant, DualKeyAuthorization):
             return
+        auth = None
         with self._lock:
             auth = self._grants_by_id.get(grant.grant_id)
             if auth:
                 auth.status = "invalidated"
                 self._grants.pop(auth.action_hash, None)
                 self._grants_by_id.pop(auth.grant_id, None)
+        self._release_associated_process_handles(auth if auth else grant)
 
     def cancel_approval_request(self, cancel_event: threading.Event | None) -> None:
         """Atomically cancels an approval request and revokes any associated grant."""
         if cancel_event is None:
             return
         cancel_event.set()
+        auth = None
         with self._lock:
             self._cancelled_events.add(cancel_event)
             auth = self._grants_by_event.pop(cancel_event, None)
@@ -946,6 +1202,8 @@ class DualKeyApprovalManager:
                     auth.grant_id[:8],
                     auth.tool_name,
                 )
+        if auth:
+            self._release_associated_process_handles(auth)
 
     def cleanup_approval_request(self, cancel_event: threading.Event | None) -> None:
         """Cleans up internal tracking references for a completed or cancelled approval request."""
@@ -1001,10 +1259,41 @@ class DualKeyApprovalManager:
                     self._pending_requests.discard(cancel_event)
             return None
 
+        self._validate_tool_schema_and_integrity(tool_name, arguments)
+
         clean_args = {
             k: v for k, v in (arguments or {}).items()
             if k not in IGNORED_MODEL_AUTH_FIELDS
         }
+        snapshots: dict[str, bytes] = {}
+        attachments_digest = ""
+        attachment_details: list[dict[str, Any]] = []
+
+        if tool_name == "send_email" and isinstance(clean_args, dict) and "attachments" in clean_args:
+            attachments = clean_args.get("attachments") or []
+            # Step 1: Read the attachment into an immutable snapshot BEFORE presentation
+            for att in attachments:
+                if isinstance(att, (str, Path)) and os.path.isfile(att):
+                    with contextlib.suppress(Exception), open(att, "rb") as f:
+                        file_bytes = f.read()
+                        att_str = str(att)
+                        snapshots[att_str] = file_bytes
+                        is_text, preview, is_truncated = classify_and_preview_attachment(
+                            os.path.basename(att_str), file_bytes
+                        )
+                        attachment_details.append({
+                            "path": att_str,
+                            "filename": os.path.basename(att_str),
+                            "size_bytes": len(file_bytes),
+                            "sha256": hashlib.sha256(file_bytes).hexdigest(),
+                            "is_text": is_text,
+                            "preview": preview,
+                            "is_truncated": is_truncated,
+                        })
+
+            attachments_digest = compute_attachments_digest(attachments)
+            clean_args["attachments_digest"] = attachments_digest
+
         action_hash = compute_action_hash(tool_name, clean_args)
         if not summary:
             summary = format_action_summary(tool_name, clean_args)
@@ -1017,9 +1306,13 @@ class DualKeyApprovalManager:
             "risk_level": risk_level,
             "timestamp": time.time(),
             "cancel_event": cancel_event,
+            "attachment_snapshots": snapshots,
+            "attachments_digest": attachments_digest,
+            "attachment_details": attachment_details,
         }
 
         try:
+            # Step 2 & 3: Present snapshot details and obtain independent human approval
             approved = handler(request_details)
 
             with self._lock:
@@ -1035,6 +1328,21 @@ class DualKeyApprovalManager:
                     logger.debug("Pre-grant hook error: %s", hook_err)
 
             if approved:
+                # Step 4: Verify attachments did not change on disk between presentation and approval
+                if tool_name == "send_email" and snapshots:
+                    for att_path_str, original_bytes in snapshots.items():
+                        if os.path.isfile(att_path_str):
+                            with contextlib.suppress(Exception), open(att_path_str, "rb") as f:
+                                current_disk_bytes = f.read()
+                            if current_disk_bytes != original_bytes:
+                                logger.error(
+                                    "Attachment '%s' was modified on disk between presentation and user approval! Aborting grant.",
+                                    att_path_str,
+                                )
+                                raise SecurityBoundaryViolation(
+                                    f"Attachment Integrity Violation: Attachment '{os.path.basename(att_path_str)}' was modified between presentation and approval."
+                                )
+
                 with self._lock:
                     if cancel_event is not None and (cancel_event.is_set() or cancel_event in self._cancelled_events):
                         logger.warning(
@@ -1046,16 +1354,21 @@ class DualKeyApprovalManager:
                     token = secrets.token_hex(16)
                     state = _turn_taint_context.get()
                     req_turn_id = state.turn_id if state is not None else None
+
                     auth = DualKeyAuthorization(
                         grant_id=grant_id,
                         tool_name=tool_name,
                         action_hash=action_hash,
                         token=token,
-                        expires_at=time.time() + 60.0,
+                        expires_at=time.monotonic() + 60.0,
                         confirmed=True,
                         status="gate_consumed",
                         summary=summary,
                         turn_id=req_turn_id,
+                        arguments=clean_args,
+                        attachment_snapshots=snapshots,
+                        attachments_digest=attachments_digest,
+                        attachment_details=attachment_details,
                     )
                     self._grants_by_id[grant_id] = auth
                     if cancel_event is not None:
@@ -1073,6 +1386,8 @@ class DualKeyApprovalManager:
             else:
                 logger.warning("Human operator denied action '%s' (hash: %s)", tool_name, action_hash[:12])
                 return None
+        except SecurityBoundaryViolation:
+            raise
         except Exception as e:  # noqa: BLE001
             logger.error("Error during human approval request for '%s': %s", tool_name, e)
             return None
@@ -1096,7 +1411,8 @@ class DualKeyApprovalManager:
                 raise PermissionError("Rejected grant: cryptographic token mismatch.")
             if registered.tool_name != grant.tool_name or not hmac.compare_digest(registered.action_hash, grant.action_hash):
                 raise PermissionError("Rejected grant: tool name or action hash mismatch.")
-            if time.time() > registered.expires_at:
+            current_time = time.monotonic()
+            if current_time >= registered.expires_at:
                 registered.status = "expired"
                 raise PermissionError(f"Rejected grant (grant_id={grant.grant_id}): authorization has expired.")
             if registered.status not in ("gate_consumed", "pending"):
@@ -1114,6 +1430,10 @@ class DualKeyApprovalManager:
             grant_token=registered.token,
             expires_at=registered.expires_at,
             manager=self,
+            attachment_snapshots=dict(getattr(registered, "attachment_snapshots", {})),
+            attachments_digest=getattr(registered, "attachments_digest", ""),
+            attachment_details=list(getattr(registered, "attachment_details", [])),
+            arguments=dict(getattr(registered, "arguments", {}) or {}),
         )
         ctx_token = _active_auth_context.set(token)
         self._local.authorized_token = token
@@ -1135,6 +1455,7 @@ class DualKeyApprovalManager:
         If grant is not provided, consumes an existing matching pending grant from _grants.
         Fails closed with PermissionError if no genuine grant exists or if grant is forged/replayed.
         """
+        self._validate_tool_schema_and_integrity(tool_name, arguments)
         clean_args = {
             k: v for k, v in (arguments or {}).items()
             if k not in IGNORED_MODEL_AUTH_FIELDS
@@ -1638,7 +1959,10 @@ class TurnTaintTracker:
         "execute_sandboxed_powershell",
         "execute_browser_javascript",
         "run_job_sandboxed_process",
+        "run_process_in_job",
+        "run_sandboxed_batch",
         "run_background_task",
+        "run_command_in_background",
         "release_file_lock",
         "delete_file",
         "kill_process",
@@ -1655,11 +1979,21 @@ class TurnTaintTracker:
         "create_or_update_custom_skill",
         "delete_custom_skill",
         "execute_powershell",
-        "execute_browser_javascript",
+        "execute_sandboxed_powershell",
         "run_background_task",
+        "run_command_in_background",
+        "run_job_sandboxed_process",
+        "run_process_in_job",
+        "run_sandboxed_batch",
+        "execute_browser_javascript",
         "release_file_lock",
         "write_file",
         "patch_file",
+        "send_email",
+        "optimize_workstation",
+        "close_application",
+        "launch_application",
+        "terminate_process_instance",
     }
 
     # Verified Level-0 read-only query and inspection tools safe on tainted turns
@@ -2024,6 +2358,40 @@ class TurnTaintTracker:
         is_tainted_mutation = is_tainted and is_privileged_mutation
 
         approval_mgr = DualKeyApprovalManager.get_instance()
+
+        if clean_name == "send_email":
+            allowed_email_keys = {"to_address", "subject", "body", "account", "attachments", "attachments_digest"}
+            raw_keys = set((args_dict or {}).keys())
+            extra_keys = raw_keys - allowed_email_keys
+            if extra_keys:
+                raise SecurityBoundaryViolation(
+                    f"Security Schema Violation: send_email does not accept undeclared argument(s) {sorted(extra_keys)}."
+                )
+
+        # Check if the ambient execution context is already actively authorized for this tool and action
+        active_ctx = _active_auth_context.get()
+        clean_args = {
+            k: v for k, v in args_dict.items()
+            if k not in IGNORED_MODEL_AUTH_FIELDS
+        }
+        if clean_name == "send_email" and "attachments" in clean_args and "attachments_digest" not in clean_args:
+            clean_args["attachments_digest"] = compute_attachments_digest(clean_args["attachments"])
+
+        current_action_hash = compute_action_hash(clean_name, clean_args)
+        if (
+            active_ctx is not None
+            and active_ctx.is_valid
+            and active_ctx.tool_name == clean_name
+        ):
+            if clean_name == "send_email" and "attachments" in clean_args:
+                expected_digest = getattr(active_ctx, "attachments_digest", "")
+                current_digest = clean_args.get("attachments_digest", "")
+                if expected_digest and current_digest != expected_digest:
+                    raise SecurityBoundaryViolation(
+                        "Attachment Integrity Violation: Attachment content was modified after user approval."
+                    )
+            if hmac.compare_digest(active_ctx.action_hash, current_action_hash):
+                return GateDecision(allowed=True, grant=None)
 
         if not (is_critical or is_tainted_mutation):
             # Safe read-only tool (including verified read-only ingestion tools)
