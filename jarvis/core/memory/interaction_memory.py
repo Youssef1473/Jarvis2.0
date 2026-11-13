@@ -99,9 +99,18 @@ class InteractionMemoryMixin:
     ) -> list[dict[str, Any]]:
         """Retrieves the most recent N interaction turns in chronological order."""
         sess_id = session_id or (self.get_active_session_id() if hasattr(self, "get_active_session_id") else None)
+        ws_id = workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else None)
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
-            if sess_id:
+            if sess_id and ws_id:
+                cursor.execute("""
+                    SELECT id, user_input, jarvis_reply, tool_calls, source_provenance, created_at
+                    FROM interactions
+                    WHERE session_id = ? AND workspace_id = ? AND scope = 'session'
+                    ORDER BY id DESC
+                    LIMIT ?
+                """, (sess_id, ws_id, limit))
+            elif sess_id:
                 cursor.execute("""
                     SELECT id, user_input, jarvis_reply, tool_calls, source_provenance, created_at
                     FROM interactions
@@ -109,6 +118,14 @@ class InteractionMemoryMixin:
                     ORDER BY id DESC
                     LIMIT ?
                 """, (sess_id, limit))
+            elif workspace_id:
+                cursor.execute("""
+                    SELECT id, user_input, jarvis_reply, tool_calls, source_provenance, created_at
+                    FROM interactions
+                    WHERE workspace_id = ? AND scope = 'session'
+                    ORDER BY id DESC
+                    LIMIT ?
+                """, (workspace_id, limit))
             else:
                 cursor.execute("""
                     SELECT id, user_input, jarvis_reply, tool_calls, source_provenance, created_at
@@ -466,25 +483,30 @@ class InteractionMemoryMixin:
 
         threading.Thread(target=_extract, daemon=True).start()
 
-    def get_context_summary(self, query: str | None = None) -> str:
+    def get_context_summary(self, query: str | None = None, workspace_id: str | None = None) -> str:
         """Generates a structured, categorized summary of remembered facts for the LLM prompt.
         If a query is provided, semantically prioritizes matched knowledge at the top."""
+        ws_id = workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else "ws_default")
         if not query:
             with self._context_summary_lock:
-                if self._context_summary_cache is not None:
+                if isinstance(self._context_summary_cache, dict) and ws_id in self._context_summary_cache:
+                    return self._context_summary_cache[ws_id]
+                elif not isinstance(self._context_summary_cache, dict) and self._context_summary_cache is not None and ws_id == "ws_default":
                     return self._context_summary_cache
 
-        facts = self.get_all_facts()
+        facts = self.get_all_facts(workspace_id=ws_id)
         if not facts:
             summary = "No prior facts recorded."
             if not query:
                 with self._context_summary_lock:
-                    self._context_summary_cache = summary
+                    if not isinstance(self._context_summary_cache, dict):
+                        self._context_summary_cache = {}
+                    self._context_summary_cache[ws_id] = summary
             return summary
 
         semantic_section = ""
         if query:
-            matched = self.hybrid_search_facts(query, top_k=4, max_l2_distance=0.95)
+            matched = self.hybrid_search_facts(query, top_k=4, max_l2_distance=0.95, workspace_id=ws_id)
             if matched:
                 lines = [f"• {m['key'].replace('_', ' ').capitalize()}: {m['value']}" for m in matched]
                 semantic_section = "[Directly Relevant Knowledge to Current Context]\n" + "\n".join(lines) + "\n\n"
@@ -502,7 +524,9 @@ class InteractionMemoryMixin:
         summary = semantic_section + "\n\n".join(sections)
         if not query:
             with self._context_summary_lock:
-                self._context_summary_cache = summary
+                if not isinstance(self._context_summary_cache, dict):
+                    self._context_summary_cache = {}
+                self._context_summary_cache[ws_id] = summary
         return summary
 
     def record_episodic_lesson(
@@ -585,10 +609,13 @@ class InteractionMemoryMixin:
         min_sim: float = 0.55,
         max_l2_distance: float = 0.90,
         k_rrf: int = 60,
+        workspace_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Recalls relevant episodic lessons using Hybrid RRF search (FTS5 BM25 + sqlite-vec KNN)."""
         if not query:
             return []
+
+        ws_id = workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else "ws_default")
 
         fts_matches = []
         sanitized = sanitize_fts5_query(query)
@@ -600,9 +627,9 @@ class InteractionMemoryMixin:
                         SELECT l.id, l.tool_name, l.trigger_context, l.failure_signature, l.lesson, l.hit_count, l.source_provenance
                         FROM episodic_lessons_fts lf
                         JOIN episodic_lessons l ON lf.rowid = l.id
-                        WHERE episodic_lessons_fts MATCH ?
+                        WHERE episodic_lessons_fts MATCH ? AND l.workspace_id = ?
                     """
-                    params = [sanitized]
+                    params = [sanitized, ws_id]
                     if tool_name:
                         sql += " AND l.tool_name = ?"
                         params.append(tool_name.strip())
@@ -624,9 +651,9 @@ class InteractionMemoryMixin:
                     SELECT l.id, l.tool_name, l.trigger_context, l.failure_signature, l.lesson, l.hit_count, l.source_provenance, lv.distance
                     FROM lessons_vec lv
                     JOIN episodic_lessons l ON lv.lesson_id = l.id
-                    WHERE lv.embedding MATCH ? AND k = ?
+                    WHERE lv.embedding MATCH ? AND k = ? AND l.workspace_id = ?
                 """
-                params = [q_blob, max(top_k * 2, 8)]
+                params = [q_blob, max(top_k * 2, 8), ws_id]
                 if tool_name:
                     sql += " AND l.tool_name = ?"
                     params.append(tool_name.strip())
@@ -670,6 +697,7 @@ class InteractionMemoryMixin:
         is_user_active_fn: Callable[[], bool] | None = None,
         batch_size: int = 20,
         extractor_fn: Callable[[str], dict[str, Any]] | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         """Executes zero-contention sleep-phase memory consolidation on WAL snapshot."""
         from .sleep_consolidator import SleepPhaseConsolidator
@@ -678,6 +706,7 @@ class InteractionMemoryMixin:
             is_user_active_fn=is_user_active_fn,
             batch_size=batch_size,
             extractor_fn=extractor_fn,
+            workspace_id=workspace_id,
         )
 
     def distill_transcripts(

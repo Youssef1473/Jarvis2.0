@@ -619,28 +619,48 @@ class FactsManagerMixin:
         category: str | None = None,
         search: str | None = None,
         limit: int = 150,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         """Retrieves structured memory nodes across facts, preferences, documents, and episodic lessons."""
+        ws_id = workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else "ws_default")
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
 
             facts_list = []
             prefs_list = []
 
-            if search:
-                q = f"%{search.lower().strip()}%"
-                cursor.execute("""
-                    SELECT id, category, key, value, updated_at
-                    FROM facts
-                    WHERE key LIKE ? OR value LIKE ? OR category LIKE ?
-                    ORDER BY updated_at DESC LIMIT ?
-                """, (q, q, q, limit))
-            else:
-                cursor.execute("""
-                    SELECT id, category, key, value, updated_at
-                    FROM facts
-                    ORDER BY updated_at DESC LIMIT ?
-                """, (limit,))
+            try:
+                if search:
+                    q = f"%{search.lower().strip()}%"
+                    cursor.execute("""
+                        SELECT id, category, key, value, updated_at
+                        FROM facts
+                        WHERE (key LIKE ? OR value LIKE ? OR category LIKE ?)
+                          AND workspace_id = ? AND scope = 'workspace'
+                        ORDER BY updated_at DESC LIMIT ?
+                    """, (q, q, q, ws_id, limit))
+                else:
+                    cursor.execute("""
+                        SELECT id, category, key, value, updated_at
+                        FROM facts
+                        WHERE workspace_id = ? AND scope = 'workspace'
+                        ORDER BY updated_at DESC LIMIT ?
+                    """, (ws_id, limit))
+            except sqlite3.OperationalError:
+                if search:
+                    q = f"%{search.lower().strip()}%"
+                    cursor.execute("""
+                        SELECT id, category, key, value, updated_at
+                        FROM facts
+                        WHERE key LIKE ? OR value LIKE ? OR category LIKE ?
+                        ORDER BY updated_at DESC LIMIT ?
+                    """, (q, q, q, limit))
+                else:
+                    cursor.execute("""
+                        SELECT id, category, key, value, updated_at
+                        FROM facts
+                        ORDER BY updated_at DESC LIMIT ?
+                    """, (limit,))
 
             for row in cursor.fetchall():
                 item = {
@@ -656,19 +676,38 @@ class FactsManagerMixin:
                     facts_list.append(item)
 
             doc_list = []
-            if search:
-                cursor.execute("""
-                    SELECT id, title, category, summary, created_at
-                    FROM documents
-                    WHERE title LIKE ? OR summary LIKE ? OR category LIKE ?
-                    ORDER BY created_at DESC LIMIT ?
-                """, (q, q, q, limit))
-            else:
-                cursor.execute("""
-                    SELECT id, title, category, summary, created_at
-                    FROM documents
-                    ORDER BY created_at DESC LIMIT ?
-                """, (limit,))
+            try:
+                if search:
+                    q = f"%{search.lower().strip()}%"
+                    cursor.execute("""
+                        SELECT id, title, category, summary, created_at
+                        FROM documents
+                        WHERE (title LIKE ? OR summary LIKE ? OR category LIKE ?)
+                          AND workspace_id = ? AND scope = 'workspace'
+                        ORDER BY created_at DESC LIMIT ?
+                    """, (q, q, q, ws_id, limit))
+                else:
+                    cursor.execute("""
+                        SELECT id, title, category, summary, created_at
+                        FROM documents
+                        WHERE workspace_id = ? AND scope = 'workspace'
+                        ORDER BY created_at DESC LIMIT ?
+                    """, (ws_id, limit))
+            except sqlite3.OperationalError:
+                if search:
+                    q = f"%{search.lower().strip()}%"
+                    cursor.execute("""
+                        SELECT id, title, category, summary, created_at
+                        FROM documents
+                        WHERE title LIKE ? OR summary LIKE ? OR category LIKE ?
+                        ORDER BY created_at DESC LIMIT ?
+                    """, (q, q, q, limit))
+                else:
+                    cursor.execute("""
+                        SELECT id, title, category, summary, created_at
+                        FROM documents
+                        ORDER BY created_at DESC LIMIT ?
+                    """, (limit,))
             for row in cursor.fetchall():
                 doc_list.append({
                     "id": row["id"],
@@ -679,19 +718,38 @@ class FactsManagerMixin:
                 })
 
             lesson_list = []
-            if search:
-                cursor.execute("""
-                    SELECT id, tool_name, trigger_context, failure_signature, lesson, hit_count, created_at
-                    FROM episodic_lessons
-                    WHERE tool_name LIKE ? OR trigger_context LIKE ? OR lesson LIKE ?
-                    ORDER BY created_at DESC LIMIT ?
-                """, (q, q, q, limit))
-            else:
-                cursor.execute("""
-                    SELECT id, tool_name, trigger_context, failure_signature, lesson, hit_count, created_at
-                    FROM episodic_lessons
-                    ORDER BY created_at DESC LIMIT ?
-                """, (limit,))
+            try:
+                if search:
+                    q = f"%{search.lower().strip()}%"
+                    cursor.execute("""
+                        SELECT id, tool_name, trigger_context, failure_signature, lesson, hit_count, created_at
+                        FROM episodic_lessons
+                        WHERE (tool_name LIKE ? OR trigger_context LIKE ? OR lesson LIKE ?)
+                          AND workspace_id = ?
+                        ORDER BY created_at DESC LIMIT ?
+                    """, (q, q, q, ws_id, limit))
+                else:
+                    cursor.execute("""
+                        SELECT id, tool_name, trigger_context, failure_signature, lesson, hit_count, created_at
+                        FROM episodic_lessons
+                        WHERE workspace_id = ?
+                        ORDER BY created_at DESC LIMIT ?
+                    """, (ws_id, limit))
+            except sqlite3.OperationalError:
+                if search:
+                    q = f"%{search.lower().strip()}%"
+                    cursor.execute("""
+                        SELECT id, tool_name, trigger_context, failure_signature, lesson, hit_count, created_at
+                        FROM episodic_lessons
+                        WHERE tool_name LIKE ? OR trigger_context LIKE ? OR lesson LIKE ?
+                        ORDER BY created_at DESC LIMIT ?
+                    """, (q, q, q, limit))
+                else:
+                    cursor.execute("""
+                        SELECT id, tool_name, trigger_context, failure_signature, lesson, hit_count, created_at
+                        FROM episodic_lessons
+                        ORDER BY created_at DESC LIMIT ?
+                    """, (limit,))
             for row in cursor.fetchall():
                 lesson_list.append({
                     "id": row["id"],
@@ -703,14 +761,32 @@ class FactsManagerMixin:
                     "created_at": str(row["created_at"] or ""),
                 })
 
-            cursor.execute("SELECT COUNT(*) as c FROM facts WHERE category NOT IN ('user_preference', 'preference', 'core_preference', 'habit')")
-            facts_count = cursor.fetchone()["c"]
-            cursor.execute("SELECT COUNT(*) as c FROM facts WHERE category IN ('user_preference', 'preference', 'core_preference', 'habit')")
-            prefs_count = cursor.fetchone()["c"]
-            cursor.execute("SELECT COUNT(*) as c FROM documents")
-            docs_count = cursor.fetchone()["c"]
-            cursor.execute("SELECT COUNT(*) as c FROM episodic_lessons")
-            lessons_count = cursor.fetchone()["c"]
+            try:
+                cursor.execute("""
+                    SELECT COUNT(*) as c FROM facts
+                    WHERE category NOT IN ('user_preference', 'preference', 'core_preference', 'habit')
+                      AND workspace_id = ? AND scope = 'workspace'
+                """, (ws_id,))
+                facts_count = cursor.fetchone()["c"]
+                cursor.execute("""
+                    SELECT COUNT(*) as c FROM facts
+                    WHERE category IN ('user_preference', 'preference', 'core_preference', 'habit')
+                      AND workspace_id = ? AND scope = 'workspace'
+                """, (ws_id,))
+                prefs_count = cursor.fetchone()["c"]
+                cursor.execute("SELECT COUNT(*) as c FROM documents WHERE workspace_id = ? AND scope = 'workspace'", (ws_id,))
+                docs_count = cursor.fetchone()["c"]
+                cursor.execute("SELECT COUNT(*) as c FROM episodic_lessons WHERE workspace_id = ?", (ws_id,))
+                lessons_count = cursor.fetchone()["c"]
+            except sqlite3.OperationalError:
+                cursor.execute("SELECT COUNT(*) as c FROM facts WHERE category NOT IN ('user_preference', 'preference', 'core_preference', 'habit')")
+                facts_count = cursor.fetchone()["c"]
+                cursor.execute("SELECT COUNT(*) as c FROM facts WHERE category IN ('user_preference', 'preference', 'core_preference', 'habit')")
+                prefs_count = cursor.fetchone()["c"]
+                cursor.execute("SELECT COUNT(*) as c FROM documents")
+                docs_count = cursor.fetchone()["c"]
+                cursor.execute("SELECT COUNT(*) as c FROM episodic_lessons")
+                lessons_count = cursor.fetchone()["c"]
 
             return {
                 "total": facts_count + prefs_count + docs_count + lessons_count,

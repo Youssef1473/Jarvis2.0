@@ -240,8 +240,15 @@ class JarvisBrain(
         *,
         antigravity_bridge: AntigravityBridge | None = None,
         antigravity_resolver: Callable[[], str | None] | None = None,
+        workspace_id: str | None = None,
     ):
         self.config = config
+        raw_ws = workspace_id or config.get("workspace_id") or config.get("active_workspace_id") or "ws_default"
+        clean_ws = str(raw_ws).strip()
+        if not clean_ws or clean_ws.lower() == "unscoped":
+            raise ValueError("Invalid active_workspace_id: cannot use empty or unscoped workspace.")
+        self.active_workspace_id = clean_ws
+
         global _LAST_ACTIVE_BRAIN
         _LAST_ACTIVE_BRAIN = self
         self._gemini_last_verified_timestamp = None
@@ -397,7 +404,10 @@ class JarvisBrain(
             dual_track_coordinator=self.dual_track_coordinator,
         )
         self.cognitive_router = CognitiveRouter(default_model=self.antigravity_model)
-        self.context_orchestrator = ContextOrchestrator(config=self.config)
+        self.context_orchestrator = ContextOrchestrator(
+            config=self.config,
+            workspace_id=self.active_workspace_id,
+        )
         self.reflex_dispatcher = ReflexDispatcher(reflex_engine=self.reflex_engine)
 
         from jarvis.core.mcp_manager import MCPManager
@@ -709,20 +719,25 @@ class JarvisBrain(
             bookmark_context = getattr(self, "_current_turn_bookmark_xml", "")
 
         if not hasattr(self, "context_orchestrator") or not self.context_orchestrator:
-            self.context_orchestrator = ContextOrchestrator(config=getattr(self, "config", {}))
+            self.context_orchestrator = ContextOrchestrator(
+                config=getattr(self, "config", {}),
+                workspace_id=getattr(self, "active_workspace_id", "ws_default"),
+            )
 
+        ws_id = getattr(self, "active_workspace_id", "ws_default")
         return self.context_orchestrator.assemble_system_prompt(
             memory=getattr(self, "memory", None),
             available_tools=available_tools,
             provider=getattr(self, "provider", "antigravity"),
             active_model=active_model,
-            workspace=workspace,
+            workspace=workspace or ws_id,
             active_task_mode=getattr(self, "active_task_mode", "general"),
             user_text=user_text,
             tier1_profile_xml=tier1_profile_xml,
             flow_state_xml=flow_state_xml,
             bookmark_context=bookmark_context,
             base_system_prompt=getattr(self, "BASE_SYSTEM_PROMPT", None),
+            workspace_id=ws_id,
         )
 
     def build_ephemeral_user_envelope(self, user_text: str) -> str:
@@ -732,13 +747,18 @@ class JarvisBrain(
         cache by keeping the system prompt static and injecting dynamic context at the turn tail.
         """
         if not hasattr(self, "context_orchestrator") or not self.context_orchestrator:
-            self.context_orchestrator = ContextOrchestrator(config=getattr(self, "config", {}))
+            self.context_orchestrator = ContextOrchestrator(
+                config=getattr(self, "config", {}),
+                workspace_id=getattr(self, "active_workspace_id", "ws_default"),
+            )
 
+        ws_id = getattr(self, "active_workspace_id", "ws_default")
         return self.context_orchestrator.build_ephemeral_user_envelope(
             user_text=user_text,
             memory=getattr(self, "memory", None),
             cognitive_twin=getattr(self, "cognitive_twin", None),
             active_task_mode=getattr(self, "active_task_mode", "general"),
+            workspace_id=ws_id,
         )
 
     load_curated_prompt = staticmethod(ContextOrchestrator.load_curated_prompt)

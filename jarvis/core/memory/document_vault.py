@@ -20,17 +20,34 @@ logger = logging.getLogger("Jarvis.Memory.DocumentVault")
 class DocumentVaultMixin:
     """Provides document staging, JIT archival, hybrid retrieval, and reference block formatting."""
 
-    def stage_document(self, filename: str, file_path: str, file_hash: str = "", file_size: int = 0) -> dict[str, Any]:
+    def stage_document(
+        self,
+        filename: str,
+        file_path: str,
+        file_hash: str = "",
+        file_size: int = 0,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
         """Registers an uploaded document into the staged queue awaiting user context."""
         clean_name = filename.strip()
         clean_path = file_path.strip()
+        ws_id = workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else "ws_default")
+        scope = "workspace" if ws_id else "unscoped"
 
         def _write(conn: sqlite3.Connection) -> int:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO staged_documents (filename, file_path, file_hash, file_size, status)
-                VALUES (?, ?, ?, ?, 'PENDING_CONTEXT')
-            """, (clean_name, clean_path, file_hash, file_size))
+            cursor.execute("PRAGMA table_info(staged_documents)")
+            cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+            if "workspace_id" in cols:
+                cursor.execute("""
+                    INSERT INTO staged_documents (workspace_id, scope, filename, file_path, file_hash, file_size, status)
+                    VALUES (?, ?, ?, ?, ?, ?, 'PENDING_CONTEXT')
+                """, (ws_id, scope, clean_name, clean_path, file_hash, file_size))
+            else:
+                cursor.execute("""
+                    INSERT INTO staged_documents (filename, file_path, file_hash, file_size, status)
+                    VALUES (?, ?, ?, ?, 'PENDING_CONTEXT')
+                """, (clean_name, clean_path, file_hash, file_size))
             return cursor.lastrowid
 
         doc_id = self.execute_write(_write)
@@ -39,31 +56,60 @@ class DocumentVaultMixin:
             "filename": clean_name,
             "file_path": clean_path,
             "status": "PENDING_CONTEXT",
+            "workspace_id": ws_id,
         }
 
-    def get_staged_documents(self, status: str = "PENDING_CONTEXT") -> list[dict[str, Any]]:
+    def get_staged_documents(self, status: str = "PENDING_CONTEXT", workspace_id: str | None = None) -> list[dict[str, Any]]:
         """Retrieves documents waiting in the staged queue."""
+        ws_id = workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else "ws_default")
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
-            if status == "ALL":
-                cursor.execute("SELECT * FROM staged_documents ORDER BY id DESC")
+            cursor.execute("PRAGMA table_info(staged_documents)")
+            cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+            if "workspace_id" in cols:
+                if status == "ALL":
+                    cursor.execute("SELECT * FROM staged_documents WHERE workspace_id = ? ORDER BY id DESC", (ws_id,))
+                else:
+                    cursor.execute("SELECT * FROM staged_documents WHERE status = ? AND workspace_id = ? ORDER BY id DESC", (status, ws_id))
             else:
-                cursor.execute("SELECT * FROM staged_documents WHERE status = ? ORDER BY id DESC", (status,))
+                if status == "ALL":
+                    cursor.execute("SELECT * FROM staged_documents ORDER BY id DESC")
+                else:
+                    cursor.execute("SELECT * FROM staged_documents WHERE status = ? ORDER BY id DESC", (status,))
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_staged_document(self, doc_id: int | None = None, filename: str | None = None) -> dict[str, Any] | None:
+    def get_staged_document(
+        self,
+        doc_id: int | None = None,
+        filename: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any] | None:
         """Finds a specific staged document or the most recent pending one."""
+        ws_id = workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else "ws_default")
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
-            if doc_id:
-                cursor.execute("SELECT * FROM staged_documents WHERE id = ?", (doc_id,))
-            elif filename:
-                cursor.execute(
-                    "SELECT * FROM staged_documents WHERE LOWER(filename) LIKE ? AND status = 'PENDING_CONTEXT' ORDER BY id DESC LIMIT 1",
-                    (f"%{filename.lower().strip()}%",)
-                )
+            cursor.execute("PRAGMA table_info(staged_documents)")
+            cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+            if "workspace_id" in cols:
+                if doc_id:
+                    cursor.execute("SELECT * FROM staged_documents WHERE id = ? AND workspace_id = ?", (doc_id, ws_id))
+                elif filename:
+                    cursor.execute(
+                        "SELECT * FROM staged_documents WHERE LOWER(filename) LIKE ? AND status = 'PENDING_CONTEXT' AND workspace_id = ? ORDER BY id DESC LIMIT 1",
+                        (f"%{filename.lower().strip()}%", ws_id),
+                    )
+                else:
+                    cursor.execute("SELECT * FROM staged_documents WHERE status = 'PENDING_CONTEXT' AND workspace_id = ? ORDER BY id DESC LIMIT 1", (ws_id,))
             else:
-                cursor.execute("SELECT * FROM staged_documents WHERE status = 'PENDING_CONTEXT' ORDER BY id DESC LIMIT 1")
+                if doc_id:
+                    cursor.execute("SELECT * FROM staged_documents WHERE id = ?", (doc_id,))
+                elif filename:
+                    cursor.execute(
+                        "SELECT * FROM staged_documents WHERE LOWER(filename) LIKE ? AND status = 'PENDING_CONTEXT' ORDER BY id DESC LIMIT 1",
+                        (f"%{filename.lower().strip()}%",),
+                    )
+                else:
+                    cursor.execute("SELECT * FROM staged_documents WHERE status = 'PENDING_CONTEXT' ORDER BY id DESC LIMIT 1")
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -87,6 +133,7 @@ class DocumentVaultMixin:
         raw_content: str = "",
         file_path: str = "",
         source_provenance: str = "unknown",
+        workspace_id: str | None = None,
     ) -> int:
         """Archives document content and structured summary into the persistent knowledge archive."""
         from jarvis.core.security_boundaries import TurnTaintTracker
@@ -97,6 +144,8 @@ class DocumentVaultMixin:
         clean_summary = scrub_sensitive_credentials(summary.strip())
         clean_raw = raw_content.strip()
         clean_path = file_path.strip()
+        ws_id = workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else "ws_default")
+        scope = "workspace" if ws_id else "unscoped"
 
         # Step 1: Pre-compute ONNX dense embedding OUTSIDE write transaction
         blob = None
@@ -112,17 +161,34 @@ class DocumentVaultMixin:
         # Step 2: Route SQLite write strictly through SingleWriterActor
         def _write(conn: sqlite3.Connection) -> int:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO documents (title, category, summary, raw_content, file_path, source_provenance)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                clean_title,
-                clean_cat,
-                clean_summary,
-                clean_raw,
-                clean_path,
-                norm_prov,
-            ))
+            cursor.execute("PRAGMA table_info(documents)")
+            cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+            if "workspace_id" in cols:
+                cursor.execute("""
+                    INSERT INTO documents (workspace_id, scope, title, category, summary, raw_content, file_path, source_provenance)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    ws_id,
+                    scope,
+                    clean_title,
+                    clean_cat,
+                    clean_summary,
+                    clean_raw,
+                    clean_path,
+                    norm_prov,
+                ))
+            else:
+                cursor.execute("""
+                    INSERT INTO documents (title, category, summary, raw_content, file_path, source_provenance)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    clean_title,
+                    clean_cat,
+                    clean_summary,
+                    clean_raw,
+                    clean_path,
+                    norm_prov,
+                ))
             doc_id = cursor.lastrowid
 
             if blob is not None:
@@ -138,55 +204,124 @@ class DocumentVaultMixin:
 
     save_document = save_document_knowledge
 
-    def search_documents(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+    def search_documents(self, query: str, limit: int = 5, workspace_id: str | None = None) -> list[dict[str, Any]]:
         """Searches archived document summaries and titles using FTS5 BM25 with LIKE fallback."""
+        ws_id = workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else "ws_default")
         sanitized = sanitize_fts5_query(query)
         if sanitized:
             try:
                 with self._get_ro_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT d.id, d.title, d.category, d.summary, d.file_path, d.source_provenance, d.created_at
-                        FROM documents_fts df
-                        JOIN documents d ON df.rowid = d.id
-                        WHERE documents_fts MATCH ?
-                        ORDER BY bm25(documents_fts) ASC
-                        LIMIT ?
-                    """, (sanitized, limit))
-                    rows = [dict(row) for row in cursor.fetchall()]
+                    cursor.execute("PRAGMA table_info(documents)")
+                    cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+                    if "workspace_id" in cols:
+                        cursor.execute("""
+                            SELECT d.id, d.title, d.category, d.summary, d.file_path, d.source_provenance, d.created_at
+                            FROM documents_fts df
+                            JOIN documents d ON df.rowid = d.id
+                            WHERE documents_fts MATCH ? AND d.workspace_id = ? AND d.scope = 'workspace'
+                            ORDER BY bm25(documents_fts) ASC
+                            LIMIT ?
+                        """, (sanitized, ws_id, limit))
+                        rows = [dict(row) for row in cursor.fetchall()]
+                        if not rows and ws_id == "ws_default":
+                            cursor.execute("""
+                                SELECT d.id, d.title, d.category, d.summary, d.file_path, d.source_provenance, d.created_at
+                                FROM documents_fts df
+                                JOIN documents d ON df.rowid = d.id
+                                WHERE documents_fts MATCH ? AND d.scope = 'unscoped'
+                                ORDER BY bm25(documents_fts) ASC
+                                LIMIT ?
+                            """, (sanitized, limit))
+                            rows = [dict(row) for row in cursor.fetchall()]
+                    else:
+                        cursor.execute("""
+                            SELECT d.id, d.title, d.category, d.summary, d.file_path, d.source_provenance, d.created_at
+                            FROM documents_fts df
+                            JOIN documents d ON df.rowid = d.id
+                            WHERE documents_fts MATCH ?
+                            ORDER BY bm25(documents_fts) ASC
+                            LIMIT ?
+                        """, (sanitized, limit))
+                        rows = [dict(row) for row in cursor.fetchall()]
                     if rows:
                         return rows
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("FTS5 documents search fallback to LIKE: %s", e)
 
         # Fallback to standard LIKE matching
         q = f"%{query.lower().strip()}%"
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, title, category, summary, file_path, source_provenance, created_at
-                FROM documents
-                WHERE LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(category) LIKE ?
-                ORDER BY id DESC LIMIT ?
-            """, (q, q, q, limit))
-            return [dict(row) for row in cursor.fetchall()]
+            cursor.execute("PRAGMA table_info(documents)")
+            cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+            if "workspace_id" in cols:
+                cursor.execute("""
+                    SELECT id, title, category, summary, file_path, source_provenance, created_at
+                    FROM documents
+                    WHERE (LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(category) LIKE ?)
+                      AND workspace_id = ? AND scope = 'workspace'
+                    ORDER BY id DESC LIMIT ?
+                """, (q, q, q, ws_id, limit))
+                rows = [dict(row) for row in cursor.fetchall()]
+                if not rows and ws_id == "ws_default":
+                    cursor.execute("""
+                        SELECT id, title, category, summary, file_path, source_provenance, created_at
+                        FROM documents
+                        WHERE (LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(category) LIKE ?)
+                          AND scope = 'unscoped'
+                        ORDER BY id DESC LIMIT ?
+                    """, (q, q, q, limit))
+                    rows = [dict(row) for row in cursor.fetchall()]
+                return rows
+            else:
+                cursor.execute("""
+                    SELECT id, title, category, summary, file_path, source_provenance, created_at
+                    FROM documents
+                    WHERE LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(category) LIKE ?
+                    ORDER BY id DESC LIMIT ?
+                """, (q, q, q, limit))
+                return [dict(row) for row in cursor.fetchall()]
 
-    def semantic_search_documents(self, query: str, top_k: int = 5, min_score: float = 0.10) -> list[dict[str, Any]]:
+    def semantic_search_documents(self, query: str, top_k: int = 5, min_score: float = 0.10, workspace_id: str | None = None) -> list[dict[str, Any]]:
         """Finds archived documents semantically relevant to query using sqlite-vec KNN search with TF-IDF fallback."""
+        ws_id = workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else "ws_default")
         try:
             import sqlite_vec
             q_vec = self.vector_engine.embed_query(query)
             q_blob = sqlite_vec.serialize_float32(q_vec)
             with self._get_ro_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT d.id, d.title, d.category, d.summary, d.file_path, d.source_provenance, d.created_at, dv.distance
-                    FROM documents_vec dv
-                    JOIN documents d ON dv.doc_id = d.id
-                    WHERE dv.embedding MATCH ? AND k = ?
-                    ORDER BY dv.distance ASC
-                """, (q_blob, max(1, top_k * 2)))
-                knn_rows = cursor.fetchall()
+                cursor.execute("PRAGMA table_info(documents)")
+                cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+                if "workspace_id" in cols:
+                    cursor.execute("""
+                        SELECT d.id, d.title, d.category, d.summary, d.file_path, d.source_provenance, d.created_at, dv.distance
+                        FROM documents_vec dv
+                        JOIN documents d ON dv.doc_id = d.id
+                        WHERE dv.embedding MATCH ? AND k = ? AND d.workspace_id = ? AND d.scope = 'workspace'
+                        ORDER BY dv.distance ASC
+                    """, (q_blob, max(1, top_k * 2), ws_id))
+                    knn_rows = cursor.fetchall()
+                    if not knn_rows and ws_id == "ws_default":
+                        cursor.execute("""
+                            SELECT d.id, d.title, d.category, d.summary, d.file_path, d.source_provenance, d.created_at, dv.distance
+                            FROM documents_vec dv
+                            JOIN documents d ON dv.doc_id = d.id
+                            WHERE dv.embedding MATCH ? AND k = ? AND d.scope = 'unscoped'
+                            ORDER BY dv.distance ASC
+                        """, (q_blob, max(1, top_k * 2)))
+                        knn_rows = cursor.fetchall()
+                else:
+                    cursor.execute("""
+                        SELECT d.id, d.title, d.category, d.summary, d.file_path, d.source_provenance, d.created_at, dv.distance
+                        FROM documents_vec dv
+                        JOIN documents d ON dv.doc_id = d.id
+                        WHERE dv.embedding MATCH ? AND k = ?
+                        ORDER BY dv.distance ASC
+                    """, (q_blob, max(1, top_k * 2)))
+                    knn_rows = cursor.fetchall()
+
                 if knn_rows:
                     results = []
                     for row in knn_rows:
@@ -213,8 +348,17 @@ class DocumentVaultMixin:
         # In-Memory TF-IDF Fallback
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, title, category, summary, file_path, source_provenance, created_at, raw_content FROM documents ORDER BY id DESC LIMIT 100")
-            docs = [dict(r) for r in cursor.fetchall()]
+            cursor.execute("PRAGMA table_info(documents)")
+            cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+            if "workspace_id" in cols:
+                cursor.execute("SELECT id, title, category, summary, file_path, source_provenance, created_at, raw_content FROM documents WHERE workspace_id = ? AND scope = 'workspace' ORDER BY id DESC LIMIT 100", (ws_id,))
+                docs = [dict(r) for r in cursor.fetchall()]
+                if not docs and ws_id == "ws_default":
+                    cursor.execute("SELECT id, title, category, summary, file_path, source_provenance, created_at, raw_content FROM documents WHERE scope = 'unscoped' ORDER BY id DESC LIMIT 100")
+                    docs = [dict(r) for r in cursor.fetchall()]
+            else:
+                cursor.execute("SELECT id, title, category, summary, file_path, source_provenance, created_at, raw_content FROM documents ORDER BY id DESC LIMIT 100")
+                docs = [dict(r) for r in cursor.fetchall()]
 
         if not docs:
             return []
@@ -247,10 +391,17 @@ class DocumentVaultMixin:
         """Fuses vector KNN and FTS5 BM25 search results via Reciprocal Rank Fusion (RRF)."""
         return fuse_vec_and_fts_rrf(vec_results, fts_results, k=k, max_l2_distance=max_l2_distance)
 
-    def hybrid_search_documents(self, query: str, limit: int = 5, k_rrf: int = 60, max_l2_distance: float = 0.78) -> list[dict[str, Any]]:
+    def hybrid_search_documents(
+        self,
+        query: str,
+        limit: int = 5,
+        k_rrf: int = 60,
+        max_l2_distance: float = 0.78,
+        workspace_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Hybrid search combining FTS5 BM25 and sqlite-vec KNN via Reciprocal Rank Fusion (RRF)."""
-        fts_results = self.search_documents(query, limit=max(limit * 2, 10))
-        vec_results = self.semantic_search_documents(query, top_k=max(limit * 2, 10))
+        fts_results = self.search_documents(query, limit=max(limit * 2, 10), workspace_id=workspace_id)
+        vec_results = self.semantic_search_documents(query, top_k=max(limit * 2, 10), workspace_id=workspace_id)
         fused = fuse_vec_and_fts_rrf(vec_results, fts_results, k=k_rrf, max_l2_distance=max_l2_distance)
         return fused[:limit]
 

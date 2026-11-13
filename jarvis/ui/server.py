@@ -781,11 +781,12 @@ class WorkstationMetricsCollector:
                         logger.debug("Provider latencies probe notice: %s", err)
                 if hasattr(b, "memory"):
                     try:
+                        active_ws = getattr(orchestrator, "active_workspace_id", "ws_default")
                         if hasattr(b.memory, "get_all_memory_nodes"):
-                            m_nodes = b.memory.get_all_memory_nodes(limit=1)
+                            m_nodes = b.memory.get_all_memory_nodes(limit=1, workspace_id=active_ws)
                             memory_label = f"{m_nodes.get('total', 0)} NODES STORED"
                         else:
-                            facts = b.memory.get_all_facts()
+                            facts = b.memory.get_all_facts(workspace_id=active_ws)
                             memory_label = f"{len(facts)} FACTS STORED"
                     except (AttributeError, TypeError, RuntimeError, OSError, sqlite3.Error) as err:
                         logger.debug("Memory nodes probe notice: %s", err)
@@ -1058,6 +1059,30 @@ class JarvisUIService:
     def get_instance(cls) -> Optional["JarvisUIService"]:
         return cls._instance
 
+    def _resolve_request_workspace(self, request_or_params: Any = None) -> str:
+        """Resolves, scopes, and validates workspace_id from query params, body dict, or orchestrator state.
+
+        Fails closed with PermissionError if workspace is 'unscoped', and ValueError if the identifier
+        violates strict format constraints.
+        """
+        raw_ws = None
+        if hasattr(request_or_params, "query_params"):
+            raw_ws = request_or_params.query_params.get("workspace_id")
+        elif isinstance(request_or_params, dict):
+            raw_ws = request_or_params.get("workspace_id")
+
+        if not raw_ws:
+            raw_ws = getattr(self.orchestrator, "active_workspace_id", None) or "ws_default"
+
+        clean_ws = str(raw_ws).strip()
+        if clean_ws.lower() == "unscoped":
+            raise PermissionError("Access to unscoped partition is forbidden.")
+
+        if not re.match(r"^[a-zA-Z0-9_-]{1,64}$", clean_ws):
+            raise ValueError(f"Invalid workspace_id format: '{clean_ws}'")
+
+        return clean_ws
+
     def _create_app(self) -> Starlette:
         routes = [
             Route("/", endpoint=self._handle_index, methods=["GET"]),
@@ -1202,6 +1227,13 @@ class JarvisUIService:
     async def _handle_memory_nodes(self, request):
         """Retrieves structured memory nodes across facts, preferences, documents, and episodic lessons."""
         try:
+            try:
+                ws_id = self._resolve_request_workspace(request)
+            except PermissionError as pe:
+                return JSONResponse({"error": str(pe)}, status_code=403)
+            except ValueError as ve:
+                return JSONResponse({"error": str(ve)}, status_code=400)
+
             mem = None
             if self.orchestrator and hasattr(self.orchestrator, "memory"):
                 mem = self.orchestrator.memory
@@ -1224,7 +1256,7 @@ class JarvisUIService:
             if hasattr(mem, "get_all_memory_nodes"):
                 try:
                     def _fetch_nodes():
-                        return mem.get_all_memory_nodes(category=category, search=search, limit=limit)
+                        return mem.get_all_memory_nodes(category=category, search=search, limit=limit, workspace_id=ws_id)
 
                     res = await anyio.to_thread.run_sync(_fetch_nodes)
                     if isinstance(res, dict):
@@ -1285,7 +1317,18 @@ class JarvisUIService:
     async def _handle_memory_update(self, request):
         """Updates or inscribes a memory node into SQLite WAL storage."""
         try:
-            data = await request.json()
+            try:
+                data = await request.json()
+            except Exception:  # noqa: BLE001
+                data = {}
+
+            try:
+                ws_id = self._resolve_request_workspace(data)
+            except PermissionError as pe:
+                return JSONResponse({"error": str(pe)}, status_code=403)
+            except ValueError as ve:
+                return JSONResponse({"error": str(ve)}, status_code=400)
+
             node_type = str(data.get("type", "fact")).strip().lower()
             key = str(data.get("key", "")).strip()
             value = str(data.get("value", "")).strip()
@@ -1305,12 +1348,12 @@ class JarvisUIService:
                 if node_type in ("preference", "user_preference"):
                     return mem.update_user_preference(key, value)
                 cat = category or "general"
-                return mem.remember_fact(key, value, category=cat)
+                return mem.remember_fact(key, value, category=cat, workspace_id=ws_id)
 
             msg = await anyio.to_thread.run_sync(_update_node)
 
-            return JSONResponse({"status": "success", "message": str(msg), "key": str(key), "value": str(value)})
-        except Exception as e:
+            return JSONResponse({"status": "success", "message": str(msg), "key": str(key), "value": str(value), "workspace_id": ws_id})
+        except Exception as e:  # noqa: BLE001
             logger.error("Error updating memory node: %s", e)
             return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -1866,6 +1909,13 @@ class JarvisUIService:
     async def _handle_documents_upload(self, request):
         """Receives a PDF document from the file explorer upload dialog and stages it."""
         try:
+            try:
+                ws_id = self._resolve_request_workspace(request)
+            except PermissionError as pe:
+                return JSONResponse({"error": str(pe)}, status_code=403)
+            except ValueError as ve:
+                return JSONResponse({"error": str(ve)}, status_code=400)
+
             form = await request.form()
             file_field = form.get("file")
             if not file_field:
@@ -1887,13 +1937,14 @@ class JarvisUIService:
             file_hash = hashlib.sha256(content).hexdigest()
             file_size = len(content)
 
-            doc_info = {"id": 0, "filename": filename, "status": "PENDING_CONTEXT"}
+            doc_info = {"id": 0, "filename": filename, "status": "PENDING_CONTEXT", "workspace_id": ws_id}
             if self.orchestrator and hasattr(self.orchestrator, "memory"):
                 doc_info = self.orchestrator.memory.stage_document(
                     filename=filename,
                     file_path=str(target_path),
                     file_hash=file_hash,
-                    file_size=file_size
+                    file_size=file_size,
+                    workspace_id=ws_id,
                 )
 
             # Broadcast WebSocket notification
@@ -1902,6 +1953,7 @@ class JarvisUIService:
                 "filename": filename,
                 "id": doc_info.get("id"),
                 "size_kb": round(file_size / 1024, 1),
+                "workspace_id": ws_id,
                 "message": f"Staged '{filename}'. Standing by for Sir's briefing."
             })
 
@@ -1916,18 +1968,26 @@ class JarvisUIService:
                 "id": doc_info.get("id"),
                 "filename": filename,
                 "size_kb": round(file_size / 1024, 1),
+                "workspace_id": ws_id,
                 "message": f"Document '{filename}' staged successfully. Awaiting your briefing, Sir."
             })
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Error handling document upload: {e}")
             return JSONResponse({"error": str(e)}, status_code=500)
 
     async def _handle_staged_documents(self, request):
         """Returns all documents waiting in the staged queue."""
+        try:
+            ws_id = self._resolve_request_workspace(request)
+        except PermissionError as pe:
+            return JSONResponse({"error": str(pe)}, status_code=403)
+        except ValueError as ve:
+            return JSONResponse({"error": str(ve)}, status_code=400)
+
         if self.orchestrator and hasattr(self.orchestrator, "memory"):
-            staged = self.orchestrator.memory.get_staged_documents(status="PENDING_CONTEXT")
-            return JSONResponse({"staged": staged})
-        return JSONResponse({"staged": []})
+            staged = self.orchestrator.memory.get_staged_documents(status="PENDING_CONTEXT", workspace_id=ws_id)
+            return JSONResponse({"staged": staged, "workspace_id": ws_id})
+        return JSONResponse({"staged": [], "workspace_id": ws_id})
 
     async def _handle_calendar(self, request):
         """Returns upcoming calendar appointments, grouped schedule matrix, and saved calendar documents."""

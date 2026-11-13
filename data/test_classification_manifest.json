@@ -1,7 +1,7 @@
 {
-  "total_collected": 2469,
+  "total_collected": 2472,
   "assigned_by_tier": {
-    "tier1_hermetic_unit": 1499,
+    "tier1_hermetic_unit": 1502,
     "tier2a_async_safe": 273,
     "tier2b_loopback_ipc": 201,
     "tier3_windows_integration": 225,
@@ -1233,6 +1233,9 @@
       "tests/test_phase4_winhook_and_habits.py::TestPhase4WinHookAndHabits::test_barge_in_reasoning_bookmark_restoration",
       "tests/test_phase4_winhook_and_habits.py::TestPhase4WinHookAndHabits::test_privacy_lock_atomic_trip",
       "tests/test_phase4_winhook_and_habits.py::TestPhase4WinHookAndHabits::test_spsc_ring_buffer_wraparound_and_burst_handling",
+      "tests/test_phase4_workspace_isolation.py::TestPhase4WorkspaceIsolation::test_1_sleep_consolidator_tenant_isolation_and_quarantine_preservation",
+      "tests/test_phase4_workspace_isolation.py::TestPhase4WorkspaceIsolation::test_2_context_orchestrator_workspace_isolation",
+      "tests/test_phase4_workspace_isolation.py::TestPhase4WorkspaceIsolation::test_3_ui_server_workspace_scoping_and_fail_closed_validation",
       "tests/test_phase9_shm_and_profiler.py::TestShmAudioRingTransport::test_trigger_barge_in_clear",
       "tests/test_phase9_shm_and_profiler.py::TestShmAudioRingTransport::test_wrap_around_and_overflow",
       "tests/test_phase9_shm_and_profiler.py::TestShmAudioRingTransport::test_write_read_basic",

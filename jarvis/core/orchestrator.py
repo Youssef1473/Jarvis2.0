@@ -47,9 +47,21 @@ class JarvisOrchestrator:
         self.config = config
         self.sample_rate = config.get("audio", {}).get("sample_rate", 16000)
 
+        # Resolve active workspace
+        raw_ws = config.get("workspace_id") or config.get("active_workspace_id") or "ws_default"
+        clean_ws = str(raw_ws).strip()
+        if not clean_ws or clean_ws.lower() == "unscoped":
+            raise ValueError("Invalid active_workspace_id: cannot use empty or unscoped workspace.")
+        self.active_workspace_id = clean_ws
+
         # Initialize sub-systems
         self.sfx = SoundEffects(config)
         self.memory = MemoryManager(config)
+        if hasattr(self.memory, "set_active_context"):
+            try:
+                self.memory.set_active_context(self.active_workspace_id, None)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Active context activation note: %s", e)
         try:
             import jarvis.skills.productivity as prod_skills
             prod_skills.set_memory_manager(self.memory)
@@ -67,10 +79,16 @@ class JarvisOrchestrator:
         try:
             import jarvis.skills.voice_control as voice_skills
             voice_skills.set_tts_instance(self.tts)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
         self.service_manager = ManagedServiceManager()
-        self.brain = JarvisBrain(config, self.memory, self.safety, service_manager=self.service_manager)
+        self.brain = JarvisBrain(
+            config,
+            self.memory,
+            self.safety,
+            service_manager=self.service_manager,
+            workspace_id=self.active_workspace_id,
+        )
         self.hud = JarvisHUD()
         self.heartbeat = JarvisHeartbeat(self, config)
         from jarvis.core.task_manager import BackgroundTaskManager
