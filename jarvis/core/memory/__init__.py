@@ -23,9 +23,11 @@ from jarvis.core.memory.tasks_calendar import TasksCalendarMixin
 from jarvis.core.memory.temporal_graph import TemporalGraphMixin
 from jarvis.core.memory.vector_engine import (
     VectorMemoryEngine,
+    contains_unredacted_credentials,
     fuse_vec_and_fts_rrf,
     sanitize_fts5_query,
     sanitize_memory_taint,
+    scrub_sensitive_credentials,
 )
 
 from .obsidian_sync import (
@@ -80,7 +82,9 @@ __all__ = [
     "SyncStats",
     "TranscriptDistiller",
     "VectorMemoryEngine",
+    "contains_unredacted_credentials",
     "fuse_vec_and_fts_rrf",
     "sanitize_fts5_query",
     "sanitize_memory_taint",
+    "scrub_sensitive_credentials",
 ]

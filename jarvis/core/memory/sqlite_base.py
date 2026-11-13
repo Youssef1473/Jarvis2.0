@@ -210,6 +210,7 @@ class SingleWriterActor:
         c.execute("PRAGMA cache_size=-64000;")
         c.execute("PRAGMA temp_store=MEMORY;")
         c.execute("PRAGMA recursive_triggers=ON;")
+        c.execute("PRAGMA foreign_keys=ON;")
         c.row_factory = sqlite3.Row
         try:
             import sqlite_vec
@@ -610,6 +611,8 @@ class SqliteBaseMixin:
             conn.execute("PRAGMA mmap_size=268435456;")
             conn.execute("PRAGMA cache_size=-64000;")
             conn.execute("PRAGMA temp_store=MEMORY;")
+            conn.execute("PRAGMA recursive_triggers=ON;")
+            conn.execute("PRAGMA foreign_keys=ON;")
             conn.row_factory = sqlite3.Row
             try:
                 import sqlite_vec
@@ -739,43 +742,205 @@ class SqliteBaseMixin:
     def __del__(self) -> None:
         self.close()
 
+    def get_active_workspace_id(self) -> str:
+        """Retrieves the active workspace_id from active_context singleton, defaulting to 'ws_default'."""
+        try:
+            with self._get_ro_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT active_workspace_id FROM active_context WHERE lock_id = 1")
+                row = cursor.fetchone()
+                if row and row["active_workspace_id"]:
+                    return row["active_workspace_id"]
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Active workspace resolution fallback to 'ws_default': %s", e)
+        return "ws_default"
+
+    def get_active_session_id(self) -> str | None:
+        """Retrieves the active session_id from active_context singleton, or None if uninitialized."""
+        try:
+            with self._get_ro_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT active_session_id FROM active_context WHERE lock_id = 1")
+                row = cursor.fetchone()
+                if row:
+                    return row["active_session_id"]
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Active session resolution error: %s", e)
+        return None
+
+    def set_active_context(
+        self,
+        workspace_id: str | None,
+        session_id: str | None,
+        switch_reason: str = "context_switch",
+    ) -> None:
+        """Sets active workspace and session enforcing 4-state integrity rules."""
+        if workspace_id is None and session_id is not None:
+            raise ValueError("State 4 violation: session cannot be active without active workspace")
+
+        def _write(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+            if workspace_id:
+                cursor.execute("SELECT is_archived FROM workspaces WHERE workspace_id = ?", (workspace_id,))
+                ws_row = cursor.fetchone()
+                if ws_row and ws_row["is_archived"]:
+                    raise PermissionError(f"Cannot activate archived workspace '{workspace_id}'")
+            if session_id:
+                cursor.execute("SELECT workspace_id, status FROM sessions WHERE session_id = ?", (session_id,))
+                s_row = cursor.fetchone()
+                if s_row:
+                    if s_row["workspace_id"] != workspace_id:
+                        raise ValueError(f"Session '{session_id}' does not belong to workspace '{workspace_id}'")
+                    if s_row["status"] == "closed":
+                        raise PermissionError(f"Cannot activate closed session '{session_id}'")
+
+            cursor.execute("""
+                INSERT INTO active_context (lock_id, active_workspace_id, active_session_id, switch_reason, switched_at)
+                VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(lock_id) DO UPDATE SET
+                    active_workspace_id = excluded.active_workspace_id,
+                    active_session_id = excluded.active_session_id,
+                    switch_reason = excluded.switch_reason,
+                    switched_at = CURRENT_TIMESTAMP
+            """, (workspace_id, session_id, switch_reason))
+
+        self.execute_write(_write)
+
+    def resolve_workspace_id(self, workspace: str | None) -> str:
+        """Resolves workspace identifier or filesystem path to canonical workspace_id."""
+        if not workspace:
+            return self.get_active_workspace_id()
+        norm_ws = workspace.strip()
+        try:
+            with self._get_ro_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT workspace_id FROM workspaces WHERE workspace_id = ? OR path = ?", (norm_ws, norm_ws))
+                row = cursor.fetchone()
+                if row:
+                    return row["workspace_id"]
+        except Exception:  # noqa: BLE001, S110
+            pass
+        return norm_ws
+
     def _init_db(self):
         """Initializes database schema."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            # 0. Workspaces & Prevention Trigger
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS workspaces (
+                    workspace_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    path TEXT NOT NULL UNIQUE,
+                    is_archived INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL,
+                    archived_at TEXT DEFAULT NULL,
+                    metadata_json TEXT DEFAULT '{}'
+                );
+            """)
+            cursor.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_prevent_workspace_hard_delete
+                BEFORE DELETE ON workspaces
+                BEGIN
+                    SELECT RAISE(ABORT, 'Hard deletion of workspaces is prohibited. Workspaces may only be soft-deleted by setting is_archived = 1.');
+                END;
+            """)
+            cursor.execute("""
+                INSERT OR IGNORE INTO workspaces (workspace_id, name, path, is_archived, created_at, archived_at, metadata_json)
+                VALUES ('ws_default', 'Default Workspace', 'C:/Users/Youssef/Projects/Jarvis_2.0', 0, strftime('%s', 'now'), NULL, '{}');
+            """)
+
+            # 0.1 Sessions
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    title TEXT DEFAULT NULL,
+                    status TEXT NOT NULL DEFAULT 'closed' CHECK(status IN ('active', 'paused', 'closed')),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                INSERT OR IGNORE INTO sessions (session_id, workspace_id, title, status)
+                VALUES ('sess_legacy', 'ws_default', 'Legacy Default Session', 'closed');
+            """)
+
+            # 0.2 Active Context (4-State Singleton Contract)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS active_context (
+                    lock_id INTEGER PRIMARY KEY CHECK (lock_id = 1),
+                    active_workspace_id TEXT REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    active_session_id TEXT REFERENCES sessions(session_id) ON DELETE RESTRICT,
+                    switch_reason TEXT NOT NULL DEFAULT 'initialization',
+                    switched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CHECK (
+                        (active_workspace_id IS NULL AND active_session_id IS NULL) OR
+                        (active_workspace_id IS NOT NULL AND active_session_id IS NULL) OR
+                        (active_workspace_id IS NOT NULL AND active_session_id IS NOT NULL)
+                    )
+                );
+            """)
+            cursor.execute("""
+                INSERT OR IGNORE INTO active_context (lock_id, active_workspace_id, active_session_id, switch_reason)
+                VALUES (1, 'ws_default', NULL, 'system_boot');
+            """)
+
             # Facts & User Profile
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS facts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_id TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    scope TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped')),
                     category TEXT DEFAULT 'general',
-                    key TEXT UNIQUE,
+                    key TEXT DEFAULT NULL,
                     value TEXT NOT NULL,
                     source_provenance TEXT NOT NULL DEFAULT 'unknown',
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL) OR
+                        (scope = 'workspace' AND workspace_id IS NOT NULL)
+                    )
                 )
             """)
+
             # Tasks & Reminders
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tasks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_id TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    session_id TEXT DEFAULT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+                    scope TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'session', 'unscoped')),
                     description TEXT NOT NULL,
                     due_date TEXT,
                     is_completed BOOLEAN DEFAULT 0,
                     source_provenance TEXT NOT NULL DEFAULT 'unknown',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL AND session_id IS NULL) OR
+                        (scope = 'workspace' AND workspace_id IS NOT NULL) OR
+                        (scope = 'session' AND workspace_id IS NOT NULL AND session_id IS NOT NULL)
+                    )
                 )
             """)
             # Interaction History
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS interactions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_id TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    session_id TEXT DEFAULT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+                    scope TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('session', 'unscoped')),
                     user_input TEXT NOT NULL,
                     jarvis_reply TEXT NOT NULL,
                     tool_calls TEXT,
                     source_provenance TEXT NOT NULL DEFAULT 'unknown',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL AND session_id IS NULL) OR
+                        (scope = 'session' AND workspace_id IS NOT NULL AND session_id IS NOT NULL)
+                    )
                 )
             """)
+
             # Calendar Events
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS calendar_events (
@@ -793,6 +958,9 @@ class SqliteBaseMixin:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS staged_documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_id TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    session_id TEXT DEFAULT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+                    scope TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'session', 'unscoped')),
                     filename TEXT NOT NULL,
                     file_path TEXT NOT NULL,
                     file_hash TEXT,
@@ -800,26 +968,40 @@ class SqliteBaseMixin:
                     status TEXT DEFAULT 'PENDING_CONTEXT',
                     user_context TEXT,
                     staged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    processed_at TIMESTAMP
+                    processed_at TIMESTAMP,
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL AND session_id IS NULL) OR
+                        (scope = 'workspace' AND workspace_id IS NOT NULL) OR
+                        (scope = 'session' AND workspace_id IS NOT NULL AND session_id IS NOT NULL)
+                    )
                 )
             """)
             # Knowledge Documents Archive
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_id TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    scope TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped')),
                     title TEXT NOT NULL,
                     category TEXT DEFAULT 'general',
                     summary TEXT,
                     raw_content TEXT,
                     file_path TEXT,
                     source_provenance TEXT NOT NULL DEFAULT 'unknown',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL) OR
+                        (scope = 'workspace' AND workspace_id IS NOT NULL)
+                    )
                 )
             """)
+
             # Episodic Lessons & Self-Correction Buffer (Tier 3 Reflexion)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS episodic_lessons (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_id TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    scope TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped')),
                     tool_name TEXT NOT NULL,
                     trigger_context TEXT NOT NULL,
                     failure_signature TEXT NOT NULL,
@@ -828,21 +1010,78 @@ class SqliteBaseMixin:
                     source_provenance TEXT NOT NULL DEFAULT 'unknown',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(tool_name, failure_signature)
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL) OR
+                        (scope = 'workspace' AND workspace_id IS NOT NULL)
+                    )
                 )
             """)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_lessons_tool ON episodic_lessons(tool_name)")
 
-            # Idempotent Migration: Ensure source_provenance column exists for all persistent data tables
-            for table_name in ("documents", "facts", "tasks", "interactions", "calendar_events", "episodic_lessons"):
-                cursor.execute(f"PRAGMA table_info({table_name})")
+            # Idempotent Column Schema Migration
+            table_column_specs: dict[str, list[tuple[str, str]]] = {
+                "facts": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped'))"),
+                    ("source_provenance", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ],
+                "interactions": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("session_id", "TEXT DEFAULT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('session', 'unscoped'))"),
+                    ("source_provenance", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ],
+                "tasks": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("session_id", "TEXT DEFAULT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'session', 'unscoped'))"),
+                    ("source_provenance", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ],
+                "documents": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped'))"),
+                    ("source_provenance", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ],
+                "episodic_lessons": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped'))"),
+                    ("source_provenance", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ],
+                "staged_documents": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("session_id", "TEXT DEFAULT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'session', 'unscoped'))"),
+                ],
+                "calendar_events": [
+                    ("source_provenance", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ],
+                "knowledge_edges": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped'))"),
+                ],
+            }
+
+            for t_name, col_specs in table_column_specs.items():
+                cursor.execute(f"PRAGMA table_info({t_name})")
                 cols = {
                     row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1]
                     for row in cursor.fetchall()
                 }
-                if "source_provenance" not in cols:
-                    cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN source_provenance TEXT NOT NULL DEFAULT 'unknown'")
-                    logger.info("Migrated SQLite schema: added source_provenance column to %s table.", table_name)
+                if not cols:
+                    continue  # Table does not exist in this database
+                for col_name, col_def in col_specs:
+                    if col_name not in cols:
+                        cursor.execute(f"ALTER TABLE {t_name} ADD COLUMN {col_name} {col_def}")
+                        logger.info("Migrated SQLite schema: added %s column to %s table.", col_name, t_name)
+
+            # Idempotent Index Creation (Guaranteed to execute AFTER columns exist)
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_unscoped_key ON facts(key) WHERE scope = 'unscoped' AND key IS NOT NULL;")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_workspace_key ON facts(workspace_id, key) WHERE scope = 'workspace' AND key IS NOT NULL;")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_scope_ws ON facts(scope, workspace_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_ws_sess ON interactions(workspace_id, session_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_documents_scope_ws ON documents(scope, workspace_id);")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lessons_unscoped_sig ON episodic_lessons(tool_name, failure_signature) WHERE scope = 'unscoped';")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lessons_ws_sig ON episodic_lessons(workspace_id, tool_name, failure_signature) WHERE scope = 'workspace';")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_lessons_tool ON episodic_lessons(tool_name);")
 
             # 1. Bi-Temporal Knowledge Graph Edges (Replaces flat facts with bi-temporal validity)
             cursor.execute("""
@@ -858,8 +1097,14 @@ class SqliteBaseMixin:
                     valid_from      REAL NOT NULL,
                     valid_until     REAL DEFAULT NULL,
                     last_accessed   REAL NOT NULL,
-                    superseded_by   INTEGER DEFAULT NULL REFERENCES knowledge_edges(edge_id),
-                    source_context  TEXT DEFAULT NULL
+                    superseded_by   INTEGER DEFAULT NULL REFERENCES knowledge_edges(edge_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+                    source_context  TEXT DEFAULT NULL,
+                    scope           TEXT NOT NULL DEFAULT 'unscoped' CHECK (scope IN ('workspace', 'unscoped')),
+                    workspace_id    TEXT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL) OR
+                        (scope = 'workspace' AND workspace_id IS NOT NULL)
+                    )
                 )
             """)
             cursor.execute("""
@@ -1121,7 +1366,8 @@ class SqliteBaseMixin:
                 cursor.execute(f"""
                     CREATE VIRTUAL TABLE IF NOT EXISTS facts_vec USING vec0(
                         fact_id INTEGER PRIMARY KEY,
-                        embedding float[{TARGET_VEC_DIM}]
+                        embedding float[{TARGET_VEC_DIM}],
+                        workspace_id TEXT
                     )
                 """)
                 cursor.execute("""
@@ -1188,7 +1434,7 @@ class SqliteBaseMixin:
                 """)
 
                 cursor.execute("""
-                    SELECT f.id, f.category, f.key, f.value
+                    SELECT f.id, f.category, f.key, f.value, COALESCE(f.workspace_id, 'unscoped') AS ws
                     FROM facts f
                     LEFT JOIN facts_vec v ON f.id = v.fact_id
                     WHERE v.fact_id IS NULL
@@ -1198,8 +1444,8 @@ class SqliteBaseMixin:
                     texts = [f"{f['category']} {f['key']} {f['value']}" for f in unindexed_facts]
                     vecs = self.vector_engine.embed_batch(texts, batch_size=64, is_query=False, dim=TARGET_VEC_DIM)
                     cursor.executemany(
-                        "INSERT OR REPLACE INTO facts_vec(fact_id, embedding) VALUES (?, ?)",
-                        [(f["id"], sqlite_vec.serialize_float32(v)) for f, v in zip(unindexed_facts, vecs)]
+                        "INSERT OR REPLACE INTO facts_vec(fact_id, embedding, workspace_id) VALUES (?, ?, ?)",
+                        [(f["id"], sqlite_vec.serialize_float32(v), f["ws"]) for f, v in zip(unindexed_facts, vecs)]
                     )
 
                 cursor.execute("""

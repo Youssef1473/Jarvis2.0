@@ -14,60 +14,164 @@ from typing import Any
 from jarvis.core.memory.vector_engine import (
     sanitize_fts5_query,
     sanitize_memory_taint,
+    scrub_sensitive_credentials,
 )
 
 logger = logging.getLogger("Jarvis.Memory.InteractionMemory")
 
 
+def _scrub_tool_call_value(val: Any) -> Any:
+    """Recursively traverses nested tool-call structures and scrubs sensitive credentials from string values."""
+    if isinstance(val, str):
+        return scrub_sensitive_credentials(val)
+    if isinstance(val, dict):
+        return {k: _scrub_tool_call_value(v) for k, v in val.items()}
+    if isinstance(val, list):
+        return [_scrub_tool_call_value(item) for item in val]
+    return val
+
+
+def _sanitize_tool_calls_payload(tool_calls: Any) -> str:
+    """Sanitizes tool-call payloads before database persistence, preserving JSON serialization and structure."""
+    if tool_calls is None:
+        return ""
+    if isinstance(tool_calls, (list, dict)):
+        try:
+            scrubbed_obj = _scrub_tool_call_value(tool_calls)
+            return json.dumps(scrubbed_obj)
+        except Exception:  # noqa: BLE001
+            return scrub_sensitive_credentials(str(tool_calls))
+    if isinstance(tool_calls, str):
+        stripped = tool_calls.strip()
+        if stripped.startswith(("{", "[")):
+            try:
+                parsed = json.loads(tool_calls)
+                if isinstance(parsed, (list, dict)):
+                    scrubbed_obj = _scrub_tool_call_value(parsed)
+                    return json.dumps(scrubbed_obj)
+            except Exception:  # noqa: BLE001, S110
+                pass
+        return scrub_sensitive_credentials(tool_calls)
+    return scrub_sensitive_credentials(str(tool_calls))
+
+
 class InteractionMemoryMixin:
     """Provides interaction turn recording, auto-learning heuristics, and episodic reflection."""
 
-    def log_interaction(self, user_input: str, jarvis_reply: str, tool_calls: str | None = None, source_provenance: str | None = None):
+    def log_interaction(
+        self,
+        user_input: str,
+        jarvis_reply: str,
+        tool_calls: str | None = None,
+        source_provenance: str | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+    ):
         """Logs a conversation turn serialized through SingleWriterActor."""
         from jarvis.core.security_boundaries import TurnTaintTracker
         source_provenance = TurnTaintTracker.resolve_write_provenance(source_provenance, default_if_clean="user_supplied")
+        clean_user_input = scrub_sensitive_credentials(user_input or "")
+        clean_jarvis_reply = scrub_sensitive_credentials(jarvis_reply or "")
+        clean_tool_calls = _sanitize_tool_calls_payload(tool_calls)
+
+        sess_id = session_id or (self.get_active_session_id() if hasattr(self, "get_active_session_id") else None)
+        ws_id = workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else None)
+
+        scope = "session" if sess_id and ws_id else "unscoped"
+        if scope == "unscoped":
+            sess_id = None
+            ws_id = None
 
         def _write(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO interactions (user_input, jarvis_reply, tool_calls, source_provenance)
-                VALUES (?, ?, ?, ?)
-            """, (user_input, jarvis_reply, tool_calls or "", source_provenance))
+                INSERT INTO interactions (workspace_id, session_id, scope, user_input, jarvis_reply, tool_calls, source_provenance)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (ws_id, sess_id, scope, clean_user_input, clean_jarvis_reply, clean_tool_calls, source_provenance))
 
         self.execute_write(_write)
 
-    def get_recent_interactions(self, limit: int = 8) -> list[dict[str, Any]]:
+    def get_recent_interactions(
+        self,
+        limit: int = 8,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Retrieves the most recent N interaction turns in chronological order."""
+        sess_id = session_id or (self.get_active_session_id() if hasattr(self, "get_active_session_id") else None)
+        with self._get_ro_connection() as conn:
+            cursor = conn.cursor()
+            if sess_id:
+                cursor.execute("""
+                    SELECT id, user_input, jarvis_reply, tool_calls, source_provenance, created_at
+                    FROM interactions
+                    WHERE session_id = ? AND scope = 'session'
+                    ORDER BY id DESC
+                    LIMIT ?
+                """, (sess_id, limit))
+            else:
+                cursor.execute("""
+                    SELECT id, user_input, jarvis_reply, tool_calls, source_provenance, created_at
+                    FROM interactions
+                    WHERE scope = 'unscoped'
+                    ORDER BY id DESC
+                    LIMIT ?
+                """, (limit,))
+            rows = cursor.fetchall()
+            return [dict(r) for r in reversed(rows)]
+
+    def get_recent_interactions_for_session(self, session_id: str, limit: int = 8) -> list[dict[str, Any]]:
+        """Retrieves interaction turns strictly isolated to a specific session."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id, user_input, jarvis_reply, tool_calls, source_provenance, created_at
                 FROM interactions
+                WHERE session_id = ? AND scope = 'session'
                 ORDER BY id DESC
                 LIMIT ?
-            """, (limit,))
+            """, (session_id, limit))
             rows = cursor.fetchall()
             return [dict(r) for r in reversed(rows)]
 
-    def search_interactions(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+    def search_interactions(
+        self,
+        query: str,
+        limit: int = 5,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Searches past conversation logs by keyword or phrase using FTS5 BM25 with LIKE fallback."""
         sanitized = sanitize_fts5_query(query)
+        sess_id = session_id or (self.get_active_session_id() if hasattr(self, "get_active_session_id") else None)
+        ws_id = workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else None)
+
         if sanitized:
             try:
                 with self._get_ro_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT i.id, i.user_input, i.jarvis_reply, i.tool_calls, i.source_provenance, i.created_at
-                        FROM interactions_fts inf
-                        JOIN interactions i ON inf.rowid = i.id
-                        WHERE interactions_fts MATCH ?
-                        ORDER BY bm25(interactions_fts) ASC
-                        LIMIT ?
-                    """, (sanitized, limit))
+                    if sess_id and ws_id:
+                        cursor.execute("""
+                            SELECT i.id, i.user_input, i.jarvis_reply, i.tool_calls, i.source_provenance, i.created_at
+                            FROM interactions_fts inf
+                            JOIN interactions i ON inf.rowid = i.id
+                            WHERE interactions_fts MATCH ? AND i.session_id = ? AND i.workspace_id = ? AND i.scope = 'session'
+                            ORDER BY bm25(interactions_fts) ASC
+                            LIMIT ?
+                        """, (sanitized, sess_id, ws_id, limit))
+                    else:
+                        cursor.execute("""
+                            SELECT i.id, i.user_input, i.jarvis_reply, i.tool_calls, i.source_provenance, i.created_at
+                            FROM interactions_fts inf
+                            JOIN interactions i ON inf.rowid = i.id
+                            WHERE interactions_fts MATCH ? AND i.scope = 'unscoped'
+                            ORDER BY bm25(interactions_fts) ASC
+                            LIMIT ?
+                        """, (sanitized, limit))
                     rows = [dict(r) for r in cursor.fetchall()]
                     if rows:
                         return rows
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("FTS5 interactions search fallback to LIKE: %s", e)
 
         # Fallback to standard LIKE matching
@@ -82,6 +186,12 @@ class InteractionMemoryMixin:
             params.extend([f"%{term}%", f"%{term}%"])
 
         where_clause = " OR ".join(conditions)
+        if sess_id and ws_id:
+            where_clause = f"({where_clause}) AND session_id = ? AND workspace_id = ? AND scope = 'session'"
+            params.extend([sess_id, ws_id])
+        else:
+            where_clause = f"({where_clause}) AND scope = 'unscoped'"
+
         sql = f"""
             SELECT id, user_input, jarvis_reply, tool_calls, source_provenance, created_at
             FROM interactions
@@ -90,11 +200,114 @@ class InteractionMemoryMixin:
             LIMIT ?
         """
         params.append(limit)
-
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(sql, tuple(params))
+            cursor.execute(sql, params)
             return [dict(r) for r in cursor.fetchall()]
+
+    def purge_session(
+        self,
+        target_session_id: str,
+        target_workspace_id: str | None = None,
+        allow_archived: bool = False,
+    ) -> dict[str, Any]:
+        """Executes a hardened session purge in a strict BEGIN IMMEDIATE transaction."""
+        if not isinstance(allow_archived, bool):
+            raise TypeError(f"allow_archived must be a strict bool, got {type(allow_archived).__name__}")
+
+        ws_id = target_workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else "ws_default")
+
+        # Step 1: Pre-burn authorization grant before transaction
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
+        approval_mgr = DualKeyApprovalManager.get_instance()
+        grant_args = {
+            "workspace_id": ws_id,
+            "session_id": target_session_id,
+            "allow_archived": allow_archived,
+        }
+        grant = approval_mgr.consume_grant_object("purge_session", grant_args)
+        if not grant:
+            raise PermissionError("Missing, expired, mismatched, or already consumed Dual-Key approval grant for purge_session")
+
+        def _write(conn: sqlite3.Connection) -> dict[str, Any]:
+            if conn.in_transaction:
+                raise RuntimeError("Integrity Error: Purge transaction cannot inherit an active transaction")
+
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA foreign_keys = ON;")
+            cursor.execute("BEGIN IMMEDIATE;")
+            if not conn.in_transaction:
+                raise RuntimeError("Integrity Error: Transaction not active after BEGIN IMMEDIATE")
+
+            try:
+                # 4-State Runtime Context Validation
+                cursor.execute("SELECT active_workspace_id, active_session_id FROM active_context WHERE lock_id = 1")
+                ctx_row = cursor.fetchone()
+                if ctx_row:
+                    act_ws = ctx_row[0]
+                    act_sess = ctx_row[1]
+                    if act_ws is None and act_sess is not None:
+                        raise ValueError("State 4 violation: session cannot be active without active workspace")
+                    if act_sess == target_session_id:
+                        raise PermissionError(f"Target session '{target_session_id}' is currently active in runtime context. Active sessions cannot be purged.")
+
+                # Validate target session status
+                cursor.execute("SELECT workspace_id, status FROM sessions WHERE session_id = ?", (target_session_id,))
+                row = cursor.fetchone()
+                if not row:
+                    raise KeyError(f"Session '{target_session_id}' not found")
+                actual_ws_id, status = row[0], row[1]
+
+                if actual_ws_id != ws_id:
+                    raise ValueError(f"Workspace mismatch: Session belongs to '{actual_ws_id}', not '{ws_id}'")
+                if status == "active":
+                    raise PermissionError(f"Session '{target_session_id}' has database status 'active'. Only closed or paused sessions can be purged.")
+                if status not in {"closed", "paused"}:
+                    raise ValueError(f"Session '{target_session_id}' has unrecognized status '{status}'. Fails closed.")
+
+                # Validate workspace archival
+                cursor.execute("SELECT is_archived FROM workspaces WHERE workspace_id = ?", (actual_ws_id,))
+                ws_row = cursor.fetchone()
+                if not ws_row:
+                    raise KeyError(f"Workspace '{actual_ws_id}' not found")
+                is_archived = bool(ws_row[0])
+                if is_archived and not allow_archived:
+                    raise PermissionError(f"Workspace '{actual_ws_id}' is archived. Purge requires explicit allow_archived=True approval.")
+
+                # Leaf-to-root deletion
+                cursor.execute("DELETE FROM interactions WHERE session_id = ?", (target_session_id,))
+                del_interactions = cursor.rowcount
+
+                cursor.execute("DELETE FROM tasks WHERE session_id = ?", (target_session_id,))
+                del_tasks = cursor.rowcount
+
+                cursor.execute("DELETE FROM staged_documents WHERE session_id = ?", (target_session_id,))
+                del_staged = cursor.rowcount
+
+                cursor.execute("DELETE FROM sessions WHERE session_id = ?", (target_session_id,))
+                del_sessions = cursor.rowcount
+
+                # Foreign key check
+                cursor.execute("PRAGMA foreign_key_check;")
+                fk_violations = cursor.fetchall()
+                if fk_violations:
+                    raise RuntimeError(f"Foreign key integrity check failed after purge: {fk_violations}")
+
+                conn.execute("COMMIT;")
+                return {
+                    "status": "purged",
+                    "session_id": target_session_id,
+                    "deleted_interactions": del_interactions,
+                    "deleted_tasks": del_tasks,
+                    "deleted_staged_documents": del_staged,
+                    "deleted_sessions": del_sessions,
+                }
+            except Exception:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK;")
+                raise
+
+        return self.execute_write(_write)
 
     def semantic_search_interactions(self, query: str, top_k: int = 5, min_score: float = 0.10) -> list[dict[str, Any]]:
         """Searches past conversation history using semantic vector similarity."""
@@ -160,7 +373,7 @@ class InteractionMemoryMixin:
                         extracted = extractor_fn(user_text, reply_text)
                         if isinstance(extracted, list):
                             items = extracted
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001
                         logger.debug("Custom extractor notice: %s", e)
 
                 if not items:
@@ -213,7 +426,7 @@ class InteractionMemoryMixin:
                             parsed = json.loads(content)
                             if isinstance(parsed, list):
                                 items = parsed
-                        except Exception as e_oe:
+                        except Exception as e_oe:  # noqa: BLE001
                             logger.debug("Memory extractor client execution note: %s", e_oe)
 
                 # Sensitive data patterns to prevent storing secrets/credentials
@@ -245,7 +458,7 @@ class InteractionMemoryMixin:
                         self.remember_fact(key, val, cat)
                         logger.info("Learned context about Sir: [%s] %s -> %s", cat, key, val)
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("%s background memory extraction notice: %s", provider, e)
             finally:
                 with self._learning_lock:
@@ -299,18 +512,20 @@ class InteractionMemoryMixin:
         failure_signature: str,
         lesson: str,
         source_provenance: str | None = None,
+        workspace_id: str | None = None,
     ) -> int:
         """Records an episodic failure post-mortem or heuristic lesson in SQLite WAL."""
         t_clean = sanitize_memory_taint((tool_name or "").strip())
         f_clean = sanitize_memory_taint((failure_signature or "").strip()[:300])
         c_clean = sanitize_memory_taint((trigger_context or "").strip()[:300])
-        l_clean = sanitize_memory_taint((lesson or "").strip())
+        l_clean = scrub_sensitive_credentials(sanitize_memory_taint((lesson or "").strip()))
 
         if not t_clean or not l_clean:
             return 0
 
         from jarvis.core.security_boundaries import TurnTaintTracker
         source_provenance = TurnTaintTracker.resolve_write_provenance(source_provenance, default_if_clean="unknown")
+        ws_id = workspace_id or (self.get_active_workspace_id() if hasattr(self, "get_active_workspace_id") else "ws_default")
 
         # Step 1: Pre-compute ONNX dense embedding OUTSIDE write transaction
         blob = None
@@ -319,32 +534,41 @@ class InteractionMemoryMixin:
             embed_text = f"{t_clean} {c_clean} {f_clean} {l_clean}"
             vec = self.vector_engine.dense_vectorize(embed_text)
             blob = sqlite_vec.serialize_float32(vec)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("sqlite-vec episodic lesson vectorization failed (%s); continuing without vector index.", e)
 
         # Step 2: Route SQLite write strictly through SingleWriterActor
         def _write(conn: sqlite3.Connection) -> int:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO episodic_lessons (
-                    tool_name, trigger_context, failure_signature, lesson, hit_count, source_provenance, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(tool_name, failure_signature) DO UPDATE SET
-                    hit_count = episodic_lessons.hit_count + 1,
-                    lesson = excluded.lesson,
-                    trigger_context = excluded.trigger_context,
-                    source_provenance = excluded.source_provenance,
-                    updated_at = CURRENT_TIMESTAMP
-            """, (t_clean, c_clean, f_clean, l_clean, source_provenance))
-            cursor.execute("SELECT id FROM episodic_lessons WHERE tool_name = ? AND failure_signature = ?", (t_clean, f_clean))
+                SELECT id, hit_count FROM episodic_lessons
+                WHERE workspace_id = ? AND tool_name = ? AND failure_signature = ? AND scope = 'workspace'
+            """, (ws_id, t_clean, f_clean))
             row = cursor.fetchone()
-            lesson_id = row["id"] if row else cursor.lastrowid
+            if row:
+                lesson_id = row["id"]
+                cursor.execute("""
+                    UPDATE episodic_lessons
+                    SET hit_count = hit_count + 1,
+                        lesson = ?,
+                        trigger_context = ?,
+                        source_provenance = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (l_clean, c_clean, source_provenance, lesson_id))
+            else:
+                cursor.execute("""
+                    INSERT INTO episodic_lessons (
+                        workspace_id, scope, tool_name, trigger_context, failure_signature, lesson, hit_count, source_provenance, created_at, updated_at
+                    ) VALUES (?, 'workspace', ?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, (ws_id, t_clean, c_clean, f_clean, l_clean, source_provenance))
+                lesson_id = cursor.lastrowid
 
             if blob is not None:
                 try:
                     cursor.execute("DELETE FROM lessons_vec WHERE lesson_id = ?", (lesson_id,))
                     cursor.execute("INSERT INTO lessons_vec(lesson_id, embedding) VALUES (?, ?)", (lesson_id, blob))
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     logger.warning("sqlite-vec episodic lesson indexing failed (%s); continuing without vector index.", e)
 
             return lesson_id
@@ -386,7 +610,7 @@ class InteractionMemoryMixin:
                     params.append(max(top_k * 2, 8))
                     cursor.execute(sql, params)
                     fts_matches = [dict(r) for r in cursor.fetchall()]
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug(f"FTS5 lessons search fallback: {e}")
 
         vec_matches = []
@@ -416,7 +640,7 @@ class InteractionMemoryMixin:
                             item = dict(r)
                             item["sim"] = round(cos_sim, 3)
                             vec_matches.append(item)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("sqlite-vec lessons KNN search failed (%s); falling back to lexical TF-IDF/BM25.", e)
 
         scores: dict[int, float] = {}

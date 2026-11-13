@@ -11,6 +11,7 @@ from typing import Any
 from jarvis.core.memory.vector_engine import (
     fuse_vec_and_fts_rrf,
     sanitize_fts5_query,
+    scrub_sensitive_credentials,
 )
 
 logger = logging.getLogger("Jarvis.Memory.DocumentVault")
@@ -93,7 +94,7 @@ class DocumentVaultMixin:
 
         clean_title = title.strip()
         clean_cat = category.lower().strip()
-        clean_summary = summary.strip()
+        clean_summary = scrub_sensitive_credentials(summary.strip())
         clean_raw = raw_content.strip()
         clean_path = file_path.strip()
 
@@ -427,7 +428,9 @@ class DocumentVaultMixin:
         for d in sorted_docs:
             raw_id = d.get("id")
             d_id = "?" if (raw_id is None or str(raw_id).strip() == "") else str(raw_id).strip()
-            title = self._sanitize_metadata(d.get("title"), fallback="Untitled Document", max_len=128)
+            title_raw = d.get("title")
+            title_clean = scrub_sensitive_credentials(str(title_raw)) if title_raw is not None else None
+            title = self._sanitize_metadata(title_clean, fallback="Untitled Document", max_len=128)
             cat = self._sanitize_metadata(d.get("category"), fallback="general", max_len=32)
             date = self._sanitize_metadata(d.get("created_at"), fallback="Unknown Date", max_len=32)
             d_id_safe = self._sanitize_metadata(d_id, fallback="?", max_len=16)
@@ -435,7 +438,8 @@ class DocumentVaultMixin:
             summary = (d.get("summary") or "").strip()
             raw = (d.get("raw_content") or "").strip()
             raw_text = summary if summary else (raw[:600] if raw else "No content summary recorded.")
-            safe_content = self._escape_document_text(raw_text)
+            scrubbed_text = scrub_sensitive_credentials(raw_text)
+            safe_content = self._escape_document_text(scrubbed_text)
 
             header = f"[Document #{d_id_safe}: {title} | Category: {cat} | Archived: {date}]"
             chunks.append(f"{header}\n{safe_content}")
