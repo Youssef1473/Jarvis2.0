@@ -3,11 +3,12 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from jarvis.core.mcp_manager import MCPClientSession, MCPManager, register_discovered_mcp_tools
-from jarvis.skills.base import SkillRegistry
-import jarvis.skills.modern_web as modern_web
 import jarvis.skills.gemini_intelligence as gemini_intel
-import jarvis.skills.chrome_devtools as chrome_devtools
+from jarvis.core.mcp_manager import (
+    MCPClientSession,
+)
+from jarvis.skills import modern_web
+from jarvis.skills.base import SkillRegistry
 
 
 class TestPluginIntegrations(unittest.TestCase):
@@ -25,9 +26,13 @@ class TestPluginIntegrations(unittest.TestCase):
         self.assertIn("audit_webpage_performance", registered_tools)
         self.assertIn("capture_devtools_snapshot", registered_tools)
 
-    @patch("subprocess.run")
-    def test_modern_web_guidance_search(self, mock_subproc):
-        """Tests search_modern_web_guidance formats CLI results properly."""
+    def test_modern_web_guidance_search(self):
+        """Tests search_modern_web_guidance formats CLI results properly and fails closed without auth."""
+        # 1. Negative test: Unauthorized execution fails closed
+        unauth_res = modern_web.search_modern_web_guidance("dialog modal")
+        self.assertIn("Authorization Required", unauth_res)
+
+        # 2. Contained batch execution mock
         mock_output = json.dumps([
             {
                 "id": "declarative-dialog-popover-control",
@@ -36,17 +41,19 @@ class TestPluginIntegrations(unittest.TestCase):
                 "featuresUsed": ["Popover", "<dialog>"]
             }
         ])
-        mock_subproc.return_value = MagicMock(returncode=0, stdout=mock_output, stderr="")
+        import subprocess
+        mock_proc = subprocess.CompletedProcess(args=["npx"], returncode=0, stdout=mock_output, stderr="")
+        with patch("jarvis.skills.modern_web.run_sandboxed_batch", return_value=mock_proc):
+            res = modern_web.search_modern_web_guidance("dialog modal", limit=1)
+            self.assertIn("declarative-dialog-popover-control", res)
+            self.assertIn("Toggle dialog or popover with buttons.", res)
 
-        res = modern_web.search_modern_web_guidance("dialog modal", limit=1)
-        self.assertIn("declarative-dialog-popover-control", res)
-        self.assertIn("Toggle dialog or popover with buttons.", res)
-
-    @patch("subprocess.run")
+    @patch("jarvis.skills.modern_web.run_sandboxed_batch")
     def test_modern_web_guidance_retrieve(self, mock_subproc):
         """Tests retrieve_modern_web_guide returns guide content."""
         guide_text = "Use invoker commands to toggle dialogs."
-        mock_subproc.return_value = MagicMock(returncode=0, stdout=guide_text, stderr="")
+        import subprocess
+        mock_subproc.return_value = subprocess.CompletedProcess(args=["npx"], returncode=0, stdout=guide_text, stderr="")
 
         res = modern_web.retrieve_modern_web_guide("declarative-dialog-popover-control")
         self.assertIn("Modern Web Guidance: declarative-dialog-popover-control", res)

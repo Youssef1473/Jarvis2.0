@@ -1,15 +1,16 @@
 """Automated tests for py-spy runtime profiling and tracemalloc memory diagnostics."""
 import os
+import subprocess
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
 from pathlib import Path
+from unittest.mock import patch
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.skills.base import SkillRegistry
 import jarvis.skills.diagnostics as diag
+from jarvis.skills.base import SkillRegistry
 
 
 class TestDiagnosticsSuite(unittest.TestCase):
@@ -23,10 +24,15 @@ class TestDiagnosticsSuite(unittest.TestCase):
         self.assertTrue(os.path.exists(pyspy_path), f"py-spy path '{pyspy_path}' must exist")
 
     @patch("jarvis.skills.diagnostics._find_pyspy", return_value="py-spy.exe")
-    @patch("subprocess.run")
-    def test_profile_runtime_execution(self, mock_run, mock_find):
-        """Verifies profile_runtime parses sampling dump output correctly."""
-        mock_run.return_value = MagicMock(
+    def test_profile_runtime_execution(self, mock_find):
+        """Verifies profile_runtime parses sampling dump output correctly and fails closed without auth."""
+        # 1. Negative test: Unauthorized execution fails closed
+        res_unauth = SkillRegistry.execute("profile_runtime", mode="dump")
+        self.assertIn("Authorization Required", res_unauth)
+
+        # 2. Contained batch execution
+        mock_batch = subprocess.CompletedProcess(
+            args=["py-spy"],
             returncode=0,
             stdout=(
                 "Thread 1234 (active):\n"
@@ -36,11 +42,12 @@ class TestDiagnosticsSuite(unittest.TestCase):
             ),
             stderr="",
         )
-        res = SkillRegistry.execute("profile_runtime", mode="dump")
-        self.assertIsInstance(res, str)
-        self.assertIn("Runtime Thread Diagnostics", res)
-        self.assertIn(str(os.getpid()), res)
-        self.assertIn("Active Threads Monitored: 2", res)
+        with patch("jarvis.skills.job_object_sandbox.run_sandboxed_batch", return_value=mock_batch):
+            res = SkillRegistry.execute("profile_runtime", mode="dump")
+            self.assertIsInstance(res, str)
+            self.assertIn("Runtime Thread Diagnostics", res)
+            self.assertIn(str(os.getpid()), res)
+            self.assertIn("Active Threads Monitored: 2", res)
 
     @patch("jarvis.skills.diagnostics._find_pyspy", return_value=None)
     def test_profile_runtime_missing_binary(self, mock_find):
@@ -50,10 +57,11 @@ class TestDiagnosticsSuite(unittest.TestCase):
         self.assertIn("Diagnostic profiler unavailable", res)
 
     @patch("jarvis.skills.diagnostics._find_pyspy", return_value="py-spy.exe")
-    @patch("subprocess.run")
-    def test_profile_runtime_access_notice(self, mock_run, mock_find):
+    @patch("jarvis.skills.job_object_sandbox.run_sandboxed_batch")
+    def test_profile_runtime_access_notice(self, mock_batch, mock_find):
         """Verifies profile_runtime handles non-zero exit codes gracefully."""
-        mock_run.return_value = MagicMock(
+        mock_batch.return_value = subprocess.CompletedProcess(
+            args=["py-spy"],
             returncode=1,
             stdout="",
             stderr="Access is denied",
@@ -71,10 +79,11 @@ class TestDiagnosticsSuite(unittest.TestCase):
         )
 
     @patch("jarvis.skills.diagnostics._find_pyspy", return_value="py-spy.exe")
-    @patch("subprocess.run")
-    def test_brain_diagnostics_fast_reflex(self, mock_run, mock_find):
+    @patch("jarvis.skills.job_object_sandbox.run_sandboxed_batch")
+    def test_brain_diagnostics_fast_reflex(self, mock_batch, mock_find):
         """Verifies brain fast reflexes trigger profile_runtime and memory audit instantly."""
-        mock_run.return_value = MagicMock(
+        mock_batch.return_value = subprocess.CompletedProcess(
+            args=["py-spy"],
             returncode=0,
             stdout="Thread 1:\n  File 'test.py', line 1\n",
             stderr="",
@@ -83,10 +92,10 @@ class TestDiagnosticsSuite(unittest.TestCase):
         from jarvis.core.config_loader import load_config
         from jarvis.core.memory import MemoryManager
         from jarvis.core.safety import SafetyGate
-        
+
         cfg = load_config()
         brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg), antigravity_resolver=lambda: None)
-        
+
         # Profile runtime reflex
         res = brain._try_fast_reflex("profile runtime")
         self.assertIsNotNone(res)
@@ -134,4 +143,3 @@ class TestDiagnosticsSuite(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

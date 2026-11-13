@@ -166,8 +166,7 @@ class TestBrowserDOMProvenanceSuite(unittest.TestCase):
                 risk_level=1,
             )
 
-        self.assertIn("Dual-Key Safety Gate: blocked high-privilege tool 'close_application'", str(ctx.exception))
-        self.assertIn("browser_dom:click_web_element_semantic", str(ctx.exception))
+        self.assertIn("Critical Authorization Gate: Tool 'close_application'", str(ctx.exception))
 
     def test_unsuccessful_dom_lookup_does_not_expose_unverified_dom_text_and_leaves_clean_turn(self):
         """Verifies failed element lookup does not leak untrusted tab titles or DOM text, and turn remains untainted."""

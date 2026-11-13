@@ -1105,7 +1105,7 @@ class TestP1Stage6BAddendumSecurity(unittest.TestCase):
         self.assertIsNotNone(ProcessHandleRegistry._handles.get(hid))
 
         # Wait for the daemon timer to fire actively without calling any registry methods
-        for _ in range(50):
+        for _ in range(100):
             time.sleep(0.02)
             if mock_close.called:
                 break

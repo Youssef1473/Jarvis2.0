@@ -2,7 +2,6 @@
 Verifies self-editing core user profile blocks in SQLite, prompt assembly injection,
 and closed-loop post-action verification gates on desktop OS tools.
 """
-import os
 import shutil
 import sys
 import tempfile
@@ -13,11 +12,12 @@ from unittest.mock import MagicMock, patch
 # Ensure project root is in path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.core.memory import MemoryManager
-from jarvis.skills.base import SkillRegistry
+import jarvis.skills.os_control  # noqa: F401
 import jarvis.skills.productivity as prod_skills
-import jarvis.skills.os_control as os_skills
 from jarvis.core.brain import JarvisBrain
+from jarvis.core.memory import MemoryManager
+from jarvis.core.security_boundaries import DualKeyApprovalManager
+from jarvis.skills.base import SkillRegistry
 
 
 class TestClosedLoopAndCorePreferencesSuite(unittest.TestCase):
@@ -122,12 +122,24 @@ class TestClosedLoopAndCorePreferencesSuite(unittest.TestCase):
 
     def test_launch_or_focus_application_closed_loop(self):
         """Verifies launch_or_focus_application invokes launch and verifies focus."""
-        with patch("jarvis.skills.windows_uia.focus_window_uia", side_effect=[None, "Spotify Premium"]), \
-             patch("jarvis.skills.os_control.focus_window", return_value="No open Spotify window was found"), \
-             patch("jarvis.skills.os_control.launch_application", return_value="Application 'spotify' launched, Sir.") as mock_launch:
-            res = SkillRegistry.execute("launch_or_focus_application", app_name="spotify")
-            self.assertIn("Verified: Launched and focused 'Spotify Premium', Sir.", res)
-            mock_launch.assert_called_once_with("spotify")
+        mgr = DualKeyApprovalManager.get_instance()
+        grant = mgr.grant_approval("launch_application", {"app_name": "spotify"})
+        ctx_token = mgr.bind_active_grant(grant)
+
+        mock_launch = MagicMock(return_value="Application 'spotify' launched, Sir.")
+        mock_launch.__name__ = "launch_application"
+        import inspect
+        mock_launch.__signature__ = inspect.signature(SkillRegistry.get_tool("launch_application"))
+
+        try:
+            with patch.dict(SkillRegistry._tools, {"launch_application": mock_launch}), \
+                 patch("jarvis.skills.windows_uia.focus_window_uia", side_effect=[None, "Spotify Premium"]), \
+                 patch("jarvis.skills.os_control.focus_window", return_value="No open Spotify window was found"):
+                res = SkillRegistry.execute("launch_or_focus_application", app_name="spotify")
+                self.assertIn("Verified: Launched and focused 'Spotify Premium', Sir.", res)
+                mock_launch.assert_called_once_with(app_name="spotify")
+        finally:
+            mgr.clear_active_authorized(ctx_token)
 
 
 if __name__ == "__main__":

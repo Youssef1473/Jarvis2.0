@@ -129,7 +129,15 @@ class TestFailClosedIngestion(unittest.TestCase):
             self.assertTrue(decision.allowed)
             self.assertFalse(self.tracker.is_tainted, "Trusted local tool must not taint the turn")
 
-            # Subsequent Level 1 mutation on clean turn is allowed without approval
+            # High-privilege mutation requires explicit authorization even on clean turn
+            with self.assertRaises(SecurityBoundaryViolation) as ctx:
+                self.tracker.evaluate_tool_execution(
+                    "execute_sandboxed_powershell", {"command": "dir"}, risk_level=1
+                )
+            self.assertIn("Critical Authorization Gate", str(ctx.exception))
+
+            # With explicit grant, execution is allowed
+            self.approval_mgr.grant_approval("execute_sandboxed_powershell", {"command": "dir"})
             mut_decision = self.tracker.evaluate_tool_execution(
                 "execute_sandboxed_powershell", {"command": "dir"}, risk_level=1
             )
@@ -273,7 +281,7 @@ class TestFailClosedIngestion(unittest.TestCase):
             self.tracker.evaluate_tool_execution(
                 "execute_sandboxed_powershell", {"command": "Get-Process"}, risk_level=1
             )
-        self.assertIn("Dual-Key Safety Gate", str(ctx.exception))
+        self.assertIn("Critical Authorization Gate", str(ctx.exception))
 
         # 2. Level 1 mutation WITH pre-approved grant succeeds
         self.approval_mgr.grant_approval("execute_sandboxed_powershell", {"command": "Get-Process"})
@@ -337,7 +345,7 @@ class TestFailClosedIngestion(unittest.TestCase):
             self.tracker.evaluate_tool_execution(
                 "execute_sandboxed_powershell", {"command": "Remove-Item test.txt"}, risk_level=1
             )
-        self.assertIn("Dual-Key Safety Gate", str(ctx.exception))
+        self.assertIn("Critical Authorization Gate", str(ctx.exception))
 
     def test_explicitly_trusted_system_telemetry_tools_remain_untainted(self):
         """15. Pure system and hardware telemetry tools are KNOWN_TRUSTED and do not taint the turn."""
@@ -452,7 +460,7 @@ class TestFailClosedIngestion(unittest.TestCase):
             self.tracker.evaluate_tool_execution(
                 "execute_sandboxed_powershell", {"command": "dir"}, risk_level=1
             )
-        self.assertIn("Dual-Key Safety Gate", str(ctx.exception))
+        self.assertIn("Critical Authorization Gate", str(ctx.exception))
 
     def test_grant_scoped_to_logical_turn_and_revoked_on_reset(self):
         """19. Dual-Key grants are bound to the logical turn; unconsumed grants are revoked on reset_turn()."""

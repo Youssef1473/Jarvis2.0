@@ -335,6 +335,47 @@ class TestFourTierRunnerSupervisorSuite(unittest.TestCase):
         self.assertEqual(sim_integrity["orphaned_count"], 1)
         self.assertIn(first_node, sim_integrity["orphaned_node_ids"])
 
+    def test_18_teardown_errors_fail_suite_and_aggregate_scorecard(self):
+        """18. Teardown and collection errors fail the suite, record in TierScorecard, and fail aggregate scorecard."""
+        from unittest.mock import MagicMock
+
+        from tools.test_supervisor import SupervisedResult
+
+        mock_supervisor = MagicMock()
+        mock_result = SupervisedResult(
+            run_id="tier1_hermetic_unit",
+            status="COMPLETED",  # Even if supervisor parsed process status as COMPLETED
+            exit_code=1,         # Subprocess exited 1 due to teardown error
+            duration_sec=1.5,
+            timed_out=False,
+            passed_count=10,
+            failed_count=0,
+            skipped_count=0,
+            error_count=1,
+            details=[{"name": "test_teardown", "status": "ERROR", "message": "teardown assertion failed"}],
+        )
+        mock_supervisor.run_pytest.return_value = mock_result
+        runner = FourTierTestRunner(workspace_root=WORKSPACE_ROOT, supervisor=mock_supervisor)
+
+        # 1. Suite classification and scorecard retention
+        scorecard = runner.run_tier1_hermetic_unit(workers=1)
+        self.assertEqual(scorecard.status, "FAILED", "Suite with teardown errors must be classified as FAILED")
+        self.assertEqual(scorecard.errors, 1, "TierScorecard must record error_count")
+        self.assertEqual(scorecard.failed, 0, "failed count reflects assertion failures")
+        self.assertEqual(scorecard.exit_code, 1, "Exit code must reflect failure")
+
+        # 2. Aggregate failure decision recognizes error
+        with patch.object(runner, "run_tier1_hermetic_unit", return_value=scorecard), \
+             patch.object(runner, "run_tier2_async_and_ipc", return_value=[]), \
+             patch.object(runner, "run_tier3_windows_integration", return_value=TierScorecard(tier_name="Tier 3", status="COMPLETED")), \
+             patch.object(runner, "run_tier4_hardware_integration", return_value=TierScorecard(tier_name="Tier 4", status="COMPLETED")), \
+             patch.object(runner, "run_browser_integration", return_value=TierScorecard(tier_name="Browser", status="COMPLETED")):
+            overall_code, all_scs = runner.run_all(workers=1)
+            self.assertNotEqual(overall_code, 0, "Aggregate execution status cannot become successful when errors exist")
+            self.assertEqual(overall_code, 1, "Process exit code must be 1 on teardown error")
+            t1_sc = next(s for s in all_scs if s.tier_name == "Tier 1: Hermetic Unit")
+            self.assertEqual(t1_sc.errors, 1)
+
 
 class TestWinsockLoopbackProbeAdversarial(unittest.TestCase):
     """Verifies Audit A: Exact runtime Winsock probe states, error handling, and socket cleanup."""

@@ -340,14 +340,21 @@ class TestPhase4TruthfulCancellation(unittest.TestCase):
         token.cancel()
         self.assertTrue(token.is_cancelled)
 
-        res = run_job_sandboxed_process(
-            command=["powershell", "-NoProfile", "-Command", "Start-Sleep -Seconds 5"],
-            cancel_token=token,
-        )
+        mgr = DualKeyApprovalManager.get_instance()
+        cmd = ["powershell", "-NoProfile", "-Command", "Start-Sleep -Seconds 5"]
+        grant = mgr.grant_approval("run_job_sandboxed_process", {"command": cmd})
+        ctx_token = mgr.bind_active_grant(grant)
+        try:
+            res = run_job_sandboxed_process(
+                command=cmd,
+                cancel_token=token,
+            )
 
-        self.assertEqual(res.get("status"), "cancelled")
-        self.assertTrue(res.get("cancelled_confirmed"))
-        self.assertTrue(token.confirmed_stopped)
+            self.assertEqual(res.get("status"), "cancelled")
+            self.assertTrue(res.get("cancelled_confirmed"))
+            self.assertTrue(token.confirmed_stopped)
+        finally:
+            mgr.clear_active_authorized(ctx_token)
 
     def test_orchestrator_returns_cancelled_before_execution(self):
         """ToolOrchestrator rejects pre-cancelled token with failure_category='cancelled'."""
@@ -474,13 +481,20 @@ class TestPhase4AffinityFallbackAndTracking(unittest.TestCase):
 
     def test_sandboxed_process_reports_affinity_degraded_field(self):
         """run_job_sandboxed_process returns explicit affinity_degraded boolean."""
-        res = run_job_sandboxed_process(
-            command=["cmd.exe", "/c", "echo test"],
-            requested_affinity=0,
-            timeout_sec=5.0,
-        )
-        self.assertIn("affinity_degraded", res)
-        self.assertIsInstance(res["affinity_degraded"], bool)
+        mgr = DualKeyApprovalManager.get_instance()
+        cmd = ["cmd.exe", "/c", "echo test"]
+        grant = mgr.grant_approval("run_job_sandboxed_process", {"command": cmd})
+        ctx_token = mgr.bind_active_grant(grant)
+        try:
+            res = run_job_sandboxed_process(
+                command=cmd,
+                requested_affinity=0,
+                timeout_sec=5.0,
+            )
+            self.assertIn("affinity_degraded", res)
+            self.assertIsInstance(res["affinity_degraded"], bool)
+        finally:
+            mgr.clear_active_authorized(ctx_token)
 
 
 class TestPhase4ASTSecurityAnalysis(unittest.TestCase):

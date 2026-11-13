@@ -1,4 +1,5 @@
 """Automated tests for Chrome DevTools Protocol (CDP) silent browser control."""
+import hashlib
 import json
 import socket
 import sys
@@ -151,8 +152,8 @@ class TestBrowserCDPSuite(unittest.TestCase):
     def test_close_browser_tab_skill_fallback_win32(self):
         """Verifies close_browser_tab falls back to Win32 hotkey when CDP is unavailable."""
         with patch("jarvis.skills.browser_cdp.close_cdp_tab", return_value=None), \
-             patch("win32gui.EnumWindows") as mock_enum, \
-             patch("pyautogui.hotkey") as mock_hotkey:
+             patch("win32gui.EnumWindows"), \
+             patch("pyautogui.hotkey"):
             res = SkillRegistry.execute("close_browser_tab", browser="brave")
             self.assertIsInstance(res, str)
 
@@ -228,7 +229,15 @@ class TestBrowserCDPSuite(unittest.TestCase):
             self.assertEqual(val, 42)
 
             DualKeyApprovalManager.get_instance().set_approval_handler(lambda req: True)
-            skill_res = SkillRegistry.execute("execute_browser_javascript", script="6 * 7", tab_name="Calculator")
+            script = "6 * 7"
+            digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+            skill_res = SkillRegistry.execute(
+                "execute_browser_javascript",
+                script=script,
+                tab_name="Calculator",
+                unique_context_id="test-ctx-1",
+                script_digest=digest,
+            )
             self.assertIn("JavaScript Evaluation Result", skill_res)
             self.assertIn("42", skill_res)
 

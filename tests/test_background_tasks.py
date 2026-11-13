@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from starlette.testclient import TestClient
 
+from jarvis.core.security_boundaries import DualKeyApprovalManager
 from jarvis.core.task_manager import BackgroundTaskManager
 from jarvis.skills import dev_shell
 from jarvis.skills.base import SkillRegistry
@@ -60,7 +61,7 @@ class TestBackgroundTasksSuite(unittest.TestCase):
 
     def test_run_background_task_failure_exit_code(self):
         """Verifies failed commands record non-zero exit code and failed status."""
-        success, msg, task_id = self.mgr.run_task(
+        success, _msg, task_id = self.mgr.run_task(
             command="exit 17",
             task_name="Exit 17 Test",
             notify_voice=False,
@@ -90,7 +91,7 @@ class TestBackgroundTasksSuite(unittest.TestCase):
 
     def test_cancel_running_task(self):
         """Verifies active tasks can be terminated cleanly on demand."""
-        success, msg, task_id = self.mgr.run_task(
+        success, _msg, task_id = self.mgr.run_task(
             command="Start-Sleep -Seconds 10",
             task_name="Long Sleep",
             notify_voice=False,
@@ -106,8 +107,15 @@ class TestBackgroundTasksSuite(unittest.TestCase):
 
     def test_skill_wrappers_execution(self):
         """Verifies dev_shell skill wrappers interact with BackgroundTaskManager."""
-        res = dev_shell.run_background_task("Write-Output 'Skill Test'", task_name="Wrapper Test", notify_voice=False)
-        self.assertIn("Launched background task 'Wrapper Test'", res)
+        approval_mgr = DualKeyApprovalManager.get_instance()
+        cmd = "Write-Output 'Skill Test'"
+        grant = approval_mgr.grant_approval("run_background_task", {"command": cmd})
+        ctx_token = approval_mgr.bind_active_grant(grant)
+        try:
+            res = dev_shell.run_background_task(cmd, task_name="Wrapper Test", notify_voice=False)
+            self.assertIn("Launched background task 'Wrapper Test'", res)
+        finally:
+            approval_mgr.clear_active_authorized(ctx_token)
 
         list_out = dev_shell.list_background_tasks()
         self.assertIn("Wrapper Test", list_out)

@@ -44,34 +44,64 @@ class TestSubprocessOutputProvenance(unittest.TestCase):
         """1. execute_powershell cannot return arbitrary output as trusted."""
         self.assertFalse(self.tracker.is_tainted)
 
-        # Run safe echo command
-        res = execute_powershell("Write-Output 'arbitrary_powershell_stdout_99'")
-        self.assertIn("arbitrary_powershell_stdout_99", res)
+        cmd = "Write-Output 'arbitrary_powershell_stdout_99'"
+        # Verify unauthorized execution fails closed
+        with self.assertRaises(SecurityBoundaryViolation):
+            execute_powershell(cmd)
 
-        # Active turn MUST be marked tainted with subprocess provenance
-        self.assertTrue(self.tracker.is_tainted)
-        self.assertTrue(any("subprocess_output:execute_powershell" in s for s in self.tracker.tainting_sources))
+        # Execute with action-bound grant
+        grant = self.approval_mgr.grant_approval("execute_powershell", {"command": cmd})
+        ctx_token = self.approval_mgr.bind_active_grant(grant)
+        try:
+            res = execute_powershell(cmd)
+            self.assertIn("arbitrary_powershell_stdout_99", res)
+
+            # Active turn MUST be marked tainted with subprocess provenance
+            self.assertTrue(self.tracker.is_tainted)
+            self.assertTrue(any("subprocess_output:execute_powershell" in s for s in self.tracker.tainting_sources))
+        finally:
+            self.approval_mgr.clear_active_authorized(ctx_token)
 
     def test_2_execute_sandboxed_powershell_taints_turn_before_reaching_llm(self):
         """2. execute_sandboxed_powershell taints the turn before its result reaches the LLM."""
         self.assertFalse(self.tracker.is_tainted)
 
-        res = execute_sandboxed_powershell("Write-Output 'sandboxed_output_val'")
-        self.assertIn("sandboxed_output_val", res)
+        cmd = "Write-Output 'sandboxed_output_val'"
+        # Verify unauthorized execution fails closed
+        with self.assertRaises(SecurityBoundaryViolation):
+            execute_sandboxed_powershell(cmd)
 
-        self.assertTrue(self.tracker.is_tainted)
-        self.assertTrue(any("subprocess_output:execute_sandboxed_powershell" in s for s in self.tracker.tainting_sources))
+        grant = self.approval_mgr.grant_approval("execute_sandboxed_powershell", {"command": cmd})
+        ctx_token = self.approval_mgr.bind_active_grant(grant)
+        try:
+            res = execute_sandboxed_powershell(cmd)
+            self.assertIn("sandboxed_output_val", res)
+
+            self.assertTrue(self.tracker.is_tainted)
+            self.assertTrue(any("subprocess_output:execute_sandboxed_powershell" in s for s in self.tracker.tainting_sources))
+        finally:
+            self.approval_mgr.clear_active_authorized(ctx_token)
 
     def test_3_run_job_sandboxed_process_preserves_untrusted_output_provenance(self):
         """3. run_job_sandboxed_process preserves untrusted output provenance."""
         self.assertFalse(self.tracker.is_tainted)
 
-        res = run_job_sandboxed_process(["cmd.exe", "/c", "echo untrusted_job_stdout"])
-        self.assertEqual(res.get("status"), "ok")
-        self.assertIn("untrusted_job_stdout", res.get("stdout_tail", ""))
+        cmd = ["cmd.exe", "/c", "echo untrusted_job_stdout"]
+        # Verify unauthorized execution fails closed
+        with self.assertRaises(SecurityBoundaryViolation):
+            run_job_sandboxed_process(cmd)
 
-        self.assertTrue(self.tracker.is_tainted)
-        self.assertTrue(any("subprocess_output:run_job_sandboxed_process" in s for s in self.tracker.tainting_sources))
+        grant = self.approval_mgr.grant_approval("run_job_sandboxed_process", {"command": cmd})
+        ctx_token = self.approval_mgr.bind_active_grant(grant)
+        try:
+            res = run_job_sandboxed_process(cmd)
+            self.assertEqual(res.get("status"), "ok")
+            self.assertIn("untrusted_job_stdout", res.get("stdout_tail", ""))
+
+            self.assertTrue(self.tracker.is_tainted)
+            self.assertTrue(any("subprocess_output:run_job_sandboxed_process" in s for s in self.tracker.tainting_sources))
+        finally:
+            self.approval_mgr.clear_active_authorized(ctx_token)
 
     def test_4_run_project_tests_output_cannot_bypass_turn_tainting(self):
         """4. run_project_tests output cannot bypass turn tainting."""
@@ -95,7 +125,13 @@ class TestSubprocessOutputProvenance(unittest.TestCase):
         self.assertFalse(self.tracker.is_tainted)
 
         # Step 1: Subprocess tool executes and returns output
-        execute_sandboxed_powershell("Write-Output 'reconnaissance_output'")
+        cmd = "Write-Output 'reconnaissance_output'"
+        grant = self.approval_mgr.grant_approval("execute_sandboxed_powershell", {"command": cmd})
+        ctx_token = self.approval_mgr.bind_active_grant(grant)
+        try:
+            execute_sandboxed_powershell(cmd)
+        finally:
+            self.approval_mgr.clear_active_authorized(ctx_token)
         self.assertTrue(self.tracker.is_tainted)
 
         # Step 2: Attempting Level 1 mutation on tainted turn without grant raises SecurityBoundaryViolation
@@ -105,7 +141,7 @@ class TestSubprocessOutputProvenance(unittest.TestCase):
                 arguments={"app_name": "notepad"},
                 risk_level=1,
             )
-        self.assertIn("Dual-Key Safety Gate", str(ctx.exception))
+        self.assertIn("Critical Authorization Gate", str(ctx.exception))
 
         # Step 3: Providing explicit human authorization grant permits execution
         self.approval_mgr.grant_approval("close_application", {"app_name": "notepad"})
@@ -123,24 +159,36 @@ class TestSubprocessOutputProvenance(unittest.TestCase):
         self.tracker.reset_turn()
         self.assertFalse(self.tracker.is_tainted)
 
-        res_fail = execute_powershell("Write-Error 'fatal_diagnostic_error'")
-        self.assertIn("fatal_diagnostic_error", res_fail)
-        self.assertTrue(self.tracker.is_tainted)
+        cmd_fail = "Write-Error 'fatal_diagnostic_error'"
+        grant_fail = self.approval_mgr.grant_approval("execute_powershell", {"command": cmd_fail})
+        ctx_token_fail = self.approval_mgr.bind_active_grant(grant_fail)
+        try:
+            res_fail = execute_powershell(cmd_fail)
+            self.assertIn("fatal_diagnostic_error", res_fail)
+            self.assertTrue(self.tracker.is_tainted)
+        finally:
+            self.approval_mgr.clear_active_authorized(ctx_token_fail)
 
         # B. Timeout status in execute_powershell
         self.tracker.reset_turn()
         self.assertFalse(self.tracker.is_tainted)
 
+        cmd_sleep = "Start-Sleep -Seconds 100"
+        grant_sleep = self.approval_mgr.grant_approval("execute_powershell", {"command": cmd_sleep})
+        ctx_token_sleep = self.approval_mgr.bind_active_grant(grant_sleep)
         mock_timeout = {
             "status": "timeout",
             "exit_code": None,
             "stdout_tail": "",
             "stderr_tail": "Timeout exceeded",
         }
-        with patch("jarvis.skills.job_object_sandbox.run_job_sandboxed_process", return_value=mock_timeout):
-            timeout_res = execute_powershell("Start-Sleep -Seconds 100", timeout_seconds=1)
-            self.assertIn("timed out", timeout_res.lower())
-            self.assertTrue(self.tracker.is_tainted)
+        try:
+            with patch("jarvis.skills.job_object_sandbox.run_job_sandboxed_process", return_value=mock_timeout):
+                timeout_res = execute_powershell(cmd_sleep, timeout_seconds=1)
+                self.assertIn("timed out", timeout_res.lower())
+                self.assertTrue(self.tracker.is_tainted)
+        finally:
+            self.approval_mgr.clear_active_authorized(ctx_token_sleep)
 
         # C. Test runner timeout
         self.tracker.reset_turn()
@@ -166,34 +214,46 @@ class TestSubprocessOutputProvenance(unittest.TestCase):
         self.tracker.reset_turn()
         self.assertFalse(self.tracker.is_tainted)
 
+        cmd = "Get-LongRunningJob"
+        grant = self.approval_mgr.grant_approval("execute_powershell", {"command": cmd})
+        ctx_token = self.approval_mgr.bind_active_grant(grant)
         mock_cancel = {
             "status": "cancelled",
             "exit_code": -1,
             "stdout_tail": "partial_computation_before_cancel",
             "stderr_tail": "Process tree terminated: cancelled by voice barge-in.",
         }
-        with patch("jarvis.skills.job_object_sandbox.run_job_sandboxed_process", return_value=mock_cancel):
-            res = execute_powershell("Get-LongRunningJob", timeout_seconds=5)
-            self.assertIn("cancelled", res.lower())
-            self.assertTrue(self.tracker.is_tainted)
-            self.assertTrue(any("subprocess_output:execute_powershell" in s for s in self.tracker.tainting_sources))
+        try:
+            with patch("jarvis.skills.job_object_sandbox.run_job_sandboxed_process", return_value=mock_cancel):
+                res = execute_powershell(cmd, timeout_seconds=5)
+                self.assertIn("cancelled", res.lower())
+                self.assertTrue(self.tracker.is_tainted)
+                self.assertTrue(any("subprocess_output:execute_powershell" in s for s in self.tracker.tainting_sources))
+        finally:
+            self.approval_mgr.clear_active_authorized(ctx_token)
 
     def test_9_subprocess_partial_output_on_error_taints_turn(self):
         """9. Partial stdout/stderr on unexpected status or failure taints turn."""
         self.tracker.reset_turn()
         self.assertFalse(self.tracker.is_tainted)
 
+        cmd = "heavy_memory_script.ps1"
+        grant = self.approval_mgr.grant_approval("execute_sandboxed_powershell", {"command": cmd})
+        ctx_token = self.approval_mgr.bind_active_grant(grant)
         mock_partial = {
             "status": "partial_failure",
             "exit_code": 137,
             "stdout_tail": "leaked_partial_data",
             "stderr_tail": "Killed by OOM watchdog",
         }
-        with patch("jarvis.skills.job_object_sandbox.run_job_sandboxed_process", return_value=mock_partial):
-            out = execute_sandboxed_powershell("heavy_memory_script.ps1")
-            self.assertIn("Killed by OOM", out)
-            self.assertTrue(self.tracker.is_tainted)
-            self.assertTrue(any("subprocess_output:execute_sandboxed_powershell" in s for s in self.tracker.tainting_sources))
+        try:
+            with patch("jarvis.skills.job_object_sandbox.run_job_sandboxed_process", return_value=mock_partial):
+                out = execute_sandboxed_powershell(cmd)
+                self.assertIn("Killed by OOM", out)
+                self.assertTrue(self.tracker.is_tainted)
+                self.assertTrue(any("subprocess_output:execute_sandboxed_powershell" in s for s in self.tracker.tainting_sources))
+        finally:
+            self.approval_mgr.clear_active_authorized(ctx_token)
 
     def test_10_subprocess_cancelled_tests_taint_turn(self):
         """10. Cancelled project tests taint turn before returning error."""

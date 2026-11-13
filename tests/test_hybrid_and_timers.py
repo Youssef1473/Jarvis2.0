@@ -51,7 +51,11 @@ def test_spoken_timers():
 
 def test_gemini_candidate_pool():
     print("\n--- 2. Testing Gemini Candidate Models Pool ---")
-    assert len(JarvisBrain.GEMINI_CANDIDATE_MODELS) >= 8
+    expected_pool = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite"]
+    assert JarvisBrain.GEMINI_CANDIDATE_MODELS == expected_pool
+    # Verify pruned obsolete aliases are absent
+    assert "gemini-3.7-flash" not in JarvisBrain.GEMINI_CANDIDATE_MODELS
+    assert "gemini-3.5-flash" not in JarvisBrain.GEMINI_CANDIDATE_MODELS
     print(f"Verified {len(JarvisBrain.GEMINI_CANDIDATE_MODELS)} candidate models configured for quota failover:")
     for m in JarvisBrain.GEMINI_CANDIDATE_MODELS:
         print(f"  • {m}")
