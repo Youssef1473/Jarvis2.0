@@ -46,6 +46,23 @@ from tools.test_classifier import (
 )
 from tools.test_supervisor import TestSupervisor
 
+SECURITY_SUITES: list[str] = [
+    "tests/test_filesystem_toctou_security_audit.py",
+    "tests/test_gemini_dispatch_security_audit.py",
+    "tests/test_p0_security_remediation.py",
+    "tests/test_p1_stage6a_execution_security.py",
+    "tests/test_p1_stage6b_mutation_security.py",
+    "tests/test_p1_stage6b_addendum_security.py",
+    "tests/test_p1_stage6c_approval_transparency.py",
+    "tests/test_tool_authorization_integrity.py",
+    "tests/test_flagship_features.py",
+    "tests/test_p0_action_bound_authorization.py",
+    "tests/test_job_object_sandbox.py",
+    "tests/test_os_skills.py",
+    "tests/test_email_integration.py",
+    "tests/test_provider_routing_audit.py",
+]
+
 
 class LoopbackStatus(str, Enum):
     AVAILABLE = "AVAILABLE"
@@ -216,6 +233,7 @@ class TierScorecard:
     total_collected: int = 0
     passed: int = 0
     failed: int = 0
+    errors: int = 0
     skipped: int = 0
     timed_out: int = 0
     env_blocked: int = 0
@@ -229,29 +247,30 @@ class TierScorecard:
 def format_scorecard_table(scorecards: list[TierScorecard], total_wall_clock: float) -> str:
     """Renders a disaggregated ASCII scorecard table."""
     lines = [
-        "=" * 98,
+        "=" * 105,
         "                         JARVIS 2.0 FOUR-TIER TEST REGRESSION SCORECARD",
-        "=" * 98,
-        f"{'Tier':<28} {'Status':<16} {'Total':>6} {'Pass':>6} {'Fail':>6} {'Skip':>6} {'TimeOut':>7} {'Blocked':>7} {'Duration':>9}",
-        "-" * 98,
+        "=" * 105,
+        f"{'Tier':<26} {'Status':<16} {'Total':>6} {'Pass':>6} {'Fail':>6} {'Error':>6} {'Skip':>6} {'TimeOut':>7} {'Blocked':>7} {'Duration':>9}",
+        "-" * 105,
     ]
-    tot_total = tot_pass = tot_fail = tot_skip = tot_timeout = tot_blocked = 0
+    tot_total = tot_pass = tot_fail = tot_errors = tot_skip = tot_timeout = tot_blocked = 0
     for sc in scorecards:
         tot_total += sc.total_collected
         tot_pass += sc.passed
         tot_fail += sc.failed
+        tot_errors += sc.errors
         tot_skip += sc.skipped
         tot_timeout += sc.timed_out
         tot_blocked += (sc.env_blocked + sc.hardware_unavailable)
         dur_str = f"{sc.duration_sec:.2f}s"
         lines.append(
-            f"{sc.tier_name:<28} {sc.status:<16} {sc.total_collected:>6} {sc.passed:>6} {sc.failed:>6} {sc.skipped:>6} {sc.timed_out:>7} {(sc.env_blocked + sc.hardware_unavailable):>7} {dur_str:>9}"
+            f"{sc.tier_name:<26} {sc.status:<16} {sc.total_collected:>6} {sc.passed:>6} {sc.failed:>6} {sc.errors:>6} {sc.skipped:>6} {sc.timed_out:>7} {(sc.env_blocked + sc.hardware_unavailable):>7} {dur_str:>9}"
         )
-    lines.append("-" * 98)
+    lines.append("-" * 105)
     lines.append(
-        f"{'TOTALS':<28} {'':<16} {tot_total:>6} {tot_pass:>6} {tot_fail:>6} {tot_skip:>6} {tot_timeout:>7} {tot_blocked:>7} {total_wall_clock:>8.2f}s"
+        f"{'TOTALS':<26} {'':<16} {tot_total:>6} {tot_pass:>6} {tot_fail:>6} {tot_errors:>6} {tot_skip:>6} {tot_timeout:>7} {tot_blocked:>7} {total_wall_clock:>8.2f}s"
     )
-    lines.append("=" * 98)
+    lines.append("=" * 105)
     return "\n".join(lines)
 
 
@@ -328,16 +347,18 @@ class FourTierTestRunner:
             record_junit=True,
         )
 
-        status = result.status
         if result.timed_out:
             status = "TIMEOUT"
-        elif result.exit_code != 0 and result.failed_count > 0:
+            exit_code = 124
+        elif result.exit_code != 0 or result.failed_count > 0 or result.error_count > 0:
             status = "FAILED"
-        elif result.exit_code == 0:
+            exit_code = result.exit_code if result.exit_code != 0 else 1
+        else:
             status = "COMPLETED"
+            exit_code = 0
 
-        print(f"[Tier 1] Completed in {result.duration_sec:.2f}s (Status: {status}, Exit code: {result.exit_code})")
-        print(f"Passed: {result.passed_count}, Failed: {result.failed_count}, Skipped: {result.skipped_count}\n")
+        print(f"[Tier 1] Completed in {result.duration_sec:.2f}s (Status: {status}, Exit code: {exit_code})")
+        print(f"Passed: {result.passed_count}, Failed: {result.failed_count}, Errors: {result.error_count}, Skipped: {result.skipped_count}\n")
 
         return TierScorecard(
             tier_name="Tier 1: Hermetic Unit",
@@ -345,10 +366,11 @@ class FourTierTestRunner:
             total_collected=total_collected,
             passed=result.passed_count,
             failed=result.failed_count,
+            errors=result.error_count,
             skipped=result.skipped_count,
             timed_out=1 if result.timed_out else 0,
             duration_sec=result.duration_sec,
-            exit_code=result.exit_code,
+            exit_code=exit_code,
             details=result.details,
         )
 
@@ -388,7 +410,17 @@ class FourTierTestRunner:
                 run_id="tier2b_loopback_ipc",
                 record_junit=True,
             )
-            st_2b = "COMPLETED" if res_2b.exit_code == 0 else ("TIMEOUT" if res_2b.timed_out else "FAILED")
+            if res_2b.timed_out:
+                st_2b = "TIMEOUT"
+                ec_2b = 124
+            elif res_2b.exit_code != 0 or res_2b.failed_count > 0 or res_2b.error_count > 0:
+                st_2b = "FAILED"
+                ec_2b = res_2b.exit_code if res_2b.exit_code != 0 else 1
+            else:
+                st_2b = "COMPLETED"
+                ec_2b = 0
+            print(f"[Tier 2B] Completed in {res_2b.duration_sec:.2f}s (Status: {st_2b}, Exit code: {ec_2b})")
+            print(f"Passed: {res_2b.passed_count}, Failed: {res_2b.failed_count}, Errors: {res_2b.error_count}, Skipped: {res_2b.skipped_count}\n")
             scorecards.append(
                 TierScorecard(
                     tier_name="Tier 2B: Loopback & IPC",
@@ -396,10 +428,11 @@ class FourTierTestRunner:
                     total_collected=len(nodes_2b),
                     passed=res_2b.passed_count,
                     failed=res_2b.failed_count,
+                    errors=res_2b.error_count,
                     skipped=res_2b.skipped_count,
                     timed_out=1 if res_2b.timed_out else 0,
                     duration_sec=res_2b.duration_sec,
-                    exit_code=res_2b.exit_code,
+                    exit_code=ec_2b,
                     details=res_2b.details,
                 )
             )
@@ -428,7 +461,17 @@ class FourTierTestRunner:
                 run_id="tier2a_async_safe",
                 record_junit=True,
             )
-            st_2a = "COMPLETED" if res_2a.exit_code == 0 else ("TIMEOUT" if res_2a.timed_out else "FAILED")
+            if res_2a.timed_out:
+                st_2a = "TIMEOUT"
+                ec_2a = 124
+            elif res_2a.exit_code != 0 or res_2a.failed_count > 0 or res_2a.error_count > 0:
+                st_2a = "FAILED"
+                ec_2a = res_2a.exit_code if res_2a.exit_code != 0 else 1
+            else:
+                st_2a = "COMPLETED"
+                ec_2a = 0
+            print(f"[Tier 2A] Completed in {res_2a.duration_sec:.2f}s (Status: {st_2a}, Exit code: {ec_2a})")
+            print(f"Passed: {res_2a.passed_count}, Failed: {res_2a.failed_count}, Errors: {res_2a.error_count}, Skipped: {res_2a.skipped_count}\n")
             scorecards.append(
                 TierScorecard(
                     tier_name="Tier 2A: Async Safe",
@@ -436,10 +479,11 @@ class FourTierTestRunner:
                     total_collected=len(nodes_2a),
                     passed=res_2a.passed_count,
                     failed=res_2a.failed_count,
+                    errors=res_2a.error_count,
                     skipped=res_2a.skipped_count,
                     timed_out=1 if res_2a.timed_out else 0,
                     duration_sec=res_2a.duration_sec,
-                    exit_code=res_2a.exit_code,
+                    exit_code=ec_2a,
                     details=res_2a.details,
                 )
             )
@@ -457,7 +501,7 @@ class FourTierTestRunner:
         t3_files = sorted({n.split("::")[0] for n in nodes})
 
         print(f"\n[Tier 3] Launching Windows OS Integration suite ({len(nodes)} tests across {len(t3_files)} files, serial)...")
-        total_passed = total_failed = total_skipped = total_timed_out = 0
+        total_passed = total_failed = total_errors = total_skipped = total_timed_out = 0
         total_duration = 0.0
         max_exit = 0
         all_details = []
@@ -477,6 +521,7 @@ class FourTierTestRunner:
             total_duration += res.duration_sec
             total_passed += res.passed_count
             total_failed += res.failed_count
+            total_errors += res.error_count
             total_skipped += res.skipped_count
             if res.timed_out:
                 total_timed_out += 1
@@ -487,8 +532,10 @@ class FourTierTestRunner:
 
         if total_timed_out > 0:
             status = "TIMEOUT"
-        elif total_failed > 0 or max_exit != 0:
+        elif total_failed > 0 or total_errors > 0 or max_exit != 0:
             status = "FAILED"
+            if max_exit == 0:
+                max_exit = 1
         else:
             status = "COMPLETED"
 
@@ -498,6 +545,7 @@ class FourTierTestRunner:
             total_collected=len(nodes),
             passed=total_passed,
             failed=total_failed,
+            errors=total_errors,
             skipped=total_skipped,
             timed_out=total_timed_out,
             duration_sec=total_duration,
@@ -527,7 +575,7 @@ class FourTierTestRunner:
             )
 
         print(f"\n[Tier 4] Launching Hardware Integration suite ({len(nodes)} tests across {len(t4_files)} files, serial)...")
-        total_passed = total_failed = total_skipped = total_timed_out = 0
+        total_passed = total_failed = total_errors = total_skipped = total_timed_out = 0
         total_duration = 0.0
         max_exit = 0
         all_details = []
@@ -547,6 +595,7 @@ class FourTierTestRunner:
             total_duration += res.duration_sec
             total_passed += res.passed_count
             total_failed += res.failed_count
+            total_errors += res.error_count
             total_skipped += res.skipped_count
             if res.timed_out:
                 total_timed_out += 1
@@ -557,8 +606,10 @@ class FourTierTestRunner:
 
         if total_timed_out > 0:
             status = "TIMEOUT"
-        elif total_failed > 0 or max_exit != 0:
+        elif total_failed > 0 or total_errors > 0 or max_exit != 0:
             status = "FAILED"
+            if max_exit == 0:
+                max_exit = 1
         else:
             status = "COMPLETED"
 
@@ -568,6 +619,7 @@ class FourTierTestRunner:
             total_collected=len(nodes),
             passed=total_passed,
             failed=total_failed,
+            errors=total_errors,
             skipped=total_skipped,
             timed_out=total_timed_out,
             duration_sec=total_duration,
@@ -608,17 +660,74 @@ class FourTierTestRunner:
             record_junit=True,
         )
 
-        status = "COMPLETED" if result.exit_code == 0 else ("TIMEOUT" if result.timed_out else "FAILED")
+        if result.timed_out:
+            status = "TIMEOUT"
+            ec = 124
+        elif result.exit_code != 0 or result.failed_count > 0 or result.error_count > 0:
+            status = "FAILED"
+            ec = result.exit_code if result.exit_code != 0 else 1
+        else:
+            status = "COMPLETED"
+            ec = 0
         return TierScorecard(
             tier_name="Browser Integration",
             status=status,
             total_collected=len(nodes),
             passed=result.passed_count,
             failed=result.failed_count,
+            errors=result.error_count,
             skipped=result.skipped_count,
             timed_out=1 if result.timed_out else 0,
             duration_sec=result.duration_sec,
-            exit_code=result.exit_code,
+            exit_code=ec,
+            details=result.details,
+        )
+
+    def run_security_suite(
+        self,
+        timeout_sec: float = 180.0,
+        verbose: bool = False,
+    ) -> TierScorecard:
+        """Executes the Phase 2 Security Regression Suite (14 canonical suites) under supervisor."""
+        print(f"\n[Security] Launching Phase 2 Security Regression Suite ({len(SECURITY_SUITES)} files)...")
+        pytest_args = ["-v" if verbose else "-q"]
+        result = self.supervisor.run_pytest(
+            targets=SECURITY_SUITES,
+            pytest_args=pytest_args,
+            timeout_sec=timeout_sec,
+            run_id="security_regression_gate",
+            record_junit=True,
+        )
+
+        if result.timed_out:
+            status = "TIMEOUT"
+            ec = 124
+        elif result.exit_code != 0 or result.failed_count > 0 or result.error_count > 0:
+            status = "FAILED"
+            ec = result.exit_code if result.exit_code != 0 else 1
+        else:
+            status = "COMPLETED"
+            ec = 0
+        print(f"[Security] Completed in {result.duration_sec:.2f}s (Status: {status}, Exit code: {ec})")
+        print(f"Passed: {result.passed_count}, Failed: {result.failed_count}, Errors: {result.error_count}, Skipped: {result.skipped_count}\n")
+        if ec != 0:
+            if result.stdout:
+                print(f"[Security Stdout]\n{result.stdout[-1500:]}\n")
+            if result.stderr:
+                print(f"[Security Stderr]\n{result.stderr[-1500:]}\n")
+
+        total = result.passed_count + result.failed_count + result.skipped_count + result.error_count
+        return TierScorecard(
+            tier_name="Security Regression Suite",
+            status=status,
+            total_collected=total,
+            passed=result.passed_count,
+            failed=result.failed_count,
+            errors=result.error_count,
+            skipped=result.skipped_count,
+            timed_out=1 if result.timed_out else 0,
+            duration_sec=result.duration_sec,
+            exit_code=ec,
             details=result.details,
         )
 
@@ -642,11 +751,20 @@ class FourTierTestRunner:
             run_id=f"targeted_{int(time.time())}",
             record_junit=True,
         )
-        print(f"[Targeted] Completed in {result.duration_sec:.2f}s (Status: {result.status}, Exit code: {result.exit_code})")
+        if result.timed_out:
+            status = "TIMEOUT"
+            ec = 124
+        elif result.exit_code != 0 or result.failed_count > 0 or result.error_count > 0:
+            status = "FAILED"
+            ec = result.exit_code if result.exit_code != 0 else 1
+        else:
+            status = "COMPLETED"
+            ec = 0
+        print(f"[Targeted] Completed in {result.duration_sec:.2f}s (Status: {status}, Exit code: {ec})")
         if result.timed_out:
             print(f"[Targeted] Execution TIMED OUT after {timeout_sec:.1f}s.")
-        print(f"Passed: {result.passed_count}, Failed: {result.failed_count}, Skipped: {result.skipped_count}\n")
-        return result.exit_code
+        print(f"Passed: {result.passed_count}, Failed: {result.failed_count}, Errors: {result.error_count}, Skipped: {result.skipped_count}\n")
+        return ec
 
     def run_all(
         self,
@@ -693,8 +811,15 @@ class FourTierTestRunner:
                 json.dump(payload, f, indent=2)
             print(f"\n[Scorecard] Exported disaggregated metrics to {scorecard_json_path}")
 
-        # Exit code logic: fail if any tier failed or timed out
-        has_failure = any(sc.failed > 0 or sc.timed_out > 0 for sc in scorecards)
+        # Exit code logic: fail if any tier failed, timed out, has errors, or non-zero exit
+        has_failure = any(
+            sc.failed > 0
+            or sc.errors > 0
+            or sc.timed_out > 0
+            or sc.status in ("FAILED", "TIMEOUT")
+            or sc.exit_code != 0
+            for sc in scorecards
+        )
         max_exit_code = max(sc.exit_code for sc in scorecards)
         return (1 if has_failure else max_exit_code), scorecards
 
@@ -707,6 +832,7 @@ def main():
     parser.add_argument("--win32", action="store_true", help="Run Tier 3: Windows OS Integration tests")
     parser.add_argument("--hardware", action="store_true", help="Run Tier 4: Hardware Integration tests")
     parser.add_argument("--browser", action="store_true", help="Run Browser Integration tests")
+    parser.add_argument("--security", action="store_true", help="Run Phase 2 Security Regression Suite")
     parser.add_argument("--all", action="store_true", help="Run all tiers in sequence and generate scorecard")
     parser.add_argument("--fast", action="store_true", help="Synonym for --unit (for backward compatibility)")
     parser.add_argument("-w", "--workers", type=int, default=4, help="Worker count for parallel tests (default: 4)")
@@ -752,6 +878,11 @@ def main():
     if args.browser:
         timeout = args.timeout if args.timeout is not None else 60.0
         sc = runner.run_browser_integration(timeout_sec=timeout, verbose=args.verbose)
+        return sc.exit_code
+
+    if args.security:
+        timeout = args.timeout if args.timeout is not None else 180.0
+        sc = runner.run_security_suite(timeout_sec=timeout, verbose=args.verbose)
         return sc.exit_code
 
     # Default / --unit / --fast

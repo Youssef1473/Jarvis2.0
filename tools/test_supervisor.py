@@ -82,8 +82,17 @@ class TestSupervisor:
         workspace_root: Path | None = None,
     ):
         self.workspace_root = workspace_root or WORKSPACE_ROOT
-        self.base_tmp_dir = (self.workspace_root / base_tmp_dir).resolve()
-        self.base_tmp_dir.mkdir(parents=True, exist_ok=True)
+        target_tmp = (self.workspace_root / base_tmp_dir).resolve()
+        try:
+            target_tmp.mkdir(parents=True, exist_ok=True)
+            probe_file = target_tmp / f".probe_{uuid.uuid4().hex[:8]}"
+            probe_file.touch()
+            probe_file.unlink()
+            self.base_tmp_dir = target_tmp
+        except OSError:
+            import tempfile
+            self.base_tmp_dir = Path(tempfile.gettempdir()) / "jarvis_pytest_tmp"
+            self.base_tmp_dir.mkdir(parents=True, exist_ok=True)
         self.default_timeout_sec = default_timeout_sec
 
     def _resolve_pytest_bin(self) -> list[str]:
@@ -357,6 +366,11 @@ class TestSupervisor:
         run_tmp.mkdir(parents=True, exist_ok=True)
 
         junit_xml = run_tmp / "junit.xml" if record_junit else None
+        if junit_xml and junit_xml.is_file():
+            try:
+                junit_xml.unlink()
+            except OSError:
+                pass
 
         cmd = self._resolve_pytest_bin()
         if pytest_args:
@@ -365,8 +379,9 @@ class TestSupervisor:
         if record_junit and junit_xml:
             cmd.append(f"--junitxml={junit_xml}")
 
-        # Unique basetemp to avoid cross-run directory collision
+        # Unique basetemp and cache dir to avoid cross-run directory collision and permission issues
         cmd.append(f"--basetemp={run_tmp / 'tmp'}")
+        cmd.extend(["-o", f"cache_dir={run_tmp / 'cache'}"])
 
         cmd.extend(target_list)
 

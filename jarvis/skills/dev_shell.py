@@ -1393,7 +1393,7 @@ def run_background_task(command: str, task_name: str = "", notify_voice: bool = 
         raise SecurityBoundaryViolation(
             "Action Hash Mismatch: Background command arguments do not match approved action hash."
         )
-    if not active_token.consume(active_token.tool_name, clean_args):
+    if not active_token.consume(active_token.tool_name, expected_hash):
         raise SecurityBoundaryViolation(
             "Single-Use Authorization Violation: Background command grant has already been consumed."
         )
