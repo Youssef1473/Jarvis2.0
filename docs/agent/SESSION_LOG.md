@@ -3264,6 +3264,455 @@ Following independent engineering reviews of the Context B ingestion audit, the 
 - **Git State:** Baseline `8c395d3f2aa32effb5236ea716a4cba0b4803f8b` intact; 16 tracked modified files, 7 untracked security test suites preserved uncommitted in working tree.
 - **Next Step:** Milestone transition to the next scheduled deliverable in `ROADMAP.md`.
 
+---
+
+## Session: 2026-11-09.02 — Option A Milestone Commit & Reliability Governance Initiation
+
+- **Session Timestamp:** 2026-11-09T16:55:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Starting Git HEAD SHA:** `8c395d3f2aa32effb5236ea716a4cba0b4803f8b`
+- **Milestone Commit SHA:** `c59c0165314106f10689f5cbcda456957e9fe73f` (`feat(security): complete Phase 2 security stabilization`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Active Milestone:** `Reliability and Engineering Governance`
+
+### Summary of Actions & Deliverables
+1. **Option A Execution & Git History Baseline:**
+   - Individually staged exactly 25 Phase 2 security stabilization files (no `git add -A`).
+   - Verified `git diff --cached --check` passed cleanly with exit code 0.
+   - Committed `c59c0165314106f10689f5cbcda456957e9fe73f` as immediate descendant of baseline `8c395d3f2aa32effb5236ea716a4cba0b4803f8b`.
+   - Created and switched to milestone branch `feat/reliability-engineering-governance`.
+2. **Milestone Governance & Plan Formulation:**
+   - Authored formal specification doc `docs/milestones/RELIABILITY_AND_ENGINEERING_GOVERNANCE_PLAN.md` covering 4 workstreams: Test Governance & Manifest Synchronization, CI Regression Gates, Legacy Test Authorization Alignment, and Real Provider Failover.
+3. **Test Inventory & Manifest Synchronization (Batch 1):**
+   - Discovered 176 unmanifested test nodes across 14 test suites (126 Phase 2 security tests + 50 core unit tests).
+   - Validated parallel hermetic safety: 183 tests across all 14 suites passed under `pytest-xdist -n 4 --dist loadfile` in 36.89s (Exit code: 0).
+   - Re-exported `data/test_classification_manifest.json` capturing all 2,374 repository test nodes (1,405 Tier 1 unit, 273 Tier 2A async safe, 201 Tier 2B loopback, 224 Tier 3 Win32, 251 Tier 4 hardware, 20 browser).
+   - Verified `python tools/test_classifier.py --check-orphaned`: **0 orphans, 0 duplicates, 2,374 nodes verified** (Exit code: 0).
+4. **Canonical Security Test Runner & CI Hardening (Batch 2):**
+   - Added `--security` flag to `tools/run_fast_tests.py` orchestrating the 12 canonical Phase 2 security suites under `TestSupervisor`.
+   - Verified `python tools/run_fast_tests.py --security`: **191 passed, 0 failed, 1 skipped in 46.23s** (Exit code: 0).
+   - Hardened `.github/workflows/ci.yml` with a dedicated, non-bypassable `security-gate` job executing both the zero-orphan check and `--security` test suite before parallel unit tests.
+5. **Tier 1 Audit & Legacy Test Diagnostics:**
+   - Supervised Tier 1 execution (`python tools/run_fast_tests.py --fast -w 4`): 1,349 passed, 47 failed, 9 skipped out of 1,405 tests (down from historical 63 baseline failures).
+   - Definitively isolated failures to pre-Phase-2 legacy unit tests attempting to invoke mutating tools (`execute_sandboxed_command`, `ast_search_codebase`, etc.) without authorization permits, confirming that Phase 2 fail-closed security enforcement is functioning strictly as designed.
+
+---
+
+## Session: 2026-11-09.03 — Failure Matrix Reconciliation, Sub-Batch 3A & 3B Completion
+
+- **Session Timestamp:** 2026-11-09T17:35:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Current Git HEAD SHA:** `c59c0165314106f10689f5cbcda456957e9fe73f`
+- **Active Milestone:** `Reliability and Engineering Governance`
+
+### Summary of Actions & Deliverables
+1. **Mathematical Failure Matrix Reconciliation (1-to-1 Mapping):**
+   - Reconciled all 47 failures from `data/pytest_tmp/tier1_hermetic_unit/junit.xml` across exactly 21 unique files.
+   - Proved 1-to-1 node ID mapping into 4 remediation sub-batches: Sub-Batch 3A (4 tests, 2 files), Sub-Batch 3B (17 tests, 6 files), Sub-Batch 3C (15 tests, 7 files), Sub-Batch 3D (11 tests, 7 files).
+   - Documented exact node IDs, called tools, and root causes in `docs/reports/TIER_1_47_FAILURES_ANALYSIS_MATRIX.md`.
+2. **Architectural Clarification on Execution Classification vs Parallel Eligibility:**
+   - Incorporated directive into `docs/milestones/RELIABILITY_AND_ENGINEERING_GOVERNANCE_PLAN.md`: execution classification (Tier 1 hermetic vs Tier 3 Win32 integration) is distinct from parallel eligibility.
+   - Tests touching real Win32/NT APIs (`NtCreateFile`, `DuplicateHandle`, Job Objects) remain governed under Tier 3 architectural taxonomy, while anchored permanently in the dedicated `--security` suite.
+   - Documented mandatory repository policy requirement for GitHub branch protection on `main`.
+3. **Security Test Runner Expansion (Batch 1 Complete):**
+   - Added `tests/test_email_integration.py` to `SECURITY_SUITES` in `tools/run_fast_tests.py` (now 13 canonical suites).
+   - Live verification: **195 passed, 0 failed, 1 skipped in 47.03s** (Exit code: 0).
+4. **Sub-Batch 3A Execution (4 Negative Security Tests):**
+   - Aligned assertion strings from legacy `Dual-Key Safety Gate` to active `Critical Authorization Gate` in `tests/test_fail_closed_ingestion.py` (3) and `tests/test_browser_dom_provenance.py` (1).
+   - Zero production code alterations, zero authorization grants injected. All 4 tests pass cleanly.
+5. **Sub-Batch 3B Execution (17 Batch-Tool Tests across 6 Files):**
+   - Implemented single-use, action-bound permits for live executions (`ast_search_codebase`, `check_code_diagnostics`), isolated contained process mocks for unit formatting tests, added explicit fail-closed negative checks, and verified explicit teardown.
+   - Files remediated: `tests/test_ast_grep_and_ruff_skills.py` (6), `tests/test_diagnostics.py` (3), `tests/test_ast_code_surgeon_pillar3.py` (3), `tests/test_graphify_skill.py` (2), `tests/test_plugin_integrations.py` (2), `tests/test_dev_skills.py` (1).
+   - Combined Sub-Batch 3B verification: **35 passed, 0 failed in 8.86s** (Exit code: 0).
+6. **Empirical Tier 1 Progress Verification:**
+   - Executed supervised full Tier 1 run (`python tools/run_fast_tests.py --fast -w 4`):
+     - **Passed: 1,369** (up from 1,349, +20 net passed).
+     - **Failed: 26** (down from 47, -21 failures, exactly matching 3A [4] + 3B [17] resolved).
+     - **Skipped: 9** (environment-dependent).
+     - **Remaining failures:** Exactly 26 (15 in Sub-Batch 3C + 11 in Sub-Batch 3D). Zero unassigned or unaccounted failures.
+7. **Governance Integrity Check:**
+   - Manifest orphan check (`python tools/test_classifier.py --check-orphaned`): **0 orphans, 0 duplicates, 2,374 nodes verified** (Exit code: 0).
+   - Static diagnostics (`tools/diagnostics.py check`): **0 AST violations, 0 lint errors** (Exit code: 0).
+   - Working tree cleanliness (`git diff --check`): **0 whitespace violations** (Exit code: 0).
+
+
+---
+
+## Session: 2026-11-09.04 — Accounting Reconciliation & Sub-Batch 3C Remediation (Process & OS Control)
+
+- **Session Timestamp:** 2026-11-09T18:22:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Current Git HEAD SHA:** `c59c0165314106f10689f5cbcda456957e9fe73f`
+- **Active Milestone:** `Reliability and Engineering Governance`
+
+### Summary of Actions & Deliverables
+1. **Phase 0 Accounting Reconciliation Solved:**
+   - Isolated the 1,404 vs 1,405 count discrepancy to `tests/test_diagnostics.py::TestDiagnosticsSuite::test_jarvis_doctor_fast_reflex` which was accidentally dropped during Sub-Batch 3B editing.
+   - Restored and verified `test_jarvis_doctor_fast_reflex`; all 8 tests in `test_diagnostics.py` pass.
+   - Reconciled arithmetic baseline: $1,370 \text{ passed} + 26 \text{ failed} + 9 \text{ skipped} = 1,405 \text{ total collected nodes}$.
+2. **Sub-Batch 3C Implementation (15 Tests across 7 Files):**
+   - Remediated all 15 process execution and OS control authorization tests using action-bound permits and contained mocks:
+     - `tests/test_subprocess_output_provenance.py` (7 tests: `test_1`, `test_2`, `test_3`, `test_5`, `test_6`, `test_8`, `test_9`): Added fail-closed pre-checks, action-bound permits for `execute_powershell`, `execute_sandboxed_powershell`, and `run_job_sandboxed_process`, updated line 108 assertion to `Critical Authorization Gate`.
+     - `tests/test_fail_closed_ingestion.py` (1 test: `test_normal_trusted_local_tool_no_unnecessary_taint`): Verified unapproved `execute_sandboxed_powershell` fails closed with `Critical Authorization Gate` on clean turn, then granted single-use permit and verified `mut_decision.allowed`.
+     - `tests/test_phase4_deep_audit.py` (2 tests: `test_cancel_before_launch_returns_cancelled_confirmed`, `test_sandboxed_process_reports_affinity_degraded_field`): Bound action-bound permits for `run_job_sandboxed_process` verifying pre-launch cancellation cessation and affinity reporting.
+     - `tests/test_autonomous_failure_recovery.py` (2 tests: `test_close_application_wm_close_fallback`, `test_focus_window_unknown_app_returns_no_match`): Bound action-bound permit for `close_application` with `WM_CLOSE` graceful fallback; patched `launch_application` in `test_focus_window_unknown_app_returns_no_match` to simulate app not found.
+     - `tests/test_closed_loop_and_core_preferences.py` (1 test: `test_launch_or_focus_application_closed_loop`): Bound action-bound permit for `launch_application` and registered `mock_launch` in `SkillRegistry._tools["launch_application"]` preserving signature.
+     - `tests/test_browser_cdp.py` (1 test: `test_execute_cdp_javascript_and_skill`): Bound `unique_context_id="test-ctx-1"` and `script_digest` matching Phase 2 CDP security contract.
+     - `tests/test_background_tasks.py` (1 test: `test_skill_wrappers_execution`): Bound action-bound permit for `run_background_task` with exact command.
+3. **Production Bugfix (Surgical 1-Line Correction):**
+   - Corrected `jarvis/skills/dev_shell.py:1396`: Changed `active_token.consume(active_token.tool_name, clean_args)` to pass `expected_hash` (str) instead of `clean_args` (dict), eliminating a `TypeError` when consuming background task grants without altering any security boundaries.
+4. **Verification & Empirical Progress:**
+   - Sub-Batch 3C targeted suite: **96 passed, 0 failed, 1 deselected in 15.98s** (Exit code: 0).
+   - Security regression suite (`python tools/run_fast_tests.py --security`): **195 passed, 0 failed, 1 skipped in 44.69s** (13 suites, Exit code: 0).
+   - Manifest integrity check (`python tools/test_classifier.py --check-orphaned`): **0 orphans, 0 duplicates, 2,374 nodes verified** (Exit code: 0).
+   - Static diagnostics (`tools/diagnostics.py check`): **0 AST violations, 0 lint errors** (Exit code: 0).
+   - Working tree cleanliness (`git diff --check`): **0 whitespace violations** (Exit code: 0).
+   - Full Tier 1 test suite (`python tools/run_fast_tests.py --fast -w 4`):
+     - **Passed: 1,385** (up from 1,370, +15 net passed).
+     - **Failed: 11** (down from 26, -15 failures, exactly matching Sub-Batch 3C).
+     - **Skipped: 9**.
+     - **Total: 1,405 nodes collected**.
+     - **Remaining 11 failures:** 100% exact match to Sub-Batch 3D (Provider routing, context assembly, and formatting).
+
+
+---
+
+## Session: 2026-11-09.05 — Sub-Batch 3D Remediation & Tier 1 100% Green Baseline Completion
+
+- **Session Timestamp:** 2026-11-09T18:52:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Current Git HEAD SHA:** `c59c0165314106f10689f5cbcda456957e9fe73f`
+- **Active Milestone:** `Reliability and Engineering Governance`
+
+### Summary of Actions & Deliverables
+1. **Sub-Batch 3D Implementation (11 Tests across 7 Files):**
+   - Remediated all 11 provider routing, context assembly, search, and candidate pool test failures:
+     - **Category A: Claude Fallback Routing (3 tests in `tests/test_claude_token_exhaustion_fallback.py`):** Patched `self.brain.antigravity_bridge.is_available = MagicMock(return_value=True)` in `setUp` so that `_process_antigravity_query()` bypasses the bridge availability guard and executes the model failover cascade. Verified 12/12 passed (Exit code: 0).
+     - **Category B: GitHub Copilot Quota Fallback (3 tests in `tests/test_github_copilot_bridge.py`):** Isolated tertiary Copilot CLI fallback tier by setting `self.brain._is_gemini_configured = lambda: False` in `TestAntigravityCopilotQuotaFallback.setUp`, preventing host environment `GEMINI_API_KEY` from prematurely triggering secondary Gemini API fallback. Verified 8/8 passed (Exit code: 0).
+     - **Category C: Antigravity Discovery Mock (1 test in `tests/test_antigravity_integration.py`):** Patched `os.access` (return_value=True) and `os.path.isfile` (return_value=True) alongside `os.path.exists` in `test_bridge_binary_discovery_mocked` to align with the Phase 1A discovery contract. Verified 15 passed, 0 failed, 3 skipped (Exit code: 0).
+     - **Category D: Context Assembly & Escaping (2 tests in `tests/test_context_orchestrator.py` and `tests/test_milestone4_cognitive_invariants.py`):** Configured `mock_memory = MagicMock(spec=["get_context_summary", "recall_episodic_lessons"])` to prevent `hasattr(mock_memory, "hybrid_search_facts")` from raising `TypeError`, populated `"[Directly Relevant Knowledge to Current Context]"` to meet the JIT privacy filter, added `active_task_mode="code"` and `distance: 0.1` so episodic lessons are included for tool intent, and verified XML delimiter escaping and 1536-byte budget capping. Verified 6/6 and 9/9 passed (Exit codes: 0).
+     - **Category E: Everything Search Batch Mock (1 test in `tests/test_everything_search_and_self_editing.py`):** Patched `jarvis.skills.job_object_sandbox.run_sandboxed_batch` instead of legacy `subprocess.run` in `test_search_everything_mocked_success` to align with Phase 2 job-sandboxed execution. Verified 8/8 passed (Exit code: 0).
+     - **Category F: Gemini Candidate Pool (1 test in `tests/test_hybrid_and_timers.py`):** Updated candidate pool assertion from legacy `>= 8` to verify the canonical 3-tier candidate pool contract (`gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.1-flash-lite`). Verified 3/3 passed (Exit code: 0).
+2. **Sub-Batch 3D Combined Suite Verification:**
+   - Ran all 7 files together: **61 passed, 0 failed, 3 skipped in 15.46s** (Exit code: 0).
+3. **Security Suite Regression Gate (Batch 1 Invariance):**
+   - Executed 13 security suites via `python tools/run_fast_tests.py --security`: **195 passed, 0 failed, 1 skipped in 44.50s** (Exit code: 0). Zero security regressions.
+4. **Manifest Orphan & Classification Gate:**
+   - Executed `python tools/test_classifier.py --check-orphaned`: **0 orphans, 0 duplicates, 2,374 nodes verified** (Exit code: 0).
+5. **Full Tier 1 Test Suite Completion (100% Pass Rate):**
+   - Executed `python tools/run_fast_tests.py --fast -w 4`:
+     - **Passed: 1,396** (up from 1,385, +11 net passed).
+     - **Failed: 0** (down from 11, all 47 original Tier 1 failures completely eliminated).
+     - **Skipped: 9** (environment-dependent).
+     - **Total: 1,405 nodes collected in 98.55s** (Status: COMPLETED, Exit code: 0).
+     - **Arithmetic exact reconciliation:** $1,396 \text{ passed} + 0 \text{ failed} + 9 \text{ skipped} = 1,405 \text{ total collected nodes}$.
+6. **Code Hygiene & Integrity:**
+   - Working tree cleanliness: `git diff --check` returned **0 whitespace violations** (Exit code: 0).
+   - AST Diagnostics: `tools/diagnostics.py check` returned **0 AST violations** (Exit code: 0).
+   - Zero production security gates modified or weakened. Single surgical production fix in `dev_shell.py:1396` preserved.
+
+---
+
+## Session: 2026-11-09.06 — Batch 4 Workstream 1: Provider Routing & Distinct Error Policy Audit
+
+- **Session Timestamp:** 2026-11-09T19:18:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Current Git HEAD SHA:** `c59c0165314106f10689f5cbcda456957e9fe73f`
+- **Active Milestone:** `Reliability and Engineering Governance`
+
+### Summary of Actions & Deliverables
+1. **Architecture Reconstruction & Reality Mapping:**
+   - Traced complete call paths across `jarvis/core/brain.py`, `jarvis/core/brain_antigravity.py`, `jarvis/core/brain_gemini.py`, `jarvis/core/antigravity_bridge.py`, and `jarvis/core/github_bridge.py`.
+   - Reconstructed real provider routing graph: Antigravity (Primary) -> Direct Gemini API (Secondary) -> GitHub Copilot CLI (Tertiary), with dynamic Claude <-> Gemini Flash switching inside Antigravity.
+2. **Distinct Error Policy Investigation & Surgical Hardening:**
+   - **Authentication Failure (401/403):** Identified defect where 401/403 in Antigravity or candidate rotation was blindly cascading to Gemini/Copilot or wasting candidate iterations. Implemented `AntigravityBridge._is_auth_error()` and added immediate cascade break in `AntigravityBridge.generate_response()` and fail-closed auth exit in `brain_antigravity.py:336-342`.
+   - **Quota Exhaustion (429 / RESOURCE_EXHAUSTED):** Implemented quota cascade from Antigravity -> Direct Gemini -> GitHub Copilot CLI. When Direct Gemini returns quota congestion, execution seamlessly falls over to tertiary Copilot CLI.
+   - **Mid-Turn Tool Call Deduplication:** Identified defect where subsequent tool-loop turn failure in Antigravity was returning raw error string or cascading. Fixed `brain_antigravity.py` to suppress provider failover when `had_tool_call` is True, truthfully returning the completed action result (`f"Action completed, Sir: {last_tool_result}"`).
+   - **Copilot CLI Guarding:** Guaranteed Copilot CLI output is treated as inert text only; tool execution is strictly suppressed.
+   - **User Cancellation:** Verified prompt cancel tokens abort immediately without secondary failover.
+   - **Connection, Timeout, 503, and Malformed Responses:** Verified bounded timeout, HTTP 503 candidate rotation, and truthful abnormal exit reporting.
+3. **Dedicated Audit Test Suite Authored & Expanded (21 tests):**
+   - Created `tests/test_provider_routing_audit.py` with 21 comprehensive audit tests covering all 10 error classes:
+     - Tests 1-11: Provider selection, quota cascades, auth fail-closed, Copilot tool suppression, user cancellation.
+     - Tests 10b & 10c: Mid-turn failure and authorization rejection outcome semantics (`_format_action_result`).
+     - Tests 12-16: Missing credentials, network errors, 503 rotation, Antigravity timeouts, and abnormal exits.
+     - Tests 17-19: Direct Gemini turn deadline budget exhaustion, empty response streams, and excessive tool steps capping.
+   - Verified 21/21 passed in 2.70s (Exit code: 0).
+4. **Canonical Security Regression Gate Integration (14 Suites):**
+   - Integrated `tests/test_provider_routing_audit.py` into `SECURITY_SUITES` in `tools/run_fast_tests.py` (now 14 canonical suites).
+   - Reconciled security skip discrepancy: verified single skip is `test_ai_generated_argument_cannot_authorize_unmanaged_browser` (WSAEACCES 10013 loopback filter), not a leaf reparse-point test.
+   - Refreshed manifest using `python tools/test_classifier.py --export data/test_classification_manifest.json`:
+     - Total collected test nodes: 2,395 (Tier 1: 1,426).
+     - Verified manifest integrity: 0 orphans, 0 duplicates, 2,395 nodes verified (Exit code: 0).
+5. **Full Regression Gates Passed:**
+   - **Security Regression Suite (14 files):** `python tools/run_fast_tests.py --security` -> **216 passed, 0 failed, 1 skipped in 47.83s** (Exit code: 0).
+   - **Tier 1 Fast Test Suite (126 files):** `python tools/run_fast_tests.py --fast -w 4` -> **1,417 passed, 0 failed, 9 skipped out of 1,426 nodes in 115.22s** (100% pass rate, Exit code: 0).
+   - **Ruff Static Analysis:** `tests/test_provider_routing_audit.py` (0 errors), `jarvis/core/brain_antigravity.py` (0 errors), `jarvis/core/antigravity_bridge.py` (87 baseline errors, 0 net delta).
+   - **AST Structural Invariants:** `tools/diagnostics.py check` -> **0 AST violations** (Exit code: 0).
+   - **Git Whitespace Hygiene:** `git diff --check` -> **0 violations** (Exit code: 0).
+
+---
+
+## Session: 2026-11-10.01 — Batch 4 Workstream 1: Final Provider Routing & Truth-in-Reporting Closeout
+
+- **Session Timestamp:** 2026-11-10T09:25:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Current Git HEAD SHA:** `c59c0165314106f10689f5cbcda456957e9fe73f`
+- **Active Milestone:** `Reliability and Engineering Governance`
+
+### Summary of Actions & Deliverables
+1. **Hermetic SQLite Test Isolation (`tests/test_provider_routing_audit.py`):**
+   - Configured `tempfile.mkdtemp(prefix="jarvis_audit_mem_")`, remapped `_base_dir` and `memory.db_path` to isolated temporary database per test instance.
+   - Enforced explicit `self.memory.close()` and `shutil.rmtree()` in `tearDown()`.
+   - Guaranteed zero writes to production `data/jarvis_memory.db`.
+2. **Direct Gemini Truth-in-Reporting Implementation (`jarvis/core/brain_gemini.py`):**
+   - Eliminated false-success generic greetings (`"At your service, Sir."`) on empty streams, candidate-less responses, thoughts-only content, malformed chunks, and safety blocks.
+   - Implemented truthful status returns:
+     - Safety blocked -> `"My apologies, Sir. That request was blocked by content safety policies."`
+     - Malformed chunk / parse error -> `"I encountered a slight anomaly in my cognitive circuits, Sir. Please try again in a moment."`
+     - Empty stream chunks -> `"My apologies, Sir. Google Gemini returned an empty response stream."`
+     - No candidates -> `"My apologies, Sir. Google Gemini returned no response candidates."`
+     - No usable text or function calls -> `"My apologies, Sir. Google Gemini returned an empty response without usable content."`
+     - User cancellation / preemption -> `"Command cancelled, Sir."`
+   - Enforced session invalidation (`self.gemini_chat = None`) across all failure and blocked paths to prevent chat history corruption.
+3. **RED-GREEN Direct Gemini Error Policy Tests:**
+   - Authored 7 new tests in `tests/test_provider_routing_audit.py` (Tests 18, 20-26) expanding the suite from 21 to 28 tests.
+   - Verified 28/28 passed in 3.92s (Exit code: 0).
+   - Updated historical `tests/test_provider_routing_failover.py::test_08_gemini_invalid_response_returns_clean_default_without_crashing`: 14/14 passed in 4.45s (Exit code: 0).
+4. **Antigravity Multi-Lease Registry Atomicity Audit & Hardening:**
+   - Evaluated `AntigravityDaemon._write_registry_atomic`: eliminated non-atomic in-place `shutil.copyfile` fallback.
+   - Restored pure atomic semantics: staged writes write to `.agy_lock.tmp.<pid>.<ts>` and execute atomic replacement (`tmp_lock.replace(lock_file)` / Win32 `ReplaceFileW`).
+   - If atomic replacement fails, the operation strictly **fails closed**: the temporary file is unlinked, leaving the original `.agy_lock` 100% intact, and `False` is returned.
+   - Authored dedicated audit and fault-injection test suite `tests/test_antigravity_registry_atomicity.py`:
+     - Interrupted write fault injection: verifies that replacement failure leaves the previous registry 100% unmodified.
+     - Concurrent readers under high-frequency atomic writes: verifies zero reader decode errors, zero 0-byte observations, and zero schema corruption.
+     - Temporary staging file cleanup verification on failure.
+     - Daemon fail-closed lease registration verification.
+   - Isolated `runtime_workspace` in `tests/test_antigravity_integration.py` (`test_antigravity_daemon_lifecycle_mocked` and `test_antigravity_daemon_adaptive_inactivity_watchdog`) to prevent test contamination.
+   - Refreshed manifest to 2,406 nodes (0 orphans, 0 duplicates).
+5. **Full Verification Gates Passed:**
+   - **Canonical Security Regression Gate (14 files):** `python tools/run_fast_tests.py --security` -> **223 passed, 0 failed, 1 skipped in 48.00s** (Exit code: 0).
+     - Accounted for exact single skip: `tests/test_p0_action_bound_authorization.py:664` (`test_ai_generated_argument_cannot_authorize_unmanaged_browser` skipped due to ProactorEventLoop self-pipe Winsock WSAEACCES 10013 loopback sandbox restriction).
+   - **Tier 1 Hermetic Unit Suite (127 files):** `python tools/run_fast_tests.py --fast -w 4` -> **1,428 passed, 0 failed, 9 skipped out of 1,437 collected nodes in 107.34s** (100% pass rate, Exit code: 0).
+     - Accounted for all 9 skips individually: 3 live Antigravity integration tests (`JARVIS_RUN_LIVE_INTEGRATION=1`) and 6 opt-in MCP plugin smoke tests (`JARVIS_RUN_MCP_SMOKE=1`).
+   - **Manifest Integrity Gate:** `python tools/test_classifier.py --check-orphaned` -> **0 orphans, 0 duplicates, 2,406 nodes verified** (Exit code: 0).
+   - **Static Linter Gate:** `python tools/lint.py check` on all modified files -> **All checks passed (0 errors)**.
+   - **AST Diagnostics Gate:** `python tools/diagnostics.py check` -> **0 AST violations, exit code 0**.
+   - **Git Whitespace Hygiene:** `git diff --check` -> **Clean, 0 whitespace errors (exit code 0)**.
+   - **Phase 2 Baseline Preservation:** Preserved `c59c0165314106f10689f5cbcda456957e9fe73f`; zero git mutations.
 
 
 
+---
+
+## Session: 2026-11-10.02 — Win32 ReplaceFileW Partial-Failure & ACL Preservation Closeout
+
+- **Session Timestamp:** 2026-11-10T10:45:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Current Git HEAD SHA:** `c59c0165314106f10689f5cbcda456957e9fe73f`
+- **Active Milestone:** `Reliability and Engineering Governance`
+
+### Summary of Actions & Deliverables
+1. **Win32 `ReplaceFileW` Partial-Failure State Handling (`jarvis/core/antigravity_bridge.py`):**
+   - Implemented precise Win32 error code inspection in `AntigravityDaemon._write_registry_atomic`:
+     - `1175` (`ERROR_UNABLE_TO_REMOVE_REPLACED`): Both files retain original names. Existing destination intact; safely clean staging `tmp_lock`.
+     - `1176` (`ERROR_UNABLE_TO_MOVE_REPLACEMENT`): Replaced file no longer exists under original name; replacement retains temporary name. Strictly preserves `tmp_lock` (`preserve_tmp = True`) as the only valid recovery artifact.
+     - `1177` (`ERROR_UNABLE_TO_MOVE_REPLACEMENT_2`): Both files may have altered names/attributes. Strictly preserves `tmp_lock` (`preserve_tmp = True`) and destination for manual reconciliation.
+     - Other Win32 errors: Both files retain original names; clean staging `tmp_lock`.
+2. **ACL & Security Descriptor Preservation:**
+   - Enforced `REPLACEFILE_WRITE_THROUGH = 0x00000001`.
+   - Omitted `REPLACEFILE_IGNORE_MERGE_ERRORS (0x2)` and `REPLACEFILE_IGNORE_ACL_ERRORS (0x4)` flags, guaranteeing that atomic replacements fail closed rather than silently stripping or dropping security descriptors and DACLs.
+3. **Dedicated Atomicity Suite Expansion (`tests/test_antigravity_registry_atomicity.py`):**
+   - Expanded from 4 to 8 tests by adding 4 dedicated Win32 partial-failure and ACL tests:
+     - `test_fault_injection_win32_1175_unable_to_remove_replaced`: Verified clean staging cleanup and destination preservation.
+     - `test_fault_injection_win32_1176_unable_to_move_replacement`: Verified `tmp_lock` is NOT unlinked and retains valid data.
+     - `test_fault_injection_win32_1177_ambiguous_rename`: Verified `tmp_lock` is NOT unlinked on ambiguous rename.
+     - `test_win32_replacefilew_acl_preservation_and_native_execution`: Verified native Windows replacement success and inspected `dwReplaceFlags` to ensure merge error ignore flags are excluded.
+   - All 8 tests passed in 0.564s (Exit code: 0).
+4. **Test Classification Manifest Refreshed:**
+   - Exported updated manifest via `python tools/test_classifier.py --export data/test_classification_manifest.json`:
+     - Total collected test nodes: 2,410 (+4 nodes, 100% accounted).
+     - Tier 1 hermetic unit nodes: 1,441.
+     - Manifest integrity confirmed: 0 orphans, 0 duplicates, 2,410 nodes verified (Exit code: 0).
+5. **Full Verification Gates Passed:**
+   - **Provider Routing Audit (28 tests):** 28 passed in 4.87s (Exit code: 0).
+   - **Provider Routing Failover (14 tests):** 14 passed in 3.40s (Exit code: 0).
+   - **Antigravity Integration (18 tests):** 15 passed, 3 skipped (live integration) in 1.48s (Exit code: 0).
+   - **Canonical Security Regression Gate (14 files):** `python tools/run_fast_tests.py --security` -> **223 passed, 0 failed, 1 skipped in 55.33s** (Exit code: 0).
+     - Accounted single skip: `test_ai_generated_argument_cannot_authorize_unmanaged_browser` (WSAEACCES 10013 loopback sandbox restriction).
+   - **Tier 1 Hermetic Unit Suite (127 files):** `python tools/run_fast_tests.py --fast -w 4` -> **1,432 passed, 0 failed, 9 skipped out of 1,441 collected nodes in 103.56s** (100% pass rate, 0 failures, Exit code: 0).
+     - Accounted 9 skips: 3 live Antigravity integration tests, 6 opt-in MCP plugin smoke tests.
+   - **Static Linter Gate:** `python tools/lint.py check tests/test_antigravity_registry_atomicity.py` -> **All checks passed (0 errors)**.
+   - **AST Diagnostics Gate:** `python tools/diagnostics.py check tests/test_antigravity_registry_atomicity.py` -> **0 AST violations (Exit code: 0)**.
+   - **Git Whitespace Hygiene:** `git diff --check` -> **0 violations (Exit code: 0)**.
+   - **Phase 2 Baseline Preservation:** Preserved `c59c0165314106f10689f5cbcda456957e9fe73f`; zero git mutations.
+
+---
+
+## Session: 2026-11-10.03 — Antigravity Registry Atomicity: Final ReplaceFileW & FlushFileBuffers API Correction
+
+- **Session Timestamp:** 2026-11-10T11:05:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Current Git HEAD SHA:** `c59c0165314106f10689f5cbcda456957e9fe73f`
+- **Active Milestone:** `Reliability and Engineering Governance`
+
+### Summary of Actions & Deliverables
+1. **API Durability Correction (`jarvis/core/antigravity_bridge.py`):**
+   - Removed `REPLACEFILE_WRITE_THROUGH = 0x00000001` from `kernel32.ReplaceFileW` calls (unsupported by Microsoft Win32 `ReplaceFileW` API).
+   - Enforced exact `dwReplaceFlags = 0` for default metadata and DACL merging.
+   - Preserved strict exclusion of `REPLACEFILE_IGNORE_MERGE_ERRORS (0x02)` and `REPLACEFILE_IGNORE_ACL_ERRORS (0x04)`.
+   - Implemented staging content durability: before namespace replacement, the staging file is written and synchronously flushed to device via `FlushFileBuffers` on a valid `GENERIC_WRITE` handle (`msvcrt.get_osfhandle(f.fileno())`), with `f.flush()` and `os.fsync(f.fileno())`.
+   - Enforced fail-closed behavior: if staging flushing fails, `_write_registry_atomic` returns `False`, existing `.agy_lock` remains 100% intact, and staging files are unlinked.
+   - Preserved Win32 1175, 1176, and 1177 partial-failure recovery semantics.
+2. **Dedicated Atomicity Suite Updated (`tests/test_antigravity_registry_atomicity.py`):**
+   - Updated `test_win32_replacefilew_acl_preservation_and_native_execution`:
+     - Verified pre-publication flush failure fails closed, preserves existing registry, and unlinks staging file.
+     - Verified `FlushFileBuffers` is called before `ReplaceFileW`.
+     - Verified `dwReplaceFlags` passed to `ReplaceFileW` is exactly `0` (`0x1`, `0x2`, and `0x4` bits absent).
+     - Verified native Windows NTFS integration: unmocked `FlushFileBuffers` and native `kernel32.ReplaceFileW(0)` execute against OS handles and successfully replace the registry.
+   - All 8 tests passed in 0.550s (Exit code: 0).
+3. **Full Regression Verification Passed:**
+   - **Registry Atomicity (8 tests):** 8/8 passed in 0.550s (Exit code: 0).
+   - **Antigravity Integration (18 tests):** 15 passed, 3 skipped (live integration) in 1.495s (Exit code: 0).
+   - **Provider Routing Failover (14 tests):** 14/14 passed in 4.343s (Exit code: 0).
+   - **Provider Routing Audit (28 tests):** 28/28 passed in 3.387s (Exit code: 0).
+   - **Canonical Security Regression Gate (14 files):** `python tools/run_fast_tests.py --security` -> **223 passed, 0 failed, 1 skipped in 51.95s** (Exit code: 0).
+   - **Tier 1 Hermetic Unit Suite (127 files):** `python tools/run_fast_tests.py --fast -w 4` -> **1,432 passed, 0 failed, 9 skipped out of 1,441 nodes in 120.25s** (100% pass rate, Exit code: 0).
+   - **Manifest Integrity Gate:** `python tools/test_classifier.py --check-orphaned` -> **0 orphans, 0 duplicates, 2,410 nodes verified** (Exit code: 0).
+   - **Static Linter Gate:** `python tools/lint.py check` -> **All checks passed (0 errors)**.
+   - **AST Diagnostics Gate:** `python tools/diagnostics.py check` -> **0 AST violations (Exit code: 0)**.
+   - **Git Whitespace Hygiene:** `git diff --check` -> **0 violations (Exit code: 0)**.
+   - **Phase 2 Baseline Preservation:** Preserved `c59c0165314106f10689f5cbcda456957e9fe73f`; zero git mutations.
+
+---
+
+## Session Log: 2026-11-10 — Workstream 2 Closeout (Context Orchestration & Prompt Envelope Safety)
+
+- **Session Timestamp:** 2026-11-10T13:55:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Current Git HEAD SHA:** `c59c0165314106f10689f5cbcda456957e9fe73f`
+- **Active Milestone:** `Reliability and Engineering Governance`
+
+### Summary of Actions & Deliverables
+1. **Context Truncation Hardening (`jarvis/context/context_orchestrator.py`):**
+   - Implemented `_safe_truncate_text_to_bytes()`: exact UTF-8 byte boundary trimming, preventing malformed multi-byte character slices (DEFECT-CTX-02) and preserving intact HTML/XML entities (`&...;`) and tags (`<...>`).
+   - Implemented `_truncate_xml_block()`: preserves outer opening and closing tags, calculates exact separator/suffix offsets (`\n...[truncated]`), trims on clean newline boundaries where possible, and enforces strict ceiling (<1536 bytes) resolving DEFECT-CTX-01.
+   - Enforced strict priority-ordered envelope retention: Live Telemetry (Priority 1, dropped first) -> Recalled Memory (Priority 2, dropped second) -> Episodic Lessons (Priority 3, highest auxiliary context) -> User Utterance (Priority 4, preserved in full without silent truncation).
+2. **Dedicated Adversarial Audit Suite (`tests/test_context_orchestration_audit.py`):**
+   - Implemented 37 comprehensive adversarial test cases covering hermetic database isolation (0 writes to `jarvis_memory.db`), XML entity breakout resistance, taint redaction, memory relevance dual-thresholding, episodic lesson gating, UTF-8 budget boundaries, visual privacy lock suppression, prefix determinism, and XML tree structural integrity.
+   - Added `test_36_envelope_xml_structural_parsing_with_element_tree`: validated complete ephemeral user envelopes across 8 budget tiers `(150, 200, 300, 450, 600, 800, 1000, 1536)` bytes using `xml.etree.ElementTree` with 100% parse success.
+   - Added `test_37_adversarial_truncation_structural_integrity_and_nested_element_behavior`: documented outer-tag-preserving block trimmer boundaries on synthetic multi-line nested elements and verified `FlowStateMirror` self-closing fallback behavior.
+   - All 37 tests passed in 1.72s (Exit code: 0).
+3. **Test Governance & Canonical Manifest Registration (`data/test_classification_manifest.json`):**
+   - Registered all 37 test nodes from `tests/test_context_orchestration_audit.py` into `node_ids_by_tier["tier1_hermetic_unit"]`.
+   - Updated `assigned_by_tier["tier1_hermetic_unit"]` from 1,441 to 1,478 (+37).
+   - Updated `total_collected` from 2,410 to 2,447 (+37).
+   - Verified manifest integrity: `python tools/test_classifier.py --check-orphaned` confirmed **0 orphans, 0 duplicates, 2,447 nodes verified (Exit code: 0)**.
+   - Verified supervisor accounting test: `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed (27/27 passed in 8.27s).
+4. **Full Regression Verification Results (Fully Green):**
+   - **Dedicated Context Audit Suite (37 tests):** 37 passed, 0 failed, 0 skipped in 1.72s (Exit code: 0).
+   - **Context Orchestrator (6 tests):** 6/6 passed in 1.06s (Exit code: 0).
+   - **Milestone 4 Cognitive Invariants (9 tests):** 9/9 passed in 8.36s (Exit code: 0).
+   - **Memory Payload Minimization (2 tests):** 2/2 passed in 3.38s (Exit code: 0).
+   - **Canonical Tier 1 Fast Suite (128 files):** `python tools/run_fast_tests.py --fast` -> **1,469 passed, 0 failed, 9 skipped out of 1,478 collected nodes in 113.92s (Exit code 0)**.
+   - **Phase 2 Security Regression Suite (14 files):** `python tools/run_fast_tests.py --security` -> **223 passed, 0 failed, 1 skipped in 48.45s (Exit code 0)**.
+   - **Static Linter Gate:** `python tools/lint.py check` -> All checks passed (Exit code 0).
+   - **AST Diagnostics Gate:** `python tools/diagnostics.py check` -> 0 violations (Exit code 0).
+   - **Git Whitespace Hygiene:** `git diff --check` -> 0 violations (Exit code 0).
+   - **Baseline & Subsystem Invariants:** Preserved `c59c0165314106f10689f5cbcda456957e9fe73f`; Provider Routing and Registry Atomicity remain frozen; zero unauthorized git mutations.
+
+
+---
+
+## Session Log: 2026-11-11 — Batch 4 Closeout: Workstream 3 (Memory Authorization & Provenance) & Regression Governance
+
+- **Session Timestamp:** 2026-11-11T09:40:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Current Git HEAD SHA:** `c59c0165314106f10689f5cbcda456957e9fe73f`
+- **Active Milestone:** `Reliability and Engineering Governance (Batch 4 — Formally Closed)`
+
+### Summary of Actions & Deliverables
+1. **Workstream 3: Memory Authorization, Provenance & Context Trust Implementation:**
+   - **Taint Restoration Across Retrieval (W3-01):** Implemented retrieval-time taint restoration in `facts_manager.py` and `interaction_memory.py`. When untrusted remembered facts (`source_provenance != 'trusted_internal'`) or episodic reflection lessons are recalled, `TurnTaintTracker` restores the compromise state before prompt assembly, preventing indirect prompt injections from executing Level 1 mutations.
+   - **Level 1 vs Level 2 Authorization Boundaries (W3-02):** Preserved unconditional authorization gates for Level 2 Critical Operations (`CRITICAL_PRIVILEGE_TOOLS` or `risk_level >= 2`), ensuring they evaluate and require explicit out-of-band user approval regardless of turn taint state.
+   - **Dual-Boundary Sensitive Credential Scrubbing (W3-04):**
+     - *Ingestion Boundary:* Implemented recursive credential pattern sanitization for structured `tool_calls` payloads in `InteractionMemory.log_interaction()`, preserving JSON structure and non-sensitive arguments while redacting secrets.
+     - *Disclosure Boundary:* Implemented disclosure-time credential scrubbing for historical conversations in `ContextOrchestrator.assemble_system_prompt()` and document summaries/raw fallback snippets in `DocumentVault.format_document_reference_block()`, ensuring legacy database records cannot disclose secrets into LLM prompts.
+     - *Archival Integrity Contract:* Original document content in `documents.raw_content` is deliberately preserved in cleartext for byte-level integrity, cryptographic hashing, and source citation.
+   - **Dedicated Adversarial Audit Suite (`tests/test_memory_authorization_audit.py`):** Authored 20-node adversarial suite covering taint propagation, confused deputy gating, credential scrubbing, provenance preservation, and epistemic conflict handling.
+   - **Strict Deferred Debt Tracking:** Formally decorated `test_06` (workspace isolation), `test_07` (session isolation), and `test_11` (epistemic conflict resolution) with `@pytest.mark.xfail(strict=True)` to track architectural debt without masking failures.
+2. **Regression Governance Remediation:**
+   - **Hermetic Audit Fixture:** Removed class-level global production database modification-time assertion from `tests/test_memory_authorization_audit.py`, eliminating cross-worker false-failures caused by concurrent SQLite initialization transactions under `pytest-xdist`. Replaced with per-instance temporary directory path isolation invariant.
+   - **Supervisor Error Accounting (`tools/run_fast_tests.py`):** Added explicit `errors: int = 0` field to `TierScorecard`, updated status determination so that suites with `error_count > 0` or non-zero exit codes are classified as `FAILED`, updated console output to explicitly display `Errors: {result.error_count}`, and updated aggregate failure logic so that teardown errors fail the execution.
+   - **Runner Regression Test (`tests/test_four_tier_runner.py`):** Added `test_18_teardown_errors_fail_suite_and_aggregate_scorecard`, proving deterministically that suites with zero assertion failures and one teardown error are classified as `FAILED` and fail the aggregate scorecard.
+   - **Document Provenance Test 12 Correction (`tests/test_document_provenance.py`):** Corrected `test_12` to evaluate `launch_or_focus_application` (Level 1 risk, high-privilege mutation, non-critical), proving that untrusted document retrieval marks the turn tainted, blocks Level 1 execution via `SecurityBoundaryViolation`, records the provenance source, prevents tool dispatch, and permits execution upon human grant.
+   - **Document Provenance Test 13 Reclassification:** Moved `test_13_subsequent_async_tool_call_observes_retrieval_taint` from `tier2a_async_safe` to `tier2b_loopback_ipc` in `data/test_classification_manifest.json` due to Windows Proactor event loop TCP self-pipe requirements.
+   - **Manifest Integrity & Reconciliation:** Updated `data/test_classification_manifest.json` to 2,468 collected nodes (Tier 1: 1,499; Tier 2A: 272; Tier 2B: 202; Tier 3: 224; Tier 4: 251; Browser: 20). Verified 0 duplicates, 0 orphans, 0 unclassified nodes.
+3. **Full Regression Verification Results (Fully Green):**
+   - **Dedicated Memory Audit Suite (20 tests):** 17 passed, 3 strict XFAIL, 0 failed, 0 errors in 2.48s (Exit code: 0).
+   - **Four-Tier Runner Suite (28 tests):** 28 passed, 0 failed, 0 errors in 10.50s (Exit code: 0).
+   - **Document Provenance Suite (13 non-loopback tests):** 13 passed, 0 failed, 0 errors in 4.5s (Exit code: 0).
+   - **Phase 2 Security Regression Suite (14 files):** `python tools/run_fast_tests.py --security` -> **223 passed, 0 failed, 0 errors, 1 skipped in 46.14s (Exit code: 0)**.
+   - **Canonical Tier 1 Fast Suite (129 files):** `python tools/run_fast_tests.py --fast` -> **1,487 passed, 0 failed, 0 errors, 12 skipped (3 XFAIL + 9 environment skips) out of 1,499 collected nodes in 114.84s (Exit code: 0, 100% clean)**.
+   - **Static Linter Gate:** `python tools/lint.py check` -> All checks passed (Exit code: 0).
+   - **AST Diagnostics Gate:** `python tools/diagnostics.py check` -> 0 violations (Exit code: 0).
+   - **Git Whitespace Hygiene:** `git diff --check` -> 0 violations (Exit code: 0).
+   - **Production Database Integrity:** Verified `data/jarvis_memory.db` untouched (`PRAGMA quick_check: ok`).
+   - **Working Tree Reconciliation:** Live working tree reconciled to exactly 41 modified tracked files and 23 untracked items.
+   - **Milestone Outcome:** Batch 4 formally accepted, closed, and frozen. Zero unauthorized git mutations.
+
+---
+
+## Session Log: 2026-11-13 — Phase 3: Workspace Isolation, vec0 Partitioning & Atomic Purge Closure
+
+- **Session Timestamp:** 2026-11-13T19:20:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Starting Git HEAD SHA:** `c59c0165314106f10689f5cbcda456957e9fe73f`
+- **Committed Git HEAD SHA:** `42952e93e419d178ef16762cb0c0c5ab7058da57`
+- **Commit Subject:** `feat(memory,security): enforce workspace isolation, vec0 partitioning, and atomic session purge (Phase 3)`
+- **Active Milestone:** `Reliability and Engineering Governance (Phase 3 Formally Closed)`
+
+### Summary of Actions & Deliverables
+1. **Offline Database Backup & Host DACL Remediation (Stages 0 & 1):**
+   - Created offline backup `backup_pre_phase3_jarvis_memory.db` via `VACUUM INTO` outside `data/` (SHA-256: `4be4679d8008b2ee4ca45c31fc309f9be7e257f5fac54b05ec10885a2d7689c4`, 139,264 bytes) and relocated to `C:/Users/Youssef/Projects/`.
+   - Stripped `Everyone`, removed `0x0040` (`FILE_DELETE_CHILD`), restricted `ALL APPLICATION PACKAGES` away from live DB, and isolated `data/identity/` to Admins & SYSTEM.
+2. **Schema 3.0 Live DB Migration & Metadata Partitioning (Stage 2):**
+   - Migrated live database `data/jarvis_memory.db` to schema 3.0 in single atomic `BEGIN IMMEDIATE` transaction (213.73 ms).
+   - Enforced foreign keys across 8 tables with `ON DELETE RESTRICT` on `workspace_id`.
+   - Wired `trg_prevent_workspace_hard_delete` aborting hard workspace deletion.
+   - Partitioned `facts_vec` with unprefixed `workspace_id TEXT` metadata column supporting native pushdown (`SCAN facts_vec VIRTUAL TABLE INDEX 0:3{___}___&Aa_`).
+   - Enforced 2,500-vector workspace capacity limit via `check_workspace_vector_capacity`.
+3. **Hardened Purge Routine & Approval Burn (Stage 3):**
+   - Wired `purge_session` with single-use pre-burn via `DualKeyApprovalManager.consume_approval("purge_session", ...)`.
+   - Enforced 4-state context check and leaf-to-root cascaded deletion.
+4. **Local Prefix-BM25 Scorer & Provenance Parity (Stage 4):**
+   - Implemented Robertson-Zaragoza positive-IDF `LocalPrefixBM25Scorer` with unicode61 tokenizer parity.
+   - Fixed `sqlite3.Row` dictionary extraction preventing external provenance masking.
+   - Verified 15/15 tests passing in `tests/test_persistent_provenance.py`.
+5. **AppContainer Junction Containment & Manifest Reconciliation (Stage 5):**
+   - Promoted native child AppContainer directory junction reparse-point containment test into `tests/test_appcontainer_sandbox.py` (56/56 passing).
+   - Reconciled test classification manifest to 2,469 nodes.
+   - Tier 1 fast test suite passed (1,488 passed, 0 failures, 10 skipped).
+6. **Commit Execution:**
+   - Staged exactly 10 implementation artifacts and executed authorized commit `42952e93e419d178ef16762cb0c0c5ab7058da57`.

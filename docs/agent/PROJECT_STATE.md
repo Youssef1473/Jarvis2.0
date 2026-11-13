@@ -14,245 +14,145 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-09T16:25:00+01:00 (CET)
-- **Active Git Branch:** `fix/security-stabilization-p0`
-- **Recorded HEAD Commit SHA:** `8c395d3f2aa32effb5236ea716a4cba0b4803f8b`
-- **HEAD Commit Subject:** `chore: prepare independent engineering audit snapshot`
-- **Milestone State:** **Phase 2 Security Stabilization: ACCEPTED & FROZEN (184/185 verified)**
+- **Validation Timestamp:** 2026-11-13T19:20:00+01:00 (CET)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Recorded HEAD Commit SHA:** `42952e93e419d178ef16762cb0c0c5ab7058da57`
+- **HEAD Commit Subject:** `feat(memory,security): enforce workspace isolation, vec0 partitioning, and atomic session purge (Phase 3)`
+- **Milestone State:** **Phase 3 Implementation & Empirical Verification: COMMITTED & CLOSED (Parent: c59c0165314106f10689f5cbcda456957e9fe73f)**
+- **Active Milestone:** **Reliability and Engineering Governance (Phase 3 Complete — Batch 5)**
 - **Staged Modifications:** `0 files` (clean staging index)
-- **Unstaged Tracked Modifications (17 files):**
-  1. `docs/agent/PROJECT_STATE.md`
-  2. `docs/agent/SESSION_LOG.md`
-  3. `jarvis/core/security_boundaries.py`
-  4. `jarvis/skills/base.py`
-  5. `jarvis/skills/browser_cdp.py`
-  6. `jarvis/skills/dev_shell.py`
-  7. `jarvis/skills/email_manager.py`
-  8. `jarvis/skills/job_object_sandbox.py`
-  9. `jarvis/skills/os_control.py`
-  10. `jarvis/skills/rstrtmgr_lock_surgeon.py`
-  11. `jarvis/skills/system_maintenance.py`
-  12. `tests/test_email_integration.py`
-  13. `tests/test_flagship_features.py`
-  14. `tests/test_job_object_sandbox.py`
-  15. `tests/test_os_skills.py`
-  16. `tests/test_p0_action_bound_authorization.py`
-  17. `tests/test_tool_authorization_integrity.py`
-- **Untracked Security Audit Suites & Artifacts:**
-  1. `docs/agent/PHASE_2_FROZEN_SNAPSHOT_MANIFEST.md`
-  2. `tests/test_filesystem_toctou_security_audit.py`
-  3. `tests/test_gemini_dispatch_security_audit.py`
-  4. `tests/test_p0_security_remediation.py`
-  5. `tests/test_p1_stage6a_execution_security.py`
-  6. `tests/test_p1_stage6b_addendum_security.py`
-  7. `tests/test_p1_stage6b_mutation_security.py`
-  8. `tests/test_p1_stage6c_approval_transparency.py`
-  29. `jarvis/core/win32_affinity.py`
-  30. `jarvis/skills/base.py`
-  31. `jarvis/skills/windows_uia.py`
-  32. `pytest.ini`
-  33. `tests/test_antigravity_integration.py`
-  34. `tests/test_antigravity_job_containment.py`
-  35. `tests/test_audio_streaming_pipeline.py`
-  36. `tests/test_background_tasks.py`
-  37. `tests/test_bettany_voice_and_dsp.py`
-  38. `tests/test_brain_rate_limit_resilience.py`
-  39. `tests/test_browser_agent.py`
-  40. `tests/test_browser_cdp.py`
-  41. `tests/test_browser_network_boundaries.py`
-  42. `tests/test_claude_token_exhaustion_fallback.py`
-  43. `tests/test_closed_loop_and_core_preferences.py`
-  44. `tests/test_cloud_streaming_latency.py`
-  45. `tests/test_cognitive_twin_pipeline.py`
-  46. `tests/test_council_batch_2.py`
-  47. `tests/test_council_batch_3.py`
-  48. `tests/test_curated_prompts_and_epistemic_gate.py`
-  49. `tests/test_diagnostics.py`
-  50. `tests/test_email_integration.py`
-  51. `tests/test_episodic_reflection.py`
-  52. `tests/test_everything_search_and_self_editing.py`
-  53. `tests/test_flagship_features.py`
-  54. `tests/test_gemini_session_reliability.py`
-  55. `tests/test_github_copilot_bridge.py`
-  56. `tests/test_hybrid_and_timers.py`
-  57. `tests/test_interactive_persona.py`
-  58. `tests/test_learned_habits.py`
-  59. `tests/test_lint_tool.py`
-  60. `tests/test_milestone4_cognitive_invariants.py`
-  61. `tests/test_multi_llm_responsiveness.py`
-  62. `tests/test_new_skills.py`
-  63. `tests/test_oneshot_process_containment.py`
-  64. `tests/test_os_skills.py`
-  65. `tests/test_performance_pc_control.py`
-  66. `tests/test_plugin_integrations.py`
-  67. `tests/test_residual_security_boundaries.py`
-  68. `tests/test_self_evolution.py`
-  69. `tests/test_self_healing_and_shutdown_immunity.py`
-  70. `tests/test_shutdown_lifecycle.py`
-  71. `tests/test_voice_control_and_skills.py`
-  72. `tests/test_windows_uia.py`
-  73. `tools/run_fast_tests.py`
-- **Exact Untracked File Inventory (158 files via git status --short --untracked-files=all):
-  1. .agents/rules/audio_threading.md
-  2. .agents/rules/persistence_sqlite.md
-  3. .agents/rules/security_boundaries.md
-  4. .agents/skills/agent-continuity/SKILL.md
-  5. .agents/skills/agent-evaluation/SKILL.md
-  6. data/agy_112_nodes.json
-  7. data/agy_112_pytest_nodes.json
-  8. data/execution_evidence/browser_capability_context_a.json
-  9. data/execution_evidence/browser_capability_context_b.json
-  10. data/execution_evidence/env_probe_context_a.json
-  11. data/execution_evidence/env_probe_context_b.json
-  12. data/execution_evidence/evidence_registry.db
-  13. data/execution_evidence/stage2_group1_playwright_ssrf_junit.xml
-  14. data/execution_evidence/stage2_group2_cdp_guards_junit.xml
-  15. data/execution_evidence/stage2_resolver_regression_junit.xml
-  16. data/execution_evidence/stage2_shim_regression_junit.xml
-  17. data/learning_candidates/LCAND-060af81e3416.json
-  18. data/learning_candidates/LCAND-1572b93ec9cc.json
-  19. data/learning_candidates/LCAND-2d10293ac866.json
-  20. data/learning_candidates/LCAND-480b6011ed6d.json
-  21. data/learning_candidates/LCAND-4ad4da892e64.json
-  22. data/learning_candidates/LCAND-b9b3a4380d77.json
-  23. data/learning_candidates/LCAND-c42c5d28f6ba.json
-  24. data/learning_candidates/candidates_registry.db
-  25. data/learning_events/061fbc2e59c9ceebf1f11d89.json
-  26. data/learning_events/20f3ee2a48c69f4598473840.json
-  27. data/learning_events/78a29e18e72a7f5b67e09fbb.json
-  28. data/learning_events/8a0d872346812c3ab2b8b7f5.json
-  29. data/learning_events/8a327621fede38c2e56d44ab.json
-  30. data/learning_events/b07f38879bb8559e7220307f.json
-  31. data/learning_events/c1d96b1722129b50906a3723.json
-  32. data/learning_events/cb2ec53a55a829b3cadc3fc2.json
-  33. data/regression_scorecard.json
-  34. data/supplemental_test_manifest.json
-  35. data/test_classification_manifest.json
-  36. docs/adr/ADR-001-decision-memo.md
-  37. docs/adr/ADR-001-sqlite-single-writer-wal.md
-  38. docs/adr/ADR-002-win32-job-object-containment.md
-  39. docs/adr/ADR-003-epoch-based-audio-cancellation.md
-  40. docs/adr/ADR-004-dual-key-tool-authorization-turn-taint.md
-  41. docs/adr/ADR-005-win32-hardware-core-affinity.md
-  42. docs/adr/ADR-006-egress-validation-ip-pinning.md
-  43. docs/adr/README.md
-  44. docs/agent/ENG_OS_03A1_PROVENANCE_AUDIT.md
-  45. docs/agent/ENG_OS_03A2_PROVENANCE_REMEDIATION.md
-  46. docs/agent/ENG_OS_03A3_TRUST_AUDIT.md
-  47. docs/agent/ENG_OS_03A_EXECUTION_EVIDENCE.md
-  48. docs/agent/ENG_OS_03B1_CRASH_CONSISTENCY_AUDIT.md
-  49. docs/agent/ENG_OS_03B2R_REMEDIATION.md
-  50. docs/agent/ENG_OS_03B2_AUTHORITATIVE_PERSISTENCE.md
-  51. docs/agent/ENG_OS_03B3_FINAL_ACCEPTANCE_AUDIT.md
-  52. docs/agent/ENG_OS_03B_PERSISTENCE_REMEDIATION.md
-  53. docs/agent/ENG_OS_03C2R_RUNNER_DISPATCH_AUDIT.md
-  54. docs/agent/ENG_OS_03C2_ACCEPTANCE_AUDIT.md
-  55. docs/agent/ENG_OS_03C3R1_FINAL_RECONCILIATION.md
-  56. docs/agent/ENG_OS_03C3R2_FAILURE_TAXONOMY_CLOSURE.md
-  57. docs/agent/ENG_OS_03C3R_CLASSIFICATION_CLOSURE.md
-  58. docs/agent/ENG_OS_03C3_SCORECARD_AUDIT.md
-  59. docs/agent/ENG_OS_03C4R1_FINAL_ACCEPTANCE.md
-  60. docs/agent/ENG_OS_03C4R2_CLOSURE.md
-  61. docs/agent/ENG_OS_03C4R_ACCEPTANCE_AUDIT.md
-  62. docs/agent/ENG_OS_03C4_TEST_HERMETICITY_REPORT.md
-  63. docs/agent/ENG_OS_03C5_TTS_LIFECYCLE_REPORT.md
-  64. docs/agent/ENG_OS_03C6R1_FINAL_HERMETICITY_ACCEPTANCE.md
-  65. docs/agent/ENG_OS_03C6R2_FINAL_EXECUTION_ACCOUNTING.md
-  66. docs/agent/ENG_OS_03C6R_CLASSIFICATION_INTEGRITY_REPORT.md
-  67. docs/agent/ENG_OS_03C6_HERMETIC_TIER1_REPORT.md
-  68. docs/agent/ENG_OS_03C7_PHASE1_EXECUTION_PROFILE.md
-  69. docs/agent/ENG_OS_03C7_PHASE2_RECOVERY_REPORT.md
-  70. docs/agent/ENG_OS_03C8_CONTEXT_B_COMPARISON_REPORT.md
-  71. docs/agent/ENG_OS_03C8_PHASE1_ENVIRONMENT_CAPABILITY_REPORT.md
-  72. docs/agent/ENG_OS_03C8_PHASE2_CONTROLLED_COMPARISON_AND_ARCHITECTURE.md
-  73. docs/agent/ENG_OS_03C8_PHASE3_DUAL_PROFILE_ARCHITECTURE.md
-  74. docs/agent/ENG_OS_03C8_STAGE1R_CDP_SECURITY_AUDIT.md
-  75. docs/agent/ENG_OS_03C8_STAGE1_CHROMIUM_CAPABILITY_REPORT.md
-  76. docs/agent/ENG_OS_03C8_STAGE2R_EXECUTION_PROVENANCE_AUDIT.md
-  77. docs/agent/ENG_OS_03C8_STAGE2_BROWSER_TEST_ENABLEMENT_REPORT.md
-  78. docs/agent/ENG_OS_03C9_PHASE_1P_AUTHORIZATION_SEMANTICS_AUDIT.md
-  79. docs/agent/ENG_OS_03C9_PHASE_1Q_AUTHORIZATION_CLOSURE.md
-  80. docs/agent/ENG_OS_03C9_PHASE_1R_SNAPSHOT_AND_RECOVERY_CLOSURE.md
-  81. docs/agent/ENG_OS_03C9_PHASE_1S_VERIFICATION_TO_EXECUTION_AUDIT.md
-  82. docs/agent/ENG_OS_03C9_PHASE_1T_B1_ISOLATION_ARCHITECTURE.md
-  83. docs/agent/ENG_OS_03C9_PHASE_1U_BOOTSTRAP_LOCK_AND_TRUST_FREEZE.md
-  84. docs/agent/ENG_OS_03C_FEASIBILITY_ASSESSMENT.md
-  85. docs/agent/ENG_OS_03C_IMPLEMENTATION.md
-  86. docs/agent/ENG_OS_03_FEASIBILITY_ASSESSMENT.md
-  87. docs/agent/EVALUATION_GUIDE.md
-  88. docs/agent/JARVIS_2_0_PHASE_1A_STARTUP_HARDENING.md
-  89. docs/agent/JARVIS_2_0_PHASE_1B_PROVIDER_ROUTING.md
-  90. docs/agent/JARVIS_2_0_PHASE_2_ACOUSTIC_LOOP.md
-  91. docs/agent/JARVIS_2_0_PHASE_3_END_TO_END_INTERACTION.md
-  92. docs/agent/JARVIS_2_0_PRODUCT_READINESS_ASSESSMENT.md
-  93. docs/agent/LESSONS.md
-  94. docs/agent/PHASE_3D2A_INDEPENDENT_AUDIT.md
-  95. docs/agent/PHASE_3D2B_REMEDIATION.md
-  96. docs/agent/PHASE_3D2C_INDEPENDENT_ACCEPTANCE_AUDIT.md
-  97. docs/agent/PHASE_3D2D_REMEDIATION.md
-  98. docs/agent/PHASE_3D2E_FINAL_CLOSURE_AUDIT.md
-  99. docs/agent/PHASE_3D2_ASSESSMENT.md
-  100. docs/agent/PROJECT_STATE.md
-  101. docs/agent/SESSION_LOG.md
-  102. docs/architecture/INDEX.md
-  103. docs/architecture/SQLITE_WRITER_OWNERSHIP_DESIGN.md
-  104. docs/handoffs/historical/2026-10-29-PR5-appcontainer-sandbox.md
-  105. docs/milestones/MILESTONES.md
-  106. docs/reports/benchmark_sqlite_wal_results.json
-  107. docs/reports/benchmark_sqlite_wal_serialization.md
-  108. docs/reports/benchmark_sqlite_wal_validation_round.json
-  109. docs/reports/benchmark_sqlite_wal_validation_round.md
-  110. docs/reports/sqlite_writer_ownership_audit.md
-  111. tests/eval/eval_holdout_registry.md
-  112. tests/eval/eval_retrieval_holdout.json
-  113. tests/eval/eval_retrieval_scenarios.json
-  114. tests/eval/eval_scenarios.json
-  115. tests/test_acoustic_loop.py
-  116. tests/test_antigravity_executable_resolver.py
-  117. tests/test_browser_executable_resolver.py
-  118. tests/test_context_router.py
-  119. tests/test_continuity_and_lifecycle.py
-  120. tests/test_execution_evidence.py
-  121. tests/test_failure_collector.py
-  122. tests/test_four_tier_runner.py
-  123. tests/test_hook_integration.py
-  124. tests/test_lesson_candidate.py
-  125. tests/test_memory_payload_minimization.py
-  126. tests/test_persistence_concurrency.py
-  127. tests/test_provider_routing_failover.py
-  128. tests/test_pytest_fallback_shim.py
-  129. tools/benchmark_context_router.py
-  130. tools/benchmark_failure_collector.py
-  131. tools/benchmark_sqlite_wal_serialization.py
-  132. tools/benchmark_sqlite_wal_validation.py
-  133. tools/context_router.py
-  134. tools/continuity_manager.py
-  135. tools/evaluate_lesson_retrieval.py
-  136. tools/execution_evidence.py
-  137. tools/execution_profile_dispatcher.py
-  138. tools/failure_collector.py
-  139. tools/lesson_candidate.py
-  140. tools/probe_audio_devices.py
-  141. tools/probe_chromium_capabilities.py
-  142. tools/probe_environment_capabilities.py
-  143. tools/probe_overlapped_named_pipe.py
-  144. tools/probe_peek_named_pipe.py
-  145. tools/probe_token_info.py
-  146. tools/snapshot_test_supervisor.py
-  147. tools/test_classifier.py
-  148. tools/test_drainer_remediation.py
-  149. tools/test_permit_authorization.py
-  150. tools/test_profile_isolation.py
-  151. tools/test_snapshot_integrity.py
-  152. tools/test_supervisor.py
-  153. tools/test_worker_bootstrap.py
-  154. tools/validate_context_b_gates.py
-  155. tools/verify_acoustic_loop.py
-  156. tools/verify_consecutive_turns.py
-  157. tools/verify_matrix_live.py
-  158. tools/verify_runner_dispatch.py
+- **Unstaged Tracked Modifications (35 files):**
+  1. `.github/workflows/ci.yml` (Added `security-gate` job with merge_group)
+  2. `docs/agent/PROJECT_STATE.md` (Active state snapshot & Phase 3 closure reconciliation)
+  3. `docs/agent/SESSION_LOG.md` (Session history logged & Phase 3 closure record)
+  4. `jarvis/context/context_orchestrator.py` (Workstream 2: UTF-8 context budget truncation; Workstream 3: disclosure-time credential scrubbing of historical interactions)
+  5. `jarvis/core/antigravity_bridge.py` (Added `_is_auth_error`, auth break in candidate cascade, atomic registry write fallback for sandbox)
+  6. `jarvis/core/brain_antigravity.py` (Auth fail-closed, Copilot cascade on Gemini quota, `had_tool_call` failover suppression, `_format_action_result`)
+  7. `jarvis/core/brain_gemini.py` (Truth-in-reporting error policies: eliminated generic greeting fallbacks, added explicit empty stream/candidate/malformed/safety handling)
+  8. `jarvis/skills/dev_shell.py` (Fixed action hash token consumption in run_background_task)
+  9. `tests/test_antigravity_integration.py` (Sub-Batch 3D discovery mock with isfile/access)
+  10. `tests/test_ast_code_surgeon_pillar3.py` (Sub-Batch 3B process mock & rollback)
+  11. `tests/test_ast_grep_and_ruff_skills.py` (Sub-Batch 3B batch permits & mocks)
+  12. `tests/test_autonomous_failure_recovery.py` (Sub-Batch 3C app close & focus recovery permits/mocks)
+  13. `tests/test_background_tasks.py` (Sub-Batch 3C background task action-bound permit)
+  14. `tests/test_browser_cdp.py` (Sub-Batch 3C unique_context_id & script_digest binding)
+  15. `tests/test_browser_dom_provenance.py` (Sub-Batch 3A assertion updates)
+  16. `tests/test_claude_token_exhaustion_fallback.py` (Sub-Batch 3D antigravity bridge availability mock)
+  17. `tests/test_closed_loop_and_core_preferences.py` (Sub-Batch 3C launch_application registry mock & permit)
+  18. `tests/test_context_orchestrator.py` (Sub-Batch 3D memory mock spec and relevant knowledge contract)
+  19. `tests/test_dev_skills.py` (Sub-Batch 3B git status batch mock & negative test)
+  20. `tests/test_diagnostics.py` (Sub-Batch 3B batch mocks, restored dropped test node)
+  21. `tests/test_document_provenance.py` (Workstream 3: corrected test 12 to use launch_or_focus_application Level 1 gate)
+  22. `tests/test_everything_search_and_self_editing.py` (Sub-Batch 3D sandboxed batch execution mock)
+  23. `tests/test_fail_closed_ingestion.py` (Sub-Batches 3A & 3C gate assertions & permits)
+  24. `tests/test_four_tier_runner.py` (Workstream 3: added test 18 verifying teardown errors fail suites & scorecards)
+  25. `tests/test_github_copilot_bridge.py` (Sub-Batch 3D provider tier isolation for Copilot fallback)
+  26. `tests/test_graphify_skill.py` (Sub-Batch 3B batch mocks)
+  27. `tests/test_hybrid_and_timers.py` (Sub-Batch 3D candidate models pool contract)
+  28. `tests/test_milestone4_cognitive_invariants.py` (Sub-Batch 3D context envelope escaping and budget cap)
+  29. `tests/test_p1_stage6b_addendum_security.py` (Hardened timer loop iterations to prevent load flakiness)
+  30. `tests/test_phase4_deep_audit.py` (Sub-Batch 3C job process permits & cancellation)
+  31. `tests/test_plugin_integrations.py` (Sub-Batch 3B modern web mocks)
+  32. `tests/test_provider_routing_failover.py` (Updated test 08 to expect truthful failure notice instead of generic greeting)
+  33. `tests/test_subprocess_output_provenance.py` (Sub-Batch 3C action-bound permits & negative gates)
+  34. `tools/run_fast_tests.py` (Workstream 3: supervisor error accounting, errors in TierScorecard, failure on teardown errors)
+  35. `tools/test_supervisor.py` (Supervisor temp directory fallback, cache_dir isolation, clean JUnit XML handling)
+
+- **Untracked Items (23 items):**
+  1. `.agents/skills/jarvis-repo-orientation/` (Skill directory)
+  2. `.agents/skills/jarvis-safe-implementation/` (Skill directory)
+  3. `.agents/skills/jarvis-security-boundary-review/` (Skill directory)
+  4. `.agents/skills/jarvis-test-governance/` (Skill directory)
+  5. `.agents/skills/jarvis-windows-native-interop/` (Skill directory)
+  6. `data/agy_112_nodes.json` (Diagnostic node map)
+  7. `data/agy_112_pytest_nodes.json` (Remediation test inventory)
+  8. `data/execution_evidence/` (Audit evidence directory)
+  9. `data/learning_candidates/` (Candidate learning records)
+  10. `data/learning_events/` (Persisted learning events)
+  11. `data/regression_scorecard.json` (Test regression metrics)
+  12. `data/supplemental_test_manifest.json` (Auxiliary test map)
+  13. `data/test_classification_manifest.json` (Canonical 2,468 test node classification manifest)
+  14. `docs/milestones/RELIABILITY_AND_ENGINEERING_GOVERNANCE_PLAN.md` (Milestone plan)
+  15. `docs/reports/TIER_1_47_FAILURES_ANALYSIS_MATRIX.md` (47-node analysis matrix)
+  16. `docs/reports/benchmark_sqlite_wal_results.json` (WAL benchmark records)
+  17. `docs/reports/benchmark_sqlite_wal_validation_round.json` (WAL validation records)
+  18. `docs/reports/tier1_47_failures_matrix.json` (Failure taxonomy matrix)
+  19. `scratch/` (Temporary scratch directory)
+  20. `tests/test_antigravity_registry_atomicity.py` (Workstream 1 audit suite: 8 tests)
+  21. `tests/test_context_orchestration_audit.py` (Workstream 2 audit suite: 37 tests)
+  22. `tests/test_memory_authorization_audit.py` (Workstream 3 audit suite: 20 tests)
+  23. `tests/test_provider_routing_audit.py` (Workstream 1 audit suite: 28 tests)
 
 ## 2. Current Engineering Focus
+
+- **Active Milestone:** `Reliability & Engineering Governance` (`feat/reliability-engineering-governance`)
+- **Completed Work:**
+  - **Batch 1 (Governance & Manifest):** Canonical 2,374 test nodes classified in `data/test_classification_manifest.json`; zero orphans verified; `--security` test runner integrated with 13 suites (**195 passed, 0 failed, 1 skipped**).
+  - **Batch 2 (Failure Analysis):** Reconciled all 47 failures into 4 distinct remediation sub-batches with 1-to-1 node ID mapping (`docs/reports/TIER_1_47_FAILURES_ANALYSIS_MATRIX.md`).
+  - **Sub-Batch 3A (Assertion Mismatches):** 4 negative security tests updated to expect `Critical Authorization Gate` (100% passed).
+  - **Sub-Batch 3B (Batch Tool Permits):** 17 positive-path tests remediated across 6 files using single-use action-bound permits and contained batch mocks with negative fail-closed checks (100% passed).
+  - **Sub-Batch 3C (Process & OS Control Permits):** 15 tests remediated across 7 files using action-bound permits, CDP context IDs, and contained mocks with negative fail-closed checks (100% passed).
+  - **Sub-Batch 3D (Provider Routing & Formatting):** 11 tests remediated across 7 files (100% passed).
+  - **Batch 4 — Workstream 1 (Provider Routing & Distinct Error Policy Audit & Final Closeout):**
+    - Traced full call chains across `brain.py`, `brain_antigravity.py`, `brain_gemini.py`, `antigravity_bridge.py`, and `github_bridge.py`.
+    - Hardened fail-closed authentication boundaries: 401/403 in Antigravity or Gemini halts execution immediately without retrying candidates or cascading to other providers.
+    - Implemented quota cascading: Antigravity quota -> Gemini API -> Copilot CLI.
+    - Suppressed provider failover mid-turn: if a tool has already been executed in the turn (`had_tool_call`), errors return the completed action result without provider switching.
+    - Implemented truthful mid-turn tool outcome semantics: `_format_action_result()` distinguishes between successful execution, failed/halted execution, and authorization rejection.
+    - Hermetic SQLite test isolation in `tests/test_provider_routing_audit.py`: isolated temporary database per instance, explicit close in `tearDown()`, zero writes to `data/jarvis_memory.db`.
+    - Truth-in-reporting direct Gemini response handling in `jarvis/core/brain_gemini.py`: completely eliminated false-success generic greetings (`"At your service, Sir."`) on empty stream, empty candidates, malformed responses, thought-only parts, and safety blocks. Session invalidated on all failure/blocked paths to protect against chat history corruption.
+    - Expanded `tests/test_provider_routing_audit.py` to 28 comprehensive audit tests (all 28 passed in 3.92s).
+    - Updated `tests/test_provider_routing_failover.py` test 08 to expect truthful failure notice (14 passed in 4.45s).
+    - Integrated `tests/test_provider_routing_audit.py` into the canonical security regression suite (14 suites).
+    - Refreshed test classification manifest to 2,410 collected test nodes (1,441 in Tier 1 with 0 orphans).
+    - Antigravity multi-lease registry atomicity audit: eliminated non-atomic `shutil.copyfile` fallback, strictly enforced atomic directory entry swap (`tmp_lock.replace` / `ReplaceFileW`) with pure fail-closed behavior preserving prior valid `.agy_lock`.
+    - Hardened Win32 `ReplaceFileW` partial-failure error code handling: code 1175 preserves old file and unlinks staging `tmp_lock`; codes 1176 and 1177 strictly preserve `tmp_lock` (`preserve_tmp = True`) as the sole valid recovery artifact; all other errors clean staging file.
+    - Preserved ACLs and durability separation: staging file is synchronously flushed via `FlushFileBuffers` before replacement; `ReplaceFileW` is called with exact `dwReplaceFlags=0` (removing unsupported `0x1` write-through flag and strictly omitting merge/ACL error ignore flags `0x2` and `0x4`).
+    - Authored and expanded dedicated audit suite `tests/test_antigravity_registry_atomicity.py` to 8 tests covering interrupted write fault-injection, concurrent readers, staging file cleanup, fail-closed registration, Win32 error codes 1175/1176/1177, and ACL preservation (8/8 passed in 0.56s).
+    - Accounted for exact single security skip: `tests/test_p0_action_bound_authorization.py:664` (`test_ai_generated_argument_cannot_authorize_unmanaged_browser` skipped due to ProactorEventLoop self-pipe Winsock WSAEACCES 10013 loopback sandbox restriction).
+    - Verified full 14-suite security regression suite: **223 passed, 0 failed, 1 skipped in 55.33s (Exit code 0)**.
+    - Verified full Tier 1 fast test suite across 4 workers: **1,432 passed, 0 failed, 9 skipped out of 1,441 collected nodes in 103.56s (100% pass rate, 0 failures, Exit code 0)**.
+    - Accounted for all 9 Tier 1 skips individually: 3 live Antigravity integration tests (`JARVIS_RUN_LIVE_INTEGRATION=1`) and 6 opt-in MCP plugin smoke tests (`JARVIS_RUN_MCP_SMOKE=1`).
+    - Verified Ruff static analysis: all modified files clean (0 net-new errors).
+    - AST-Grep structural invariants: 0 violations (Exit code 0).
+    - Git Whitespace Hygiene: `git diff --check` -> 0 violations (Exit code 0).
+    - Preserved Phase 2 baseline commit `c59c0165314106f10689f5cbcda456957e9fe73f` with zero unauthorized git mutations.
+  - **Batch 4 — Workstream 2 (Context Orchestration & Prompt Envelope Safety — FORMALLY ACCEPTED & CLOSED):**
+    - Traced full context assembly across `assemble_system_prompt()` (Stage 1 static) and `build_ephemeral_user_envelope()` (Stage 2 dynamic turn tail).
+    - Resolved DEFECT-CTX-01 (+20B separator/suffix overrun) and DEFECT-CTX-02 (multi-byte UTF-8 character boundary split): implemented `_safe_truncate_text_to_bytes()` and `_truncate_xml_block()` with byte-exact ceiling (<1536 bytes) and entity boundary protection (`&...;`, `<...>`).
+    - Enforced strict context retention priority: Live Telemetry (Priority 1, dropped first) -> Recalled Memory (Priority 2, dropped second) -> Episodic Lessons (Priority 3, highest auxiliary context) -> User Utterance (Priority 4, absolute preservation without silent truncation).
+    - Verified nested XML integrity: empirical trace proved production Stage 2 envelopes (`<episodic_lessons>`, `<jit_recalled_memory>`, `<live_telemetry_envelope>`) contain strictly escaped flat text; validated complete envelopes across 8 budget tiers via `xml.etree.ElementTree` with 100% parse success.
+    - Documented architectural boundary: `_truncate_xml_block()` is an outer-tag-preserving block trimmer for flat escaped envelopes; multi-tier nested envelopes (`<ambient_untrusted_telemetry>`) are assembled in Stage 1 and enforce their own self-closing fallback in `FlowStateMirror`.
+    - Authored dedicated 37-test adversarial audit suite `tests/test_context_orchestration_audit.py` (37/37 passed in 1.72s).
+    - Registered all 37 audit tests in `data/test_classification_manifest.json` under `tier1_hermetic_unit`: updated Tier 1 count from 1,441 to 1,478; updated total collected from 2,410 to 2,447 (0 orphans, 0 duplicates verified).
+    - Verified full Tier 1 Hermetic Unit Suite: **1,469 passed, 0 failed, 9 skipped out of 1,478 collected nodes in 113.92s (Exit code 0, 100% green)**.
+    - Verified Phase 2 Security Regression Suite: **223 passed, 0 failed, 1 skipped in 48.45s (Exit code 0)**.
+    - Verified `test_four_tier_runner.py::test_17_accurate_total_test_accounting`: **27/27 passed in 8.27s (Exit code 0)**.
+  - **Batch 4 — Workstream 3 (Memory Authorization, Provenance & Context Trust — FORMALLY ACCEPTED & CLOSED):**
+    - Traced full memory lifecycle across ingestion, persistence, retrieval, distillation, vector indexing, and model context envelope disclosure.
+    - Implemented retrieval-time taint restoration (W3-01): untrusted remembered facts (`source_provenance != 'trusted_internal'`) and episodic reflection lessons restore `TurnTaintTracker` compromise state before model inference, guaranteeing Level 1 mutation protection against indirect prompt injection across conversational turns.
+    - Preserved independent human approval precedence (W3-02): Level 2 critical operations (`CRITICAL_PRIVILEGE_TOOLS` or `risk_level >= 2`) evaluate unconditional authorization gates prior to taint gates, preventing bypass while ensuring fail-closed containment.
+    - Implemented dual-boundary credential scrubbing (W3-04): recursive sanitization of structured `tool_calls` payloads in `InteractionMemory.log_interaction()` before persistence; real-time scrubbing of historical conversations in `ContextOrchestrator.assemble_system_prompt()`; real-time scrubbing of document summaries and raw-content fallback snippets in `DocumentVault.format_document_reference_block()`.
+    - Preserved archival contract: original cleartext in `documents.raw_content` database column remains 100% byte-for-byte unmutated for cryptographic hash validation and exact citations.
+    - Authored dedicated 20-node adversarial audit suite `tests/test_memory_authorization_audit.py`: 17 passed, 3 strict XFAIL (`test_06` workspace isolation, `test_07` session isolation, `test_11` epistemic conflict resolution).
+    - Preserved three deferred architectural requirements as strict expected failures (`@pytest.mark.xfail(strict=True)`), tracking documented technical debt without false-positive inflation.
+  - **Batch 4 — Regression Governance Remediation (FORMALLY ACCEPTED & CLOSED):**
+    - Removed non-hermetic class-level database modification-time assertion in `tests/test_memory_authorization_audit.py`; replaced with per-instance temporary directory path isolation invariant.
+    - Corrected test runner error accounting in `tools/run_fast_tests.py`: suites reporting teardown or collection errors (`error_count > 0`) or non-zero exit codes are classified as `FAILED`; summary output displays `Errors: {result.error_count}`; `TierScorecard` retains errors in explicit `errors: int` field; aggregate failure decision fails on any error.
+    - Added regression test `tests/test_four_tier_runner.py::test_18_teardown_errors_fail_suite_and_aggregate_scorecard` proving teardown errors fail individual suites and aggregate scorecards.
+    - Corrected `tests/test_document_provenance.py::test_12_level1_mutation_blocked_after_untrusted_retrieval` to evaluate `launch_or_focus_application` (Level 1 risk, high-privilege, non-critical) against Dual-Key taint gates, proving retrieval taint blocks execution without dispatcher invocation.
+    - Reclassified `test_13_subsequent_async_tool_call_observes_retrieval_taint` into `tier2b_loopback_ipc` due to Windows ProactorEventLoop TCP self-pipe requirements.
+    - Updated canonical manifest `data/test_classification_manifest.json` to 2,468 collected nodes (Tier 1: 1,499; Tier 2A: 272; Tier 2B: 202; Tier 3: 224; Tier 4: 251; Browser: 20; 0 orphans, 0 duplicates).
+    - Final Canonical Tier 1 Suite (`tools/run_fast_tests.py --fast`): **1,487 passed, 0 failed, 0 errors, 12 skipped (3 XFAIL + 9 environment skips) out of 1,499 collected nodes in 114.84s (Exit code 0)**.
+    - Final Canonical Security Suite (`tools/run_fast_tests.py --security`): **223 passed, 0 failed, 0 errors, 1 skipped across 14 suites in 46.14s (Exit code 0)**.
+    - Final Four-Tier Runner Suite: **28/28 passed in 10.50s (Exit code 0)**.
+    - Final Document Provenance Suite (non-13 nodes): **13/13 passed in 4.5s (Exit code 0)**.
+- **Batch 4 Status:** **WORKSTREAMS 1, 2, AND 3 FORMALLY ACCEPTED, FROZEN & CLOSED**.
+- **Forward Architecture Backlog for Subsequent Milestones:**
+  1. *Workspace & Multi-Session Isolation (W3-03):* Tracked by executable XFAIL tests `test_06` and `test_07`. Scope: multi-tenant directory boundary enforcement and ephemeral session key memory isolation.
+  2. *Epistemic Authority & Conflict Resolution (W3-05):* Tracked by executable XFAIL test `test_11`. Scope: supersession hierarchies, temporal decay, and contradictory historical fact qualification.
+  3. *Tier 2B Host IPC Loopback Verification:* Execute `test_13` on host Windows OS where loopback TCP sockets (`127.0.0.1`) are permitted.
+  4. *Test Fixture Containment Refinement:* Transition path containment assertions to `Path(resolved_db).is_relative_to(Path(temp_dir))`.
 
 - **Active Milestone:** `JARVIS-2.0 — End-to-End Product Readiness` (Status: **PHASES 1A, 1B, & 2 COMPLETED & VERIFIED; PHASE 3 READY**)
 - **Previous Milestone:** `ENG-OS-03C9: Windows Integration Profile Realization & Supervisor Architecture` (Status: **FORMALLY CLOSED & ACCEPTED UNDER B1 OPERATIONAL TRUST MODEL**)
