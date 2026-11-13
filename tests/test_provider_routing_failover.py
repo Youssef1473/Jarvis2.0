@@ -215,7 +215,7 @@ class TestProviderRoutingFailover(unittest.TestCase):
         brain.shutdown()
 
     def test_08_gemini_invalid_response_returns_clean_default_without_crashing(self):
-        """Scenario 8: Empty or invalid response streams yield clean conversational default without crashing."""
+        """Scenario 8: Empty or invalid response streams report explicit failure without fabricating success."""
         brain = JarvisBrain(
             self.config,
             self.memory,
@@ -227,7 +227,8 @@ class TestProviderRoutingFailover(unittest.TestCase):
         self.mock_chat.send_message_stream.return_value = [empty_chunk]
 
         reply = brain._process_gemini_query("Ping")
-        self.assertEqual(reply, "At your service, Sir.")
+        self.assertNotEqual(reply, "At your service, Sir.")
+        self.assertIn("without usable content", reply.lower())
         brain.shutdown()
 
     def test_09_conversation_context_preserved_across_provider_transition(self):

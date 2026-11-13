@@ -389,21 +389,132 @@ class AntigravityDaemon:
 
     @classmethod
     def _write_registry_atomic(cls, workspace: Path, registry: dict[str, Any], pid_for_tmp: int) -> bool:
-        """Atomically persists registry to data/agy_runtime_workspace/.agy_lock via atomic rename."""
+        """Atomically persists registry to data/agy_runtime_workspace/.agy_lock via atomic rename.
+
+        Enforces strict fail-closed preservation of prior valid state:
+        1. Staging file content is written and synchronously flushed to device via FlushFileBuffers
+           (or os.fsync on POSIX) before attempting namespace publication.
+        2. ReplaceFileW is invoked with dwReplaceFlags=0 for default DACL and metadata merging.
+           REPLACEFILE_WRITE_THROUGH (0x1) is excluded as unsupported by ReplaceFileW.
+           REPLACEFILE_IGNORE_MERGE_ERRORS (0x2) and REPLACEFILE_IGNORE_ACL_ERRORS (0x4) are
+           strictly excluded so replacement fails closed if security descriptors cannot merge.
+        3. On Win32 ReplaceFileW partial-failure states (1176, 1177), temporary replacement
+           artifacts are strictly preserved for recovery rather than unlinked.
+        """
         lock_file = workspace / ".agy_lock"
         tmp_lock = workspace / f".agy_lock.tmp.{pid_for_tmp}.{time.time_ns()}"
+        preserve_tmp = False
         try:
             content = json.dumps(registry, indent=2)
-            tmp_lock.write_text(content, encoding="utf-8")
-            tmp_lock.replace(lock_file)
+            # 1. Write staging content and flush buffers to storage device before namespace replacement
+            with open(tmp_lock, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+                if sys.platform == "win32":
+                    import ctypes
+                    import msvcrt
+                    from ctypes import wintypes
+
+                    h_file = msvcrt.get_osfhandle(f.fileno())
+                    if h_file != -1:
+                        kernel32 = ctypes.windll.kernel32
+                        kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+                        kernel32.FlushFileBuffers.restype = wintypes.BOOL
+                        kernel32.GetLastError.argtypes = []
+                        kernel32.GetLastError.restype = wintypes.DWORD
+                        if not kernel32.FlushFileBuffers(wintypes.HANDLE(h_file)):
+                            win_err = kernel32.GetLastError()
+                            raise OSError(f"FlushFileBuffers failed with Win32 error {win_err}")
+
+            # 2. Atomic namespace replacement
+            try:
+                tmp_lock.replace(lock_file)
+            except OSError as replace_err:
+                # If direct replace failed on Windows and destination exists, attempt Win32 ReplaceFileW
+                if sys.platform == "win32" and lock_file.exists():
+                    import ctypes
+                    from ctypes import wintypes
+
+                    kernel32 = ctypes.windll.kernel32
+                    kernel32.ReplaceFileW.argtypes = [
+                        wintypes.LPCWSTR,
+                        wintypes.LPCWSTR,
+                        wintypes.LPCWSTR,
+                        wintypes.DWORD,
+                        wintypes.LPVOID,
+                        wintypes.LPVOID,
+                    ]
+                    kernel32.ReplaceFileW.restype = wintypes.BOOL
+                    kernel32.GetLastError.argtypes = []
+                    kernel32.GetLastError.restype = wintypes.DWORD
+
+                    # Strictly preserve ACLs and metadata:
+                    # - dwReplaceFlags=0: standard replacement with default metadata/DACL merging.
+                    # - REPLACEFILE_WRITE_THROUGH (0x1) is NOT supported by ReplaceFileW per Win32 docs.
+                    # - REPLACEFILE_IGNORE_MERGE_ERRORS (0x2) and REPLACEFILE_IGNORE_ACL_ERRORS (0x4)
+                    #   are strictly EXCLUDED so replacement fails closed if security descriptors cannot be merged.
+                    res = kernel32.ReplaceFileW(
+                        str(lock_file.resolve()),
+                        str(tmp_lock.resolve()),
+                        None,
+                        wintypes.DWORD(0),
+                        None,
+                        None,
+                    )
+                    if not res:
+                        win_err = kernel32.GetLastError()
+                        ERROR_UNABLE_TO_REMOVE_REPLACED = 1175
+                        ERROR_UNABLE_TO_MOVE_REPLACEMENT = 1176
+                        ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 = 1177
+
+                        if win_err == ERROR_UNABLE_TO_MOVE_REPLACEMENT:
+                            # 1176: The replaced file no longer exists under its original name,
+                            # but the replacement file still retains its temporary name.
+                            # MUST NOT delete tmp_lock: it holds the only valid copy!
+                            preserve_tmp = True
+                            logger.error(
+                                "Win32 ReplaceFileW failed with ERROR_UNABLE_TO_MOVE_REPLACEMENT (1176). "
+                                "Destination may no longer exist; preserving temporary replacement artifact: %s",
+                                tmp_lock,
+                            )
+                        elif win_err == ERROR_UNABLE_TO_MOVE_REPLACEMENT_2:
+                            # 1177: Both replacement and replaced files may have changed names/attributes.
+                            # MUST NOT delete tmp_lock: ambiguous state requires manual reconciliation.
+                            preserve_tmp = True
+                            logger.error(
+                                "Win32 ReplaceFileW failed with ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 (1177). "
+                                "Ambiguous filesystem state; preserving all recovery artifacts: %s and %s",
+                                lock_file,
+                                tmp_lock,
+                            )
+                        elif win_err == ERROR_UNABLE_TO_REMOVE_REPLACED:
+                            # 1175: Both files retain their original names. Existing destination intact.
+                            preserve_tmp = False
+                            logger.warning(
+                                "Win32 ReplaceFileW failed with ERROR_UNABLE_TO_REMOVE_REPLACED (1175). "
+                                "Existing registry preserved intact; cleaning staging tmp file.",
+                            )
+                        else:
+                            # Other errors: Both files retain their original names.
+                            preserve_tmp = False
+                            logger.debug(
+                                "Win32 ReplaceFileW failed (win_err=%d, replace_err=%s); cleaning staging tmp file.",
+                                win_err,
+                                replace_err,
+                            )
+                        raise replace_err
+                else:
+                    raise replace_err
             return True
         except Exception as e:
             logger.debug("Failed atomic registry write: %s", e)
-            try:
-                if tmp_lock.exists():
-                    tmp_lock.unlink(missing_ok=True)
-            except Exception:
-                pass
+            if not preserve_tmp:
+                try:
+                    if tmp_lock.exists():
+                        tmp_lock.unlink(missing_ok=True)
+                except Exception:
+                    pass
             return False
 
     def _register_lease(self, pid: int, model: str) -> bool:
@@ -1396,6 +1507,15 @@ class AntigravityBridge:
         logger.info("Gemini 3.8 Flash quota exhaustion status manually cleared.")
 
     @staticmethod
+    def _is_auth_error(error_msg: str) -> bool:
+        """Checks if an error string indicates permanent authentication failure (401, 403, etc.)."""
+        err = (error_msg or "").lower()
+        return any(k in err for k in (
+            "401", "403", "unauthorized", "unauthenticated",
+            "permission_denied", "forbidden", "authentication required", "api_key_invalid",
+        ))
+
+    @staticmethod
     def _is_token_exhaustion_error(error_msg: str) -> bool:
         """Checks if an error string indicates token exhaustion, rate limit, quota, credit issues, or CLI code 3."""
         err = (error_msg or "").lower()
@@ -1889,6 +2009,10 @@ class AntigravityBridge:
             err_text = " ".join(
                 str(res.get(field) or "") for field in ("response", "error")
             )
+            if self._is_auth_error(err_text):
+                logger.error("Antigravity authentication failure on model '%s': %s. Aborting candidate cascade.", attempt_model, err_text[:80])
+                break
+
             quota_error_seen = quota_error_seen or self._is_token_exhaustion_error(err_text)
 
             # If Claude failed due to token or quota limits, mark Claude as exhausted and prioritize Flash High/Medium

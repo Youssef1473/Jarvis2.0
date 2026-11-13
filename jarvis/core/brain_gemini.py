@@ -170,24 +170,54 @@ class GeminiProviderMixin:
                 text_buffer = ""
                 full_content_chunks = []
                 function_calls_accumulated = []
+                had_stream_chunks = False
+                has_candidates = False
+                safety_blocked = False
+                is_malformed = False
 
                 # Stream tokens directly to Kokoro-82M speech callback in real time
                 response_stream = self.gemini_chat.send_message_stream(contents, config=call_config)
                 for chunk in response_stream:
-                    if getattr(chunk, "function_calls", None):
-                        function_calls_accumulated.extend(chunk.function_calls)
-                    chunk_text = ""
+                    had_stream_chunks = True
                     try:
-                        if hasattr(chunk, "candidates") and chunk.candidates:
-                            cand = chunk.candidates[0]
-                            if hasattr(cand, "content") and cand.content and cand.content.parts:
+                        prompt_feedback = getattr(chunk, "prompt_feedback", None)
+                        if prompt_feedback and not hasattr(prompt_feedback, "_mock_return_value"):
+                            block_reason = getattr(prompt_feedback, "block_reason", None)
+                            if block_reason and not hasattr(block_reason, "_mock_return_value"):
+                                b_name = str(getattr(block_reason, "name", block_reason)).upper()
+                                if b_name in ("SAFETY", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT"):
+                                    safety_blocked = True
+
+                        fn_calls = getattr(chunk, "function_calls", None)
+                        if fn_calls and isinstance(fn_calls, (list, tuple)):
+                            function_calls_accumulated.extend(fn_calls)
+
+                        chunk_text = ""
+                        candidates = getattr(chunk, "candidates", None)
+                        if candidates and isinstance(candidates, (list, tuple)) and len(candidates) > 0:
+                            has_candidates = True
+                            cand = candidates[0]
+                            finish_reason = getattr(cand, "finish_reason", None)
+                            if finish_reason and not hasattr(finish_reason, "_mock_return_value"):
+                                f_name = str(getattr(finish_reason, "name", finish_reason)).upper()
+                                if f_name in ("SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"):
+                                    safety_blocked = True
+                            content = getattr(cand, "content", None)
+                            parts = getattr(content, "parts", None) if content else None
+                            if parts and isinstance(parts, (list, tuple)):
                                 text_parts = [
-                                    p.text for p in cand.content.parts
-                                    if getattr(p, "text", None) and not getattr(p, "thought", False)
+                                    str(p.text) for p in parts
+                                    if getattr(p, "text", None) and isinstance(p.text, str) and not getattr(p, "thought", False)
                                 ]
                                 chunk_text = "".join(text_parts)
-                    except Exception:  # noqa: BLE001
-                        chunk_text = getattr(chunk, "text", "") or ""
+                        else:
+                            fallback_text = getattr(chunk, "text", None)
+                            if isinstance(fallback_text, str) and fallback_text:
+                                chunk_text = fallback_text
+                    except (AttributeError, TypeError, ValueError, KeyError, IndexError) as chunk_err:
+                        logger.warning("Malformed Gemini chunk encountered: %s", chunk_err)
+                        is_malformed = True
+                        chunk_text = ""
 
                     if chunk_text:
                         full_content_chunks.append(chunk_text)
@@ -209,9 +239,16 @@ class GeminiProviderMixin:
                         tool_name = call.name
                         tool_args = dict(call.args) if call.args else {}
                         logger.info(f"Tool call: {tool_name}({tool_args})")
-                        tool_result, _ = self._dispatch_tool_pipeline(
-                            tool_name, tool_args, step_index=gemini_tool_iterations, sentence_callback=sentence_callback
-                        )
+                        try:
+                            tool_result, _ = self._dispatch_tool_pipeline(
+                                tool_name, tool_args, step_index=gemini_tool_iterations, sentence_callback=sentence_callback
+                            )
+                        except RuntimeError as err:
+                            if "preempted" in str(err).lower() or "cancelled" in str(err).lower():
+                                logger.info("Gemini tool execution aborted by user interrupt: %s", err)
+                                self.gemini_chat = None
+                                return "Command cancelled, Sir."
+                            raise
                         logger.info(f"Tool result: {tool_result}")
                         call_id = getattr(call, "id", None)
                         if call_id:
@@ -231,20 +268,46 @@ class GeminiProviderMixin:
                     function_calls_accumulated = []
                     followup_stream = self.gemini_chat.send_message_stream(tool_responses, config=call_config)
                     for chunk in followup_stream:
-                        if getattr(chunk, "function_calls", None):
-                            function_calls_accumulated.extend(chunk.function_calls)
-                        chunk_text = ""
+                        had_stream_chunks = True
                         try:
-                            if hasattr(chunk, "candidates") and chunk.candidates:
-                                cand = chunk.candidates[0]
-                                if hasattr(cand, "content") and cand.content and cand.content.parts:
+                            prompt_feedback = getattr(chunk, "prompt_feedback", None)
+                            if prompt_feedback and not hasattr(prompt_feedback, "_mock_return_value"):
+                                block_reason = getattr(prompt_feedback, "block_reason", None)
+                                if block_reason and not hasattr(block_reason, "_mock_return_value"):
+                                    b_name = str(getattr(block_reason, "name", block_reason)).upper()
+                                    if b_name in ("SAFETY", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT"):
+                                        safety_blocked = True
+
+                            fn_calls = getattr(chunk, "function_calls", None)
+                            if fn_calls and isinstance(fn_calls, (list, tuple)):
+                                function_calls_accumulated.extend(fn_calls)
+
+                            chunk_text = ""
+                            candidates = getattr(chunk, "candidates", None)
+                            if candidates and isinstance(candidates, (list, tuple)) and len(candidates) > 0:
+                                has_candidates = True
+                                cand = candidates[0]
+                                finish_reason = getattr(cand, "finish_reason", None)
+                                if finish_reason and not hasattr(finish_reason, "_mock_return_value"):
+                                    f_name = str(getattr(finish_reason, "name", finish_reason)).upper()
+                                    if f_name in ("SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"):
+                                        safety_blocked = True
+                                content = getattr(cand, "content", None)
+                                parts = getattr(content, "parts", None) if content else None
+                                if parts and isinstance(parts, (list, tuple)):
                                     text_parts = [
-                                        p.text for p in cand.content.parts
-                                        if getattr(p, "text", None) and not getattr(p, "thought", False)
+                                        str(p.text) for p in parts
+                                        if getattr(p, "text", None) and isinstance(p.text, str) and not getattr(p, "thought", False)
                                     ]
                                     chunk_text = "".join(text_parts)
-                        except Exception:  # noqa: BLE001
-                            chunk_text = getattr(chunk, "text", "") or ""
+                            else:
+                                fallback_text = getattr(chunk, "text", None)
+                                if isinstance(fallback_text, str) and fallback_text:
+                                    chunk_text = fallback_text
+                        except (AttributeError, TypeError, ValueError, KeyError, IndexError) as chunk_err:
+                            logger.warning("Malformed Gemini followup chunk encountered: %s", chunk_err)
+                            is_malformed = True
+                            chunk_text = ""
 
                         if chunk_text:
                             full_content_chunks.append(chunk_text)
@@ -263,6 +326,7 @@ class GeminiProviderMixin:
                     if clean_clause:
                         sentence_callback(clean_clause)
 
+                is_failed_or_blocked = False
                 if function_calls_accumulated:
                     reply_text = (
                         "I reached the limit for tool steps on this request, "
@@ -271,14 +335,45 @@ class GeminiProviderMixin:
                     # Unresolved function calls leave the SDK chat history ending in a model function_call.
                     # Invalidate session so the next request reconstructs a clean chat from memory.
                     self.gemini_chat = None
+                elif full_content_chunks:
+                    reply_text = "".join(full_content_chunks).strip()
+                elif safety_blocked:
+                    logger.warning("Gemini response was blocked by content safety policies.")
+                    reply_text = "My apologies, Sir. That request was blocked by content safety policies."
+                    self.gemini_chat = None
+                    is_failed_or_blocked = True
+                elif is_malformed:
+                    logger.error("Gemini returned a malformed response.")
+                    reply_text = "I encountered a slight anomaly in my cognitive circuits, Sir. Please try again in a moment."
+                    self.gemini_chat = None
+                    is_failed_or_blocked = True
+                elif not had_stream_chunks:
+                    logger.error("Gemini returned an empty response stream without chunks.")
+                    reply_text = "My apologies, Sir. Google Gemini returned an empty response stream."
+                    self.gemini_chat = None
+                    is_failed_or_blocked = True
+                elif not has_candidates:
+                    logger.error("Gemini returned a response without candidates.")
+                    reply_text = "My apologies, Sir. Google Gemini returned no response candidates."
+                    self.gemini_chat = None
+                    is_failed_or_blocked = True
                 else:
-                    reply_text = "".join(full_content_chunks).strip() if full_content_chunks else "At your service, Sir."
+                    logger.error("Gemini response contained candidates but no usable text or function calls.")
+                    reply_text = "My apologies, Sir. Google Gemini returned an empty response without usable content."
+                    self.gemini_chat = None
+                    is_failed_or_blocked = True
+
+                if sentence_callback and is_failed_or_blocked and reply_text and not text_buffer.strip():
+                    clean_s = self._clean_speech_clause(reply_text)
+                    if clean_s:
+                        sentence_callback(clean_s)
 
                 try:
                     self.memory.log_interaction(user_text, reply_text)
-                    self.memory.auto_learn_from_interaction(
-                        user_text, reply_text, provider=self.provider, extractor_fn=self._extract_memory_insights
-                    )
+                    if not is_failed_or_blocked:
+                        self.memory.auto_learn_from_interaction(
+                            user_text, reply_text, provider=self.provider, extractor_fn=self._extract_memory_insights
+                        )
                 except Exception as log_err:  # noqa: BLE001
                     logger.debug("Gemini interaction logging notice: %s", log_err)
 
@@ -298,6 +393,11 @@ class GeminiProviderMixin:
                 err_str = str(e)
                 err_lower = err_str.lower()
                 self._gemini_last_error = err_str[:120]
+
+                # User cancellation or preemption
+                if isinstance(e, RuntimeError) and any(k in err_lower for k in ("preempted", "cancelled")):
+                    logger.info("Gemini turn aborted by user interrupt: %s", e)
+                    return "Command cancelled, Sir."
 
                 # 1. Authentication failure (permanent, do not retry other models)
                 if any(k in err_lower for k in ("401", "403", "api_key_invalid", "unauthenticated", "permission_denied", "forbidden")):

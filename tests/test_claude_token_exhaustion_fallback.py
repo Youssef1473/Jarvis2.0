@@ -23,6 +23,7 @@ class TestClaudeTokenExhaustionFallback(unittest.TestCase):
         self.memory = MemoryManager(self.config)
         self.safety = SafetyGate(self.config)
         self.brain = JarvisBrain(self.config, self.memory, self.safety, antigravity_resolver=lambda: None)
+        self.brain.antigravity_bridge.is_available = MagicMock(return_value=True)
 
     def test_exhaustion_state_lifecycle(self):
         """Verifies initial state, marking exhausted, and resetting exhaustion."""

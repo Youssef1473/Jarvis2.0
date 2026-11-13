@@ -80,6 +80,7 @@ class TestAntigravityCopilotQuotaFallback(unittest.TestCase):
         self.config.setdefault("llm", {})["antigravity_resolver"] = lambda: None
         self.memory = MemoryManager(self.config)
         self.brain = JarvisBrain(self.config, self.memory, SafetyGate(self.config), antigravity_resolver=lambda: None)
+        self.brain._is_gemini_configured = lambda: False
         self.brain.active_tool_names = frozenset()
         self.brain.antigravity_auto_tiering = False
         self.brain.antigravity_model = "gemini-3.8-flash-low"

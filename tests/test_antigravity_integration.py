@@ -58,7 +58,9 @@ class TestAntigravityIntegration(unittest.TestCase):
         clean_cfg = {k: v for k, v in self.config.items() if k != "llm"}
         clean_cfg["llm"] = {k: v for k, v in self.config.get("llm", {}).items() if k not in {"antigravity_resolver", "antigravity_executable_resolver"}}
         with patch.object(AntigravityBridge, "_find_agy_executable", return_value="mock_agy.exe"), \
-             patch("os.path.exists", return_value=True):
+             patch("os.path.exists", return_value=True), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True):
             mock_bridge = AntigravityBridge(clean_cfg)
             self.assertTrue(mock_bridge.is_available())
         with patch.object(AntigravityBridge, "_find_agy_executable", return_value=None):
@@ -340,7 +342,9 @@ class TestAntigravityIntegration(unittest.TestCase):
 
     def test_antigravity_daemon_lifecycle_mocked(self):
         """Verifies AntigravityDaemon spawns with stream-json flags and terminates cleanly."""
-        from unittest.mock import patch, MagicMock
+        import tempfile
+        from unittest.mock import MagicMock, patch
+
         from jarvis.core.antigravity_bridge import AntigravityDaemon
 
         daemon = AntigravityDaemon(
@@ -348,9 +352,13 @@ class TestAntigravityIntegration(unittest.TestCase):
             default_model="gemini-3.8-flash-low",
             default_effort="low"
         )
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        daemon.runtime_workspace = Path(temp_dir.name)
         self.assertFalse(daemon.is_alive())
 
         mock_proc = MagicMock()
+        mock_proc.pid = 4242
         mock_proc.poll.return_value = None
         mock_proc.stdin = MagicMock()
         mock_proc.stdout = MagicMock()
@@ -364,8 +372,9 @@ class TestAntigravityIntegration(unittest.TestCase):
             ""
         ]
 
+        real_exists = os.path.exists
         with patch("subprocess.Popen", return_value=mock_proc), \
-             patch("os.path.exists", return_value=True), \
+             patch("os.path.exists", side_effect=lambda p: True if "mock_agy" in str(p) else real_exists(p)), \
              patch("jarvis.skills.job_object_sandbox.create_process_job_object", return_value=4242), \
              patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=True), \
              patch("jarvis.skills.job_object_sandbox.resume_process", return_value=True), \
@@ -413,7 +422,9 @@ class TestAntigravityIntegration(unittest.TestCase):
 
     def test_antigravity_daemon_adaptive_inactivity_watchdog(self):
         """Verifies adaptive inactivity watchdog handles inactivity and terminates stalled worker."""
+        import tempfile
         import time
+
         from jarvis.core.antigravity_bridge import AntigravityDaemon
 
         daemon = AntigravityDaemon(
@@ -421,7 +432,11 @@ class TestAntigravityIntegration(unittest.TestCase):
             default_model="gemini-3.8-flash-low",
             default_effort="low"
         )
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        daemon.runtime_workspace = Path(temp_dir.name)
         mock_proc = MagicMock()
+        mock_proc.pid = 4242
         mock_proc.poll.return_value = None
         mock_proc.stdin = MagicMock()
         mock_proc.stdout = MagicMock()
@@ -436,8 +451,9 @@ class TestAntigravityIntegration(unittest.TestCase):
             stalled_readline(),
         ]
 
+        real_exists = os.path.exists
         with patch("subprocess.Popen", return_value=mock_proc), \
-             patch("os.path.exists", return_value=True), \
+             patch("os.path.exists", side_effect=lambda p: True if "mock_agy" in str(p) else real_exists(p)), \
              patch("jarvis.skills.job_object_sandbox.create_process_job_object", return_value=4242), \
              patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=True), \
              patch("jarvis.skills.job_object_sandbox.resume_process", return_value=True), \
