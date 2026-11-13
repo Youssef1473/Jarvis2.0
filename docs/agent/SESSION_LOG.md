@@ -3716,3 +3716,44 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - Tier 1 fast test suite passed (1,488 passed, 0 failures, 10 skipped).
 6. **Commit Execution:**
    - Staged exactly 10 implementation artifacts and executed authorized commit `42952e93e419d178ef16762cb0c0c5ab7058da57`.
+
+---
+
+## Session Log: 2026-11-14 — Phase 4: Runtime Workspace Propagation & Consolidator Tenant Isolation Closure
+
+- **Session Timestamp:** 2026-11-14T00:35:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Starting Git HEAD SHA:** `bfae7ccfe983b766e272d4fa679b8f86cb75d92e` (Phase 3 governance seal; Phase 3 code: `42952e93e419d178ef16762cb0c0c5ab7058da57`)
+- **Committed Git HEAD SHA:** `93ecbf587d60f4e48b598ec920b72ebfbeab0636`
+- **Commit Subject:** `feat(memory,runtime,ui): enforce end-to-end workspace propagation and consolidator isolation (Phase 4)`
+- **Active Milestone:** `Reliability and Engineering Governance (Phase 4 Formally Closed)`
+
+### Summary of Actions & Deliverables
+1. **SleepPhaseConsolidator Multi-Tenant Loop & Isolation (Stage 1):**
+   - Wired multi-tenant consolidation loop in `SleepPhaseConsolidator.run_sleep_consolidation`: when invoked without an explicit `workspace_id`, dynamically retrieves active workspaces (`SELECT workspace_id FROM workspaces WHERE is_archived = 0 AND workspace_id != 'unscoped'`) and consolidates each tenant independently. Fails closed on `"unscoped"` or empty string with `ValueError`.
+   - Constrained `discover_redundant_facts_readonly` to `WHERE workspace_id = ? AND scope = 'workspace'` relational candidates and pushdown filtered `facts_vec` KNN `MATCH` queries (`WHERE v.workspace_id = ? AND v.embedding MATCH ? ... AND f.workspace_id = ? AND f.scope = 'workspace'`).
+   - Scoped `discover_consolidatable_lessons_readonly` to `WHERE workspace_id = ?`.
+   - Scoped `apply_consolidation_micro_batches` atomic deletions with explicit `workspace_id = ?` predicates on both `facts` and `facts_vec`.
+   - Scoped Pass A (`run_pass_a_entity_deduplication`) and Pass B (`run_pass_b_workflow_distillation`) strictly to tenant workspace boundaries and removed obsolete Schema 2.x inline table creation DDL.
+2. **Runtime Workspace Scoping & Context Assembly (Stage 2):**
+   - Configured `JarvisOrchestrator` to extract, validate, and store `self.active_workspace_id` (defaulting to `"ws_default"`, failing closed on `"unscoped"`), activate context via `self.memory.set_active_context(self.active_workspace_id, None)`, and pass `workspace_id` to `JarvisBrain`.
+   - Wired `JarvisBrain` to receive and propagate `self.active_workspace_id` into `ContextOrchestrator`, `assemble_system_prompt()`, and `build_ephemeral_user_envelope()`.
+   - Enhanced `ContextOrchestrator` to accept and enforce `self.active_workspace_id` (failing closed on `"unscoped"`), forwarding `workspace_id=clean_ws` into `hybrid_search_facts`, `get_context_summary`, `recall_episodic_lessons`, and `get_recent_interactions`. Preserved all uncommitted context-budget truncation and credential-scrubbing enhancements.
+   - Updated `InteractionMemory.get_context_summary` with tenant-partitioned summary caching and `recall_episodic_lessons` with workspace-scoped FTS5 and vector KNN filters.
+   - Aligned `InteractionMemory.get_recent_interactions` with Schema 3.0 check constraint invariants (`session_id = ? AND workspace_id = ? AND scope = 'session'` for active sessions; `workspace_id = ? AND scope = 'session'` for explicit workspace queries; `scope = 'unscoped'` for unauthenticated or non-session queries).
+   - Added `workspace_id` parameter and `scope = 'workspace'` filtering across `DocumentVault` staging, retrieval, and search methods.
+3. **HTTP UI Server Tenant Isolation & Fail-Closed Guards (Stage 3):**
+   - Implemented `JarvisUIService._resolve_request_workspace` extracting `workspace_id` from query/body parameters with strict regex validation (`^[a-zA-Z0-9_-]{1,64}$`), falling back to `orchestrator.active_workspace_id`, and failing closed with `PermissionError` (HTTP 403) on `"unscoped"` or `ValueError` (HTTP 400) on malformed IDs.
+   - Scoped `_handle_memory_nodes`, `_handle_memory_update`, `_handle_documents_upload`, and `_handle_staged_documents` to the resolved workspace.
+   - Scoped workstation HUD vitals telemetry (`WorkstationMetricsCollector.sample_metrics_sync`) memory nodes and fact counts to `active_workspace_id`.
+4. **Empirical Verification, Test Manifest Accounting & Hygiene (Stage 4 & Final Gates):**
+   - Authored `tests/test_phase4_workspace_isolation.py` (3 tests verifying consolidator isolation, context assembly isolation, and HTTP UI fail-closed scoping).
+   - Regenerated canonical test classification manifest `data/test_classification_manifest.json` from 2,469 to 2,472 collected nodes (Tier 1: 1,502; Tier 2A: 273; Tier 2B: 201; Tier 3: 225; Tier 4: 251; Browser: 20).
+   - Verified `test_17_accurate_total_test_accounting` passed 100% with 0 orphaned nodes.
+   - Executed targeted regression suites: 54 tests passed across `test_phase4_workspace_isolation.py`, `test_sleep_consolidation_wal.py`, `test_memory_concurrency_stress.py`, `test_context_orchestrator.py`, and `test_context_orchestration_audit.py` (plus 32 subtests); `test_ui_server.py` passed 100%.
+   - Validated static linters: `tools/lint.py check` verified 0 ruff errors/warnings on Phase 4 modified lines; `tools/diagnostics.py scan` verified 0 AST structural invariant violations.
+   - Verified live database invariants on `data/jarvis_memory.db`: `PRAGMA integrity_check` = `ok`, `0` foreign key violations, exactly 234 quarantined `'unscoped'` facts and vectors intact.
+5. **Commit Execution:**
+   - Staged exactly 10 Phase 4 implementation, test, and manifest artifacts and executed authorized commit `93ecbf587d60f4e48b598ec920b72ebfbeab0636`.
