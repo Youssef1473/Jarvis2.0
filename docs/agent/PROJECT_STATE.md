@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-14T14:35:00+01:00 (CET)
-- **Active Git Branch:** `docs/install-improve-skill`
-- **Recorded HEAD Commit SHA:** `a8a7c840363ed78a192e53f7e3f7e6325406f669`
-- **HEAD Commit Subject:** `docs(governance): seal tri-branch merge and 2d86625 production baseline (#18)`
-- **Milestone State:** **Production Baseline Verified on main (a8a7c84); Installing shadcn/improve Advisor Skill**
-- **Active Milestone:** **Advisor Skill Installation & Subsystem Audit Readiness**
+- **Validation Timestamp:** 2026-11-14T17:45:00+01:00 (CET)
+- **Active Git Branch:** `main`
+- **Recorded HEAD Commit SHA:** `a5669e1d31473d0a3a40bec81b9ac102eb92dbab`
+- **HEAD Commit Subject:** `Merge pull request #22 from Youssef1473/refactor/untangle-browser-cdp`
+- **Milestone State:** **Production Baseline Verified on main (a5669e1); Plans 001-004 Formally Closed**
+- **Active Milestone:** **Modernization & Refactoring Execution (Plans 001-004 Closed)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
@@ -36,8 +36,17 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Reliability & Engineering Governance` (`refactor/untangle-vision`)
+- **Active Milestone:** `Modernization & Refactoring Execution (Plans 001-004 Closed)`
 - **Completed Work:**
+  - **`/improve` Modernization & Refactoring Queue (Plans 001–004 COMPLETED & SEALED):**
+    - **Plan 001 (Audio DSP 64-bit Win32 ABI — PR #20, `0f35e95`):** Hardened 64-bit Win32 kernel32 event ABI (`SetEvent`, `ResetEvent`, `CloseHandle`) in `jarvis/audio/dsp_process.py`, eliminating 64-bit handle truncation hazard (`0xc0000008`) and logging teardown errors.
+    - **Plan 002 (Provider Error Handling — PR #21, `6612990`):** Replaced blind exception catches with typed error handling and diagnostic telemetry across `openrouter.py`, `gemini.py`, and `http2_pool.py`.
+    - **Plan 003 (Browser SSRF Error Transparency — PR #21, `ccdf42e`):** Separated `SecurityBoundaryViolation` SSRF policy denials from network timeouts in `jarvis/skills/browser_agent.py`, preserving audit failure transparency.
+    - **Plan 004 (Browser CDP Architectural Decomposition — PR #22, `729d226`):** Decomposed `jarvis/skills/browser_cdp.py` from 1,949 lines down to 1,011 lines (-48.1% footprint). Extracted `cdp_transport.py` (661 lines), `cdp_tabs.py` (279 lines), and `cdp_page_extractor.py` (205 lines). Dynamic late-bound symbol resolution (`_get_browser_cdp_symbol`) preserves 100% mock-patch transparency. Enforced fail-closed CDP port authorization and guaranteed tab session cleanup on aborted navigations.
+    - **Full Plans Closure:** All 4 implementation plans in `plans/README.md` marked `DONE`.
+    - **Static Diagnostics & Hygiene:** 0 Ruff diagnostics on all modernized modules, 0 AST-Grep structural invariant violations across the entire repository.
+    - **Test Accounting Invariant:** 2,472 collected nodes accounted for (0 drift) via `test_17_accurate_total_test_accounting`.
+    - **Database Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 236 rows (234 quarantined unscoped, 2 ws_default), and `facts_vec` = 236 rows.
   - **Untangle-Codebase — `jarvis/vision/` Architectural Decomposition & Win32 ABI Hardening (COMPLETED & SEALED):**
     - **Refactor Commit SHA (`9efc7de`):** `refactor(vision): centralize 64-bit Win32 ABI, RAII desktop handles, and vision module boundaries`
     - **Centralized 64-bit Win32 ABI (`win32_vision_abi.py`, 456 lines):** Declared explicit 64-bit `ctypes` ABI signatures (`argtypes`/`restype`) for `user32`, `kernel32`, `dwmapi`, and `shcore`. Implemented `scoped_desktop_access()` RAII context manager restoring `orig_hdesk` before `CloseDesktop` to eliminate `ERROR_BUSY` (`170`) leaks. Provided dynamic late-bound resolvers for `dwmapi`, `user32`, and `kernel32` so `mock.patch("ctypes.windll...")` targets remain 100% interceptable.

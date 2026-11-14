@@ -4089,3 +4089,44 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Persistence Concurrency:** 29/29 tests passed in `tests/test_persistence_concurrency.py`.
    - **Static Diagnostics:** All newly refactored modules verified with 0 Ruff errors and 0 AST-Grep violations.
    - **SQLite WAL Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` $\to$ `[('ok',)]`, `PRAGMA foreign_key_check` $\to$ `[]` (0 violations), and 234 quarantined unscoped rows + 2 `ws_default` rows intact.
+
+
+---
+
+## Session Log: 2026-11-14 — /improve Modernization Queue (Plans 001–004) & Baseline Closure
+
+- **Session Timestamp:** 2026-11-14T17:45:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `main`
+- **Starting Git HEAD SHA:** `2d8662573afcb61a354e5dcbc424832db4c8b2a8` (`2d86625`)
+- **Ending Git HEAD SHA:** `a5669e1d31473d0a3a40bec81b9ac102eb92dbab` (`a5669e1`)
+- **Landed Pull Requests:**
+  - **PR #18:** `docs(governance): seal tri-branch merge and 2d86625 production baseline (#18)` (Merged, commit `a8a7c84`)
+  - **PR #19:** `docs(skills): install Jarvis-guarded shadcn/improve advisor skill and references (#19)` (Merged, commit `0b24eb2`)
+  - **PR #20:** `fix(audio): harden 64-bit Win32 kernel32 event ABI and teardown logging in dsp_process (#20)` (Merged, commit `0f35e95`)
+  - **PR #21:** `fix(providers,browser): typed exception handling and transparent SSRF error propagation (#21)` (Merged, commit `cdffbc6`, containing `6612990` and `ccdf42e`)
+  - **PR #22:** `refactor(browser): decompose browser_cdp into transport, tabs, and page extractor modules (#22)` (Merged, commit `a5669e1`, containing `729d226`)
+- **Active Milestone:** `Modernization & Refactoring Execution (Plans 001-004 Closed)`
+
+### Summary of Actions & Deliverables
+1. **Advisor Skill Installation & Audit (PR #19):**
+   - Installed `.agents/skills/improve/SKILL.md` along with reference guides and `.gitignore` isolation for `plans/`.
+   - Executed read-only architectural survey across untouched legacy modules, generating 4 high-leverage implementation plans in `plans/README.md`.
+2. **Execution of Plans 001–003 (PR #20, PR #21):**
+   - **Plan 001 (`jarvis/audio/dsp_process.py`):** Fixed 64-bit Win32 `HANDLE` truncation hazard (`SetEvent`, `ResetEvent`, `CloseHandle`) in real-time audio barge-in synchronization; eliminated `0xc0000008` exception risk and added structured teardown logging.
+   - **Plan 002 (`jarvis/core/providers/`):** Replaced blind `except Exception:` catches with typed exception handling across `openrouter.py`, `gemini.py`, and `http2_pool.py`.
+   - **Plan 003 (`jarvis/skills/browser_agent.py`):** Separated `SecurityBoundaryViolation` SSRF policy denials from transient network timeouts, ensuring security blocks are surfaced unambiguously in telemetry.
+3. **Execution of Plan 004 — `browser_cdp.py` Modular Decomposition (PR #22):**
+   - Reduced `jarvis/skills/browser_cdp.py` from 1,949 lines down to 1,011 lines (-938 lines, -48.1% footprint).
+   - Extracted `jarvis/skills/cdp_transport.py` (661 lines), `jarvis/skills/cdp_tabs.py` (279 lines), and `jarvis/skills/cdp_page_extractor.py` (205 lines).
+   - Preserved mock transparency via `_get_browser_cdp_symbol()` dynamic resolution.
+   - Enforced fail-closed CDP port authorization and guaranteed tab session cleanup on aborted navigations.
+4. **All Plans Completed:**
+   - Updated `plans/README.md` marking all four plans (`001`, `002`, `003`, `004`) as `DONE`.
+5. **Full-Tree Diagnostic & Integrity Verification:**
+   - **Static Linter (`tools/lint.py`):** 0 Ruff diagnostics across all modernized modules (`browser_cdp.py`, `cdp_transport.py`, `cdp_tabs.py`, `cdp_page_extractor.py`, `browser_agent.py`, `dsp_process.py`, `providers/*`).
+   - **Structural Invariants (`tools/diagnostics.py`):** AST-Grep verified with 0 violations across the entire repository.
+   - **Test Accounting Invariant:** `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed with 100% accounting (2,472 collected nodes accounted for, 0 drift).
+   - **Targeted Test Suites:** `test_browser_cdp.py` passed 18/18 under supervisor in 4.14s.
+   - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 236 rows (234 quarantined unscoped, 2 ws_default), and `facts_vec` = 236 rows.
