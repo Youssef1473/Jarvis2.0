@@ -3811,3 +3811,38 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - Tracked working tree reconciled to 0 unstaged modifications, 0 staged modifications.
    - Remaining untracked runtime artifacts in `data/` and `scratch/` inventoried: `data/agy_112_nodes.json`, `data/agy_112_pytest_nodes.json`, `data/execution_evidence/`, `data/learning_candidates/`, `data/learning_events/`, `data/regression_scorecard.json`, `data/supplemental_test_manifest.json`, `scratch/`.
    - Zero modifications to production database `data/jarvis_memory.db`; all 234 quarantined unscoped records preserved intact.
+
+---
+
+## Session Log: 2026-11-14 — Untangle-Codebase (brain.py): Intent Routing, Turn State, Skill Loading & Provider Lifecycle Decomposition
+
+- **Session Timestamp:** 2026-11-14T08:00:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Starting Git HEAD SHA:** `2a0b97d99f26db569df2c70eb332c1f348dc38e8` (`docs(governance): record Workstream 1-3 triage and clean baseline`)
+- **Committed Git HEAD SHA:** `d648243c25dca4b7722fc68d5ef8b577c34f45c3`
+- **Commit Subject:** `refactor(brain): decompose intent routing, turn state, skill loading, and provider lifecycle`
+- **Active Milestone:** `Untangle-Codebase (brain.py Decomposed & Sealed)`
+
+### Summary of Actions & Deliverables
+1. **Architectural Decomposition of `jarvis/core/brain.py`:**
+   - Reduced `jarvis/core/brain.py` footprint from 1,498 lines to 874 lines (-624 lines, -41.6% reduction) by decoupling mixed responsibilities into focused subsystem collaborators.
+   - Preserved all public APIs, method signatures, keyword parameters, and inheritance MRO (`AntigravityBrainMixin`, `SpecialistBrainMixin`, `JarvisBrain`).
+2. **Subsystem Extractions & Collaborators:**
+   - **Cognitive Routing & Candidate Pools:** Consolidated query intent detection, candidate model fallback pools, and tool category classification into `CognitiveRouter` (`jarvis/core/cognition/cognitive_router.py`). Candidate model lists are exported with `ClassVar[list[str]]` on `JarvisBrain` to maintain 100% backward compatibility with downstream callers and tests.
+   - **Per-Turn Execution State (`TurnContext`):** Introduced immutable `TurnContext` dataclass capturing turn-scoped correlation IDs, tokens, abort events, and taint context with backward-compatible `None` fallbacks across all execution paths.
+   - **Lazy Domain Skill Loading:** Eliminated 38 top-level eager skill imports from `brain.py` that caused import side-effects and COM threading hazards. Implemented thread-safe `SkillRegistry.ensure_skills_loaded()` invoked lazily in `JarvisBrain.__init__()`.
+   - **Speech Clause Chunking & Ollama VRAM Unload:** Delegated spoken clause chunking to `jarvis/core/pipeline/interim_bridge.py` and Ollama VRAM eviction to `OllamaProvider.unload_model()`.
+3. **Static Analysis & Hygiene:**
+   - Eliminated all 38 Ruff (`RUF012`, `S110`, `BLE001`, `SIM102`, `SIM103`) diagnostics across the 7 refactored modules.
+   - `python tools/lint.py check <7 files>` exited 0 ("All checks passed!").
+   - `python tools/diagnostics.py scan <modules>` exited 0 (0 AST structural invariant violations).
+4. **Empirical Verification & Invariant Testing:**
+   - Targeted unit/routing suites: 137 tests across 12 test files passed 100%.
+   - Full Tier 1 Fast Test Suite: `python tools/run_fast_tests.py --fast` executed across 4 workers in 141.89s:
+     `Passed: 1492, Failed: 0, Errors: 0, Skipped: 10 (Exit code: 0)`.
+   - Test manifest accounting invariant: `test_17_accurate_total_test_accounting` passed 100%, confirming exactly 2,472 collected nodes accounted for (0 node drift).
+5. **Git Hygiene & Commit Execution:**
+   - Staged strictly the 7 refactored files and committed `d648243c25dca4b7722fc68d5ef8b577c34f45c3`.
+   - Tracked working tree preserved with Phase 4 schema alignments in `sleep_consolidator.py` and `test_memory_authorization_audit.py` awaiting user triage.

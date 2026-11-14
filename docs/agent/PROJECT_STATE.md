@@ -14,15 +14,16 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-14T01:00:00+01:00 (CET)
+- **Validation Timestamp:** 2026-11-14T08:00:00+01:00 (CET)
 - **Active Git Branch:** `feat/reliability-engineering-governance`
-- **Recorded HEAD Commit SHA:** `0d12bdd89bb8e469cfbe317bc2d2121342aa68fb`
-- **HEAD Commit Subject:** `docs(skills,governance): add Jarvis engineering skills and reliability milestone reports`
-- **Milestone State:** **Option A Workstream Verification, Triage & Atomic Commits: COMPLETED (Zero Tracked Modifications Remaining)**
-- **Active Milestone:** **Reliability and Engineering Governance (Option A Complete — Clean Baseline)**
+- **Recorded HEAD Commit SHA:** `d648243c25dca4b7722fc68d5ef8b577c34f45c3`
+- **HEAD Commit Subject:** `refactor(brain): decompose intent routing, turn state, skill loading, and provider lifecycle`
+- **Milestone State:** **Untangle-Codebase (brain.py): COMPLETED & SEALED**
+- **Active Milestone:** **Untangle-Codebase (brain.py Decomposed & Sealed)**
 - **Staged Modifications:** `0 files` (clean staging index)
-- **Unstaged Tracked Modifications (0 files):**
-  - None (clean working tree on tracked files)
+- **Unstaged Tracked Modifications (2 files):**
+  1. `jarvis/core/memory/sleep_consolidator.py` (Phase 4 schema checks & bi-temporal knowledge edge access_count alignment)
+  2. `tests/test_memory_authorization_audit.py` (Phase 4 tenant isolation prompt disclosure test fixture alignment)
 
 - **Untracked Items (8 items):**
   1. `data/agy_112_nodes.json` (Diagnostic node map)
@@ -38,6 +39,16 @@
 
 - **Active Milestone:** `Reliability & Engineering Governance` (`feat/reliability-engineering-governance`)
 - **Completed Work:**
+  - **Untangle-Codebase — `jarvis/core/brain.py` Architectural Decomposition (COMPLETED & SEALED):**
+    - **Commit SHA (`d648243`):** `refactor(brain): decompose intent routing, turn state, skill loading, and provider lifecycle`
+    - **Line Reduction & Complexity:** Reduced `jarvis/core/brain.py` from 1,498 lines to 874 lines (-624 lines, -41.6% footprint).
+    - **Cognitive Routing & Pools:** Consolidated candidate model pools (`GEMINI_CANDIDATE_MODELS`, `GROQ_CANDIDATE_MODELS`, `ANTIGRAVITY_CANDIDATE_MODELS`, `OPENROUTER_CANDIDATE_MODELS`), tool classification sets, and query intent analysis into `CognitiveRouter` (`jarvis/core/cognition/cognitive_router.py`) with ClassVar re-exports on `JarvisBrain` preserving downstream public imports and test compatibility.
+    - **Turn State Isolation:** Encapsulated turn-scoped mutable state into `TurnContext` dataclass with backward-compatible `None` fallback across all execution paths.
+    - **Lazy Skill Auto-Registration:** Replaced 38 eager top-level skill imports in `brain.py` with idempotent, thread-safe `SkillRegistry.ensure_skills_loaded()` inside `JarvisBrain.__init__()`, preventing import side-effects and COM STA/MTA threading collisions while ensuring 100% test registry population.
+    - **Speech & Provider Subsystem Delegation:** Relocated clause-based speech chunking to `jarvis/core/pipeline/interim_bridge.py` and Ollama VRAM eviction to `OllamaProvider.unload_model()`.
+    - **Static Hygiene:** Eliminated all 38 Ruff (`RUF012`, `S110`, `BLE001`, `SIM102`, `SIM103`) diagnostics across all 7 refactored files; `tools/lint.py check` exited 0; `tools/diagnostics.py scan` exited 0.
+    - **Empirical Regression Verification:** Tier 1 Fast Test Suite passed with **1,492 passed, 0 failed, 0 errors, 10 skipped in 141.89s (Exit code 0)**.
+    - **Test Manifest Accounting:** Verified exact 2,472 collected node manifest accounting invariant via `test_17_accurate_total_test_accounting` (0 node drift).
   - **Option A (Workstream Verification, Triage & Atomic Commits — COMPLETED & CLOSED):**
     - **Commit 1 (`2eb2451`):** `feat(providers): enforce truth-in-reporting error policies and atomic bridge registry`
       - Packaged truth-in-reporting error handling in `brain_gemini.py` (eliminating false-success generic greetings on empty stream/candidates, malformed responses, thought-only parts, safety blocks).
