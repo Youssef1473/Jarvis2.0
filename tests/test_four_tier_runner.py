@@ -384,6 +384,8 @@ class TestWinsockLoopbackProbeAdversarial(unittest.TestCase):
         """Live probe in restricted sandbox correctly returns BLOCKED_FILTER with WSAEACCES (10013)."""
         res = probe_loopback_available(timeout_sec=0.1)
         self.assertIsInstance(res, LoopbackProbeResult)
+        if res.status == LoopbackStatus.AVAILABLE:
+            self.skipTest("Localhost loopback is functional in this environment (not running inside restricted sandbox)")
         self.assertEqual(res.status, LoopbackStatus.BLOCKED_FILTER)
         self.assertEqual(res.error_code, 10013)
         self.assertFalse(bool(res), "Blocked probe must evaluate to falsy in boolean contexts")
