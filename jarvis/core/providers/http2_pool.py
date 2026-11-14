@@ -55,7 +55,7 @@ def close_warm_http2_client() -> None:
         if _warm_client is not None and not _warm_client.is_closed:
             try:
                 _warm_client.close()
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.debug("Error closing warm HTTP client: %s", e)
             finally:
                 _warm_client = None

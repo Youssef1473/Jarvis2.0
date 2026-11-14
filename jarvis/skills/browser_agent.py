@@ -1,6 +1,7 @@
 """Autonomous web browsing agent powered by Playwright and live web intelligence."""
 import logging
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -90,7 +91,7 @@ def _setup_playwright_ssrf_guard(
             logger.warning("SSRF blocked Playwright initial request to '%s': %s", current_url, sec_err)
             route.abort("blockedbyclient")
             return
-        except Exception as err:
+        except (ValueError, urllib.error.URLError) as err:
             violation_holder[0] = f"Invalid destination URL '{current_url}': {err}"
             route.abort("blockedbyclient")
             return
@@ -100,7 +101,8 @@ def _setup_playwright_ssrf_guard(
             try:
                 # Fetch single hop with max_redirects=0
                 resp = route.fetch(url=current_url, max_redirects=0)
-            except Exception:
+            except (TimeoutError, OSError, RuntimeError) as fetch_err:
+                logger.debug("Playwright route.fetch failed for '%s': %s", current_url, fetch_err)
                 route.abort("failed")
                 return
 
@@ -108,7 +110,8 @@ def _setup_playwright_ssrf_guard(
             if resp.status not in (301, 302, 303, 307, 308):
                 try:
                     route.fulfill(response=resp)
-                except Exception:
+                except (OSError, RuntimeError) as fulfill_err:
+                    logger.debug("Playwright route.fulfill failed for '%s': %s", current_url, fulfill_err)
                     route.abort("failed")
                 return
 
@@ -117,7 +120,8 @@ def _setup_playwright_ssrf_guard(
             if not loc:
                 try:
                     route.fulfill(response=resp)
-                except Exception:
+                except (OSError, RuntimeError) as fulfill_err:
+                    logger.debug("Playwright route.fulfill failed for redirect without location: %s", fulfill_err)
                     route.abort("failed")
                 return
 
@@ -159,7 +163,7 @@ def _setup_playwright_ssrf_guard(
                 logger.warning("SSRF blocked Playwright redirect hop to '%s': %s", resolved_hop, redir_sec_err)
                 route.abort("blockedbyclient")
                 return
-            except Exception as err:
+            except (ValueError, urllib.error.URLError) as err:
                 violation_holder[0] = f"Invalid redirect destination URL '{resolved_hop}': {err}"
                 route.abort("blockedbyclient")
                 return
@@ -187,7 +191,7 @@ def _setup_playwright_ssrf_guard(
                 violation_holder[0] = str(ws_sec_err)
                 logger.warning("SSRF blocked Playwright WebSocket to '%s': %s", ws_url, ws_sec_err)
                 ws_route.close(code=1008, reason="Blocked by SSRF policy")
-            except Exception as ws_err:
+            except (ValueError, urllib.error.URLError) as ws_err:
                 violation_holder[0] = f"Invalid WebSocket URL '{ws_url}': {ws_err}"
                 ws_route.close(code=1008, reason="Invalid WebSocket URL")
 
@@ -223,7 +227,7 @@ def browse_and_read_webpage(url: str, max_chars: int = 2500) -> str:
         safe_url = validate_egress_url(clean_url, allow_localhost=False)
     except SecurityBoundaryViolation as sec_err:
         return f"Security violation blocked browsing operation: {sec_err}"
-    except Exception as err:
+    except (ValueError, urllib.error.URLError) as err:
         return f"Invalid URL for browsing operation: {err}"
 
     ssrf_violation: list[str | None] = [None]
@@ -253,7 +257,7 @@ def browse_and_read_webpage(url: str, max_chars: int = 2500) -> str:
             truncated = full_text[:max_chars]
 
             return f"Page Title: {title}\nURL: {safe_url}\n\nExtracted Content:\n{truncated}..."
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - fallback to hardened urllib on any Playwright launch, navigation, or extraction failure
         if ssrf_violation[0]:
             return f"Security violation blocked browsing operation: {ssrf_violation[0]}"
 
@@ -278,7 +282,7 @@ def browse_and_read_webpage(url: str, max_chars: int = 2500) -> str:
             return f"Page Title: {title}\nURL: {safe_url}\n\nExtracted Content:\n{truncated}..."
         except SecurityBoundaryViolation as sec_err:
             return f"Security violation blocked fallback browsing operation: {sec_err}"
-        except Exception as e2:
+        except Exception as e2:  # noqa: BLE001 - return combined failure message if fallback browsing also fails
             return f"Failed to browse webpage '{safe_url}': {e} (Fallback also failed: {e2})"
 
 
@@ -302,7 +306,7 @@ def open_url_in_desktop_browser(url: str) -> str:
     try:
         webbrowser.open(clean_url)
         return f"Opened '{clean_url}' in your desktop browser, Sir."
-    except Exception as e:
+    except (webbrowser.Error, OSError) as e:
         return f"Failed to open browser: {e}"
 
 
@@ -324,14 +328,15 @@ def get_tech_news_headlines(count: int = 5) -> str:
                 title = item_data.get("title", "")
                 score = item_data.get("score", 0)
                 stories.append(f"{rank}. {title} ({score} points)")
-            except Exception:
-                pass
+            except (KeyError, ValueError, TypeError, requests.RequestException) as parse_err:
+                logger.debug("Failed to retrieve or parse HN story %s: %s", item_id, parse_err)
+                continue
 
         if not stories:
             return "No news stories retrieved at this time."
 
         return "Top Trending Tech Headlines:\n" + "\n".join(stories)
-    except Exception as e:
+    except (requests.RequestException, ValueError, KeyError) as e:
         return f"Failed to fetch tech headlines: {e}"
 
 
@@ -368,7 +373,7 @@ def capture_webpage_screenshot(url: str, filename: str = "web_snapshot.png") -> 
         out_path.parent.mkdir(parents=True, exist_ok=True)
     except SecurityBoundaryViolation as sec_err:
         return f"Security violation blocked screenshot operation: {sec_err}"
-    except Exception as err:
+    except (ValueError, urllib.error.URLError, OSError) as err:
         return f"Invalid screenshot operation parameters: {err}"
 
     ssrf_violation: list[str | None] = [None]
@@ -389,7 +394,7 @@ def capture_webpage_screenshot(url: str, filename: str = "web_snapshot.png") -> 
             browser.close()
 
         return f"Webpage screenshot captured and saved to: {out_path.resolve()}"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - return error description if Playwright screenshot fails
         if ssrf_violation[0]:
             return f"Security violation blocked screenshot operation: {ssrf_violation[0]}"
         return f"Failed to capture webpage screenshot: {e}"

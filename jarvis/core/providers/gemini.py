@@ -45,7 +45,7 @@ class GeminiProvider(BaseProvider):
             try:
                 from google import genai
                 self.client = genai.Client(api_key=self.api_key)
-            except Exception as e:
+            except (ImportError, AttributeError, ValueError, RuntimeError) as e:
                 logger.warning("Could not initialize google.genai client: %s", e)
 
     def generate_turn(

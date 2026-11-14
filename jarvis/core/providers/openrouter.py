@@ -80,7 +80,7 @@ class OpenRouterProvider(BaseProvider):
             try:
                 from jarvis.core.providers.http2_pool import get_warm_http2_client
                 client_kwargs["http_client"] = get_warm_http2_client()
-            except Exception as e:
+            except (ImportError, AttributeError, RuntimeError) as e:
                 logger.debug("Warm HTTP client initialization notice: %s", e)
 
             self.client = OpenAI(**client_kwargs)
@@ -195,7 +195,8 @@ class OpenRouterProvider(BaseProvider):
                     fn_name = tc_data["name"]
                     try:
                         fn_args = json.loads(tc_data["arguments"] or "{}")
-                    except Exception:
+                    except (json.JSONDecodeError, TypeError, ValueError) as parse_err:
+                        logger.debug("Failed to parse tool call arguments for %s: %s", fn_name, parse_err)
                         fn_args = {}
                     final_tool_calls.append(ToolCall(
                         id=tc_data["id"],
@@ -211,7 +212,8 @@ class OpenRouterProvider(BaseProvider):
                         fn_name = fn_match.group(1).strip()
                         try:
                             fn_args = json.loads(args_match.group(1)) if args_match else {}
-                        except Exception:
+                        except (json.JSONDecodeError, TypeError, ValueError) as parse_err:
+                            logger.debug("Failed to parse XML tool call arguments for %s: %s", fn_name, parse_err)
                             fn_args = {}
                         final_tool_calls.append(ToolCall(
                             id=f"or_xml_{int(time.time()*1000)}",
@@ -227,7 +229,7 @@ class OpenRouterProvider(BaseProvider):
                     model=candidate,
                 )
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - provider fallback cascades across candidate models on any failure
                 last_error = e
                 err_str = str(e).lower()
                 is_rate_limit = any(k in err_str for k in ("429", "rate limit", "quota", "temporarily", "congested"))
@@ -321,7 +323,7 @@ class OpenRouterProvider(BaseProvider):
                     if content:
                         q.put((tag, content))
                 q.put((f"{tag}_done", None))
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - worker thread captures all stream exceptions to report to parent queue
                 q.put((f"{tag}_error", exc))
 
         t_primary = threading.Thread(target=_worker, args=(p_model, "primary", abort_primary), daemon=True)
