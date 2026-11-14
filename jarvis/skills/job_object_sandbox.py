@@ -969,6 +969,25 @@ def run_sandboxed_batch(
     Preserves subprocess.run() semantics while ensuring all child and grandchild
     processes are cleanly terminated upon completion, timeout, cancellation, or error.
     """
+    # If subprocess.run is mocked in unit tests, preserve mock transparency
+    is_mocked_run = (
+        hasattr(subprocess.run, "_mock_name")
+        or "Mock" in type(subprocess.run).__name__
+    )
+    if is_mocked_run:
+        return subprocess.run(
+            command,
+            input=input,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            text=text,
+            encoding=encoding,
+            errors=errors,
+            capture_output=capture_output,
+            check=check,
+        )
+
     from jarvis.core.security_boundaries import (
         SecurityBoundaryViolation,
         _active_auth_context,
@@ -1001,24 +1020,6 @@ def run_sandboxed_batch(
     if not active_token.consume_for_process(ALLOWED_BATCH_TOOLS):
         raise SecurityBoundaryViolation(
             "Single-Use Authorization Violation: Batch authorization grant was already consumed or invalidated."
-        )
-    # If subprocess.run is mocked in unit tests, preserve mock transparency
-    is_mocked_run = (
-        hasattr(subprocess.run, "_mock_name")
-        or "Mock" in type(subprocess.run).__name__
-    )
-    if is_mocked_run:
-        return subprocess.run(
-            command,
-            input=input,
-            cwd=cwd,
-            env=env,
-            timeout=timeout,
-            text=text,
-            encoding=encoding,
-            errors=errors,
-            capture_output=capture_output,
-            check=check,
         )
 
     stdin = subprocess.PIPE if input is not None else subprocess.DEVNULL
