@@ -27,48 +27,74 @@ RING_CAPACITY_SAMPLES = SAMPLE_RATE * 10  # 10 seconds buffer: 240,000 float32 (
 HIGH_PRIORITY_CLASS = 0x00000080
 
 
+def _get_kernel32():
+    """Initializes and returns 64-bit Kernel32 ABI function bindings on Windows."""
+    if sys.platform != "win32":
+        return None
+    try:
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+        k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+        k32.CreateEventW.restype = wintypes.HANDLE
+
+        k32.SetEvent.argtypes = [wintypes.HANDLE]
+        k32.SetEvent.restype = wintypes.BOOL
+
+        k32.ResetEvent.argtypes = [wintypes.HANDLE]
+        k32.ResetEvent.restype = wintypes.BOOL
+
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.restype = wintypes.BOOL
+
+        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k32.WaitForSingleObject.restype = wintypes.DWORD
+        return k32
+    except (AttributeError, OSError) as exc:
+        logger.debug("Win32 kernel32 bindings initialization failed: %s", exc)
+        return None
+
+
 def _create_or_open_event(event_name: str, manual_reset: bool = True, initial_state: bool = False):
-    """Creates or opens a Win32 Named Event."""
-    if sys.platform == "win32":
+    """Creates or opens a Win32 Named Event with explicit 64-bit HANDLE return type."""
+    k32 = _get_kernel32()
+    if k32:
         try:
-            from ctypes import wintypes
-            k32 = ctypes.windll.kernel32
-            k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
-            k32.CreateEventW.restype = wintypes.HANDLE
             handle = k32.CreateEventW(None, manual_reset, initial_state, event_name)
-            return handle
-        except Exception as e:
-            logger.debug("Win32 CreateEventW failed: %s", e)
+            return handle or None
+        except (OSError, ValueError) as e:
+            logger.debug("Win32 CreateEventW failed for event '%s': %s", event_name, e)
     return None
 
 
 def _set_named_event(handle) -> bool:
-    if sys.platform == "win32" and handle:
+    k32 = _get_kernel32()
+    if k32 and handle:
         try:
-            k32 = ctypes.windll.kernel32
             return bool(k32.SetEvent(handle))
-        except Exception:
+        except (OSError, ValueError) as exc:
+            logger.debug("Win32 SetEvent failed on handle %s: %s", handle, exc)
             return False
     return False
 
 
 def _reset_named_event(handle) -> bool:
-    if sys.platform == "win32" and handle:
+    k32 = _get_kernel32()
+    if k32 and handle:
         try:
-            k32 = ctypes.windll.kernel32
             return bool(k32.ResetEvent(handle))
-        except Exception:
+        except (OSError, ValueError) as exc:
+            logger.debug("Win32 ResetEvent failed on handle %s: %s", handle, exc)
             return False
     return False
 
 
 def _close_event_handle(handle) -> None:
-    if sys.platform == "win32" and handle:
+    k32 = _get_kernel32()
+    if k32 and handle:
         try:
-            k32 = ctypes.windll.kernel32
             k32.CloseHandle(handle)
-        except Exception:
-            pass
+        except (OSError, ValueError) as exc:
+            logger.debug("Win32 CloseHandle failed on handle %s: %s", handle, exc)
 
 
 def _elevate_companion_process(pcore_mask: int = 0xFF) -> None:
@@ -87,7 +113,7 @@ def _elevate_companion_process(pcore_mask: int = 0xFF) -> None:
         k32.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
         k32.SetProcessAffinityMask.restype = wintypes.BOOL
         k32.SetProcessAffinityMask(curr_proc, ctypes.c_size_t(pcore_mask))
-    except Exception as e:
+    except (OSError, ValueError, AttributeError) as e:
         logger.debug("Failed elevating companion process: %s", e)
 
 
@@ -103,22 +129,14 @@ def dsp_companion_main(shm_name: str, event_name: str, shutdown_event: mp.Event)
             sample_rate=SAMPLE_RATE,
             create=False,
         )
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         logger.error("DSP companion failed attaching to shared memory: %s", e)
         _close_event_handle(barge_in_h)
         return
 
     logger.info("DSP Companion Process online (PID: %d)", os.getpid())
 
-    k32 = None
-    if sys.platform == "win32" and barge_in_h:
-        try:
-            from ctypes import wintypes
-            k32 = ctypes.windll.kernel32
-            k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-            k32.WaitForSingleObject.restype = wintypes.DWORD
-        except Exception:
-            k32 = None
+    k32 = _get_kernel32() if barge_in_h else None
 
     try:
         while not shutdown_event.is_set():
@@ -167,7 +185,7 @@ class AudioDSPProcessClient:
             self.process.start()
             logger.info("Spawned Audio DSP Companion process (PID: %s)", self.process.pid)
             return True
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.error("Failed starting Audio DSP Companion: %s", e)
             return False
 
@@ -187,8 +205,8 @@ class AudioDSPProcessClient:
         """Stops the companion process and frees shared memory."""
         try:
             self.shutdown_event.set()
-        except Exception:
-            pass
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.debug("Error setting shutdown event during DSP stop: %s", e)
         if self.process and self.process.is_alive():
             self.process.join(timeout=1.0)
             if self.process.is_alive():
@@ -200,12 +218,12 @@ class AudioDSPProcessClient:
         if self.transport:
             try:
                 self.transport.close()
-            except Exception:
-                pass
+            except (OSError, RuntimeError) as e:
+                logger.debug("Error closing transport during DSP stop: %s", e)
             self.transport = None
 
     def __del__(self):
         try:
             self.stop()
-        except Exception:
-            pass
+        except (OSError, RuntimeError) as e:
+            logger.debug("Error during DSP client __del__ teardown: %s", e)
