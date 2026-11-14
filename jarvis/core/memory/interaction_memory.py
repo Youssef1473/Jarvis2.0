@@ -701,7 +701,8 @@ class InteractionMemoryMixin:
     ) -> dict[str, Any]:
         """Executes zero-contention sleep-phase memory consolidation on WAL snapshot."""
         from .sleep_consolidator import SleepPhaseConsolidator
-        consolidator = SleepPhaseConsolidator(str(self.db_path), self.vector_engine)
+        writer_actor = getattr(self, "_writer_actor", None)
+        consolidator = SleepPhaseConsolidator(str(self.db_path), self.vector_engine, writer_actor=writer_actor)
         return consolidator.run_sleep_consolidation(
             is_user_active_fn=is_user_active_fn,
             batch_size=batch_size,

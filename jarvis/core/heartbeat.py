@@ -55,7 +55,7 @@ def _get_idle_duration_sec() -> float:
         if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
             millis = (ctypes.windll.kernel32.GetTickCount() - lii.dwTime) & 0xFFFFFFFF
             return max(0.0, float(millis) / 1000.0)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
     return 0.0
 
@@ -97,7 +97,7 @@ class JarvisHeartbeat:
         if self._flow_mirror is None:
             try:
                 self._flow_mirror = FlowStateMirror.get_instance()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 self._flow_mirror = None
         if self._tts is None and self.orchestrator is not None:
             self._tts = getattr(self.orchestrator, "tts", None)
@@ -138,7 +138,7 @@ class JarvisHeartbeat:
             if self.orchestrator and hasattr(self.orchestrator, "memory") and self.orchestrator.memory:
                 stored_alerted = self.orchestrator.memory.get_fact(f"alerted_events_{today_str}") or ""
             self._alerted_event_ids: set[int] = {int(x) for x in stored_alerted.split(",") if x.strip().isdigit()}
-        except Exception:
+        except Exception:  # noqa: BLE001
             self._alerted_event_ids: set[int] = set()
         self._alerted_task_ids: set[int] = set()
 
@@ -160,7 +160,7 @@ class JarvisHeartbeat:
         if self.orchestrator and hasattr(self.orchestrator, "memory") and self.orchestrator.memory:
             try:
                 last_briefing_date = self.orchestrator.memory.get_fact("last_briefing_date")
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
         self._briefing_delivered_today = (last_briefing_date == today_str)
 
@@ -173,7 +173,7 @@ class JarvisHeartbeat:
         if sys.platform == "win32":
             try:
                 self.cadence_tracker = MotorCadenceTracker()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("MotorCadenceTracker initialization notice: %s", e)
 
         # Window Switch vs Title Change Tracking (Requirement 2)
@@ -205,7 +205,7 @@ class JarvisHeartbeat:
                 from jarvis.vision.window_hook_daemon import WinEventHookDaemon
                 self.window_hook_daemon = WinEventHookDaemon()
                 self.window_hook_daemon.add_listener(self._on_window_event)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("WinEventHookDaemon initialization notice: %s", e)
 
             try:
@@ -217,7 +217,7 @@ class JarvisHeartbeat:
                     hamming_threshold=140,
                     idle_threshold=3.0,
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("BackgroundDHashMonitor initialization notice: %s", e)
 
     IDE_DETECTION_PATTERNS = (
@@ -337,7 +337,7 @@ class JarvisHeartbeat:
         if hasattr(self, "cadence_tracker") and self.cadence_tracker:
             try:
                 kpm, backspace_ratio = self.cadence_tracker.get_cadence(window_seconds=60.0)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("Cadence tracker read notice: %s", e)
 
         # 2. Window Switches Per Min
@@ -455,16 +455,15 @@ class JarvisHeartbeat:
                     domain = self.get_action_domain(action)
                     cog_state = self.cognitive_twin.state.value if hasattr(self, "cognitive_twin") and self.cognitive_twin else "ROUTINE_ADMIN"
                     pred = self.habit_graph.observe_action(action, cognitive_state=cog_state, domain=domain, timestamp=now)
-                    if pred and pred.is_proactive_candidate:
-                        if hasattr(self.orchestrator, "broadcast_ambient_telemetry"):
-                            self.orchestrator.broadcast_ambient_telemetry({
-                                "event": "proactive_habit_prediction",
-                                "target_action": pred.target_action,
-                                "probability": pred.probability,
-                                "confidence": pred.confidence,
-                                "transition_count": pred.transition_count,
-                            })
-                except Exception as h_err:
+                    if pred and pred.is_proactive_candidate and hasattr(self.orchestrator, "broadcast_ambient_telemetry"):
+                        self.orchestrator.broadcast_ambient_telemetry({
+                            "event": "proactive_habit_prediction",
+                            "target_action": pred.target_action,
+                            "probability": pred.probability,
+                            "confidence": pred.confidence,
+                            "transition_count": pred.transition_count,
+                        })
+                except Exception as h_err:  # noqa: BLE001
                     logger.debug("Habit observation notice: %s", h_err)
 
         if not title:
@@ -492,7 +491,7 @@ class JarvisHeartbeat:
                 title,
                 category="workstation"
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("Could not stage active desktop context from hook: %s", e)
 
         idle_sec = self.get_idle_seconds()
@@ -595,7 +594,7 @@ class JarvisHeartbeat:
             self.orchestrator.sfx.play_done()
             self.orchestrator.hud.set_state("idle")
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Error in proactive speech delivery: {e}")
             self.orchestrator.hud.set_state("idle")
             return False
@@ -679,7 +678,7 @@ class JarvisHeartbeat:
         if self._ast_diagnoser is not None:
             try:
                 diagnosis_payload["fix"] = await asyncio.to_thread(self._ast_diagnoser, snap)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.debug("Silent AST diagnosis skipped: %s", exc)
 
         # 2. Dispatch full diagnostic telemetry to the Holographic HUD WebSocket
@@ -689,7 +688,7 @@ class JarvisHeartbeat:
                 type="terminal_failure",
                 data=diagnosis_payload,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             if self.orchestrator and hasattr(self.orchestrator, "broadcast_ambient_telemetry"):
                 self.orchestrator.broadcast_ambient_telemetry({
                     "event": "terminal_failure",
@@ -758,7 +757,7 @@ class JarvisHeartbeat:
                     type="circadian_advisory",
                     data={"continuous_minutes": round(continuous_minutes, 1), "message": quip},
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001
                 if self.orchestrator and hasattr(self.orchestrator, "broadcast_ambient_telemetry"):
                     self.orchestrator.broadcast_ambient_telemetry({
                         "event": "circadian_advisory",
@@ -781,13 +780,13 @@ class JarvisHeartbeat:
                 if now >= self._startup_grace_period:
                     try:
                         asyncio.run(self._tick())
-                    except Exception as tick_err:
+                    except Exception as tick_err:  # noqa: BLE001
                         logger.debug("Heartbeat async tick notice: %s", tick_err)
                     if self.desktop_presence:
                         self._check_desktop_presence()
                     try:
                         self.sample_telemetry_slice()
-                    except Exception as t_err:
+                    except Exception as t_err:  # noqa: BLE001
                         logger.debug("Heartbeat telemetry sampling notice: %s", t_err)
                     if self.auto_briefing:
 
@@ -800,7 +799,7 @@ class JarvisHeartbeat:
                         self._check_ergonomics(elapsed)
                     if self.email_alerts:
                         self._check_new_emails()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"Heartbeat tick exception: {e}")
 
             # Laptop Thermal Profile: relax timer frequency on battery power to prevent waking CPU cores
@@ -815,7 +814,7 @@ class JarvisHeartbeat:
             if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
                 millis = (ctypes.windll.kernel32.GetTickCount() - lii.dwTime) & 0xFFFFFFFF
                 return max(0.0, float(millis) / 1000.0)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug(f"Win32 GetLastInputInfo notice: {e}")
         return 0.0
 
@@ -829,7 +828,7 @@ class JarvisHeartbeat:
                     buf = ctypes.create_unicode_buffer(length + 1)
                     ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
                     return buf.value.strip()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug(f"Win32 GetForegroundWindow notice: {e}")
         return ""
 
@@ -852,32 +851,38 @@ class JarvisHeartbeat:
                 if not self._sleep_consolidation_done:
                     self._sleep_consolidation_done = True
                     if hasattr(self.orchestrator, "memory") and hasattr(self.orchestrator.memory, "consolidate_sleep_phase"):
-                        try:
-                            res = self.orchestrator.memory.consolidate_sleep_phase(
-                                is_user_active_fn=lambda: self.get_idle_seconds() < self.idle_threshold_seconds
-                            )
-                            if hasattr(self.orchestrator, "broadcast_ambient_telemetry") and res:
-                                dist = res.get("distillation", {})
-                                dupes = res.get("duplicates_merged", 0)
-                                edges = res.get("edges_promoted", 0)
-                                macros = res.get("reflex_macros_compiled", 0)
-                                if dupes > 0 or edges > 0 or macros > 0:
-                                    self.orchestrator.broadcast_ambient_telemetry({
-                                        "event": "sleep_consolidation_complete",
-                                        "duplicates_merged": dupes,
-                                        "edges_promoted": edges,
-                                        "reflex_macros_compiled": macros,
-                                        "wal_pages_checkpointed": res.get("wal_pages_checkpointed", 0),
-                                    })
-                                elif dist.get("traits_extracted", 0) > 0 or res.get("facts_pruned", 0) > 0:
-                                    self.orchestrator.broadcast_ambient_telemetry({
-                                        "event": "memory_consolidated",
-                                        "traits_extracted": dist.get("traits_extracted", 0),
-                                        "facts_pruned": res.get("facts_pruned", 0),
-                                        "decayed_habits": res.get("decayed_habits", 0),
-                                    })
-                        except Exception as c_err:
-                            logger.debug(f"Sleep-phase consolidation notice: {c_err}")
+                        raw_ws = getattr(self.orchestrator, "active_workspace_id", "ws_default")
+                        clean_ws = str(raw_ws).strip() if raw_ws else "ws_default"
+                        if clean_ws.lower() == "unscoped":
+                            logger.warning("Sleep-phase consolidation skipped: 'unscoped' workspace is prohibited.")
+                        else:
+                            try:
+                                res = self.orchestrator.memory.consolidate_sleep_phase(
+                                    is_user_active_fn=lambda: self.get_idle_seconds() < self.idle_threshold_seconds,
+                                    workspace_id=clean_ws,
+                                )
+                                if hasattr(self.orchestrator, "broadcast_ambient_telemetry") and res:
+                                    dist = res.get("distillation", {})
+                                    dupes = res.get("duplicates_merged", 0)
+                                    edges = res.get("edges_promoted", 0)
+                                    macros = res.get("reflex_macros_compiled", 0)
+                                    if dupes > 0 or edges > 0 or macros > 0:
+                                        self.orchestrator.broadcast_ambient_telemetry({
+                                            "event": "sleep_consolidation_complete",
+                                            "duplicates_merged": dupes,
+                                            "edges_promoted": edges,
+                                            "reflex_macros_compiled": macros,
+                                            "wal_pages_checkpointed": res.get("wal_pages_checkpointed", 0),
+                                        })
+                                    elif dist.get("traits_extracted", 0) > 0 or res.get("facts_pruned", 0) > 0:
+                                        self.orchestrator.broadcast_ambient_telemetry({
+                                            "event": "memory_consolidated",
+                                            "traits_extracted": dist.get("traits_extracted", 0),
+                                            "facts_pruned": res.get("facts_pruned", 0),
+                                            "decayed_habits": res.get("decayed_habits", 0),
+                                        })
+                            except Exception as c_err:  # noqa: BLE001
+                                logger.debug(f"Sleep-phase consolidation notice: {c_err}")
         elif self._is_user_idle and idle_sec < 15.0:
             # 2. User Return Detection (User resumed activity after >idle_threshold_seconds)
             self._is_user_idle = False
@@ -894,7 +899,7 @@ class JarvisHeartbeat:
                     current_title,
                     category="workstation"
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug(f"Could not stage active desktop context: {e}")
 
             if hasattr(self.orchestrator, "broadcast_ambient_telemetry"):
@@ -919,7 +924,7 @@ class JarvisHeartbeat:
                     current_title,
                     category="workstation"
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
         if hasattr(self.orchestrator, "broadcast_ambient_telemetry"):
@@ -948,7 +953,7 @@ class JarvisHeartbeat:
                     if self.speak_proactive(msg):
                         self._mark_event_alerted(eid)
                         break
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug(f"Return calendar check notice: {e}")
 
     def _is_on_battery(self) -> bool:
@@ -957,7 +962,7 @@ class JarvisHeartbeat:
             status = SYSTEM_POWER_STATUS()
             if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
                 return status.ACLineStatus == 0
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
         return False
 
@@ -995,7 +1000,7 @@ class JarvisHeartbeat:
             if spoken_summary:
                 return self.speak_proactive(spoken_summary)
             return False
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to generate morning briefing: {e}")
             return False
 
@@ -1009,7 +1014,7 @@ class JarvisHeartbeat:
                 ",".join(str(i) for i in self._alerted_event_ids),
                 category="system"
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug(f"Could not persist alerted event id {eid}: {e}")
 
     def _parse_time(self, timestr: str, created_at: str | None = None) -> datetime.datetime | None:
@@ -1035,7 +1040,7 @@ class JarvisHeartbeat:
                             c_dt = datetime.datetime.fromisoformat(created_at.strip())
                             # If created on an earlier day without explicit date, it was for that creation day
                             dt = dt.replace(year=c_dt.year, month=c_dt.month, day=c_dt.day)
-                        except Exception:
+                        except Exception:  # noqa: BLE001
                             dt = dt.replace(year=now.year, month=now.month, day=now.day)
                     else:
                         dt = dt.replace(year=now.year, month=now.month, day=now.day)
@@ -1069,16 +1074,15 @@ class JarvisHeartbeat:
                     continue
 
                 # Broadcast countdown to HUD if within 30 minutes
-                if 0 <= delta_minutes <= 30:
-                    if hasattr(self.orchestrator, "broadcast_ambient_telemetry"):
-                        self.orchestrator.broadcast_ambient_telemetry({
-                            "event": "calendar_countdown",
-                            "event_id": eid,
-                            "title": event["title"],
-                            "start_time": event["start_time"],
-                            "minutes_remaining": delta_minutes,
-                            "location": event.get("location", ""),
-                        })
+                if 0 <= delta_minutes <= 30 and hasattr(self.orchestrator, "broadcast_ambient_telemetry"):
+                    self.orchestrator.broadcast_ambient_telemetry({
+                        "event": "calendar_countdown",
+                        "event_id": eid,
+                        "title": event["title"],
+                        "start_time": event["start_time"],
+                        "minutes_remaining": delta_minutes,
+                        "location": event.get("location", ""),
+                    })
 
                 # Alert if event is 0 to 15 minutes away
                 if 0 <= delta_minutes <= 15:
@@ -1090,7 +1094,7 @@ class JarvisHeartbeat:
                     if self.deliver_proactive(msg, intrinsic_utility=0.85, context_relevance=0.95, urgency=0.9):
                         self._mark_event_alerted(eid)
                         break  # Announce one at a time to prevent stacking
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug(f"Calendar check notice: {e}")
 
     def _check_battery_status(self):
@@ -1101,14 +1105,17 @@ class JarvisHeartbeat:
 
         try:
             status = SYSTEM_POWER_STATUS()
-            if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
-                # ACLineStatus == 0 means running on battery (unplugged)
-                if status.ACLineStatus == 0 and status.BatteryLifePercent <= 20:
-                    pct = status.BatteryLifePercent
-                    msg = f"Sir, workstation battery reserves have fallen to {pct}%. I recommend connecting to AC power."
-                    if self.deliver_proactive(msg, intrinsic_utility=0.9, context_relevance=1.0, urgency=0.95):
-                        self._last_battery_alert = now
-        except Exception as e:
+            # ACLineStatus == 0 means running on battery (unplugged)
+            if (
+                ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status))
+                and status.ACLineStatus == 0
+                and status.BatteryLifePercent <= 20
+            ):
+                pct = status.BatteryLifePercent
+                msg = f"Sir, workstation battery reserves have fallen to {pct}%. I recommend connecting to AC power."
+                if self.deliver_proactive(msg, intrinsic_utility=0.9, context_relevance=1.0, urgency=0.95):
+                    self._last_battery_alert = now
+        except Exception as e:  # noqa: BLE001
             logger.debug(f"Power check notice: {e}")
 
     def _check_ergonomics(self, elapsed_seconds: float = 30.0):
@@ -1162,6 +1169,6 @@ class JarvisHeartbeat:
                 self.speak_proactive(msg)
             else:
                 self._last_unread_email_count = current_count
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug(f"Email heartbeat check notice: {e}")
 
