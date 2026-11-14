@@ -8,7 +8,6 @@ from __future__ import annotations
 import ctypes
 import logging
 import queue
-import sys
 import threading
 from collections.abc import Callable
 from ctypes import wintypes
@@ -19,38 +18,22 @@ from jarvis.core.win32_affinity import (
     THREAD_PRIORITY_NORMAL,
     pin_current_thread_to_mask,
 )
+from jarvis.vision.win32_vision_abi import (
+    CHILDID_SELF,
+    EVENT_OBJECT_NAMECHANGE,
+    EVENT_SYSTEM_DIALOGSTART,
+    EVENT_SYSTEM_FOREGROUND,
+    IS_WINDOWS,
+    OBJID_WINDOW,
+    WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS,
+    WINEVENTPROC,
+    WM_QUIT,
+    Win32VisionABI,
+    get_window_title,
+)
 
 logger = logging.getLogger("Jarvis.Vision.WindowHook")
-
-# Win32 Event Constants
-EVENT_SYSTEM_FOREGROUND = 0x0003
-EVENT_SYSTEM_DIALOGSTART = 0x0010
-EVENT_OBJECT_NAMECHANGE = 0x800C
-
-# Win32 Out-of-Context Flags
-WINEVENT_OUTOFCONTEXT = 0x0000
-WINEVENT_SKIPOWNPROCESS = 0x0002
-
-# Object and Child ID Filters
-OBJID_WINDOW = 0
-CHILDID_SELF = 0
-
-# Message pump constants
-WM_QUIT = 0x0012
-
-if sys.platform == "win32":
-    WINEVENTPROC = ctypes.WINFUNCTYPE(
-        None,
-        wintypes.HANDLE,  # hWinEventHook
-        wintypes.DWORD,   # event
-        wintypes.HWND,    # hwnd
-        wintypes.LONG,    # idObject
-        wintypes.LONG,    # idChild
-        wintypes.DWORD,   # idEventThread
-        wintypes.DWORD,   # dwmsEventTime
-    )
-else:
-    WINEVENTPROC = None  # type: ignore[assignment,misc]
 
 
 class WinEventHookDaemon:
@@ -83,21 +66,7 @@ class WinEventHookDaemon:
 
     def _get_window_title(self, hwnd: int) -> str:
         """Extracts window title via GetWindowTextW in <0.05ms."""
-        if sys.platform != "win32" or not hwnd:
-            return ""
-        try:
-            # Guard against querying hung windows which can block the thread
-            if getattr(ctypes.windll.user32, "IsHungAppWindow", None):
-                if ctypes.windll.user32.IsHungAppWindow(hwnd):
-                    return ""
-            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-            if length > 0:
-                buf = ctypes.create_unicode_buffer(length + 1)
-                ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
-                return buf.value.strip()
-        except (OSError, ValueError) as err:
-            logger.debug("GetWindowTextW query notice for hwnd %s: %s", hwnd, err)
-        return ""
+        return get_window_title(hwnd)
 
     def _event_callback(
         self,
@@ -115,7 +84,7 @@ class WinEventHookDaemon:
         if id_object != OBJID_WINDOW or id_child != CHILDID_SELF:
             return
 
-        if not hwnd or sys.platform != "win32":
+        if not hwnd or not IS_WINDOWS:
             return
 
         title = self._get_window_title(hwnd)
@@ -129,15 +98,17 @@ class WinEventHookDaemon:
             for listener in listeners:
                 try:
                     listener(hwnd, event, title)
-                except Exception as e:  # noqa: BLE001
+                except (OSError, RuntimeError, ValueError) as e:
                     logger.debug("Error in window event listener: %s", e)
 
     def _dispatch_worker_loop(self) -> None:
         """Background worker executing subscriber callbacks off the native Win32 hook pump."""
         while self._running:
             try:
-                item = self._event_queue.get(timeout=0.2)
-            except Exception:
+                # SimpleQueue does not support timeout in older Pythons, but in 3.9+ it does via get()
+                # On SimpleQueue, get() blocks indefinitely unless None sentinel is put
+                item = self._event_queue.get()
+            except (OSError, ValueError, RuntimeError):
                 continue
             if item is None:
                 break
@@ -147,20 +118,20 @@ class WinEventHookDaemon:
             for listener in listeners:
                 try:
                     listener(hwnd, event, title)
-                except Exception as e:  # noqa: BLE001
+                except (OSError, RuntimeError, ValueError) as e:
                     logger.debug("Error in window event listener: %s", e)
 
     def _pump_loop(self) -> None:
         """Dedicated message pump thread pinned to E-Cores with EcoQoS."""
-        if sys.platform != "win32":
+        if not IS_WINDOWS or Win32VisionABI.user32 is None or Win32VisionABI.kernel32 is None or WINEVENTPROC is None:
             return
 
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
+        user32 = Win32VisionABI.user32
+        kernel32 = Win32VisionABI.kernel32
 
         # Pin this message pump thread to E-Cores to use 0% of P-Cores
         pin_current_thread_to_mask(MASK_ECORE_BACKGROUND, priority=THREAD_PRIORITY_NORMAL, eco_qos=True)
-        self._hook_thread_id = kernel32.GetCurrentThreadId()
+        self._hook_thread_id = int(kernel32.GetCurrentThreadId())
 
         # Wrap member function into persistent WINEVENTPROC callback
         self._win_event_proc = WINEVENTPROC(self._event_callback)
@@ -169,7 +140,7 @@ class WinEventHookDaemon:
 
         # Mandatory constraint: register two tight hook ranges rather than one wide range
         # Range 1: 0x0003 (EVENT_SYSTEM_FOREGROUND) to 0x0010 (EVENT_SYSTEM_DIALOGSTART)
-        self._hook1 = user32.SetWinEventHook(
+        hook1 = user32.SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,
             EVENT_SYSTEM_DIALOGSTART,
             0,
@@ -178,9 +149,10 @@ class WinEventHookDaemon:
             0,
             flags,
         )
+        self._hook1 = int(hook1) if hook1 else None
 
         # Range 2: 0x800C (EVENT_OBJECT_NAMECHANGE) to 0x800C
-        self._hook2 = user32.SetWinEventHook(
+        hook2 = user32.SetWinEventHook(
             EVENT_OBJECT_NAMECHANGE,
             EVENT_OBJECT_NAMECHANGE,
             0,
@@ -189,6 +161,7 @@ class WinEventHookDaemon:
             0,
             flags,
         )
+        self._hook2 = int(hook2) if hook2 else None
 
         logger.info(
             "WinEventHookDaemon started on thread %s (hooks: 0x%X, 0x%X)",
@@ -208,16 +181,16 @@ class WinEventHookDaemon:
 
         # Unhook upon message pump exit
         if self._hook1:
-            user32.UnhookWinEvent(self._hook1)
+            user32.UnhookWinEvent(wintypes.HANDLE(self._hook1))
             self._hook1 = None
         if self._hook2:
-            user32.UnhookWinEvent(self._hook2)
+            user32.UnhookWinEvent(wintypes.HANDLE(self._hook2))
             self._hook2 = None
         logger.info("WinEventHookDaemon message pump exited cleanly.")
 
     def start(self) -> bool:
         """Starts the background event hook message pump thread."""
-        if sys.platform != "win32":
+        if not IS_WINDOWS:
             logger.info("WinEventHookDaemon only supported on Windows.")
             return False
 
@@ -246,11 +219,16 @@ class WinEventHookDaemon:
 
         self._running = False
         self._event_queue.put(None)
-        if sys.platform == "win32" and self._hook_thread_id:
+        if IS_WINDOWS and self._hook_thread_id and Win32VisionABI.user32 is not None:
             try:
                 # Mandatory constraint: Post WM_QUIT (0x0012) to hook thread to cleanly unblock GetMessageW
-                ctypes.windll.user32.PostThreadMessageW(self._hook_thread_id, WM_QUIT, 0, 0)
-            except (OSError, AttributeError) as e:
+                Win32VisionABI.user32.PostThreadMessageW(
+                    wintypes.DWORD(self._hook_thread_id),
+                    wintypes.UINT(WM_QUIT),
+                    0,
+                    0,
+                )
+            except (OSError, AttributeError, ValueError) as e:
                 logger.debug("PostThreadMessageW notice: %s", e)
 
         if self._thread and self._thread.is_alive():
@@ -261,3 +239,17 @@ class WinEventHookDaemon:
         self._dispatch_thread = None
         self._hook_thread_id = None
         self._win_event_proc = None
+
+
+__all__ = [
+    "CHILDID_SELF",
+    "EVENT_OBJECT_NAMECHANGE",
+    "EVENT_SYSTEM_DIALOGSTART",
+    "EVENT_SYSTEM_FOREGROUND",
+    "OBJID_WINDOW",
+    "WINEVENTPROC",
+    "WINEVENT_OUTOFCONTEXT",
+    "WINEVENT_SKIPOWNPROCESS",
+    "WM_QUIT",
+    "WinEventHookDaemon",
+]

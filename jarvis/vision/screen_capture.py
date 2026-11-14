@@ -1,49 +1,41 @@
-"""Screen capture and visual perception for Jarvis 2.0."""
+"""Screen capture and visual perception for Jarvis 2.0.
+
+Provides leak-free, high-DPI desktop capture and in-RAM privacy redaction
+for multimodal visual perception and LLM reasoning.
+"""
+from __future__ import annotations
+
 import io
 import logging
-import sys
 
 from PIL import Image, ImageGrab
 
-logger = logging.getLogger("Jarvis.Vision")
+from jarvis.vision.win32_vision_abi import (
+    enable_per_monitor_v2_dpi,
+    scoped_desktop_access,
+)
+
+logger = logging.getLogger("Jarvis.Vision.ScreenCapture")
 
 
-def _ensure_desktop_access():
-    """Ensures thread is attached to the interactive Windows desktop."""
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            user32 = ctypes.windll.user32
-            # Enable DPI awareness (Per Monitor v2)
-            try:
-                ctypes.windll.shcore.SetProcessDpiAwareness(2)
-            except Exception:
-                try:
-                    user32.SetProcessDPIAware()
-                except Exception:
-                    pass
-
-            # Ensure thread desktop is attached to active interactive input desktop
-            hdesk = user32.OpenInputDesktop(0, False, 0x01FF)
-            if not hdesk:
-                hdesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
-            if hdesk:
-                user32.SetThreadDesktop(hdesk)
-        except Exception as e:
-            logger.debug(f"Desktop switch notice: {e}")
+def _ensure_desktop_access() -> None:
+    """Ensures thread is attached to the interactive Windows desktop and DPI v2 is configured."""
+    enable_per_monitor_v2_dpi()
 
 
 class ScreenPerception:
-    """Captures desktop screenshots and prepares images for Gemini Vision analysis."""
+    """Captures desktop screenshots and prepares images for visual perception analysis."""
 
     @staticmethod
     def capture_screen(max_width: int = 1600) -> Image.Image | None:
-        """Captures active screen and scales down proportionally for fast LLM inference."""
+        """Captures active screen with RAII desktop attachment and scales proportionally."""
         _ensure_desktop_access()
         try:
             from jarvis.vision.privacy_guard import ZOrderPrivacyGuard
 
-            screenshot = ImageGrab.grab(all_screens=False)
+            with scoped_desktop_access():
+                screenshot = ImageGrab.grab(all_screens=False)
+
             # In-RAM redaction of sensitive Z-order windows (passwords, banks, wallets)
             screenshot = ZOrderPrivacyGuard.get_instance().redact_image_in_place(screenshot)
 
@@ -53,8 +45,8 @@ class ScreenPerception:
                 new_size = (max_width, int(screenshot.height * scale))
                 screenshot = screenshot.resize(new_size, Image.Resampling.BILINEAR)
             return screenshot
-        except Exception as e:
-            logger.error(f"Failed to capture screen: {e}")
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.error("Failed to capture screen: %s", e)
             return None
 
     @staticmethod
@@ -66,3 +58,9 @@ class ScreenPerception:
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=quality)
         return buf.getvalue()
+
+
+__all__ = [
+    "ScreenPerception",
+    "_ensure_desktop_access",
+]
