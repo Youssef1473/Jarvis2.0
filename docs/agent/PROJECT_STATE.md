@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-14T09:15:00+01:00 (CET)
+- **Validation Timestamp:** 2026-11-14T09:50:00+01:00 (CET)
 - **Active Git Branch:** `feat/reliability-engineering-governance`
-- **Recorded HEAD Commit SHA:** `368572e524564cdbe6e96f0a605acc32a015839c`
-- **HEAD Commit Subject:** `refactor(ui): decompose server.py into security, metrics, telemetry, and domain route modules`
-- **Milestone State:** **UI Server Untangle-Codebase & Decomposition: COMPLETED & SEALED**
-- **Active Milestone:** **Reliability & Engineering Governance (Untangle-Codebase Pass 1 on orchestrator.py / Branch Review)**
+- **Recorded HEAD Commit SHA:** `7b09bd2fe0ed61e029935a702896d4832ddb50e7`
+- **HEAD Commit Subject:** `refactor(orchestrator): extract speech capture, lifecycle shutdown, and intent acknowledgments`
+- **Milestone State:** **Core Triad (brain.py, server.py, orchestrator.py) Untangle-Codebase: COMPLETED & SEALED**
+- **Active Milestone:** **Reliability & Engineering Governance (Branch Merge-Readiness Review)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
@@ -38,6 +38,16 @@
 
 - **Active Milestone:** `Reliability & Engineering Governance` (`feat/reliability-engineering-governance`)
 - **Completed Work:**
+  - **Untangle-Codebase — `jarvis/core/orchestrator.py` Architectural Decomposition (COMPLETED & SEALED):**
+    - **Commit SHA (`7b09bd2`):** `refactor(orchestrator): extract speech capture, lifecycle shutdown, and intent acknowledgments`
+    - **Line Reduction & Complexity:** Reduced `jarvis/core/orchestrator.py` from 1,003 lines to 707 lines (-296 lines, -29.5% footprint).
+    - **Speech Capture & Dynamic Silence:** Extracted VAD pause scaling, dynamic silence calculation, RMS hesitation damping, and Push-to-Talk frame buffering into `AdaptiveSpeechCapture` (`jarvis/audio/speech_capture.py`, 241 lines).
+    - **Lifecycle Shutdown & 64-bit ABI Hardening:** Extracted 6-phase shutdown sequence to `jarvis/core/orchestrator_lifecycle.py` (`OrchestratorShutdownCoordinator`, 153 lines) and fixed 64-bit Win32 HANDLE ABI in `trim_process_memory()`, setting `kernel32.GetCurrentProcess.restype = wintypes.HANDLE` and `psapi.EmptyWorkingSet.argtypes = [wintypes.HANDLE]`, eliminating `STATUS_INVALID_HANDLE` (`0xc0000008`).
+    - **Cognitive Routing & Topic Extraction:** Extracted departure/shutdown directive detection, immediate intent audio feedback, and topic phrase extraction to `jarvis/core/cognition/intent_acknowledgments.py` (168 lines).
+    - **Backward Compatibility & Patch Invariants:** Preserved all 10 module-scope patch targets in `jarvis.core.orchestrator` (`HotkeyListener`, `JarvisBrain`, `JarvisHUD`, `JarvisHeartbeat`, `MemoryManager`, `SafetyGate`, `SoundEffects`, `SpeechToText`, `TextToSpeech`, `WakeWordDetector`) and thin delegation methods for 100% backward compatibility.
+    - **Static Hygiene:** 0 Ruff diagnostics across all 4 files (`tools/lint.py`) and 0 AST structural invariant violations (`tools/diagnostics.py`).
+    - **Empirical Regression Verification:** Targeted orchestrator, audio & Win32 suites passed with **77 passed, 0 failed in 27.29s (Exit code 0)**; Tier 1 Fast Test Suite passed with **1,492 passed, 0 failed, 10 skipped in 150.20s (Exit code 0)**.
+    - **Test Manifest Accounting:** Verified exact 2,472 collected node manifest accounting invariant via `test_17_accurate_total_test_accounting` (0 node drift).
   - **Untangle-Codebase — `jarvis/ui/server.py` Architectural Decomposition (COMPLETED & SEALED):**
     - **Commit SHA (`368572e`):** `refactor(ui): decompose server.py into security, metrics, telemetry, and domain route modules`
     - **Line Reduction & Complexity:** Reduced `jarvis/ui/server.py` from 2,431 lines to 699 lines (-1,732 lines, -71.2% footprint).

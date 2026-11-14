@@ -3917,3 +3917,36 @@ Following independent engineering reviews of the Context B ingestion audit, the 
 4. **Git Hygiene & Commit Execution:**
    - Staged strictly the 11 UI refactoring files and committed `368572e524564cdbe6e96f0a605acc32a015839c`.
 
+
+---
+
+## Session Log: 2026-11-14 — Untangle-Codebase (orchestrator.py): Speech Capture, Lifecycle Shutdown & Intent Acknowledgments Decomposition
+
+- **Session Timestamp:** 2026-11-14T09:50:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Starting Git HEAD SHA:** `8cc8fc25eb7fe59415054431d08ace3231c73141` (`docs(governance): record server.py untangle-codebase closure`)
+- **Committed Git HEAD SHA:** `7b09bd2fe0ed61e029935a702896d4832ddb50e7` (`7b09bd2`)
+- **Commit Subject:** `refactor(orchestrator): extract speech capture, lifecycle shutdown, and intent acknowledgments`
+- **Active Milestone:** `Reliability & Engineering Governance (Core triad untangle-codebase completed & sealed)`
+
+### Summary of Actions & Deliverables
+1. **Architectural Decomposition of `jarvis/core/orchestrator.py`:**
+   - Reduced `jarvis/core/orchestrator.py` footprint from 1,003 lines to 707 lines (-296 lines, -29.5% footprint).
+   - Extracted speech capture, VAD pause scaling, hesitation damping, PTT buffering, audio record callbacks, and queue overflow tracking to `jarvis/audio/speech_capture.py` (`AdaptiveSpeechCapture`, 241 lines).
+   - Extracted 6-phase shutdown sequence to `jarvis/core/orchestrator_lifecycle.py` (`OrchestratorShutdownCoordinator`, 153 lines).
+   - Hardened Win32 64-bit ABI in `trim_process_memory()`: explicitly declared `kernel32.GetCurrentProcess.restype = wintypes.HANDLE` and `psapi.EmptyWorkingSet.argtypes = [wintypes.HANDLE]`, permanently eliminating `STATUS_INVALID_HANDLE` (`0xc0000008`) from `(HANDLE)-1` truncation.
+   - Extracted shutdown detection, intent acknowledgments, and topic phrase extraction to `jarvis/core/cognition/intent_acknowledgments.py` (`is_shutdown_command`, `get_immediate_intent_acknowledgment`, `extract_topic_label`, 168 lines).
+   - Preserved all 10 module-scope patch targets in `jarvis.core.orchestrator` (`HotkeyListener`, `JarvisBrain`, `JarvisHUD`, `JarvisHeartbeat`, `MemoryManager`, `SafetyGate`, `SoundEffects`, `SpeechToText`, `TextToSpeech`, `WakeWordDetector`) and thin delegation methods for 100% backward compatibility.
+   - Hardened `abort_active_command()` to use `getattr(self, "brain", None)` to safely handle uninitialized or mock instances created via `object.__new__(JarvisOrchestrator)`.
+2. **Static Analysis & Structural Diagnostics:**
+   - `python tools/lint.py check` verified 0 errors across `orchestrator.py`, `speech_capture.py`, `orchestrator_lifecycle.py`, and `intent_acknowledgments.py`.
+   - `python tools/diagnostics.py check` confirmed 0 AST-Grep structural invariant violations across all refactored modules (ALL DIAGNOSTICS PASSED).
+3. **Empirical Regression Verification:**
+   - Targeted orchestrator, audio, and Win32 suites: 77 tests across 9 files (`test_adaptive_listening.py`, `test_self_healing_and_shutdown_immunity.py`, `test_shutdown_lifecycle.py`, `test_execution_abort_killswitch.py`, `test_post_9aeec4c_convergence.py`, `test_residual_security_boundaries.py`, `test_phase4_workspace_isolation.py`, `test_win32_affinity.py`, `test_audio_reliability.py`) passed 100% in 27.29s (exit code 0).
+   - Full Tier 1 Fast Test Suite: `python tools/run_fast_tests.py --fast` passed across 4 workers:
+     `Passed: 1492, Failed: 0, Errors: 0, Skipped: 10 in 150.20s (Status: COMPLETED, Exit code: 0)`.
+   - Test manifest accounting invariant: `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed 100% (2,472 collected nodes accounted for, 0 drift).
+4. **Git Hygiene & Commit Execution:**
+   - Staged strictly the 4 refactored files and committed `7b09bd2fe0ed61e029935a702896d4832ddb50e7`.
