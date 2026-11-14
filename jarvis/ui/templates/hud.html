@@ -1685,6 +1685,13 @@
       <div class="pill" data-action="toggle-drawer" style="cursor: pointer; border-color: var(--holo-cyan);" title="Toggle Right-Flank Tactical Control Desk [F4 / Click]">
         <span style="color: var(--holo-cyan);">⚡ CONTROL FLANK</span>
       </div>
+      <div class="pill" id="workspacePill" style="border-color: var(--holo-cyan); display: flex; align-items: center; gap: 6px;" title="Active Multi-Tenant Workspace Partition">
+        <span style="color: var(--holo-cyan); font-weight: 700;">WS:</span>
+        <select id="workspaceSelect" aria-label="Select active workspace partition" style="background: transparent; color: var(--holo-cyan); border: none; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; cursor: pointer; outline: none; padding: 0 2px;">
+          <option value="ws_default" style="background: #060b14; color: var(--holo-cyan);">ws_default</option>
+        </select>
+        <span id="workspaceVectorBadge" class="thermal-badge tabular-nums inline-block" style="font-size: 0.65rem; padding: 1px 5px; color: var(--holo-emerald); border-color: var(--holo-emerald);" title="Vector Index Volume and Headroom against 2,500 ceiling">0/2500 VEC</span>
+      </div>
       <div class="pill">
         <span id="clockDisplay">00:00:00</span>
       </div>
@@ -1794,6 +1801,14 @@
         <div class="telemetry-row">
           <span class="telemetry-label">STAGED INTAKE</span>
           <span class="telemetry-val" id="telemetryStagedVal" style="color: var(--holo-emerald);">0 PENDING</span>
+        </div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">WORKSPACE</span>
+          <span class="telemetry-val" id="telemetryWsVal" style="color: var(--holo-cyan);">ws_default</span>
+        </div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">VEC0 HEADROOM</span>
+          <span class="telemetry-val tabular-nums inline-block" id="telemetryVecHeadroomVal" style="color: var(--holo-emerald);">2,500 REM</span>
         </div>
       </div>
     </section>
@@ -2157,6 +2172,10 @@
       domRefs.memoryCountVal = document.getElementById('memoryCountVal');
       domRefs.activeTimersVal = document.getElementById('activeTimersVal');
       domRefs.telemetryStagedVal = document.getElementById('telemetryStagedVal');
+      domRefs.workspaceSelect = document.getElementById('workspaceSelect');
+      domRefs.workspaceVectorBadge = document.getElementById('workspaceVectorBadge');
+      domRefs.telemetryWsVal = document.getElementById('telemetryWsVal');
+      domRefs.telemetryVecHeadroomVal = document.getElementById('telemetryVecHeadroomVal');
       domRefs.chatContainer = document.getElementById('chatContainer');
       domRefs.msgCount = document.getElementById('msgCount');
       domRefs.btnMute = document.getElementById('btnMute');
@@ -2211,6 +2230,14 @@
       const pdfFileInput = document.getElementById('pdfFileInput');
       if (pdfFileInput) {
         pdfFileInput.addEventListener('change', handlePdfUpload);
+      }
+
+      // 2b. Static Workspace Selector change listener
+      const wsSelect = document.getElementById('workspaceSelect');
+      if (wsSelect) {
+        wsSelect.addEventListener('change', (e) => {
+          handleWorkspaceSwitch(e.target.value);
+        });
       }
 
       // 3. Modal Backdrop Direct-Click Dismissals
@@ -3028,6 +3055,8 @@ void main() {
         handleAmbientTelemetry(data.data, data.timestamp);
       } else if (data.type === "tool_execution") {
         handleToolExecution(data.data, data.timestamp);
+      } else if (data.type === "workspace_switched") {
+        if (typeof loadWorkspaces === "function") loadWorkspaces();
       }
     }
 
@@ -4966,11 +4995,78 @@ void main() {
         .catch(() => {});
     }
 
+    async function loadWorkspaces() {
+      try {
+        const res = await fetch('/api/workspaces', { headers: jarvisHeaders() });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data || !data.workspaces) return;
+
+        const select = domRefs.workspaceSelect || document.getElementById('workspaceSelect');
+        if (select) {
+          select.innerHTML = '';
+          data.workspaces.forEach(wsItem => {
+            const opt = document.createElement('option');
+            opt.value = wsItem.workspace_id;
+            opt.textContent = `${wsItem.workspace_id} (${wsItem.facts_count} facts, ${wsItem.vectors_count} vec)`;
+            opt.style.background = '#060b14';
+            opt.style.color = 'var(--holo-cyan)';
+            if (wsItem.is_active || wsItem.workspace_id === data.active_workspace_id) {
+              opt.selected = true;
+            }
+            select.appendChild(opt);
+          });
+          if (data.active_workspace_id) {
+            select.value = data.active_workspace_id;
+          }
+        }
+
+        const badge = domRefs.workspaceVectorBadge || document.getElementById('workspaceVectorBadge');
+        if (badge) {
+          const tot = data.total_vectors !== undefined ? data.total_vectors : 0;
+          const ceil = data.vector_ceiling !== undefined ? data.vector_ceiling : 2500;
+          badge.textContent = `${tot}/${ceil} VEC`;
+        }
+
+        const wsVal = domRefs.telemetryWsVal || document.getElementById('telemetryWsVal');
+        if (wsVal && data.active_workspace_id) {
+          wsVal.textContent = data.active_workspace_id;
+        }
+
+        const headVal = domRefs.telemetryVecHeadroomVal || document.getElementById('telemetryVecHeadroomVal');
+        if (headVal && data.headroom_remaining !== undefined) {
+          headVal.textContent = `${data.headroom_remaining.toLocaleString()} REM`;
+        }
+      } catch (err) {
+        console.warn('Workspace list telemetry notice:', err);
+      }
+    }
+
+    async function handleWorkspaceSwitch(targetWs) {
+      if (!targetWs || targetWs.toLowerCase() === 'unscoped') return;
+      try {
+        const res = await fetch('/api/workspaces/switch', {
+          method: 'POST',
+          headers: jarvisHeaders(),
+          body: JSON.stringify({ target_workspace_id: targetWs }),
+        });
+        if (res.ok) {
+          await loadWorkspaces();
+          if (typeof renderIntelligenceTab === 'function' && activeDrawerTab === 'intelligence') {
+            renderIntelligenceTab();
+          }
+        }
+      } catch (err) {
+        console.error('Workspace switch error:', err);
+      }
+    }
+
     window.addEventListener('load', () => {
       initDomReferences();
       initDomEvents();
       initWebSocket();
       fetchInitialTelemetry();
+      loadWorkspaces();
       checkStagedDocuments();
       updateAgendaCountBadge();
 

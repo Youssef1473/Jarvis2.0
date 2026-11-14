@@ -293,6 +293,75 @@ class TestPhase4WorkspaceIsolation(unittest.TestCase):
         self.assertEqual(len(docs_b), 1)
         self.assertEqual(docs_b[0]["filename"], "plan_b.pdf")
 
+        # 8. Test _handle_workspaces_list and _handle_workspaces_switch
+        import asyncio
+        import json
+
+        # Query workspaces list
+        req_list = MagicMock()
+        req_list.query_params = {}
+        req_list.headers = {}
+        req_list.cookies = {}
+        list_resp = asyncio.run(ui_service._handle_workspaces_list(req_list))
+        self.assertEqual(list_resp.status_code, 200)
+        list_body = json.loads(list_resp.body.decode("utf-8"))
+        self.assertEqual(list_body["status"], "ok")
+        self.assertEqual(list_body["active_workspace_id"], "ws_alpha")
+        ws_ids = [w["workspace_id"] for w in list_body["workspaces"]]
+        self.assertIn("ws_alpha", ws_ids)
+        self.assertIn("ws_beta", ws_ids)
+        self.assertIn("ws_default", ws_ids)
+        self.assertNotIn("unscoped", ws_ids)
+
+        # Fail-closed 403 on unscoped query param
+        req_list_unscoped = MagicMock()
+        req_list_unscoped.query_params = {"workspace_id": "unscoped"}
+        req_list_unscoped.headers = {}
+        req_list_unscoped.cookies = {}
+        unscoped_list_resp = asyncio.run(ui_service._handle_workspaces_list(req_list_unscoped))
+        self.assertEqual(unscoped_list_resp.status_code, 403)
+
+        # Switch to ws_beta
+        req_switch = MagicMock()
+        req_switch.headers = {}
+        req_switch.cookies = {}
+
+        async def _mock_json_beta():
+            return {"target_workspace_id": "ws_beta"}
+
+        req_switch.json = _mock_json_beta
+        switch_resp = asyncio.run(ui_service._handle_workspaces_switch(req_switch))
+        self.assertEqual(switch_resp.status_code, 200)
+        switch_body = json.loads(switch_resp.body.decode("utf-8"))
+        self.assertEqual(switch_body["status"], "ok")
+        self.assertEqual(switch_body["active_workspace_id"], "ws_beta")
+        self.assertEqual(mock_orch.active_workspace_id, "ws_beta")
+        self.assertEqual(self.memory.get_active_workspace_id(), "ws_beta")
+
+        # Reject switch to unscoped (fail-closed 403)
+        req_switch_unscoped = MagicMock()
+        req_switch_unscoped.headers = {}
+        req_switch_unscoped.cookies = {}
+
+        async def _mock_json_unscoped():
+            return {"target_workspace_id": "unscoped"}
+
+        req_switch_unscoped.json = _mock_json_unscoped
+        unscoped_switch_resp = asyncio.run(ui_service._handle_workspaces_switch(req_switch_unscoped))
+        self.assertEqual(unscoped_switch_resp.status_code, 403)
+
+        # Reject switch to non-existent workspace (fail-closed 400)
+        req_switch_nonexistent = MagicMock()
+        req_switch_nonexistent.headers = {}
+        req_switch_nonexistent.cookies = {}
+
+        async def _mock_json_nonexistent():
+            return {"target_workspace_id": "ws_nonexistent"}
+
+        req_switch_nonexistent.json = _mock_json_nonexistent
+        nonexistent_switch_resp = asyncio.run(ui_service._handle_workspaces_switch(req_switch_nonexistent))
+        self.assertEqual(nonexistent_switch_resp.status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()
