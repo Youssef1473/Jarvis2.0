@@ -35,7 +35,9 @@ def test_spoken_timers():
     print("List result:\n", list_res)
     assert "Coffee Break" in list_res
 
-    # Test canceling specific timer
+    # Test canceling specific timer in clean turn
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().reset_turn()
     cancel_res = SkillRegistry.execute("cancel_timer", label="Coffee Break")
     print("Cancel result:", cancel_res)
     assert "cancelled" in cancel_res.lower()
@@ -49,7 +51,11 @@ def test_spoken_timers():
 
 def test_gemini_candidate_pool():
     print("\n--- 2. Testing Gemini Candidate Models Pool ---")
-    assert len(JarvisBrain.GEMINI_CANDIDATE_MODELS) >= 8
+    expected_pool = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite"]
+    assert JarvisBrain.GEMINI_CANDIDATE_MODELS == expected_pool
+    # Verify pruned obsolete aliases are absent
+    assert "gemini-3.7-flash" not in JarvisBrain.GEMINI_CANDIDATE_MODELS
+    assert "gemini-3.5-flash" not in JarvisBrain.GEMINI_CANDIDATE_MODELS
     print(f"Verified {len(JarvisBrain.GEMINI_CANDIDATE_MODELS)} candidate models configured for quota failover:")
     for m in JarvisBrain.GEMINI_CANDIDATE_MODELS:
         print(f"  • {m}")
@@ -63,7 +69,7 @@ def test_hybrid_brain_initialization_and_dispatch():
 
     memory = MemoryManager(cfg)
     safety = SafetyGate(cfg)
-    brain = JarvisBrain(cfg, memory, safety)
+    brain = JarvisBrain(cfg, memory, safety, antigravity_resolver=lambda: None)
 
     print("Active provider:", brain.provider)
     print("Ollama client available:", brain.ollama_client is not None)

@@ -208,6 +208,13 @@ def execute_workflow_reflex(
         if not skill_res.success:
             _record_macro_outcome(db_path, macro_name, success=False)
             status_val = "security_denied" if skill_res.error_type == "security_violation" else "failed"
+            from jarvis.core.security_boundaries import TurnTaintTracker
+            tracker = TurnTaintTracker.get_instance()
+            if tracker.is_tainted:
+                tracker.mark_tainted(
+                    source=f"workflow_reflex:{macro_name}",
+                    metadata={"macro_name": macro_name, "failed_step": step["step_index"]},
+                )
             return {
                 "status": status_val,
                 "macro_name": macro_name,
@@ -226,6 +233,13 @@ def execute_workflow_reflex(
                     actual_v = res.get(k)
                     if actual_v != expected_v:
                         _record_macro_outcome(db_path, macro_name, success=False)
+                        from jarvis.core.security_boundaries import TurnTaintTracker
+                        tracker = TurnTaintTracker.get_instance()
+                        if tracker.is_tainted:
+                            tracker.mark_tainted(
+                                source=f"workflow_reflex:{macro_name}",
+                                metadata={"macro_name": macro_name, "failed_step": step["step_index"]},
+                            )
                         return {
                             "status": "post_condition_failed",
                             "macro_name": macro_name,
@@ -236,6 +250,13 @@ def execute_workflow_reflex(
 
     _record_macro_outcome(db_path, macro_name, success=True)
     dur_ms = round((time.perf_counter() - t0) * 1000, 2)
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    tracker = TurnTaintTracker.get_instance()
+    if tracker.is_tainted:
+        tracker.mark_tainted(
+            source=f"workflow_reflex:{macro_name}",
+            metadata={"macro_name": macro_name, "steps_executed": len(step_results)},
+        )
     return {
         "status": "success",
         "macro_name": macro_name,
@@ -285,6 +306,12 @@ def list_compiled_reflex_macros(db_path: str = "data/jarvis_memory.db") -> dict[
         macros = [dict(row) for row in rows]
     finally:
         conn.close()
+
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().mark_tainted(
+        source="persistent_memory:compiled_reflex_macros",
+        metadata={"count": len(macros)},
+    )
     return {"status": "ok", "count": len(macros), "macros": macros}
 
 

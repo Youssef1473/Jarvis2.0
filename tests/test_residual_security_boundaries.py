@@ -335,7 +335,7 @@ class TestResidualSecurityBoundaries(unittest.TestCase):
 
     def test_orchestrator_stop_invokes_cdp_cleanup(self):
         """JarvisOrchestrator.stop() invokes clear_all_tab_sessions() cleanly."""
-        orch = JarvisOrchestrator(config={})
+        orch = JarvisOrchestrator(config={"llm": {"antigravity_resolver": lambda: None}})
         orch._running = True
         orch._stopped = False
 

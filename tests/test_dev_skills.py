@@ -1,11 +1,10 @@
 """Tests for Jarvis codebase self-engineering and developer tools."""
-import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import jarvis.skills.dev_shell
+import jarvis.skills.dev_shell  # noqa: F401
 from jarvis.core.security_boundaries import DualKeyApprovalManager
 from jarvis.skills.base import SkillRegistry
 
@@ -72,9 +71,20 @@ def test_dev_skills():
             bak_path.unlink()
 
         print("\n5. Testing git_status...")
-        git_res = SkillRegistry.execute("git_status")
-        print("Git status:\n" + git_res)
-        assert "Branch:" in git_res
+        # Negative test: unauthorized git_status fails closed
+        unauth_git_res = SkillRegistry.execute("git_status")
+        assert "Authorization Required" in unauth_git_res
+
+        # Unit test with contained process mock
+        import subprocess
+        from unittest.mock import patch
+        status_proc = subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=" M test.py", stderr="")
+        branch_proc = subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout="main\n", stderr="")
+        with patch("jarvis.skills.dev_shell.run_sandboxed_batch", side_effect=[status_proc, branch_proc]):
+            git_res = SkillRegistry.execute("git_status")
+            print("Git status:\n" + git_res)
+            assert "Branch: main" in git_res
+            assert "M test.py" in git_res
 
         print("\nALL SELF-ENGINEERING & CODEBASE DEVELOPER SKILLS PASSED CLEANLY!")
     finally:

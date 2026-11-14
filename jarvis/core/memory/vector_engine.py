@@ -1,10 +1,14 @@
 """Vector search, tokenization, TF-IDF, and RRF rank fusion algorithms for Jarvis 2.0."""
 from __future__ import annotations
 
+import logging
 import math
 import re
+import sqlite3
 from collections import Counter
-from typing import Any
+from typing import Any, ClassVar
+
+logger = logging.getLogger("Jarvis.Memory.VectorEngine")
 
 _FTS_STOPWORDS = {
     'what', 'whats', 'who', 'when', 'where', 'why', 'how', 'tell', 'me', 'about',
@@ -47,6 +51,47 @@ def sanitize_memory_taint(text: str) -> str:
         return ""
     cleaned = _MEMORY_TAINT_REGEX.sub("", str(text))
     return re.sub(r"[ \t]+", " ", cleaned).strip()
+
+
+_SENSITIVE_CREDENTIAL_PATTERNS: list[re.Pattern] = [
+    # Key-value assignments: api_key = "...", token: '...', password = "..."
+    re.compile(
+        r"(?:api[_-]?key|secret|password|token|bearer)\s*[:=]\s*['\"]?[A-Za-z0-9_\-\.~+/]{8,}['\"]?",
+        re.IGNORECASE,
+    ),
+    # GitHub personal access tokens
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b", re.IGNORECASE),
+    # OpenAI API keys
+    re.compile(r"\bsk-[A-Za-z0-9]{20,}\b", re.IGNORECASE),
+    # AWS Access Key IDs
+    re.compile(r"\b(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b"),
+    # Google API keys
+    re.compile(r"\bAIza[A-Za-z0-9_\-]{30,}\b", re.IGNORECASE),
+    # JWT tokens: eyJ...
+    re.compile(
+        r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b",
+        re.IGNORECASE,
+    ),
+    # Bearer authentication header
+    re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.]{15,}\b", re.IGNORECASE),
+]
+
+
+def scrub_sensitive_credentials(text: str) -> str:
+    """Replaces sensitive API keys, tokens, and passwords with [REDACTED_CREDENTIAL]."""
+    if not text:
+        return ""
+    scrubbed = str(text)
+    for pat in _SENSITIVE_CREDENTIAL_PATTERNS:
+        scrubbed = pat.sub("[REDACTED_CREDENTIAL]", scrubbed)
+    return scrubbed
+
+
+def contains_unredacted_credentials(text: str) -> bool:
+    """Returns True if the text contains recognizable credential tokens or secret assignments."""
+    if not text:
+        return False
+    return any(pat.search(str(text)) for pat in _SENSITIVE_CREDENTIAL_PATTERNS)
 
 
 def fuse_vec_and_fts_rrf(
@@ -108,7 +153,38 @@ class VectorMemoryEngine:
     """Local vector recall engine using TF-IDF subword and token n-gram vectors with cosine similarity.
     Runs 100% locally with zero external network or model download dependencies in <1ms."""
 
-    SEMANTIC_SYNONYMS = {
+    WORKSPACE_VECTOR_WARNING_THRESHOLD: ClassVar[int] = 2000
+    WORKSPACE_VECTOR_CAPACITY_LIMIT: ClassVar[int] = 2500
+
+    @classmethod
+    def check_workspace_vector_capacity(cls, conn: sqlite3.Connection, workspace_id: str | None) -> None:
+        """Validates workspace vector capacity invariant (< 2,500 vectors per workspace).
+        Enforces P95 latency bounds (< 15 ms).
+        """
+        if not workspace_id:
+            return
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT count(*) FROM facts_vec WHERE workspace_id = ?", (workspace_id,))
+            row = cur.fetchone()
+            count = row[0] if row else 0
+        except sqlite3.OperationalError:
+            # facts_vec virtual table does not exist (degraded vector engine mode)
+            return
+        if count >= cls.WORKSPACE_VECTOR_CAPACITY_LIMIT:
+            raise RuntimeError(
+                f"Workspace '{workspace_id}' vector capacity limit reached ({count}/{cls.WORKSPACE_VECTOR_CAPACITY_LIMIT}). "
+                "Compaction or pruning required to maintain sub-15ms KNN latency."
+            )
+        if count >= cls.WORKSPACE_VECTOR_WARNING_THRESHOLD:
+            logger.warning(
+                "Workspace '%s' vector count (%d) exceeds warning threshold (%d). Compaction recommended.",
+                workspace_id,
+                count,
+                cls.WORKSPACE_VECTOR_WARNING_THRESHOLD,
+            )
+
+    SEMANTIC_SYNONYMS: ClassVar[dict[str, list[str]]] = {
         "editor": ["ide", "vscode", "code", "programming", "sublime", "pycharm", "cursor", "neovim", "vim"],
         "ide": ["editor", "vscode", "code", "development", "programming"],
         "code": ["programming", "script", "developer", "ide", "editor", "software"],

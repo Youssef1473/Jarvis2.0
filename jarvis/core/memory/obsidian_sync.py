@@ -16,7 +16,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from jarvis.core.memory import sanitize_fts5_query
 
@@ -71,7 +71,10 @@ class ObsidianNoteParser:
             loaded = yaml.safe_load(raw_yaml)
             if isinstance(loaded, dict):
                 parsed = loaded
-        except Exception:
+        except (ImportError, ValueError, AttributeError):
+            pass
+        except Exception as pyyaml_err:  # noqa: BLE001 - Resilient fallback to regex parser
+            logger.debug("PyYAML parse note: %s", pyyaml_err)
             # 2. Resilient fallback key-value / list regex parser
             for line in raw_yaml.splitlines():
                 line = line.strip()
@@ -225,7 +228,7 @@ class ObsidianNoteParser:
 class ObsidianContextSyncEngine:
     """Non-blocking, thread-isolated background sync engine for Obsidian Markdown vaults."""
 
-    IGNORED_DIRS = {
+    IGNORED_DIRS: ClassVar[set[str]] = {
         ".obsidian", ".git", ".trash", ".stversions", ".vscode", "node_modules", ".cache"
     }
 
@@ -297,8 +300,8 @@ class ObsidianContextSyncEngine:
         # Signal DB queue termination
         try:
             self._db_queue.put(None, timeout=0.5)
-        except Exception:
-            pass
+        except (queue.Full, ValueError) as q_err:
+            logger.debug("DB queue teardown note: %s", q_err)
 
         if self._scan_thread and self._scan_thread.is_alive():
             self._scan_thread.join(timeout=timeout)
@@ -395,24 +398,14 @@ class ObsidianContextSyncEngine:
                     try:
                         c.execute("INSERT INTO obsidian_chunks_fts(obsidian_chunks_fts) VALUES('rebuild')")
                         c.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('obsidian_fts5_initialized', '1')")
-                    except Exception as rb_err:
+                    except sqlite3.OperationalError as rb_err:
                         logger.debug("Obsidian FTS5 initial rebuild notice: %s", rb_err)
-            except Exception as fts_err:
+            except sqlite3.Error as fts_err:
                 logger.warning("Obsidian FTS5 virtual table could not be initialized: %s", fts_err)
 
-        try:
-            from jarvis.core.memory.sqlite_base import SingleWriterActor
-            SingleWriterActor.get_or_create(self.db_path).execute_write(_schema_defs)
-        except Exception:
-            if conn is not None:
-                _schema_defs(conn)
-            else:
-                c = sqlite3.connect(str(self.db_path), check_same_thread=False)
-                try:
-                    with c:
-                        _schema_defs(c)
-                finally:
-                    c.close()
+        from jarvis.core.memory.sqlite_base import SingleWriterActor
+        fallback_factory = (lambda: conn) if conn is not None else (lambda: sqlite3.connect(str(self.db_path), check_same_thread=False))
+        SingleWriterActor.execute_or_fallback(self.db_path, _schema_defs, fallback_factory)
 
     def _apply_ops_to_conn(self, conn: sqlite3.Connection, ops: list[dict[str, Any]]) -> None:
         """Applies a batch of obsidian sync operations to SQLite."""
@@ -490,7 +483,7 @@ class ObsidianContextSyncEngine:
                 SingleWriterActor.get_or_create(self.db_path).execute_write(
                     lambda c: self._apply_ops_to_conn(c, current_ops)
                 )
-            except Exception as e:
+            except (sqlite3.Error, RuntimeError, TimeoutError) as e:
                 logger.error("Obsidian DB batch commit error: %s", e)
 
         while not self._stop_event.is_set():
@@ -524,7 +517,7 @@ class ObsidianContextSyncEngine:
 
             try:
                 self.sync_now()
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - Periodic background sync pass must isolate unhandled scan errors
                 logger.error("Error during Obsidian incremental scan pass: %s", err)
 
             # Wait for next interval or explicit manual trigger
@@ -557,12 +550,12 @@ class ObsidianContextSyncEngine:
                                 stat = entry.stat()
                                 discovered_rel_paths.add(rel_path)
                                 self._process_file_delta(rel_path, Path(entry.path), stat.st_mtime, stats)
-                            except Exception as file_err:
+                            except (OSError, UnicodeDecodeError, ValueError) as file_err:
                                 logger.debug("Skipping file '%s': %s", entry.name, file_err)
 
                         # Micro-sleep to yield CPU and protect sub-100ms CUDA voice pipeline
                         time.sleep(0.001)
-            except Exception as scan_err:
+            except (OSError, PermissionError) as scan_err:
                 logger.debug("Directory scan notice for '%s': %s", current_dir, scan_err)
 
         _scan_dir(self.vault_path)
@@ -611,7 +604,7 @@ class ObsidianContextSyncEngine:
                 SingleWriterActor.get_or_create(self.db_path).execute_write(
                     lambda c: self._apply_ops_to_conn(c, ops)
                 )
-            except Exception as e:
+            except (sqlite3.Error, RuntimeError, TimeoutError) as e:
                 logger.error("Sync direct DB flush error: %s", e)
 
     def _process_file_delta(self, rel_path: str, full_path: Path, mtime: float, stats: SyncStats):
@@ -627,7 +620,7 @@ class ObsidianContextSyncEngine:
         try:
             with open(full_path, encoding="utf-8", errors="replace") as f:
                 content = f.read()
-        except Exception as e:
+        except OSError as e:
             logger.warning("Could not read note '%s': %s", rel_path, e)
             return
 
@@ -706,7 +699,7 @@ class ObsidianContextSyncEngine:
                         return results
                 finally:
                     conn.close()
-            except Exception as e:
+            except sqlite3.Error as e:
                 logger.debug("Obsidian FTS5 query_context fallback to LIKE: %s", e)
 
         # Standard LIKE token hit-density fallback

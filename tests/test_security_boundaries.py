@@ -1117,13 +1117,26 @@ class TestAsyncApprovalPropagation(unittest.IsolatedAsyncioTestCase):
         args_a = {"op": "outer"}
         args_b = {"op": "inner"}
 
-        @SkillRegistry.register(name=tool_b, description="Inner tool", risk_level=0)
+        @SkillRegistry.register(
+            name=tool_b,
+            description="Inner tool",
+            risk_level=0,
+            read_only=True,
+            data_provenance="trusted_system",
+        )
         def _inner_fn(op: str):
             return "inner_ok"
 
+        SkillRegistry.certify_test_read_only_tool(tool_b)
+
         outer_authorized_post_inner = None
 
-        @SkillRegistry.register(name=tool_a, description="Outer tool", risk_level=2)
+        @SkillRegistry.register(
+            name=tool_a,
+            description="Outer tool",
+            risk_level=2,
+            data_provenance="trusted_system",
+        )
         def _outer_fn(op: str, user_approved: bool = False):
             nonlocal outer_authorized_post_inner
             inner_res = orchestrator.execute_step(tool_b, args_b)
@@ -1286,14 +1299,27 @@ class TestAsyncApprovalPropagation(unittest.IsolatedAsyncioTestCase):
 
         inner_borrowed_outer = None
 
-        @SkillRegistry.register(name=tool_inner, description="Inner unapproved", risk_level=0)
+        @SkillRegistry.register(
+            name=tool_inner,
+            description="Inner unapproved",
+            risk_level=0,
+            read_only=True,
+            data_provenance="trusted_system",
+        )
         def _inner_tool_fn(target: str):
             nonlocal inner_borrowed_outer
             # Inner tool attempts to verify authorization for outer tool's action!
             inner_borrowed_outer = self.approval_mgr.verify_and_consume_active_context(tool_outer, args_outer)
             return "inner_done"
 
-        @SkillRegistry.register(name=tool_outer, description="Outer approved", risk_level=2)
+        SkillRegistry.certify_test_read_only_tool(tool_inner)
+
+        @SkillRegistry.register(
+            name=tool_outer,
+            description="Outer approved",
+            risk_level=2,
+            data_provenance="trusted_system",
+        )
         def _outer_tool_fn(target: str, user_approved: bool = False):
             # Outer tool calls inner tool via orchestrator
             return orchestrator.execute_step(tool_inner, args_inner)
@@ -1482,28 +1508,71 @@ class TestExternalIngestionProvenance(unittest.TestCase):
         self.assertEqual(self.tracker.tainting_sources, ())
 
     def test_trusted_local_operations_do_not_taint(self):
-        """M1 Req 8: Ordinary trusted local operations do not mark the turn as tainted."""
+        """M1 Req 8: Ordinary verified trusted system telemetry operations do not mark the turn as tainted."""
         local_tools = [
-            ("recall_fact", {"key": "user_name"}),
-            ("list_directory", {"path": "."}),
             ("get_current_time_and_date", {}),
-            ("get_active_window", {}),
+            ("get_battery_status", {}),
+            ("get_system_vitals", {}),
+            ("audit_memory_heap", {}),
         ]
         for tool_name, args in local_tools:
             decision = self.tracker.evaluate_tool_execution(tool_name, args, risk_level=0)
             self.assertTrue(decision.allowed)
             self.assertFalse(
                 self.tracker.is_tainted,
-                f"FAIL M1: Trusted local tool '{tool_name}' erroneously tainted the turn!",
+                f"FAIL M1: Trusted system tool '{tool_name}' erroneously tainted the turn!",
             )
             self.assertEqual(self.tracker.tainting_sources, ())
+
+    def test_untrusted_desktop_and_filesystem_tools_taint_turn(self):
+        """P2: Tools returning window titles, filenames, user code, or external data taint the turn."""
+        untrusted_query_tools = [
+            ("list_directory", {"folder_path": "."}),
+            ("list_running_applications", {}),
+            ("get_recent_workspace_mutations", {}),
+            ("list_custom_skills", {}),
+            ("inspect_file_locks", {"file_path": "test.txt"}),
+            ("inspect_port_holders", {"port": 8080}),
+            ("morning_protocol", {"city": "London"}),
+            ("list_staged_documents", {}),
+            ("list_photos", {}),
+            ("check_code_diagnostics", {}),
+            ("list_background_tasks", {}),
+            ("verify_learned_habits", {}),
+            ("list_compiled_reflex_macros", {}),
+            ("profile_runtime", {}),
+            ("list_active_timers", {}),
+            ("record_workspace_mutation", {"action": "write", "file_path": "test.txt"}),
+            ("inspect_ram_hogs", {}),
+            ("run_system_troubleshooting", {}),
+            ("jarvis_doctor", {}),
+            ("execute_protocol", {"protocol_name": "work"}),
+        ]
+        for tool_name, args in untrusted_query_tools:
+            self.tracker.reset_turn()
+            self.assertFalse(self.tracker.is_tainted)
+            decision = self.tracker.evaluate_tool_execution(tool_name, args, risk_level=0)
+            self.assertTrue(decision.allowed)
+            self.assertTrue(
+                self.tracker.is_tainted,
+                f"FAIL P2: Questionable tool '{tool_name}' failed to taint the turn!",
+            )
+            self.assertIn(tool_name, self.tracker.tainting_sources)
 
     def test_failure_handling_preserves_monotonicity_and_does_not_taint_on_trusted_errors(self):
         """M1 Req 9: Errors in local operations do not taint; errors during ingestion do not clear taint."""
         # Error in trusted local tool does not taint
-        @SkillRegistry.register(name="_failing_local_tool", description="Test failure", risk_level=0)
+        @SkillRegistry.register(
+            name="_failing_local_tool",
+            description="Test failure",
+            risk_level=0,
+            read_only=True,
+            data_provenance="trusted_system",
+        )
         def _failing_fn():
             raise FileNotFoundError("Local file not found")
+
+        SkillRegistry.certify_test_read_only_tool("_failing_local_tool")
 
         orchestrator = ToolOrchestrator(taint_tracker=self.tracker)
         res = orchestrator.execute_step("_failing_local_tool", {})

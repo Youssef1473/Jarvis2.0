@@ -39,8 +39,7 @@ class TestSelfHealingAndShutdownImmunity(unittest.TestCase):
 
     def test_antigravity_streaming_subprocess_flags(self):
         """Verifies AntigravityBridge._generate_streaming uses CREATE_NEW_PROCESS_GROUP and DEVNULL stderr."""
-        bridge = AntigravityBridge()
-        bridge.agy_path = "dummy_agy.exe"
+        bridge = AntigravityBridge(agy_path="dummy_agy.exe")
 
         with patch("subprocess.Popen") as mock_popen:
             mock_proc = MagicMock()

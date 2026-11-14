@@ -2,6 +2,8 @@
 name: security-auditor
 description: Specialized security auditor auditing trust boundaries, credential scrubbing, SSRF egress, and process sandbox isolation.
 subagent: true
+mainAgent: false
+model: flash
 tools:
   - read_file
   - search_web

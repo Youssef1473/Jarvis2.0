@@ -10,9 +10,32 @@ import sqlite3
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 logger = logging.getLogger("Jarvis.Memory.SqliteBase")
+
+
+class SingleWriterError(RuntimeError):
+    """Base error for SingleWriterActor failures."""
+
+    cancelled_before_execution: bool = True
+    timed_out_in_flight: bool = False
+    transaction_outcome_unknown: bool = False
+    transaction_outcome: str = "not_executed"
+
+
+class ActorUnavailableError(SingleWriterError):
+    """Raised when SingleWriterActor is not running before queuing a write operation
+
+    and its worker thread is dead. Direct connection fallback is safe.
+    """
+
+
+class ActorStoppingError(SingleWriterError):
+    """Raised when SingleWriterActor is stopping while its worker thread is still alive.
+
+    Direct connection fallback is strictly prohibited to prevent concurrent SQLite writers.
+    """
 
 
 class SingleWriterActor:
@@ -25,46 +48,130 @@ class SingleWriterActor:
     STATE_STOPPING = "stopping"
     STATE_STOPPED = "stopped"
 
-    _instances: dict[str, SingleWriterActor] = {}
-    _registry_lock: threading.RLock = threading.RLock()
+    _instances: ClassVar[dict[str, SingleWriterActor]] = {}
+    _registry_lock: ClassVar[threading.RLock] = threading.RLock()
+    _db_write_locks: ClassVar[dict[str, threading.RLock]] = {}
+    _active_fallback_threads: ClassVar[dict[str, int]] = {}
+
+    @classmethod
+    def _get_db_lock(cls, resolved_key: str) -> threading.RLock:
+        with cls._registry_lock:
+            lock = cls._db_write_locks.get(resolved_key)
+            if lock is None:
+                lock = threading.RLock()
+                cls._db_write_locks[resolved_key] = lock
+            return lock
 
     @classmethod
     def get_or_create(cls, db_path: Path | str) -> SingleWriterActor:
         """Retrieves or instantiates a singleton SingleWriterActor for the given database path."""
         resolved_key = os.path.normcase(str(Path(db_path).resolve()))
-        with cls._registry_lock:
-            existing = cls._instances.get(resolved_key)
-            if existing is not None and existing._running:
-                return existing
+        db_lock = cls._get_db_lock(resolved_key)
+        with db_lock:
+            current_tid = threading.get_ident()
+            with cls._registry_lock:
+                if cls._active_fallback_threads.get(resolved_key) == current_tid:
+                    raise SingleWriterError(
+                        f"Reentrant SingleWriterActor instantiation prohibited: thread {current_tid} "
+                        f"is actively executing a direct fallback write for database '{resolved_key}'."
+                    )
+
+                existing = cls._instances.get(resolved_key)
+                if existing is not None:
+                    with existing._state_lock:
+                        if existing._state == cls.STATE_RUNNING and existing._thread.is_alive():
+                            return existing
+
+                    if not existing._thread.is_alive():
+                        cls._instances.pop(resolved_key, None)
+                        existing = None
+
+            # Concurrency Invariant: Never allow two live writer threads for the same database.
+            # Release _registry_lock while waiting so the terminating worker can acquire _registry_lock to pop itself.
+            if existing is not None and existing._thread.is_alive():
+                if threading.current_thread() is not existing._thread:
+                    existing._thread.join(timeout=0.2)
+                with cls._registry_lock:
+                    if existing._thread.is_alive():
+                        raise ActorStoppingError(
+                            f"Previous SingleWriterActor for {resolved_key} is still terminating "
+                            f"(state={existing._state}, thread={existing._thread.name}); cannot instantiate a competing writer."
+                        )
+                    cls._instances.pop(resolved_key, None)
+
             actor = cls(Path(db_path))
-            cls._instances[resolved_key] = actor
             return actor
 
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
-        with self._registry_lock:
-            self._instances[os.path.normcase(str(self.db_path.resolve()))] = self
-        self._queue: queue.Queue[tuple[Callable[[sqlite3.Connection], Any], threading.Event, list, list, threading.Event, dict, threading.Lock] | None] = queue.Queue()
-        self._state = self.STATE_RUNNING
-        self._state_lock = threading.Lock()
-        self._vector_extension_loaded: bool = False
-        self._vector_load_error: str | None = None
-        try:
-            import sqlite_vec
-            probe = sqlite3.connect(":memory:")
-            try:
-                probe.enable_load_extension(True)
-                sqlite_vec.load(probe)
-                self._vector_extension_loaded = True
-                self._vector_load_error = None
-            finally:
-                probe.close()
-        except Exception as exc:
-            self._vector_extension_loaded = False
-            self._vector_load_error = str(exc)
+        resolved_key = os.path.normcase(str(self.db_path.resolve()))
+        db_lock = self._get_db_lock(resolved_key)
+        with db_lock:
+            with self._registry_lock:
+                current_tid = threading.get_ident()
+                if self._active_fallback_threads.get(resolved_key) == current_tid:
+                    raise SingleWriterError(
+                        f"Direct SingleWriterActor instantiation prohibited: thread {current_tid} "
+                        f"is actively executing a direct fallback write for database '{resolved_key}'."
+                    )
+                existing = self._instances.get(resolved_key)
+                if existing is not None and existing is not self and existing._thread.is_alive():
+                    if existing._state != self.STATE_RUNNING:
+                        raise ActorStoppingError(
+                            f"Previous SingleWriterActor for {resolved_key} is still terminating "
+                            f"(state={existing._state}, thread={existing._thread.name}); cannot instantiate a competing writer."
+                        )
+                    raise SingleWriterError(
+                        f"Active SingleWriterActor already exists for '{resolved_key}' "
+                        f"(state={existing._state}, thread={existing._thread.name}). Use get_or_create()."
+                    )
 
-        self._thread = threading.Thread(target=self._worker_loop, daemon=True, name="JarvisSingleWriter")
-        self._thread.start()
+            self._current_item: tuple | None = None
+            self._queue: queue.Queue[
+                tuple[Callable[[sqlite3.Connection], Any], threading.Event, list, list, threading.Event, dict, threading.Lock]
+                | None
+            ] = queue.Queue()
+            self._state = self.STATE_RUNNING
+            self._state_lock = threading.Lock()
+            self._vector_extension_loaded: bool = False
+            self._vector_load_error: str | None = None
+            try:
+                import sqlite_vec
+
+                probe = sqlite3.connect(":memory:")
+                try:
+                    probe.enable_load_extension(True)
+                    sqlite_vec.load(probe)
+                    self._vector_extension_loaded = True
+                    self._vector_load_error = None
+                finally:
+                    probe.close()
+            except Exception as exc:  # noqa: BLE001
+                self._vector_extension_loaded = False
+                self._vector_load_error = str(exc)
+
+            self._thread = threading.Thread(target=self._worker_loop, daemon=True, name="JarvisSingleWriter")
+
+            try:
+                with self._registry_lock:
+                    self._instances[resolved_key] = self
+                self._thread.start()
+            except BaseException:
+                if self._thread.is_alive():
+                    # Concurrency Invariant: Thread was launched before exception occurred.
+                    # Fail closed: safely stop the worker and never remove registration while worker is alive.
+                    try:
+                        self.stop(drain=False, timeout=1.0)
+                    except Exception as stop_err:  # noqa: BLE001
+                        logger.warning("Error stopping partially initialized actor worker: %s", stop_err)
+                    with self._registry_lock:
+                        if not self._thread.is_alive() and self._instances.get(resolved_key) is self:
+                            self._instances.pop(resolved_key, None)
+                else:
+                    with self._registry_lock:
+                        if self._instances.get(resolved_key) is self:
+                            self._instances.pop(resolved_key, None)
+                raise
 
     @property
     def is_vector_extension_loaded(self) -> bool:
@@ -103,6 +210,7 @@ class SingleWriterActor:
         c.execute("PRAGMA cache_size=-64000;")
         c.execute("PRAGMA temp_store=MEMORY;")
         c.execute("PRAGMA recursive_triggers=ON;")
+        c.execute("PRAGMA foreign_keys=ON;")
         c.row_factory = sqlite3.Row
         try:
             import sqlite_vec
@@ -110,7 +218,7 @@ class SingleWriterActor:
             sqlite_vec.load(c)
             self._vector_extension_loaded = True
             self._vector_load_error = None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._vector_extension_loaded = False
             self._vector_load_error = str(exc)
             logger.warning(
@@ -124,91 +232,179 @@ class SingleWriterActor:
         is_temp = "tmp" in key.lower() or "temp" in key.lower() or self.db_path.name.startswith("test_")
 
         conn: sqlite3.Connection | None = None
-        if not is_temp:
-            try:
-                conn = self._create_conn()
-            except Exception as e:
-                logger.debug("SingleWriterActor persistent conn init note: %s", e)
-
-        while True:
-            with self._state_lock:
-                if self._state == self.STATE_STOPPED:
-                    break
-            try:
-                item = self._queue.get(timeout=0.1)
-            except queue.Empty:
-                with self._state_lock:
-                    if self._state != self.STATE_RUNNING and self._queue.empty():
-                        break
-                continue
-
-            if item is None:
-                self._queue.task_done()
-                break
-
-            func, done_evt, res_box, err_box, cancel_evt, status, item_lock = item
-
-            # Check if caller already timed out or cancelled this write under mutex
-            with item_lock:
-                if cancel_evt.is_set() or status.get("phase") == "cancelled_before_execution":
-                    status["phase"] = "cancelled_before_execution"
-                    done_evt.set()
-                    self._queue.task_done()
-                    continue
-                # Atomically commit to executing this item so caller cannot cancel before execution
-                status["phase"] = "executing"
-
-            local_conn = conn
-            opened_temp = False
-            if local_conn is None:
+        try:
+            if not is_temp:
                 try:
-                    local_conn = self._create_conn()
-                    opened_temp = True
-                except Exception as ce:
-                    with item_lock:
-                        err_box.append(ce)
-                        status["phase"] = "failed"
-                    done_evt.set()
-                    self._queue.task_done()
+                    conn = self._create_conn()
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("SingleWriterActor persistent conn init note: %s", e)
+
+            while True:
+                with self._state_lock:
+                    if self._state == self.STATE_STOPPED:
+                        break
+                try:
+                    item = self._queue.get(timeout=0.1)
+                except queue.Empty:
+                    with self._state_lock:
+                        if self._state != self.STATE_RUNNING and self._queue.empty():
+                            break
                     continue
 
-            try:
-                with local_conn:
-                    result = func(local_conn)
-                with item_lock:
-                    res_box.append(result)
-                    status["phase"] = "completed"
-            except Exception as e:
-                with item_lock:
-                    err_box.append(e)
-                    status["phase"] = "failed"
-            finally:
-                if opened_temp and local_conn is not None:
-                    try:
-                        local_conn.close()
-                    except Exception:
-                        pass
-                done_evt.set()
-                self._queue.task_done()
+                if item is None:
+                    self._queue.task_done()
+                    break
 
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
+                self._current_item = item
+                func, done_evt, res_box, err_box, cancel_evt, status, item_lock = item
+
+                # Check if caller already timed out or cancelled this write under mutex
+                with item_lock:
+                    if cancel_evt.is_set() or status.get("phase") == "cancelled_before_execution":
+                        status["phase"] = "cancelled_before_execution"
+                        done_evt.set()
+                        self._queue.task_done()
+                        self._current_item = None
+                        continue
+                    status["phase"] = "preparing"
+                    status["callback_started"] = False
+
+                local_conn = conn
+                opened_temp = False
+                if local_conn is None:
+                    try:
+                        local_conn = self._create_conn()
+                        opened_temp = True
+                    except BaseException as ce:
+                        with item_lock:
+                            if isinstance(ce, Exception):
+                                conn_err = ce
+                            else:
+                                conn_err = RuntimeError(
+                                    f"Worker loop fatal {type(ce).__name__} during connection initialization; "
+                                    "write was not executed."
+                                )
+                            conn_err.cancelled_before_execution = True
+                            conn_err.timed_out_in_flight = False
+                            conn_err.transaction_outcome_unknown = False
+                            conn_err.transaction_outcome = "not_executed"
+                            err_box.append(conn_err)
+                            status["phase"] = "failed_before_callback"
+                        done_evt.set()
+                        self._queue.task_done()
+                        self._current_item = None
+                        if not isinstance(ce, Exception):
+                            raise
+                        continue
+
+                with item_lock:
+                    status["phase"] = "executing"
+                    status["callback_started"] = True
+
+                try:
+                    with local_conn:
+                        result = func(local_conn)
+                    with item_lock:
+                        res_box.append(result)
+                        status["phase"] = "completed"
+                except Exception as e:  # noqa: BLE001
+                    with item_lock:
+                        err_box.append(e)
+                        status["phase"] = "failed"
+                except BaseException as fatal_be:
+                    with item_lock:
+                        status["phase"] = "failed"
+                        fatal_err = RuntimeError(
+                            f"Worker loop fatal {type(fatal_be).__name__} during write execution; "
+                            "transaction outcome is unknown."
+                        )
+                        fatal_err.cancelled_before_execution = False
+                        fatal_err.timed_out_in_flight = False
+                        fatal_err.transaction_outcome_unknown = True
+                        fatal_err.transaction_outcome = "unknown"
+                        err_box.append(fatal_err)
+                    raise
+                finally:
+                    if opened_temp and local_conn is not None:
+                        try:
+                            local_conn.close()
+                        except Exception as close_err:  # noqa: BLE001
+                            logger.debug("Error closing temporary local_conn: %s", close_err)
+                    done_evt.set()
+                    self._queue.task_done()
+                    self._current_item = None
+        except BaseException as fatal_exc:
+            logger.critical("SingleWriterActor worker loop encountered fatal error: %s", fatal_exc)
+            raise
+        finally:
+            with self._state_lock:
+                self._state = self.STATE_STOPPED
+            if self._current_item is not None:
+                _, done_evt, _, err_box, cancel_evt, status, item_lock = self._current_item
+                with item_lock:
+                    if not done_evt.is_set():
+                        callback_started = status.get("callback_started", False)
+                        status["phase"] = "failed"
+                        if not err_box:
+                            if callback_started:
+                                active_err = RuntimeError(
+                                    "SingleWriterActor worker terminated fatally while write was executing; "
+                                    "transaction outcome is unknown."
+                                )
+                                active_err.cancelled_before_execution = False
+                                active_err.timed_out_in_flight = False
+                                active_err.transaction_outcome_unknown = True
+                                active_err.transaction_outcome = "unknown"
+                            else:
+                                active_err = RuntimeError(
+                                    "SingleWriterActor worker terminated fatally before callback execution began; "
+                                    "write was not executed."
+                                )
+                                active_err.cancelled_before_execution = True
+                                active_err.timed_out_in_flight = False
+                                active_err.transaction_outcome_unknown = False
+                                active_err.transaction_outcome = "not_executed"
+                            err_box.append(active_err)
+                        done_evt.set()
+                self._current_item = None
+            self._drain_and_reject_pending(
+                reason=RuntimeError("SingleWriterActor worker terminated unexpectedly; queued write rejected.")
+            )
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception as close_err:  # noqa: BLE001
+                    logger.debug("SingleWriterActor persistent conn close note: %s", close_err)
+            with self._registry_lock:
+                resolved_key = os.path.normcase(str(self.db_path.resolve()))
+                if self._instances.get(resolved_key) is self:
+                    self._instances.pop(resolved_key, None)
 
     def execute_write(self, func: Callable[[sqlite3.Connection], Any], timeout: float = 30.0) -> Any:
-        with self._state_lock:
-            if self._state != self.STATE_RUNNING:
-                raise RuntimeError(f"SingleWriterActor is {self._state}; cannot accept new write operations.")
-
         done_evt = threading.Event()
         cancel_evt = threading.Event()
         res_box: list = []
         err_box: list = []
         status: dict = {"phase": "pending"}
         item_lock = threading.Lock()
-        self._queue.put((func, done_evt, res_box, err_box, cancel_evt, status, item_lock))
+
+        # Atomic admission check and queue insertion under _state_lock
+        with self._state_lock:
+            if self._state != self.STATE_RUNNING:
+                if self._thread.is_alive():
+                    err = ActorStoppingError(
+                        f"SingleWriterActor is {self._state} and worker thread is alive; cannot accept new write operations."
+                    )
+                else:
+                    err = ActorUnavailableError(
+                        f"SingleWriterActor is {self._state}; cannot accept new write operations."
+                    )
+                err.cancelled_before_execution = True
+                err.timed_out_in_flight = False
+                err.transaction_outcome_unknown = False
+                err.transaction_outcome = "not_executed"
+                raise err
+            self._queue.put((func, done_evt, res_box, err_box, cancel_evt, status, item_lock))
 
         if not done_evt.wait(timeout=timeout):
             # Check execution phase atomically under mutex to distinguish pre-execution cancellation vs in-flight execution
@@ -242,8 +438,106 @@ class SingleWriterActor:
     async def execute_write_async(self, func: Callable[[sqlite3.Connection], Any]) -> Any:
         return await asyncio.to_thread(self.execute_write, func)
 
-    def _drain_and_reject_pending(self) -> None:
+    @classmethod
+    def execute_or_fallback(
+        cls,
+        db_path: Path | str,
+        func: Callable[[sqlite3.Connection], Any],
+        fallback_conn_factory: Callable[[], Any],
+        timeout: float = 30.0,
+    ) -> Any:
+        """Executes a write operation on SingleWriterActor, falling back to a direct connection
+
+        ONLY if the actor was unavailable before queuing (never on in-flight timeouts, stopping actors, or SQL errors).
+        """
+        resolved_key = os.path.normcase(str(Path(db_path).resolve()))
+        try:
+            actor = cls.get_or_create(db_path)
+            return actor.execute_write(func, timeout=timeout)
+        except ActorStoppingError:
+            # Concurrency Invariant: Actor is terminating with a live worker thread in-flight.
+            # Direct fallback write MUST NOT execute concurrently with the terminating worker.
+            raise
+        except ActorUnavailableError as aue:
+            logger.warning(
+                "SingleWriterActor for %s is unavailable (%s); executing via fallback connection.",
+                db_path,
+                aue,
+            )
+            db_lock = cls._get_db_lock(resolved_key)
+            with db_lock:
+                current_tid = threading.get_ident()
+                with cls._registry_lock:
+                    if cls._active_fallback_threads.get(resolved_key) == current_tid:
+                        raise SingleWriterError(
+                            f"Reentrant fallback execution prohibited: thread {current_tid} is already executing fallback for '{resolved_key}'."
+                        )
+                    # Re-check under db_lock whether an actor became available or is stopping
+                    existing = cls._instances.get(resolved_key)
+                    if existing is not None:
+                        with existing._state_lock:
+                            if existing._state == cls.STATE_RUNNING and existing._thread.is_alive():
+                                return existing.execute_write(func, timeout=timeout)
+                        if existing._thread.is_alive():
+                            raise ActorStoppingError(
+                                f"SingleWriterActor for {resolved_key} is stopping while worker thread is alive."
+                            )
+                    cls._active_fallback_threads[resolved_key] = current_tid
+
+                try:
+                    ctx = fallback_conn_factory()
+                    if isinstance(ctx, sqlite3.Connection):
+                        conn = ctx
+                        try:
+                            res = func(conn)
+                            if hasattr(conn, "commit"):
+                                conn.commit()
+                            return res
+                        except Exception:
+                            if hasattr(conn, "rollback"):
+                                try:
+                                    conn.rollback()
+                                except Exception as rb_err:  # noqa: BLE001
+                                    logger.debug("Rollback on fallback connection note: %s", rb_err)
+                            raise
+                        finally:
+                            if hasattr(conn, "close"):
+                                conn.close()
+                    elif hasattr(ctx, "__enter__") and hasattr(ctx, "__exit__"):
+                        with ctx as conn:
+                            res = func(conn)
+                            if hasattr(conn, "commit"):
+                                conn.commit()
+                            return res
+                    else:
+                        conn = ctx
+                        try:
+                            res = func(conn)
+                            if hasattr(conn, "commit"):
+                                conn.commit()
+                            return res
+                        except Exception:
+                            if hasattr(conn, "rollback"):
+                                try:
+                                    conn.rollback()
+                                except Exception as rb_err:  # noqa: BLE001
+                                    logger.debug("Rollback on raw fallback connection note: %s", rb_err)
+                            raise
+                        finally:
+                            if hasattr(conn, "close"):
+                                conn.close()
+                finally:
+                    with cls._registry_lock:
+                        cls._active_fallback_threads.pop(resolved_key, None)
+
+    def _drain_and_reject_pending(self, reason: Exception | None = None) -> None:
         """Drains remaining queue items and sets error on pending callers."""
+        err = reason if reason is not None else RuntimeError("SingleWriterActor shutdown before write could execute.")
+        if not hasattr(err, "cancelled_before_execution"):
+            err.cancelled_before_execution = True
+            err.timed_out_in_flight = False
+            err.transaction_outcome_unknown = False
+            err.transaction_outcome = "not_executed"
         while not self._queue.empty():
             try:
                 item = self._queue.get_nowait()
@@ -252,7 +546,8 @@ class SingleWriterActor:
                     with item_lock:
                         cancel_evt.set()
                         status["phase"] = "cancelled_before_execution"
-                        err_box.append(RuntimeError("SingleWriterActor shutdown before write could execute."))
+                        if not err_box:
+                            err_box.append(err)
                         done_evt.set()
                 self._queue.task_done()
             except (queue.Empty, ValueError):
@@ -267,14 +562,13 @@ class SingleWriterActor:
             timeout: Maximum wait time for worker thread to terminate.
         """
         with self._state_lock:
-            if self._state == self.STATE_STOPPED:
+            if self._state == self.STATE_STOPPED and not self._thread.is_alive():
                 return
-            self._state = self.STATE_STOPPING
-
-        if not drain:
-            self._drain_and_reject_pending()
-
-        self._queue.put(None)
+            if self._state == self.STATE_RUNNING:
+                self._state = self.STATE_STOPPING
+                if not drain:
+                    self._drain_and_reject_pending()
+                self._queue.put(None)
         if self._thread.is_alive():
             if threading.current_thread() is not self._thread:
                 self._thread.join(timeout=timeout)
@@ -297,7 +591,7 @@ class SingleWriterActor:
 
         with self._registry_lock:
             resolved_key = os.path.normcase(str(self.db_path.resolve()))
-            if self._instances.get(resolved_key) is self:
+            if not self._thread.is_alive() and self._instances.get(resolved_key) is self:
                 self._instances.pop(resolved_key, None)
 
 
@@ -317,6 +611,8 @@ class SqliteBaseMixin:
             conn.execute("PRAGMA mmap_size=268435456;")
             conn.execute("PRAGMA cache_size=-64000;")
             conn.execute("PRAGMA temp_store=MEMORY;")
+            conn.execute("PRAGMA recursive_triggers=ON;")
+            conn.execute("PRAGMA foreign_keys=ON;")
             conn.row_factory = sqlite3.Row
             try:
                 import sqlite_vec
@@ -324,7 +620,7 @@ class SqliteBaseMixin:
                 sqlite_vec.load(conn)
                 self._vector_extension_loaded = True
                 self._vector_load_error = None
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._vector_extension_loaded = False
                 self._vector_load_error = str(exc)
                 logger.warning(
@@ -342,18 +638,16 @@ class SqliteBaseMixin:
         """Returns True if sqlite-vec extension and virtual tables are operational across all pools."""
         if not getattr(self, "_vector_extension_loaded", False):
             return False
-        if hasattr(self, "_writer_actor") and self._writer_actor:
-            if not getattr(self._writer_actor, "is_vector_extension_loaded", True):
-                return False
-        if hasattr(self, "_ro_vector_pool") and self._ro_vector_pool:
-            if not getattr(self._ro_vector_pool, "is_vector_extension_loaded", True):
-                return False
+        if hasattr(self, "_writer_actor") and self._writer_actor and not getattr(self._writer_actor, "is_vector_extension_loaded", True):
+            return False
+        if hasattr(self, "_ro_vector_pool") and self._ro_vector_pool and not getattr(self._ro_vector_pool, "is_vector_extension_loaded", True):
+            return False
         try:
             from jarvis.memory.ro_pool import ReadOnlyConnectionPool
             ro_pool = ReadOnlyConnectionPool.get_instance()
             if hasattr(ro_pool, "vector_load_error") and ro_pool.vector_load_error is not None:
                 return False
-        except Exception as ro_err:
+        except Exception as ro_err:  # noqa: BLE001
             logger.debug("RO pool health check note: %s", ro_err)
         return True
 
@@ -371,8 +665,8 @@ class SqliteBaseMixin:
             ro_pool = ReadOnlyConnectionPool.get_instance()
             if hasattr(ro_pool, "vector_load_error") and ro_pool.vector_load_error:
                 return ro_pool.vector_load_error
-        except Exception:
-            pass
+        except Exception as pool_err:  # noqa: BLE001
+            logger.debug("Vector load error inspection note: %s", pool_err)
         return None
 
     def get_vector_search_health(self) -> dict[str, Any]:
@@ -401,25 +695,17 @@ class SqliteBaseMixin:
 
     def execute_write(self, func: Callable[[sqlite3.Connection], Any], timeout: float = 30.0) -> Any:
         """Executes a write operation serialized through the Single-Writer Actor queue,
-        falling back to a direct connection context if the actor is unavailable.
+        falling back to a direct connection context ONLY if the actor is unavailable before execution.
         """
-        actor = getattr(self, "_writer_actor", None)
-        if actor is None or getattr(actor, "state", None) != SingleWriterActor.STATE_RUNNING:
-            actor = SingleWriterActor.get_or_create(self.db_path)
-            self._writer_actor = actor
-        if actor is not None and getattr(actor, "state", None) == SingleWriterActor.STATE_RUNNING:
-            return actor.execute_write(func, timeout=timeout)
-        with self._get_connection() as conn:
-            return func(conn)
+        return SingleWriterActor.execute_or_fallback(
+            self.db_path,
+            func,
+            self._get_connection,
+            timeout=timeout,
+        )
 
     async def execute_write_async(self, func: Callable[[sqlite3.Connection], Any]) -> Any:
         """Asynchronously dispatches a write operation through the Single-Writer Actor queue."""
-        actor = getattr(self, "_writer_actor", None)
-        if actor is None or getattr(actor, "state", None) != SingleWriterActor.STATE_RUNNING:
-            actor = SingleWriterActor.get_or_create(self.db_path)
-            self._writer_actor = actor
-        if actor is not None and getattr(actor, "state", None) == SingleWriterActor.STATE_RUNNING:
-            return await actor.execute_write_async(func)
         return await asyncio.to_thread(self.execute_write, func)
 
     def get_vector_pool(self, pool_size: int = 4):
@@ -442,54 +728,219 @@ class SqliteBaseMixin:
         if hasattr(self, "_ro_vector_pool") and self._ro_vector_pool is not None:
             try:
                 self._ro_vector_pool.teardown()
-            except Exception:
-                pass
+            except Exception as teardown_err:  # noqa: BLE001
+                logger.debug("RO vector pool teardown note: %s", teardown_err)
             self._ro_vector_pool = None
         if hasattr(self, "_writer_actor") and self._writer_actor:
             self._writer_actor.stop()
         try:
             from jarvis.memory.ro_pool import ReadOnlyConnectionPool
             ReadOnlyConnectionPool.get_instance().close_db(self.db_path)
-        except Exception:
-            pass
+        except Exception as close_err:  # noqa: BLE001
+            logger.debug("RO connection pool close note: %s", close_err)
 
     def __del__(self) -> None:
         self.close()
+
+    def get_active_workspace_id(self) -> str:
+        """Retrieves the active workspace_id from active_context singleton, defaulting to 'ws_default'."""
+        try:
+            with self._get_ro_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT active_workspace_id FROM active_context WHERE lock_id = 1")
+                row = cursor.fetchone()
+                if row and row["active_workspace_id"]:
+                    return row["active_workspace_id"]
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Active workspace resolution fallback to 'ws_default': %s", e)
+        return "ws_default"
+
+    def get_active_session_id(self) -> str | None:
+        """Retrieves the active session_id from active_context singleton, or None if uninitialized."""
+        try:
+            with self._get_ro_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT active_session_id FROM active_context WHERE lock_id = 1")
+                row = cursor.fetchone()
+                if row:
+                    return row["active_session_id"]
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Active session resolution error: %s", e)
+        return None
+
+    def set_active_context(
+        self,
+        workspace_id: str | None,
+        session_id: str | None,
+        switch_reason: str = "context_switch",
+    ) -> None:
+        """Sets active workspace and session enforcing 4-state integrity rules."""
+        if workspace_id is None and session_id is not None:
+            raise ValueError("State 4 violation: session cannot be active without active workspace")
+
+        def _write(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+            if workspace_id:
+                cursor.execute("SELECT is_archived FROM workspaces WHERE workspace_id = ?", (workspace_id,))
+                ws_row = cursor.fetchone()
+                if ws_row and ws_row["is_archived"]:
+                    raise PermissionError(f"Cannot activate archived workspace '{workspace_id}'")
+            if session_id:
+                cursor.execute("SELECT workspace_id, status FROM sessions WHERE session_id = ?", (session_id,))
+                s_row = cursor.fetchone()
+                if s_row:
+                    if s_row["workspace_id"] != workspace_id:
+                        raise ValueError(f"Session '{session_id}' does not belong to workspace '{workspace_id}'")
+                    if s_row["status"] == "closed":
+                        raise PermissionError(f"Cannot activate closed session '{session_id}'")
+
+            cursor.execute("""
+                INSERT INTO active_context (lock_id, active_workspace_id, active_session_id, switch_reason, switched_at)
+                VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(lock_id) DO UPDATE SET
+                    active_workspace_id = excluded.active_workspace_id,
+                    active_session_id = excluded.active_session_id,
+                    switch_reason = excluded.switch_reason,
+                    switched_at = CURRENT_TIMESTAMP
+            """, (workspace_id, session_id, switch_reason))
+
+        self.execute_write(_write)
+
+    def resolve_workspace_id(self, workspace: str | None) -> str:
+        """Resolves workspace identifier or filesystem path to canonical workspace_id."""
+        if not workspace:
+            return self.get_active_workspace_id()
+        norm_ws = workspace.strip()
+        try:
+            with self._get_ro_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT workspace_id FROM workspaces WHERE workspace_id = ? OR path = ?", (norm_ws, norm_ws))
+                row = cursor.fetchone()
+                if row:
+                    return row["workspace_id"]
+        except Exception:  # noqa: BLE001, S110
+            pass
+        return norm_ws
 
     def _init_db(self):
         """Initializes database schema."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            # 0. Workspaces & Prevention Trigger
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS workspaces (
+                    workspace_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    path TEXT NOT NULL UNIQUE,
+                    is_archived INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL,
+                    archived_at TEXT DEFAULT NULL,
+                    metadata_json TEXT DEFAULT '{}'
+                );
+            """)
+            cursor.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_prevent_workspace_hard_delete
+                BEFORE DELETE ON workspaces
+                BEGIN
+                    SELECT RAISE(ABORT, 'Hard deletion of workspaces is prohibited. Workspaces may only be soft-deleted by setting is_archived = 1.');
+                END;
+            """)
+            cursor.execute("""
+                INSERT OR IGNORE INTO workspaces (workspace_id, name, path, is_archived, created_at, archived_at, metadata_json)
+                VALUES ('ws_default', 'Default Workspace', 'C:/Users/Youssef/Projects/Jarvis_2.0', 0, strftime('%s', 'now'), NULL, '{}');
+            """)
+
+            # 0.1 Sessions
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    title TEXT DEFAULT NULL,
+                    status TEXT NOT NULL DEFAULT 'closed' CHECK(status IN ('active', 'paused', 'closed')),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                INSERT OR IGNORE INTO sessions (session_id, workspace_id, title, status)
+                VALUES ('sess_legacy', 'ws_default', 'Legacy Default Session', 'closed');
+            """)
+
+            # 0.2 Active Context (4-State Singleton Contract)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS active_context (
+                    lock_id INTEGER PRIMARY KEY CHECK (lock_id = 1),
+                    active_workspace_id TEXT REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    active_session_id TEXT REFERENCES sessions(session_id) ON DELETE RESTRICT,
+                    switch_reason TEXT NOT NULL DEFAULT 'initialization',
+                    switched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CHECK (
+                        (active_workspace_id IS NULL AND active_session_id IS NULL) OR
+                        (active_workspace_id IS NOT NULL AND active_session_id IS NULL) OR
+                        (active_workspace_id IS NOT NULL AND active_session_id IS NOT NULL)
+                    )
+                );
+            """)
+            cursor.execute("""
+                INSERT OR IGNORE INTO active_context (lock_id, active_workspace_id, active_session_id, switch_reason)
+                VALUES (1, 'ws_default', NULL, 'system_boot');
+            """)
+
             # Facts & User Profile
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS facts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_id TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    scope TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped')),
                     category TEXT DEFAULT 'general',
-                    key TEXT UNIQUE,
+                    key TEXT DEFAULT NULL,
                     value TEXT NOT NULL,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    source_provenance TEXT NOT NULL DEFAULT 'unknown',
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL) OR
+                        (scope = 'workspace' AND workspace_id IS NOT NULL)
+                    )
                 )
             """)
+
             # Tasks & Reminders
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tasks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_id TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    session_id TEXT DEFAULT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+                    scope TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'session', 'unscoped')),
                     description TEXT NOT NULL,
                     due_date TEXT,
                     is_completed BOOLEAN DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    source_provenance TEXT NOT NULL DEFAULT 'unknown',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL AND session_id IS NULL) OR
+                        (scope = 'workspace' AND workspace_id IS NOT NULL) OR
+                        (scope = 'session' AND workspace_id IS NOT NULL AND session_id IS NOT NULL)
+                    )
                 )
             """)
             # Interaction History
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS interactions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_id TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    session_id TEXT DEFAULT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+                    scope TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('session', 'unscoped')),
                     user_input TEXT NOT NULL,
                     jarvis_reply TEXT NOT NULL,
                     tool_calls TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    source_provenance TEXT NOT NULL DEFAULT 'unknown',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL AND session_id IS NULL) OR
+                        (scope = 'session' AND workspace_id IS NOT NULL AND session_id IS NOT NULL)
+                    )
                 )
             """)
+
             # Calendar Events
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS calendar_events (
@@ -499,6 +950,7 @@ class SqliteBaseMixin:
                     end_time TEXT,
                     location TEXT,
                     is_cancelled BOOLEAN DEFAULT 0,
+                    source_provenance TEXT NOT NULL DEFAULT 'unknown',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -506,6 +958,9 @@ class SqliteBaseMixin:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS staged_documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_id TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    session_id TEXT DEFAULT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+                    scope TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'session', 'unscoped')),
                     filename TEXT NOT NULL,
                     file_path TEXT NOT NULL,
                     file_hash TEXT,
@@ -513,46 +968,120 @@ class SqliteBaseMixin:
                     status TEXT DEFAULT 'PENDING_CONTEXT',
                     user_context TEXT,
                     staged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    processed_at TIMESTAMP
+                    processed_at TIMESTAMP,
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL AND session_id IS NULL) OR
+                        (scope = 'workspace' AND workspace_id IS NOT NULL) OR
+                        (scope = 'session' AND workspace_id IS NOT NULL AND session_id IS NOT NULL)
+                    )
                 )
             """)
             # Knowledge Documents Archive
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_id TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    scope TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped')),
                     title TEXT NOT NULL,
                     category TEXT DEFAULT 'general',
                     summary TEXT,
                     raw_content TEXT,
                     file_path TEXT,
                     source_provenance TEXT NOT NULL DEFAULT 'unknown',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL) OR
+                        (scope = 'workspace' AND workspace_id IS NOT NULL)
+                    )
                 )
             """)
-            # Idempotent Migration: Ensure source_provenance column exists for pre-existing databases
-            cursor.execute("PRAGMA table_info(documents)")
-            doc_cols = {
-                row["name"] if hasattr(row, "__getitem__") and "name" in row.keys() else row[1]
-                for row in cursor.fetchall()
-            }
-            if "source_provenance" not in doc_cols:
-                cursor.execute("ALTER TABLE documents ADD COLUMN source_provenance TEXT NOT NULL DEFAULT 'unknown'")
-                logger.info("Migrated SQLite schema: added source_provenance column to documents table.")
+
             # Episodic Lessons & Self-Correction Buffer (Tier 3 Reflexion)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS episodic_lessons (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_id TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    scope TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped')),
                     tool_name TEXT NOT NULL,
                     trigger_context TEXT NOT NULL,
                     failure_signature TEXT NOT NULL,
                     lesson TEXT NOT NULL,
                     hit_count INTEGER DEFAULT 1,
+                    source_provenance TEXT NOT NULL DEFAULT 'unknown',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(tool_name, failure_signature)
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL) OR
+                        (scope = 'workspace' AND workspace_id IS NOT NULL)
+                    )
                 )
             """)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_lessons_tool ON episodic_lessons(tool_name)")
+
+            # Idempotent Column Schema Migration
+            table_column_specs: dict[str, list[tuple[str, str]]] = {
+                "facts": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped'))"),
+                    ("source_provenance", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ],
+                "interactions": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("session_id", "TEXT DEFAULT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('session', 'unscoped'))"),
+                    ("source_provenance", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ],
+                "tasks": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("session_id", "TEXT DEFAULT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'session', 'unscoped'))"),
+                    ("source_provenance", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ],
+                "documents": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped'))"),
+                    ("source_provenance", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ],
+                "episodic_lessons": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped'))"),
+                    ("source_provenance", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ],
+                "staged_documents": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("session_id", "TEXT DEFAULT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'session', 'unscoped'))"),
+                ],
+                "calendar_events": [
+                    ("source_provenance", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ],
+                "knowledge_edges": [
+                    ("workspace_id", "TEXT DEFAULT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT"),
+                    ("scope", "TEXT NOT NULL DEFAULT 'unscoped' CHECK(scope IN ('workspace', 'unscoped'))"),
+                ],
+            }
+
+            for t_name, col_specs in table_column_specs.items():
+                cursor.execute(f"PRAGMA table_info({t_name})")
+                cols = {
+                    row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1]
+                    for row in cursor.fetchall()
+                }
+                if not cols:
+                    continue  # Table does not exist in this database
+                for col_name, col_def in col_specs:
+                    if col_name not in cols:
+                        cursor.execute(f"ALTER TABLE {t_name} ADD COLUMN {col_name} {col_def}")
+                        logger.info("Migrated SQLite schema: added %s column to %s table.", col_name, t_name)
+
+            # Idempotent Index Creation (Guaranteed to execute AFTER columns exist)
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_unscoped_key ON facts(key) WHERE scope = 'unscoped' AND key IS NOT NULL;")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_workspace_key ON facts(workspace_id, key) WHERE scope = 'workspace' AND key IS NOT NULL;")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_scope_ws ON facts(scope, workspace_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_ws_sess ON interactions(workspace_id, session_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_documents_scope_ws ON documents(scope, workspace_id);")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lessons_unscoped_sig ON episodic_lessons(tool_name, failure_signature) WHERE scope = 'unscoped';")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_lessons_ws_sig ON episodic_lessons(workspace_id, tool_name, failure_signature) WHERE scope = 'workspace';")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_lessons_tool ON episodic_lessons(tool_name);")
 
             # 1. Bi-Temporal Knowledge Graph Edges (Replaces flat facts with bi-temporal validity)
             cursor.execute("""
@@ -568,8 +1097,14 @@ class SqliteBaseMixin:
                     valid_from      REAL NOT NULL,
                     valid_until     REAL DEFAULT NULL,
                     last_accessed   REAL NOT NULL,
-                    superseded_by   INTEGER DEFAULT NULL REFERENCES knowledge_edges(edge_id),
-                    source_context  TEXT DEFAULT NULL
+                    superseded_by   INTEGER DEFAULT NULL REFERENCES knowledge_edges(edge_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+                    source_context  TEXT DEFAULT NULL,
+                    scope           TEXT NOT NULL DEFAULT 'unscoped' CHECK (scope IN ('workspace', 'unscoped')),
+                    workspace_id    TEXT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+                    CHECK (
+                        (scope = 'unscoped' AND workspace_id IS NULL) OR
+                        (scope = 'workspace' AND workspace_id IS NOT NULL)
+                    )
                 )
             """)
             cursor.execute("""
@@ -793,9 +1328,9 @@ class SqliteBaseMixin:
                         cursor.execute("INSERT INTO interactions_fts(interactions_fts) VALUES('rebuild')")
                         cursor.execute("INSERT INTO episodic_lessons_fts(episodic_lessons_fts) VALUES('rebuild')")
                         cursor.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('fts5_initialized', '1')")
-                    except Exception as rb_err:
+                    except Exception as rb_err:  # noqa: BLE001
                         logger.debug("FTS5 initial rebuild notice: %s", rb_err)
-            except Exception as fts_err:
+            except Exception as fts_err:  # noqa: BLE001
                 logger.warning("SQLite FTS5 virtual tables could not be initialized (falling back to standard SQL): %s", fts_err)
 
             # sqlite-vec Native C Vector Virtual Table & Real-Time Sync Triggers (Native 384-dim BGE INT8)
@@ -831,7 +1366,8 @@ class SqliteBaseMixin:
                 cursor.execute(f"""
                     CREATE VIRTUAL TABLE IF NOT EXISTS facts_vec USING vec0(
                         fact_id INTEGER PRIMARY KEY,
-                        embedding float[{TARGET_VEC_DIM}]
+                        embedding float[{TARGET_VEC_DIM}],
+                        workspace_id TEXT
                     )
                 """)
                 cursor.execute("""
@@ -898,7 +1434,7 @@ class SqliteBaseMixin:
                 """)
 
                 cursor.execute("""
-                    SELECT f.id, f.category, f.key, f.value
+                    SELECT f.id, f.category, f.key, f.value, COALESCE(f.workspace_id, 'unscoped') AS ws
                     FROM facts f
                     LEFT JOIN facts_vec v ON f.id = v.fact_id
                     WHERE v.fact_id IS NULL
@@ -908,8 +1444,8 @@ class SqliteBaseMixin:
                     texts = [f"{f['category']} {f['key']} {f['value']}" for f in unindexed_facts]
                     vecs = self.vector_engine.embed_batch(texts, batch_size=64, is_query=False, dim=TARGET_VEC_DIM)
                     cursor.executemany(
-                        "INSERT OR REPLACE INTO facts_vec(fact_id, embedding) VALUES (?, ?)",
-                        [(f["id"], sqlite_vec.serialize_float32(v)) for f, v in zip(unindexed_facts, vecs)]
+                        "INSERT OR REPLACE INTO facts_vec(fact_id, embedding, workspace_id) VALUES (?, ?, ?)",
+                        [(f["id"], sqlite_vec.serialize_float32(v), f["ws"]) for f, v in zip(unindexed_facts, vecs)]
                     )
 
                 cursor.execute("""
@@ -961,7 +1497,7 @@ class SqliteBaseMixin:
                 cursor.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('embedder_backend', ?)", (current_backend,))
                 self._vector_extension_loaded = True
                 self._vector_load_error = None
-            except Exception as vec_err:
+            except Exception as vec_err:  # noqa: BLE001
                 self._vector_extension_loaded = False
                 self._vector_load_error = str(vec_err)
                 logger.warning(

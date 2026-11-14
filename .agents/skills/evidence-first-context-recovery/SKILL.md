@@ -47,25 +47,32 @@ flowchart TD
 ### Step 1: Active Working Tree & Head Grounding
 Before analyzing any historical milestone or proposed change, establish the current repository state:
 ```powershell
-# 1. Current commit hash and headline
+# 1. Current branch, commit hash, and headline
+git branch --show-current
+git rev-parse HEAD
 git log -1 --oneline
 
-# 2. Exact uncommitted file inventory
-git status --short
+# 2. Complete uncommitted file inventory (including untracked files)
+git status --short --untracked-files=all
 
 # 3. Check for staged modifications
 git diff --cached --stat
 
-# 4. Review recent milestone commit sequence
+# 4. Review recent commit sequence
 git log -n 5 --oneline
 ```
-*Verification Invariant:* Note whether the working tree contains active, uncommitted work that must be preserved. Never assume the repository is clean without inspecting `git status`.
+*Verification Invariant:* Compare live Git output against [`docs/agent/PROJECT_STATE.md`](../../../docs/agent/PROJECT_STATE.md). If divergence exists, reconcile differences explicitly. Never assume the repository is clean without inspecting `git status --short --untracked-files=all`.
 
 ---
 
-### Step 2: Milestone Provenance & Commit Tracing
+### Step 2: Milestone Provenance, State Registers & Commit Tracing
 When investigating how a feature was implemented or why an invariant exists:
-1. **Search Git Commit Messages & Diffs:**
+1. **Consult Persistent Engineering Memory First:**
+   - Inspect [`docs/agent/PROJECT_STATE.md`](../../../docs/agent/PROJECT_STATE.md) for current focus, dirty files, and test health.
+   - Inspect [`docs/agent/SESSION_LOG.md`](../../../docs/agent/SESSION_LOG.md) for recent session handoffs, commands, and exit codes.
+   - Inspect [`docs/agent/LESSONS.md`](../../../docs/agent/LESSONS.md) for verified failure post-mortems and prevention rules.
+   - Inspect [`docs/milestones/MILESTONES.md`](../../../docs/milestones/MILESTONES.md) for verified historical milestone deliverables (M-01 through M-06).
+2. **Search Git Commit Messages & Diffs:**
    ```powershell
    # Find commits modifying a specific symbol
    git log -S "<symbol_name>" -p -n 3
@@ -76,11 +83,11 @@ When investigating how a feature was implemented or why an invariant exists:
    # Inspect specific milestone commit details
    git show <commit_hash> --stat
    ```
-2. **Consult Available Project Handoffs:**
-   - If `docs/handoffs/` exists and contains files, inspect only the specific handoff corresponding to the milestone:
+3. **Consult Historical Project Handoffs:**
+   - If `docs/handoffs/historical/` exists and contains files, inspect only the specific handoff corresponding to the milestone:
      ```powershell
      # List available handoffs without assuming contents
-     Get-ChildItem -Path docs/handoffs -ErrorAction SilentlyContinue | Select-Object Name
+     Get-ChildItem -Path docs/handoffs/historical -ErrorAction SilentlyContinue | Select-Object Name
      ```
    - Never assume a handoff file exists if the directory is missing or empty.
 

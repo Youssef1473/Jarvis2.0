@@ -1,4 +1,6 @@
 """Jarvis 3.0 local-first brain with opt-in cloud specialist consultations."""
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -7,67 +9,62 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
-import jarvis.skills.ast_code_surgeon
-import jarvis.skills.briefing
-import jarvis.skills.browser_agent
-import jarvis.skills.browser_cdp
-import jarvis.skills.calendar_manager
-import jarvis.skills.chrome_devtools
-import jarvis.skills.deep_research
-import jarvis.skills.dev_shell
-import jarvis.skills.diagnostics
-import jarvis.skills.document_ingest
-import jarvis.skills.email_manager
-import jarvis.skills.everything_search
-import jarvis.skills.gemini_intelligence
-import jarvis.skills.hybrid_actuator
-import jarvis.skills.job_object_sandbox
-import jarvis.skills.mcp_manager
-import jarvis.skills.media_dj
-import jarvis.skills.modern_web
-import jarvis.skills.notes
-import jarvis.skills.nvml_dxgi_vram_arbiter
-
-# Ensure skills are imported and registered
-import jarvis.skills.os_control
-import jarvis.skills.photo_manager
-import jarvis.skills.productivity
-import jarvis.skills.project_manager
-import jarvis.skills.protocols
-import jarvis.skills.reflex_macro_compiler
-import jarvis.skills.rstrtmgr_lock_surgeon
-import jarvis.skills.screen_vision
-import jarvis.skills.self_evolution
-import jarvis.skills.system_maintenance
-import jarvis.skills.system_watchdog
-import jarvis.skills.timers
-import jarvis.skills.usn_journal_delta_radar
-import jarvis.skills.voice_control
-import jarvis.skills.web_search
-import jarvis.skills.windows_uia
 from jarvis.context.context_orchestrator import (
     BASE_SYSTEM_PROMPT as CONTEXT_BASE_SYSTEM_PROMPT,
 )
-from jarvis.context.context_orchestrator import ContextOrchestrator
+from jarvis.context.context_orchestrator import (
+    ContextOrchestrator,
+)
 from jarvis.core.antigravity_bridge import AntigravityBridge
 from jarvis.core.brain_antigravity import AntigravityProviderMixin
 from jarvis.core.brain_gemini import GeminiProviderMixin
 from jarvis.core.brain_openai import OpenAIProviderMixin
 from jarvis.core.brain_specialist import SpecialistConsultationMixin
-from jarvis.core.cognition import CognitiveRouter
+from jarvis.core.cognition.cognitive_router import (
+    ANTIGRAVITY_CANDIDATE_MODELS,
+    CODE_TOOL_NAMES,
+    GEMINI_CANDIDATE_MODELS,
+    GROQ_CANDIDATE_MODELS,
+    OPENROUTER_FREE_MODELS,
+    READ_ONLY_TOOL_NAMES,
+    TOOL_INTENT_GROUPS,
+    CognitiveRouter,
+)
 from jarvis.core.github_bridge import GitHubCopilotBridge
 from jarvis.core.memory import MemoryManager
+from jarvis.core.pipeline.interim_bridge import (
+    clean_speech_clause,
+    extract_next_speech_chunk,
+)
 from jarvis.core.pipeline.latency_profiler import PipelineLatencyProfiler
+from jarvis.core.providers.ollama import OllamaProvider
 from jarvis.core.reflex_dispatcher import ReflexDispatcher
 from jarvis.core.reflex_engine import DynamicReflexEngine
 from jarvis.core.safety import SafetyGate
 from jarvis.core.services import ManagedServiceManager
 from jarvis.skills.base import SkillRegistry
+from jarvis.skills.diagnostics import get_global_latency_profiler
 
 logger = logging.getLogger("Jarvis.Brain")
+
+_LAST_ACTIVE_BRAIN: Any | None = None
+
+
+@dataclass
+class TurnContext:
+    """Encapsulates turn-scoped execution state, idempotency ledger, and telemetry."""
+
+    turn_id: str = field(default_factory=lambda: f"turn_{int(time.time() * 1000)}")
+    flow_state_xml: str = ""
+    bookmark_context: str = ""
+    is_retry: bool = False
+    executed_tools: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    resolved_tool_outputs: dict[str, Any] = field(default_factory=dict)
+    idempotency_ledger: dict[str, Any] = field(default_factory=dict)
 
 
 class JarvisBrain(
@@ -80,118 +77,13 @@ class JarvisBrain(
 
     BASE_SYSTEM_PROMPT = CONTEXT_BASE_SYSTEM_PROMPT
 
-    GEMINI_CANDIDATE_MODELS = [
-        "gemini-3.8-flash",
-        "gemini-3.7-flash",
-        "gemini-3.5-flash",
-        "gemini-flash-latest",
-        "gemini-3.1-flash-lite",
-        "gemini-3.5-flash-lite",
-        "gemini-flash-lite-latest",
-        "gemini-3-flash-preview",
-        "gemini-2.5-pro",
-        "gemini-pro-latest",
-    ]
-
-    GROQ_CANDIDATE_MODELS = [
-        "qwen/qwen3.8-27b",
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-    ]
-
-    ANTIGRAVITY_CANDIDATE_MODELS = [
-        "gemini-3.8-flash-medium",
-        "gemini-3.8-flash-high",
-        "gemini-3.8-flash-low",
-        "claude-sonnet-4-6",
-        "claude-opus-4-6-thinking",
-        "gpt-oss-120b-medium",
-        "gemini-4-argon-high",
-    ]
-
-    # Keep in sync with OpenRouterProvider's currently listed free candidates.
-    OPENROUTER_FREE_MODELS = [
-        "nvidia/nemotron-3.5-super-vl:free",
-        "nvidia/nemotron-3-super-120b-a12b:free",
-        "cohere/north-mini-code:free",
-        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-        "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "google/gemma-4-31b-it:free",
-    ]
-
-    CODE_TOOL_NAMES = {
-        "list_directory",
-        "read_file",
-        "read_multiple_files",
-        "search_codebase",
-        "search_everything",
-        "write_file",
-        "patch_file",
-        "git_diff",
-        "git_status",
-        "execute_powershell",
-        "run_project_tests",
-        "web_search",
-        "create_or_update_custom_skill",
-        "list_custom_skills",
-        "delete_custom_skill",
-        "inspect_screen",
-        "see_screen",
-    }
-
-    TOOL_INTENT_GROUPS = (
-        (("add feature", "create feature", "build yourself", "create a skill", "add a skill", "create command", "add command", "build a command", "create tool", "add tool", "new tool", "new skill", "evolve", "self build", "teach yourself", "learn to", "learn this skill", "learn a skill", "learn skill", "custom skill", "edit yourself", "modify yourself", "enhance yourself", "optimize yourself", "improve yourself", "upgrade yourself", "inspect your code", "check your code", "look at your code", "fix yourself", "refactor yourself", "your codebase", "your files", "jarvis 2.0", "jarvis_2.0", "self edit", "self optimize", "self improve", "self enhance"), {"read_file", "read_multiple_files", "patch_file", "write_file", "search_codebase", "list_directory", "execute_powershell", "run_project_tests", "git_diff", "git_status", "create_or_update_custom_skill", "list_custom_skills", "delete_custom_skill"}),
-        (("brave", "browser tab", "new tab", "open tab", "chrome tab", "edge tab", "brave tab", "close tab", "terminate tab", "close browser tab", "kill tab", "terminate a tab", "close a tab", "close the tab", "terminate the tab", "terminate a tab on my browser", "close current tab", "terminate current tab"), {"open_browser_tab", "close_browser_tab", "launch_application", "list_open_browser_tabs"}),
-        (("focus window", "switch to window", "bring to front", "focus app", "switch window"), {"focus_window", "list_running_applications"}),
-        (("hotkey", "press key", "shortcut", "press enter", "press escape", "press ctrl", "keyboard shortcut", "theater mode", "theatre mode", "cinema mode", "fullscreen", "full screen"), {"press_hotkey", "control_media"}),
-        (("type text", "type into", "write text"), {"type_text"}),
-        (("volume", "mute", "unmute", "sound", "louder", "quieter"), {"adjust_volume"}),
-        (("play", "pause", "skip", "next song", "previous song", "media", "spotify"), {"control_media"}),
-        (("show desktop", "minimize all"), {"minimize_all_windows"}),
-        (("battery", "charging", "charge level"), {"get_battery_status"}),
-        (("time", "date", "day", "clock"), {"get_current_time_and_date"}),
-        (("weather", "temperature", "forecast"), {"get_weather"}),
-        (("remind", "reminder", "to-do", "todo", "task"), {"add_task_or_reminder", "list_pending_tasks", "complete_task"}),
-        (("calendar", "meeting", "appointment", "schedule", "starkboard", "stark board", "cancel event", "dismiss event", "no meeting", "don't have a meeting", "dont have a meeting", "timetable", "classes", "class", "upcoming", "what do i have", "whats on my", "what's on my", "delete calendar", "remove calendar", "clear calendar", "clear schedule"), {"schedule_calendar_event", "list_calendar_events", "cancel_calendar_event", "delete_calendar"}),
-        (("remember", "save this", "store this", "commit", "commit to memory", "commit this", "commit that", "add to memory", "save to memory", "store in memory", "in your memory", "to memory"), {"remember_fact", "recall_fact"}),
-        (("recall", "previous conversation", "past conversation", "we discussed", "you said earlier"), {"recall_fact", "recall_past_conversation"}),
-        (("lesson", "mistake", "error history", "past failure", "avoid mistake", "what went wrong", "reflection"), {"recall_episodic_lessons", "record_episodic_lesson"}),
-        (("email", "inbox", "unread mail", "gmail", "mail", "send email", "search email", "read email", "draft email"), {"check_unread_emails", "search_emails", "read_email_details", "send_email"}),
-        (("news", "headlines"), {"web_search", "get_tech_news_headlines"}),
-        (("search", "latest", "current", "look up", "lookup"), {"web_search", "get_wikipedia_summary"}),
-        (("http://", "https://", "webpage", "website", "open url"), {"browse_and_read_webpage", "open_url_in_desktop_browser", "capture_webpage_screenshot"}),
-        (("open", "launch", "start", "software", "program", "browser", "app"), {"launch_application"}),
-        (("close", "terminate", "exit app", "kill app", "quit app"), {"close_application"}),
-        (("see my screen", "see the screen", "see screen", "look at my screen", "look at the screen", "inspect my screen", "inspect screen", "what's on my screen", "what is on my screen", "describe my screen", "read my screen", "read the screen", "screen vision"), {"inspect_screen", "see_screen", "get_active_window"}),
-        (("running", "open apps", "open windows", "active window", "focused window", "what am i looking at", "on my screen", "on screen", "my screen", "what is open"), {"get_active_window", "list_running_applications", "inspect_screen"}),
-        (("vitals", "cpu", "ram", "memory usage", "hardware", "system status", "specs", "gpu"), {"get_system_vitals", "get_battery_status"}),
-        (("clipboard", "copy", "copied", "paste"), {"read_clipboard", "copy_to_clipboard"}),
-        (("lock", "lock pc", "lock computer", "lock workstation"), {"lock_workstation"}),
-        (("screenshot", "snapshot", "capture screen"), {"take_desktop_screenshot", "inspect_screen", "see_screen"}),
-        (("timer", "countdown", "stopwatch", "alarm", "how much time left"), {"start_timer", "cancel_timer", "list_active_timers"}),
-        (("protocol", "work protocol", "lockdown", "relax protocol", "night protocol", "coding mode", "focus mode"), {"execute_protocol"}),
-        (("briefing", "morning briefing", "daily briefing", "morning protocol", "good morning"), {"get_daily_briefing"}),
-        (("ram hog", "memory hog", "eating ram", "eating", "who is eating", "top memory", "high memory", "memory consumer"), {"inspect_ram_hogs"}),
-        (("optimize", "cleanup", "clean pc", "clean workstation", "flush dns", "speed up"), {"optimize_workstation", "inspect_ram_hogs"}),
-        (("youtube", "play song", "play video", "play music", "soundtrack"), {"play_youtube_media"}),
-        (("open project", "launch project", "open repo"), {"open_project"}),
-        (("open folder", "downloads folder", "screenshots folder", "documents folder", "desktop folder"), {"open_user_folder"}),
-        (("note", "notes", "take note", "take a note", "note down", "write down", "jot down", "save note", "record note", "my notes", "read notes", "search notes"), {"take_quick_note", "read_recent_notes", "search_notes"}),
-        (("hardware watchdog", "thermal monitor", "watchdog", "system health check", "hardware health", "check hardware"), {"check_hardware_health", "start_hardware_watchdog", "stop_hardware_watchdog"}),
-        (("deep research", "research topic", "investigate", "in-depth research", "compile report"), {"deep_research", "web_search"}),
-        (("pdf", "document", "documents", "staged", "import pdf", "uploaded", "that pdf", "the pdf", "syllabus", "intake", "file explorer", "search document", "search documents", "read document", "archived document", "document archive", "my documents"), {"process_staged_document", "list_staged_documents", "search_archived_documents", "read_archived_document"}),
-        (("voice profile", "change voice", "switch voice", "voice style", "classic voice", "friday voice", "speed up voice", "speak faster", "speak slower", "audio device", "sound device", "headphones", "switch speaker"), {"set_voice_profile", "set_speech_rate", "get_voice_settings", "list_audio_devices", "set_audio_output_device"}),
-        (("find file", "search file", "where is", "look for file", "locate file", "search desktop", "find my file", "everything search", "search everything", "find file everywhere", "search all drives", "search hard drive", "search disk", "locate file everywhere", "instant search"), {"search_everything", "search_desktop_files_fast"}),
-        (("preference", "user preference", "my preference", "call me", "i prefer", "always use", "default to", "my profile", "my habit", "remember", "remember that", "remember this", "remember it", "commit to memory", "commit that", "add to memory", "add that", "save to memory", "store in memory"), {"update_user_preference", "get_user_preferences", "remember_fact", "recall_fact"}),
-        (("diagnose test", "fix test", "test failure", "traceback", "debug test", "failing test", "pytest failed", "syntax error in", "patch function", "surgical patch", "apply patch"), {"diagnose_test_failure_ast", "apply_and_verify_surgical_patch"}),
-        (("file lock", "locked file", "who is using file", "who has file open", "restart manager", "release lock", "unlock file", "port in use", "port holder", "who is on port"), {"inspect_file_locks", "inspect_port_holders", "release_file_lock"}),
-        (("vram", "gpu memory", "vram usage", "thermal budget", "gpu temp", "gpu temperature", "nvml", "dxgi"), {"audit_vram_and_thermal_budget", "get_system_vitals"}),
-        (("workspace mutation", "recent file changes", "what changed in workspace", "usn journal", "file mutations", "changed files"), {"get_recent_workspace_mutations", "record_workspace_mutation"}),
-        (("workflow reflex", "compile reflex", "reflex macro", "record reflex", "macro workflow", "list macros", "execute macro"), {"compile_workflow_reflex", "execute_workflow_reflex", "list_compiled_reflex_macros", "delete_compiled_reflex_macro"}),
-        (("click element", "click web", "click on page", "type into web", "type in browser", "semantic click", "semantic type"), {"click_web_element_semantic", "type_into_web_element_semantic", "open_browser_tab"}),
-        (("job sandbox", "sandboxed process", "run sandboxed", "isolated process"), {"run_job_sandboxed_process"}),
-        (("photo", "photos", "picture", "pictures", "image file", "photo vault", "search photos", "my photos"), {"ingest_photo", "search_photos_semantic", "list_recent_photos", "describe_photo"}),
-    )
+    GEMINI_CANDIDATE_MODELS: ClassVar[list[str]] = list(GEMINI_CANDIDATE_MODELS)
+    GROQ_CANDIDATE_MODELS: ClassVar[list[str]] = list(GROQ_CANDIDATE_MODELS)
+    ANTIGRAVITY_CANDIDATE_MODELS: ClassVar[list[str]] = list(ANTIGRAVITY_CANDIDATE_MODELS)
+    OPENROUTER_FREE_MODELS: ClassVar[list[str]] = list(OPENROUTER_FREE_MODELS)
+    CODE_TOOL_NAMES: ClassVar[frozenset[str]] = CODE_TOOL_NAMES
+    READ_ONLY_TOOL_NAMES: ClassVar[frozenset[str]] = READ_ONLY_TOOL_NAMES
+    TOOL_INTENT_GROUPS: ClassVar[tuple[tuple[tuple[str, ...], set[str]], ...]] = TOOL_INTENT_GROUPS
 
     def __init__(
         self,
@@ -199,15 +91,32 @@ class JarvisBrain(
         memory_manager: MemoryManager,
         safety_gate: SafetyGate,
         service_manager: ManagedServiceManager | None = None,
+        *,
+        antigravity_bridge: AntigravityBridge | None = None,
+        antigravity_resolver: Callable[[], str | None] | None = None,
+        workspace_id: str | None = None,
     ):
+        # Ensure domain skills are registered into SkillRegistry
+        SkillRegistry.ensure_skills_loaded()
+
         self.config = config
+        raw_ws = workspace_id or config.get("workspace_id") or config.get("active_workspace_id") or "ws_default"
+        clean_ws = str(raw_ws).strip()
+        if not clean_ws or clean_ws.lower() == "unscoped":
+            raise ValueError("Invalid active_workspace_id: cannot use empty or unscoped workspace.")
+        self.active_workspace_id = clean_ws
+
+        global _LAST_ACTIVE_BRAIN
+        _LAST_ACTIVE_BRAIN = self
+        self._gemini_last_verified_timestamp = None
+        self._gemini_last_error = None
         self.memory = memory_manager
         self.safety = safety_gate
         self.service_manager = service_manager or ManagedServiceManager()
         self.temperature = config.get("llm", {}).get("temperature", 0.6)
         self.active_task_mode = "general"
         self.active_tool_names: frozenset[str] = frozenset()
-        
+
         # Use local inference by default; hosted providers are opt-in.
         self.provider = config.get("llm", {}).get("provider", "ollama").lower()
 
@@ -228,7 +137,9 @@ class JarvisBrain(
 
         # Gemini state
         configured_gemini_model = config.get("llm", {}).get("model", "gemini-3.8-flash")
-        self.gemini_candidates = [configured_gemini_model] + [m for m in self.GEMINI_CANDIDATE_MODELS if m != configured_gemini_model]
+        self.gemini_candidates = [configured_gemini_model] + [
+            m for m in self.GEMINI_CANDIDATE_MODELS if m != configured_gemini_model
+        ]
         self.gemini_model_idx = 0
         self.gemini_model = self.gemini_candidates[self.gemini_model_idx]
         self.gemini_client = None
@@ -237,7 +148,23 @@ class JarvisBrain(
         self.gemini_tool_names: frozenset[str] = frozenset()
 
         # Antigravity CLI Bridge (Google AI Pro integration)
-        self.antigravity_bridge = AntigravityBridge(config)
+        if antigravity_bridge is not None:
+            self.antigravity_bridge = antigravity_bridge
+        else:
+            resolver = (
+                antigravity_resolver
+                or config.get("llm", {}).get("antigravity_resolver")
+                or config.get("llm", {}).get("antigravity_executable_resolver")
+            )
+            explicit_agy_path = (
+                config.get("llm", {}).get("antigravity_path")
+                or config.get("llm", {}).get("agy_path")
+            )
+            self.antigravity_bridge = AntigravityBridge(
+                config,
+                executable_resolver=resolver,
+                agy_path=explicit_agy_path,
+            )
         configured_ag_model = config.get("llm", {}).get("antigravity_model", "gemini-3.8-flash-medium")
         self.antigravity_candidates = [configured_ag_model] + [
             m for m in self.ANTIGRAVITY_CANDIDATE_MODELS if m != configured_ag_model
@@ -261,12 +188,20 @@ class JarvisBrain(
             "openrouter": 0.0,
         }
 
+        # Turn-scoped execution tracking and idempotency ledger
+        self._current_turn_executed_tools: list[tuple[str, dict[str, Any]]] = []
+        self._current_turn_resolved_tool_outputs: dict[str, Any] = {}
+        self._current_turn_idempotency_ledger: dict[str, Any] = {}
+        self._is_turn_retry: bool = False
+        self._current_turn_flow_xml: str = ""
+        self._current_turn_bookmark_xml: str = ""
+        self._current_turn_id: str = ""
+
         # Monotonic cancellation token for preempting in-flight tool actuation on speech barge-in
         self._active_cancel_token: Any | None = None
 
         # Real-time nanosecond stage-by-stage latency profiler
-        self.latency_profiler: PipelineLatencyProfiler = jarvis.skills.diagnostics.get_global_latency_profiler()
-        self._current_turn_id: str = ""
+        self.latency_profiler: PipelineLatencyProfiler = get_global_latency_profiler()
 
         # Initialize requested provider
         if self.provider in ("hybrid", "auto"):
@@ -297,11 +232,9 @@ class JarvisBrain(
         try:
             from jarvis.routing.cascade import RoutingCascade
             self.routing_cascade = RoutingCascade(reflex_engine=self.reflex_engine)
-        except Exception as e:
+        except (ImportError, RuntimeError, AttributeError) as e:
             logger.debug("RoutingCascade initialization notice: %s", e)
             self.routing_cascade = None
-        self._current_turn_executed_tools: list[tuple[str, dict[str, Any]]] = []
-        self._current_turn_resolved_tool_outputs: dict[str, Any] = {}
         self.tts = None
 
         from jarvis.conversation.bookmarks import ReasoningBookmarkStack
@@ -330,7 +263,10 @@ class JarvisBrain(
             dual_track_coordinator=self.dual_track_coordinator,
         )
         self.cognitive_router = CognitiveRouter(default_model=self.antigravity_model)
-        self.context_orchestrator = ContextOrchestrator(config=self.config)
+        self.context_orchestrator = ContextOrchestrator(
+            config=self.config,
+            workspace_id=self.active_workspace_id,
+        )
         self.reflex_dispatcher = ReflexDispatcher(reflex_engine=self.reflex_engine)
 
         from jarvis.core.mcp_manager import MCPManager
@@ -363,7 +299,7 @@ class JarvisBrain(
                     self.tts.queue_sentence(phrase)
                 elif hasattr(self.tts, "speak_sync"):
                     self.tts.speak_sync(phrase)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("Interim speech error: %s", e)
 
     def _is_speaking(self) -> bool:
@@ -389,8 +325,16 @@ class JarvisBrain(
         if hasattr(self, "tts") and self.tts:
             try:
                 self.tts.stop()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("TTS stop notice during barge-in flush: %s", e)
+
+    def _compute_tool_call_signature(self, tool_name: str, tool_args: dict[str, Any]) -> str:
+        """Computes a deterministic canonical signature for a tool invocation."""
+        try:
+            args_str = json.dumps(tool_args or {}, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            args_str = str(sorted((tool_args or {}).items()))
+        return f"{tool_name}::{args_str}"
 
     def _dispatch_tool_pipeline(
         self,
@@ -399,6 +343,7 @@ class JarvisBrain(
         step_index: int = 1,
         sentence_callback: Callable[[str], None] | None = None,
         dual_key_confirmed: bool = False,
+        turn_context: TurnContext | None = None,
     ) -> tuple[Any, bool]:
         """Single authoritative gateway for all tool authorization, safety checks, and execution across all providers.
 
@@ -406,12 +351,45 @@ class JarvisBrain(
             (tool_result, is_success): tool_result is the output or error string;
             is_success is True if executed without safety halts or cancellation.
         """
+        # 0. Deterministic Idempotency Ledger & Side-Effect Replay Prevention
+        ledger = turn_context.idempotency_ledger if turn_context is not None else getattr(self, "_current_turn_idempotency_ledger", {})
+        executed_tools = turn_context.executed_tools if turn_context is not None else getattr(self, "_current_turn_executed_tools", [])
+        turn_id = turn_context.turn_id if turn_context is not None else getattr(self, "_current_turn_id", "active")
+        is_retry = turn_context.is_retry if turn_context is not None else getattr(self, "_is_turn_retry", False)
+
+        call_sig = self._compute_tool_call_signature(tool_name, tool_args)
+        if call_sig in ledger:
+            logger.warning(
+                "Idempotency ledger hit: tool '%s' with identical arguments already executed in turn %s. "
+                "Returning recorded result without re-executing side effects.",
+                tool_name,
+                turn_id,
+            )
+            return ledger[call_sig], True
+
+        # Prevent unconfirmed side-effecting replay during provider retry
+        is_side_effecting = tool_name not in self.READ_ONLY_TOOL_NAMES
+        if is_retry and is_side_effecting:
+            had_prior_side_effects = any(
+                t[0] not in self.READ_ONLY_TOOL_NAMES
+                for t in executed_tools
+            )
+            if had_prior_side_effects:
+                halt_msg = (
+                    f"Action halted: Tool '{tool_name}' carries potential side effects and cannot be "
+                    f"automatically replayed during a provider failover retry when prior side effects already completed."
+                )
+                logger.warning(halt_msg)
+                if sentence_callback:
+                    sentence_callback(halt_msg)
+                return halt_msg, False
+
         # 1. Narrate action to UI and audio
         if sentence_callback:
             try:
                 narrative = self._narrate_tool_action(tool_name, tool_args)
                 sentence_callback(narrative)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("Tool narration notice: %s", e)
 
         # 2. Centralized SafetyGate check (destructive commands, forbidden URLs, etc.)
@@ -430,7 +408,15 @@ class JarvisBrain(
         tool_result = self._execute_tool_with_orchestrator(
             tool_name, tool_args, step_index=step_index, dual_key_confirmed=dual_key_confirmed
         )
-        self._record_tool_execution(tool_name, tool_args, tool_result)
+        ledger[call_sig] = tool_result
+        if not hasattr(self, "_current_turn_idempotency_ledger"):
+            self._current_turn_idempotency_ledger = {}
+        self._current_turn_idempotency_ledger[call_sig] = tool_result
+
+        if turn_context is not None:
+            self._record_tool_execution(tool_name, tool_args, tool_result, turn_context=turn_context)
+        else:
+            self._record_tool_execution(tool_name, tool_args, tool_result)
         return tool_result, True
 
     def _execute_tool_with_orchestrator(
@@ -455,19 +441,19 @@ class JarvisBrain(
         if hasattr(self, "antigravity_bridge") and self.antigravity_bridge:
             try:
                 self.antigravity_bridge.stop()
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.debug("Antigravity bridge shutdown notice: %s", e)
 
         if hasattr(self, "mcp_manager") and self.mcp_manager:
             try:
                 self.mcp_manager.shutdown_all()
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.debug("MCP manager shutdown notice: %s", e)
 
         if hasattr(self, "service_manager") and self.service_manager:
             try:
                 self.service_manager.stop_all(timeout_seconds=timeout_seconds)
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.debug("Service manager shutdown notice: %s", e)
 
         if hasattr(self, "tts") and self.tts:
@@ -476,14 +462,14 @@ class JarvisBrain(
                     self.tts.close(timeout=timeout_seconds)
                 elif hasattr(self.tts, "stop"):
                     self.tts.stop()
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.debug("TTS shutdown notice during brain teardown: %s", e)
 
     def __del__(self):
         """Ensures spawned processes are not orphaned when the brain instance is collected."""
         try:
             self.shutdown(timeout_seconds=1.0)
-        except Exception:
+        except (OSError, RuntimeError):
             pass
 
     def _synthesize_error_lesson(self, tool_name: str, tool_args: dict[str, Any], failure_signature: str) -> str:
@@ -518,10 +504,19 @@ class JarvisBrain(
         clean_sig = re.sub(r"^(?:Error|Failed to|Action halted|Could not find)[:\s]*", "", failure_signature, flags=re.IGNORECASE).strip()
         return f"When invoking '{tool_name}' with {args_str}: Pre-validate arguments and environment to avoid '{clean_sig[:120]}'."
 
-    def _record_tool_execution(self, tool_name: str, tool_args: dict[str, Any], tool_result: Any = None):
+    def _record_tool_execution(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_result: Any = None,
+        turn_context: TurnContext | None = None,
+    ):
         """Tracks executed tools during the current turn for habit promotion, or records episodic failure lessons."""
         if not hasattr(self, "_current_turn_executed_tools"):
             self._current_turn_executed_tools = []
+        if not hasattr(self, "_current_turn_resolved_tool_outputs"):
+            self._current_turn_resolved_tool_outputs = {}
+
         res_str = str(tool_result or "")
         if any(res_str.startswith(err) for err in ("Failed to", "Action halted", "Could not find", "Error:")):
             try:
@@ -535,13 +530,18 @@ class JarvisBrain(
                     failure_signature=res_str[:250],
                     lesson=lesson,
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug("Episodic reflection recording notice: %s", e)
             return
-        self._current_turn_executed_tools.append((tool_name, dict(tool_args or {})))
-        if not hasattr(self, "_current_turn_resolved_tool_outputs"):
-            self._current_turn_resolved_tool_outputs = {}
+
+        tool_record = (tool_name, dict(tool_args or {}))
+        self._current_turn_executed_tools.append(tool_record)
         self._current_turn_resolved_tool_outputs[tool_name] = tool_result
+
+        if turn_context is not None:
+            if tool_record not in turn_context.executed_tools:
+                turn_context.executed_tools.append(tool_record)
+            turn_context.resolved_tool_outputs[tool_name] = tool_result
 
         # Temporal Habit Graph unified observation (Argon Dimension 1.3)
         if hasattr(self, "habit_graph") and self.habit_graph:
@@ -552,13 +552,12 @@ class JarvisBrain(
                     cognitive_state=cog_state,
                     domain="tool",
                 )
-            except Exception as h_err:
+            except Exception as h_err:  # noqa: BLE001
                 logger.debug("HabitGraph tool observation notice: %s", h_err)
 
     def get_current_turn_tool_outputs(self) -> dict[str, Any]:
         """Returns the dictionary of resolved tool outputs from the current turn."""
         return dict(getattr(self, "_current_turn_resolved_tool_outputs", {}))
-
 
     def _get_reflex_dispatcher(self) -> ReflexDispatcher:
         """Retrieves or lazily instantiates the ReflexDispatcher coordinator."""
@@ -588,6 +587,7 @@ class JarvisBrain(
         tier1_profile_xml: str = "",
         flow_state_xml: str = "",
         bookmark_context: str = "",
+        turn_context: TurnContext | None = None,
     ) -> str:
         """Constructs the definitive sovereign system prompt for Jarvis 2.0,
         calibrated to Sir's 7-Dimension Operational Profile.
@@ -596,26 +596,37 @@ class JarvisBrain(
         active_model = self.openai_model or self.gemini_model
         workspace = self.config.get("_base_dir", "")
 
+        if turn_context is not None:
+            if not flow_state_xml:
+                flow_state_xml = turn_context.flow_state_xml
+            if not bookmark_context:
+                bookmark_context = turn_context.bookmark_context
+
         if not flow_state_xml:
             flow_state_xml = getattr(self, "_current_turn_flow_xml", "")
         if not bookmark_context:
             bookmark_context = getattr(self, "_current_turn_bookmark_xml", "")
 
         if not hasattr(self, "context_orchestrator") or not self.context_orchestrator:
-            self.context_orchestrator = ContextOrchestrator(config=getattr(self, "config", {}))
+            self.context_orchestrator = ContextOrchestrator(
+                config=getattr(self, "config", {}),
+                workspace_id=getattr(self, "active_workspace_id", "ws_default"),
+            )
 
+        ws_id = getattr(self, "active_workspace_id", "ws_default")
         return self.context_orchestrator.assemble_system_prompt(
             memory=getattr(self, "memory", None),
             available_tools=available_tools,
             provider=getattr(self, "provider", "antigravity"),
             active_model=active_model,
-            workspace=workspace,
+            workspace=workspace or ws_id,
             active_task_mode=getattr(self, "active_task_mode", "general"),
             user_text=user_text,
             tier1_profile_xml=tier1_profile_xml,
             flow_state_xml=flow_state_xml,
             bookmark_context=bookmark_context,
             base_system_prompt=getattr(self, "BASE_SYSTEM_PROMPT", None),
+            workspace_id=ws_id,
         )
 
     def build_ephemeral_user_envelope(self, user_text: str) -> str:
@@ -625,83 +636,65 @@ class JarvisBrain(
         cache by keeping the system prompt static and injecting dynamic context at the turn tail.
         """
         if not hasattr(self, "context_orchestrator") or not self.context_orchestrator:
-            self.context_orchestrator = ContextOrchestrator(config=getattr(self, "config", {}))
+            self.context_orchestrator = ContextOrchestrator(
+                config=getattr(self, "config", {}),
+                workspace_id=getattr(self, "active_workspace_id", "ws_default"),
+            )
 
+        ws_id = getattr(self, "active_workspace_id", "ws_default")
         return self.context_orchestrator.build_ephemeral_user_envelope(
             user_text=user_text,
             memory=getattr(self, "memory", None),
             cognitive_twin=getattr(self, "cognitive_twin", None),
+            active_task_mode=getattr(self, "active_task_mode", "general"),
+            workspace_id=ws_id,
         )
 
     load_curated_prompt = staticmethod(ContextOrchestrator.load_curated_prompt)
-
+    _clean_speech_clause = staticmethod(clean_speech_clause)
+    _extract_next_speech_chunk = staticmethod(extract_next_speech_chunk)
+    _is_code_task = staticmethod(CognitiveRouter.is_code_task)
 
     def _select_tools_for_query(self, user_text: str) -> frozenset[str]:
-        """Limit each request to skills that its wording plausibly needs.
+        """Limit each request to skills that its wording plausibly needs."""
+        last_assistant_msg = ""
+        for msg in reversed(getattr(self, "openai_messages", [])):
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    last_assistant_msg = content.lower()
+                break
 
-        Tool schemas are part of every model prompt. Keeping routine conversation
-        schema-free reduces prompt processing and makes a small local model less
-        likely to spend a turn considering unrelated actions.
-        """
-        if self.active_task_mode == "code":
-            return frozenset(self.CODE_TOOL_NAMES)
-        if self.should_capture_screen(user_text):
-            if self.provider == "gemini":
-                # The direct Gemini API session embeds the current screenshot directly.
-                return frozenset()
-            return frozenset({"inspect_screen", "see_screen"})
-
-        query = user_text.lower()
-        selected: set[str] = set()
-        for keywords, tools in self.TOOL_INTENT_GROUPS:
-            if any(keyword in query for keyword in keywords):
-                selected.update(tools)
-
-        # Multi-turn affirmative follow-up detection for active learning and co-engineering
-        clean_words = query.strip().split()
-        if len(clean_words) <= 5 and any(w in query for w in ("yes", "yeah", "yep", "sure", "please", "go ahead", "do that", "add it", "remember it", "remember that", "commit it", "do it")):
-            last_assistant_msg = ""
-            for msg in reversed(getattr(self, "openai_messages", [])):
-                if msg.get("role") == "assistant":
-                    content = msg.get("content", "")
-                    if isinstance(content, str):
-                        last_assistant_msg = content.lower()
-                    break
-            if any(k in last_assistant_msg for k in ("commit", "memory", "archives", "remember", "record", "calibrated")):
-                selected.update({"remember_fact", "update_user_preference", "recall_fact"})
-            elif any(k in last_assistant_msg for k in ("build", "skill", "feature", "tool", "option a", "option b")):
-                selected.update(self.CODE_TOOL_NAMES)
-
-        # Dynamic Voyager Discovery: Scan registered tools in SkillRegistry
-        # to ensure custom skills and unmapped tools whose identifiers match the query are included
-        all_tools = SkillRegistry.get_all_tools()
-        query_words = set(re.findall(r"\b[a-z0-9_-]+\b", query))
-        for tool_name, tool_fn in all_tools.items():
-            if tool_name not in selected:
-                tool_tokens = set(tool_name.lower().split("_"))
-                if tool_tokens.issubset(query_words) or (len(tool_tokens) > 1 and len(tool_tokens & query_words) >= 2):
-                    selected.add(tool_name)
-
-        return frozenset(selected)
+        if hasattr(self, "cognitive_router") and self.cognitive_router:
+            return self.cognitive_router.select_tools_for_query(
+                user_text=user_text,
+                active_task_mode=getattr(self, "active_task_mode", "general"),
+                provider=getattr(self, "provider", "antigravity"),
+                last_assistant_msg=last_assistant_msg,
+            )
+        router = CognitiveRouter()
+        return router.select_tools_for_query(
+            user_text=user_text,
+            active_task_mode=getattr(self, "active_task_mode", "general"),
+            provider=getattr(self, "provider", "antigravity"),
+            last_assistant_msg=last_assistant_msg,
+        )
 
     def should_capture_screen(self, query: str) -> bool:
         """Determines if the prompt requests visual inspection of screen pixels."""
+        if hasattr(self, "cognitive_router") and self.cognitive_router:
+            return self.cognitive_router.should_capture_screen(query)
+        return CognitiveRouter().should_capture_screen(query)
 
-        q = query.lower()
-        # Exclude OS actions, window listings, screenshots, and lock commands
-        if any(w in q for w in ("running", "open apps", "open windows", "active window", "focused window", "screenshot", "lock", "minimize")):
-            return False
-
-        vision_triggers = [
-            "look at this", "look here", "look at my screen", "look at the screen",
-            "what do you see", "error on my screen", "read my screen", "read the screen",
-            "inspect my screen", "inspect the screen", "can you see my screen",
-            "describe my screen", "see on my screen", "visualize screen",
-            "what am i looking at", "what is on my screen", "what is this error",
-            "what error is this", "look at this error", "look at the error",
-            "look at that error", "inspect screen", "see screen"
-        ]
-        return any(t in q for t in vision_triggers)
+    def _is_code_followup(self, user_text: str) -> bool:
+        """Determines if a user turn is a conversational follow-up to an ongoing coding task."""
+        if hasattr(self, "cognitive_router") and self.cognitive_router:
+            return self.cognitive_router.is_code_followup(
+                user_text, active_task_mode=getattr(self, "active_task_mode", "general")
+            )
+        return CognitiveRouter().is_code_followup(
+            user_text, active_task_mode=getattr(self, "active_task_mode", "general")
+        )
 
     def is_fast_reflex(self, norm_text: str) -> bool:
         """Determines if a query matches a fast reflex command without executing any tools."""
@@ -725,17 +718,29 @@ class JarvisBrain(
         sentence_callback: Any = None,
         flow_state_xml: str = "",
         bookmark_context: str = "",
+        turn_context: TurnContext | None = None,
     ) -> str:
         """Routes normal conversation to the configured primary model; consultations are explicit."""
         turn_start_time = time.perf_counter()
-        self._current_turn_id = f"turn_{int(time.time() * 1000)}"
+
+        if turn_context is None:
+            turn_context = TurnContext(
+                flow_state_xml=flow_state_xml,
+                bookmark_context=bookmark_context,
+            )
+
+        self._current_turn_id = turn_context.turn_id
         if hasattr(self, "latency_profiler") and self.latency_profiler:
             self.latency_profiler.begin_turn(self._current_turn_id)
             self.latency_profiler.mark(self._current_turn_id, "stt_final_ns")
-        self._current_turn_executed_tools = []
-        self._current_turn_resolved_tool_outputs = {}
-        self._current_turn_flow_xml = flow_state_xml
-        self._current_turn_bookmark_xml = bookmark_context
+
+        self._current_turn_executed_tools = turn_context.executed_tools
+        self._current_turn_resolved_tool_outputs = turn_context.resolved_tool_outputs
+        self._current_turn_idempotency_ledger = turn_context.idempotency_ledger
+        self._is_turn_retry = turn_context.is_retry
+        self._current_turn_flow_xml = turn_context.flow_state_xml
+        self._current_turn_bookmark_xml = turn_context.bookmark_context
+
         from jarvis.core.security_boundaries import TurnTaintTracker
         TurnTaintTracker.get_instance().reset_turn()
         if hasattr(self, "tool_orchestrator") and self.tool_orchestrator:
@@ -841,10 +846,11 @@ class JarvisBrain(
                 candidate_skills = list(self.active_tool_names) if self.active_tool_names else None
                 decision = self.routing_cascade.route_query(norm_text, candidate_skills=candidate_skills)
                 if decision.tier in (0, 1) and decision.execute_locally and decision.skill_name:
-                    tool_res, ok = self._dispatch_tool_pipeline(
+                    tool_res, _ = self._dispatch_tool_pipeline(
                         decision.skill_name,
                         decision.kwargs,
                         sentence_callback=sentence_callback,
+                        turn_context=turn_context,
                     )
                     reply = str(tool_res)
                     if hasattr(self, "latency_profiler") and self.latency_profiler:
@@ -855,7 +861,7 @@ class JarvisBrain(
                         sentence_callback(reply)
                     self.memory.log_interaction(user_text, reply, None)
                     return reply
-            except Exception as cascade_err:
+            except Exception as cascade_err:  # noqa: BLE001
                 logger.debug("RoutingCascade evaluation notice: %s", cascade_err)
 
         # Smart Tri-Tier Hybrid Dispatch & Model Execution
@@ -865,8 +871,9 @@ class JarvisBrain(
             try:
                 from jarvis.speculative.engine import SpeculativeExecutionEngine
                 SpeculativeExecutionEngine.get_instance().discard_unclaimed()
-            except Exception:
-                pass
+            except (ImportError, RuntimeError, AttributeError) as spec_err:
+                logger.debug("SpeculativeExecutionEngine discard notice: %s", spec_err)
+
         if hasattr(self, "latency_profiler") and self.latency_profiler:
             self.latency_profiler.mark(self._current_turn_id, "llm_first_token_ns")
             self.latency_profiler.complete_turn(self._current_turn_id)
@@ -886,12 +893,17 @@ class JarvisBrain(
         """
         import asyncio
         loop = asyncio.get_running_loop()
+        turn_context = TurnContext(
+            flow_state_xml=flow_state_xml,
+            bookmark_context=bookmark_context,
+        )
         reply = await loop.run_in_executor(
             None,
             lambda: self.process_query(
                 user_text=utterance,
                 flow_state_xml=flow_state_xml,
                 bookmark_context=bookmark_context,
+                turn_context=turn_context,
             ),
         )
         # Infer topic label from utterance
@@ -959,7 +971,7 @@ class JarvisBrain(
                     self.openai_client = self.groq_client
                     self.openai_model = self.groq_model
                     return self._process_openai_compatible_query(user_text, sentence_callback)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     logger.warning(f"Groq query failed ({e}). Seamlessly falling back...")
                     if has_antigravity:
                         logger.info("Hybrid Fallback: Routing to ANTIGRAVITY FLASH...")
@@ -981,7 +993,34 @@ class JarvisBrain(
                 return self._process_gemini_query(user_text, sentence_callback)
 
         if self.provider in ("antigravity", "agy"):
-            return self._process_antigravity_query(user_text, sentence_callback)
+            if getattr(self, "antigravity_bridge", None) and self.antigravity_bridge.is_available():
+                return self._process_antigravity_query(user_text, sentence_callback)
+
+            # Antigravity is unavailable — check for secondary Gemini failover
+            if self._is_gemini_configured():
+                status = getattr(self.antigravity_bridge, "availability_status", "UNAVAILABLE")
+                logger.info(
+                    "Primary reasoning provider ('antigravity') is unavailable (%s). "
+                    "Seamlessly failing over to secondary reasoning provider: Gemini API.",
+                    status,
+                )
+                return self._process_gemini_query(user_text, sentence_callback)
+
+            # Neither reasoning provider is available — explain unavailability
+            status = getattr(self.antigravity_bridge, "availability_status", "UNAVAILABLE")
+            diag = getattr(
+                self.antigravity_bridge,
+                "availability_diagnostic",
+                "Antigravity CLI ('agy') executable is not installed or accessible in PATH.",
+            )
+            reply = (
+                f"My apologies, Sir. My primary reasoning provider ('antigravity') is unavailable ({status}: {diag}), "
+                f"and secondary Gemini reasoning is not configured. Local deterministic reflexes remain operational for system commands."
+            )
+            if sentence_callback:
+                sentence_callback(reply)
+            return reply
+
         if self.provider in ("github", "github_copilot", "github-copilot", "copilot", "gh"):
             return self._process_github_query(user_text, sentence_callback)
         if self.provider == "ollama" and not self.openai_client:
@@ -990,15 +1029,86 @@ class JarvisBrain(
             return "Groq is not connected. Configure GROQ_API_KEY; I have not switched to another provider."
         if self.provider in ("ollama", "omniroute", "groq", "grok") and self.openai_client:
             return self._process_openai_compatible_query(user_text, sentence_callback)
-        if self.provider == "gemini" and not self.gemini_client:
-            return "Gemini is not connected. Configure GEMINI_API_KEY; I have not switched to another provider."
         if self.provider == "gemini":
+            if not self._is_gemini_configured():
+                return "My apologies, Sir. Gemini is configured as your primary provider, but no valid GEMINI_API_KEY was found in your environment or .env file."
             return self._process_gemini_query(user_text, sentence_callback)
         if self.provider in ("openrouter", "open_router", "or"):
             if not self.openrouter_provider or not self.openrouter_provider.is_available():
                 return "OpenRouter is not connected. Add OPENROUTER_API_KEY to .env, Sir."
             return self._process_openrouter_query(user_text, sentence_callback)
         return f"No active model is configured for provider '{self.provider}', Sir."
+
+    def _is_gemini_configured(self) -> bool:
+        """Returns True if a non-placeholder GEMINI_API_KEY is present in the environment or config."""
+        key = os.getenv("GEMINI_API_KEY", "").strip()
+        return bool(key and key != "your_gemini_api_key_here")
+
+    def get_provider_status(self) -> dict[str, Any]:
+        """Returns the operational availability status of active and configured reasoning providers."""
+        has_antigravity = bool(getattr(self, "antigravity_bridge", None) and self.antigravity_bridge.is_available())
+        has_gemini = self._is_gemini_configured()
+        has_copilot = bool(getattr(self, "github_bridge", None) and self.github_bridge.is_available())
+        has_ollama = bool(getattr(self, "ollama_client", None) is not None)
+        has_openrouter = bool(getattr(self, "openrouter_provider", None) and self.openrouter_provider.is_available())
+
+        ag_status = getattr(self.antigravity_bridge, "availability_status", "NOT_CONFIGURED") if hasattr(self, "antigravity_bridge") else "NOT_CONFIGURED"
+        ag_diag = getattr(self.antigravity_bridge, "availability_diagnostic", "") if hasattr(self, "antigravity_bridge") else ""
+
+        # Determine effective active routing
+        if self.provider in ("antigravity", "agy"):
+            if has_antigravity:
+                active_route = "antigravity"
+            elif has_gemini:
+                active_route = "gemini_fallback"
+            else:
+                active_route = "reflexes_only"
+        elif self.provider == "gemini":
+            active_route = "gemini" if has_gemini else "reflexes_only"
+        else:
+            active_route = self.provider
+
+        gemini_verified_ts = getattr(self, "_gemini_last_verified_timestamp", None)
+        gemini_last_err = getattr(self, "_gemini_last_error", None)
+        if not has_gemini:
+            gemini_status = "NOT_CONFIGURED"
+        elif gemini_last_err:
+            gemini_status = f"DEGRADED ({gemini_last_err})"
+        elif gemini_verified_ts:
+            ts_str = time.strftime("%H:%M:%S", time.localtime(gemini_verified_ts))
+            gemini_status = f"CONNECTION_VERIFIED (last verified: {ts_str})"
+        else:
+            gemini_status = "CONFIGURED"
+
+        return {
+            "active_provider": self.provider,
+            "active_route": active_route,
+            "providers": {
+                "antigravity": {
+                    "available": has_antigravity,
+                    "status": ag_status,
+                    "diagnostic": ag_diag,
+                },
+                "gemini": {
+                    "available": has_gemini,
+                    "status": gemini_status,
+                    "last_verified_timestamp": gemini_verified_ts,
+                    "last_error": gemini_last_err,
+                },
+                "github": {
+                    "available": has_copilot,
+                    "status": "AVAILABLE" if has_copilot else "NOT_FOUND",
+                },
+                "ollama": {
+                    "available": has_ollama,
+                    "status": "ONLINE" if has_ollama else "OFFLINE",
+                },
+                "openrouter": {
+                    "available": has_openrouter,
+                    "status": "CONFIGURED" if has_openrouter else "NO_API_KEY",
+                },
+            },
+        }
 
     def get_latencies(self) -> dict[str, float]:
         """Returns the most recent measured round-trip inference latencies in milliseconds."""
@@ -1007,117 +1117,6 @@ class JarvisBrain(
     def get_latency_profiler(self) -> PipelineLatencyProfiler:
         """Returns the nanosecond stage-by-stage PipelineLatencyProfiler instance."""
         return self.latency_profiler
-
-    @staticmethod
-    def _is_code_task(query: str) -> bool:
-        """Routes repository and software engineering requests through the focused code workflow."""
-        q = query.lower()
-        cancel_triggers = (
-            "stop coding", "stop code", "exit coding", "switch to general",
-            "cancel coding", "stop writing code", "done coding", "enough coding"
-        )
-        if any(c in q for c in cancel_triggers):
-            return False
-        indicators = (
-            "code", "coding", "codebase", "repository", "repo", "source file", "multiple files",
-            "read files", "implement", "debug", "bug", "refactor", "function", "class", "module",
-            "script", "python", "javascript", "typescript", "powershell", "pull request", "build an app",
-            "write an app", "fix this", "fix the", "programming", "software project", "unit test",
-            "error message", "traceback", "stack trace", "exception", "compile error", "dependency conflict",
-            "application code", "app crashes", "app is crashing", "won't start", "won't compile",
-            "edit yourself", "modify yourself", "enhance yourself", "optimize yourself", "improve yourself",
-            "upgrade yourself", "inspect your code", "check your code", "look at your code", "fix yourself",
-            "refactor yourself", "your codebase", "your files", "jarvis 2.0", "jarvis_2.0", "self edit",
-            "self optimize", "self improve", "self enhance", "build yourself", "self build", "self-evolution",
-            "evolve", "custom skill", "patch file", "run tests", "edit code", "code changes"
-        )
-        return any(indicator in q for indicator in indicators)
-
-    def _is_code_followup(self, user_text: str) -> bool:
-        """Determines if a user turn is a conversational follow-up to an ongoing coding task."""
-        if getattr(self, "active_task_mode", "general") != "code":
-            return False
-
-        norm = user_text.lower().strip()
-        words = norm.split()
-
-        # Explicit topic termination or reset
-        cancel_triggers = (
-            "stop", "cancel", "never mind", "nevermind", "forget it", "exit",
-            "reset", "switch to general", "enough coding", "change topic"
-        )
-        if any(c in norm for c in cancel_triggers):
-            return False
-
-        # Fast reflexes or device inquiries are not code follow-ups
-        reflex_triggers = (
-            "weather", "temperature", "forecast", "time is it", "what time",
-            "battery", "charging", "volume", "mute", "unmute", "hello", "hi", "hey"
-        )
-        if any(r in norm for r in reflex_triggers):
-            return False
-
-        # Common follow-up directives during interactive coding / co-engineering
-        followup_phrases = (
-            "yes", "yeah", "yep", "sure", "ok", "okay", "agreed", "sounds good",
-            "proceed", "continue", "go ahead", "do it", "do that", "apply",
-            "option a", "option b", "option c", "option 1", "option 2", "option 3",
-            "first option", "second option", "fix that", "fix this", "try that",
-            "try this", "run tests", "run the tests", "check tests", "retest",
-            "commit", "push", "what about", "why did", "show diff", "diff"
-        )
-        if any(p in norm for p in followup_phrases):
-            return True
-
-        # Short turns (<= 8 words) in an active code session are considered follow-ups
-        if len(words) <= 8 and not self.should_capture_screen(user_text):
-            return True
-
-        return False
-
-    @staticmethod
-    def _clean_speech_clause(text: str) -> str:
-        """Normalizes times, dates, numbers, units, and markdown for vocal delivery."""
-        if not text:
-            return ""
-        from jarvis.audio.normalizer import SpeechNormalizer
-        cleaned = SpeechNormalizer.normalize(text)
-        if not re.search(r"[a-zA-Z0-9]", cleaned):
-            return ""
-        return cleaned
-
-    @staticmethod
-    def _extract_next_speech_chunk(buffer: str) -> tuple[str | None, str]:
-        """Extracts the next natural spoken clause or sentence from the streaming buffer
-        with speculative punctuation boundary emission for sub-100ms voice reflex latency."""
-        # Terminal punctuation (. ! ? \n)
-        m_term = re.search(r'(?<!\d)(?<!\b[A-Za-z])[.!?\n]+(?!\d)(\s+|$)', buffer)
-        # Speculative clause punctuation (, ; : — –) guarding colons/commas between digits
-        m_clause = re.search(r'(?:[,;—–]|(?<!\d):(?!\d))(\s+|$)', buffer)
-
-        candidates = []
-        if m_term and m_term.start() >= 2:
-            candidates.append((m_term.end(), m_term.start()))
-        if m_clause and m_clause.start() >= 3:
-            prefix_candidate = buffer[:m_clause.start()].strip()
-            if prefix_candidate and len(prefix_candidate.split()) >= 1:
-                candidates.append((m_clause.end(), m_clause.start()))
-
-        if candidates:
-            # Sort by earliest boundary in stream
-            candidates.sort(key=lambda x: x[1])
-            cut_idx = candidates[0][0]
-            prefix = buffer[:cut_idx].strip()
-            if prefix:
-                return prefix, buffer[cut_idx:]
-
-        # Fallback if buffer grows long without punctuation
-        if len(buffer) >= 80:
-            last_space = buffer.rfind(' ')
-            if last_space > 20:
-                return buffer[:last_space].strip(), buffer[last_space:]
-
-        return None, buffer
 
     def classify_query_tier(self, query: str) -> str:
         """Determines whether a query is suitable for Fast LPU Tier vs Deep Frontier Tier."""
@@ -1164,7 +1163,7 @@ class JarvisBrain(
                     data = json.loads(text)
                     if isinstance(data, list):
                         return data
-            except Exception as e:
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError, RuntimeError) as e:
                 logger.debug("Antigravity memory extraction notice: %s", e)
 
         # 2. Try Gemini direct client
@@ -1182,7 +1181,7 @@ class JarvisBrain(
                     data = json.loads(text)
                     if isinstance(data, list):
                         return data
-            except Exception as e:
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError, RuntimeError) as e:
                 logger.debug("Gemini memory extraction notice: %s", e)
 
         # 3. Fallback to Groq if key exists
@@ -1207,7 +1206,7 @@ class JarvisBrain(
                 data = json.loads(text)
                 if isinstance(data, list):
                     return data
-            except Exception as e:
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError, RuntimeError) as e:
                 logger.debug("Groq memory extraction notice: %s", e)
 
         return []
@@ -1217,32 +1216,19 @@ class JarvisBrain(
         if hasattr(self, "antigravity_bridge") and self.antigravity_bridge:
             try:
                 self.antigravity_bridge.stop()
-            except Exception:
-                pass
+            except (OSError, RuntimeError) as e:
+                logger.debug("Antigravity bridge stop notice: %s", e)
 
         if hasattr(self, "unified_runner") and self.unified_runner:
             try:
                 self.unified_runner.shutdown()
-            except Exception:
-                pass
+            except (OSError, RuntimeError) as e:
+                logger.debug("Unified runner shutdown notice: %s", e)
 
         # Unload Ollama models from VRAM if local Ollama server is running
-        try:
-            ollama_url = self.config.get("llm", {}).get("ollama_base_url", "http://localhost:11434/v1")
-            base = ollama_url.split("/v1", 1)[0].rstrip("/")
-            import json
-            import urllib.request
-            req = urllib.request.Request(
-                f"{base}/api/generate",
-                data=json.dumps({"model": getattr(self, "ollama_model", "qwen3.5:2b-q4_K_M"), "keep_alive": 0}).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=1.0):
-                pass
-            logger.info("Unloaded Ollama models from GPU VRAM.")
-        except Exception:
-            pass
+        ollama_url = self.config.get("llm", {}).get("ollama_base_url", "http://localhost:11434/v1")
+        model = getattr(self, "ollama_model", "qwen3.5:2b-q4_K_M")
+        OllamaProvider.unload_model(base_url=ollama_url, model=model)
 
     def set_cancellation_token(self, token: Any) -> None:
         """Sets the active BargeInCancellationToken for in-flight tool execution loops."""
@@ -1261,10 +1247,10 @@ class JarvisBrain(
         if hasattr(self, "tool_orchestrator") and self.tool_orchestrator:
             try:
                 self.tool_orchestrator.reset()
-            except Exception:
-                pass
+            except (OSError, RuntimeError) as e:
+                logger.debug("Tool orchestrator reset notice during cancellation: %s", e)
         if hasattr(self, "antigravity_bridge") and self.antigravity_bridge:
             try:
                 self.antigravity_bridge.abort_active_turn()
-            except Exception:
-                pass
+            except (OSError, RuntimeError) as e:
+                logger.debug("Antigravity bridge abort notice during cancellation: %s", e)

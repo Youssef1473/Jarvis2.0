@@ -26,5 +26,54 @@
         ]
       }
     ]
+  },
+  "context-router": {
+    "enabled": true,
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "if exist tools\\context_router.py (python tools\\context_router.py) else (python ..\\tools\\context_router.py)",
+        "timeout": 5
+      }
+    ]
+  },
+  "continuity-checker": {
+    "enabled": true,
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "if exist tools\\continuity_manager.py (python tools\\continuity_manager.py hook-session-start) else (python ..\\tools\\continuity_manager.py hook-session-start)",
+        "timeout": 5
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "if exist tools\\continuity_manager.py (python tools\\continuity_manager.py hook-check) else (python ..\\tools\\continuity_manager.py hook-check)",
+        "timeout": 5
+      }
+    ]
+  },
+  "failure-collector": {
+    "enabled": true,
+    "PostToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if exist tools\\failure_collector.py (python tools\\failure_collector.py) else (python ..\\tools\\failure_collector.py)",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "if exist tools\\failure_collector.py (python tools\\failure_collector.py) else (python ..\\tools\\failure_collector.py)",
+        "timeout": 5
+      }
+    ]
   }
 }

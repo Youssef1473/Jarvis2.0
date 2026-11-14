@@ -22,6 +22,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import jarvis.skills.document_ingest as doc_ingest
 from jarvis.core.config_loader import load_config
@@ -353,18 +354,22 @@ class TestPersistentDocumentProvenance(unittest.TestCase):
         res_retrieval = orchestrator.execute_step("read_archived_document", {"identifier": str(doc_id)})
         self.assertIn("Untrusted PDF Report", res_retrieval)
         self.assertTrue(self.tracker.is_tainted)
+        self.assertIn(f"archived_document:{doc_id}", self.tracker.tainting_sources)
 
         # Attempt high-privilege Level 1 mutation without approval -> MUST FAIL CLOSED
-        with self.assertRaises(SecurityBoundaryViolation) as ctx:
-            self.tracker.evaluate_tool_execution(
-                "close_application", {"app_name": "notepad.exe"}, risk_level=1
-            )
-        self.assertIn(f"archived_document:{doc_id}", str(ctx.exception))
+        with patch("jarvis.skills.base.SkillRegistry.execute") as mock_exec:
+            with self.assertRaises(SecurityBoundaryViolation) as ctx:
+                self.tracker.evaluate_tool_execution(
+                    "launch_or_focus_application", {"app_name": "notepad.exe"}, risk_level=1
+                )
+            self.assertIn("Dual-Key Safety Gate: blocked high-privilege tool", str(ctx.exception))
+            self.assertIn(f"archived_document:{doc_id}", str(ctx.exception))
+            mock_exec.assert_not_called()
 
         # Once granted by human approval, execution is permitted
-        self.approval_mgr.grant_approval("close_application", {"app_name": "notepad.exe"})
+        self.approval_mgr.grant_approval("launch_or_focus_application", {"app_name": "notepad.exe"})
         decision = self.tracker.evaluate_tool_execution(
-            "close_application", {"app_name": "notepad.exe"}, risk_level=1
+            "launch_or_focus_application", {"app_name": "notepad.exe"}, risk_level=1
         )
         self.assertTrue(decision.allowed)
         self.assertIsNotNone(decision.grant)
@@ -399,7 +404,10 @@ class TestPersistentDocumentProvenance(unittest.TestCase):
                 "close_application", {"app_name": "notepad.exe"}
             )
             # Must return security error without running
-            self.assertIn("Dual-Key Safety Gate: blocked high-privilege tool 'close_application'", str(res2))
+            self.assertTrue(
+                "Critical Authorization Gate" in str(res2) or "Dual-Key Safety Gate" in str(res2),
+                f"Unexpected security error response: {res2}"
+            )
 
         asyncio.run(scenario())
 

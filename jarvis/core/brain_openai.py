@@ -296,6 +296,8 @@ class OpenAIProviderMixin:
         max_output_tokens = int(self.config.get("llm", {}).get("max_output_tokens", 1024))
 
         last_error = None
+        had_tool_call = False
+        last_tool_result = ""
         for model_candidate in candidate_models:
             logger.info(f"Routing query to {self.provider.upper()} ({model_candidate}) with real-time streaming...")
             try:

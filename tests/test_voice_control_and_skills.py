@@ -8,22 +8,24 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
 import numpy as np
 
 # Ensure project root is in path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.skills.base import SkillRegistry
-from jarvis.audio.tts import TextToSpeech
 import jarvis.skills.voice_control as voice_skills
-import jarvis.skills.os_control as os_skills
+from jarvis.audio.tts import TextToSpeech
 from jarvis.core.brain import JarvisBrain
+from jarvis.core.security_boundaries import TurnTaintTracker
+from jarvis.skills.base import SkillRegistry
 
 
 class TestVoiceControlAndSkillsSuite(unittest.TestCase):
     """Verifies voice customization tools, latent blending, and enhanced desktop skills."""
 
     def setUp(self):
+        TurnTaintTracker.get_instance().reset_turn()
         self.temp_dir = tempfile.mkdtemp()
         self.config = {
             "_base_dir": self.temp_dir,
@@ -37,12 +39,14 @@ class TestVoiceControlAndSkillsSuite(unittest.TestCase):
             "llm": {
                 "provider": "antigravity",
                 "antigravity_model": "gemini-3.8-flash-low",
+                "antigravity_resolver": lambda: None,
             },
             "memory": {"db_path": os.path.join(self.temp_dir, "test_mem.db")},
             "safety": {"confirm_destructive": True},
         }
 
     def tearDown(self):
+        TurnTaintTracker.get_instance().reset_turn()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_voice_profiles_blending_resolution(self):

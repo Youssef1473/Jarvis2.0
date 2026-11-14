@@ -79,7 +79,7 @@ def test_intent_routing_coverage():
         cfg = yaml.safe_load(f)
     cfg["llm"]["provider"] = "hybrid"
 
-    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg))
+    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg), antigravity_resolver=lambda: None)
 
     queries = {
         "Jarvis, take a note that we deploy tomorrow": "take_quick_note",

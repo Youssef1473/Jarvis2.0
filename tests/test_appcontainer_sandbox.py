@@ -43,6 +43,49 @@ from jarvis.skills.job_object_sandbox import (
 IS_WIN = sys.platform == "win32"
 
 
+def is_running_in_appcontainer() -> bool:
+    """Returns True if the current process is already running within an AppContainer boundary."""
+    if not IS_WIN:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        advapi32.OpenProcessToken.restype = wintypes.BOOL
+        h_token = wintypes.HANDLE()
+        if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(h_token)):
+            return False
+        try:
+            is_ac = wintypes.DWORD()
+            ret_len = wintypes.DWORD()
+            if advapi32.GetTokenInformation(h_token, 29, ctypes.byref(is_ac), 4, ctypes.byref(ret_len)):
+                return bool(is_ac.value)
+        finally:
+            kernel32.CloseHandle(h_token)
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
+# Spawning an AppContainer process requires Windows and cannot be nested within an existing AppContainer
+CAN_SPAWN_AC = IS_WIN and not is_running_in_appcontainer()
+
+
+def _run_authorized_batch(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Invokes run_sandboxed_batch with an explicitly bound DualKeyApprovalManager authorization."""
+    from jarvis.core.security_boundaries import DualKeyApprovalManager
+    mgr = DualKeyApprovalManager.get_instance()
+    grant = mgr.grant_approval("run_sandboxed_batch", {"command": command})
+    ctx_token = mgr.bind_active_grant(grant)
+    try:
+        return run_sandboxed_batch(command, **kwargs)
+    finally:
+        mgr.clear_active_authorized(ctx_token)
+
+
 class TestAppContainerConfiguration(unittest.TestCase):
     """Verifies configuration invariants and least-privilege defaults."""
 
@@ -83,7 +126,7 @@ class TestAppContainerConfiguration(unittest.TestCase):
 class TestAppContainerProfileLifecycle(unittest.TestCase):
     """Tests profile creation, derivation, and deletion lifecycle."""
 
-    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    @unittest.skipUnless(CAN_SPAWN_AC, "AppContainer execution requires non-nested AppContainer Windows host")
     def test_profile_creation_reuse_and_cleanup(self):
         """Creates an AppContainer profile, derives existing SID on reuse, and deletes cleanly."""
         unique_name = f"Jarvis_Test_Profile_{os.getpid()}_{time.time_ns()}"
@@ -107,7 +150,7 @@ class TestAppContainerProfileLifecycle(unittest.TestCase):
             deleted = AppContainerProfileManager.delete_profile(unique_name)
             self.assertTrue(deleted)
 
-    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    @unittest.skipUnless(CAN_SPAWN_AC, "AppContainer execution requires non-nested AppContainer Windows host")
     def test_existing_profile_reuse_does_not_delete_shared_profile(self):
         """Reusing an existing profile sets is_new_profile=False and preserves it after child exit."""
         shared_name = f"Jarvis_Shared_{os.getpid()}_{time.time_ns()}"
@@ -210,7 +253,7 @@ class TestAppContainerFailClosedSecurity(unittest.TestCase):
                 proc_mgr.start()
             self.assertIn("AppContainer launch failed", str(ctx.exception))
 
-    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    @unittest.skipUnless(CAN_SPAWN_AC, "AppContainer execution requires non-nested AppContainer Windows host")
     def test_fail_closed_on_job_assignment_failure(self):
         """If Job Object assignment fails, child is killed immediately and RuntimeError is raised."""
         cfg = AppContainerConfig(profile_name=f"Jarvis_JobFail_{os.getpid()}_{time.time_ns()}")
@@ -247,7 +290,7 @@ class TestAppContainerFailClosedSecurity(unittest.TestCase):
 
     def test_legacy_sandbox_preservation(self):
         """use_appcontainer=False preserves existing Win32 Job Object execution path."""
-        res = run_sandboxed_batch(
+        res = _run_authorized_batch(
             [sys.executable, "-c", "print('legacy_job_sandbox_active')"],
             capture_output=True,
             use_appcontainer=False,
@@ -256,10 +299,9 @@ class TestAppContainerFailClosedSecurity(unittest.TestCase):
         self.assertIn("legacy_job_sandbox_active", res.stdout)
 
 
+@unittest.skipUnless(CAN_SPAWN_AC, "AppContainer execution requires non-nested AppContainer Windows host")
 class TestAppContainerExecutionAndContainment(unittest.TestCase):
     """Executes live contained processes and verifies Windows NT security boundaries."""
-
-    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
     def test_live_windows_containment_denied_access(self):
         """Proves NT kernel containment: AppContainer writes to granted scratch, but is strictly denied write to user home."""
         scratch_dir = tempfile.mkdtemp(prefix="jarvis_containment_scratch_")
@@ -314,7 +356,7 @@ except OSError as oe:
         sys.exit(22)
 """
         try:
-            res = run_sandboxed_batch(
+            res = _run_authorized_batch(
                 [sys.executable, "-c", script],
                 capture_output=True,
                 use_appcontainer=True,
@@ -336,7 +378,99 @@ except OSError as oe:
             if user_home_target.exists():
                 user_home_target.unlink(missing_ok=True)
 
-    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    @unittest.skipUnless(CAN_SPAWN_AC, "AppContainer execution requires non-nested AppContainer Windows host")
+    def test_appcontainer_junction_reparse_point_containment_denied(self):
+        """NT kernel object manager containment: traversing directory junction to ungranted workspace fails closed with winerror=5."""
+        scratch_base = Path("scratch").resolve()
+        scratch_base.mkdir(parents=True, exist_ok=True)
+        dir_a = scratch_base / f"test_junc_a_{os.getpid()}_{time.time_ns()}"
+        dir_b = scratch_base / f"test_junc_b_{os.getpid()}_{time.time_ns()}"
+        dir_a.mkdir(parents=True, exist_ok=True)
+        dir_b.mkdir(parents=True, exist_ok=True)
+
+        username = os.environ.get("USERNAME", "Youssef")
+        subprocess.run(["icacls", str(dir_b), "/inheritance:r", "/q"], check=False)
+        subprocess.run([
+            "icacls", str(dir_b),
+            "/grant:r", f"{username}:(OI)(CI)(F)",
+            "/grant:r", "NT AUTHORITY\\SYSTEM:(OI)(CI)(F)",
+            "/grant:r", "BUILTIN\\Administrators:(OI)(CI)(F)",
+            "/q"
+        ], check=False)
+
+        file_a = dir_a / "file_a.txt"
+        file_b = dir_b / "file_b.txt"
+        file_a.write_text("workspace_a_secret", encoding="utf-8")
+        file_b.write_text("workspace_b_secret", encoding="utf-8")
+
+        junc_path = dir_a / "link_to_b"
+        mklink_cmd = f'cmd /c mklink /J "{junc_path}" "{dir_b}"'
+        res_link = subprocess.run(mklink_cmd, check=False, shell=True, capture_output=True, text=True)
+        if res_link.returncode != 0:
+            shutil.rmtree(dir_a, ignore_errors=True)
+            shutil.rmtree(dir_b, ignore_errors=True)
+            self.skipTest(f"Host environment does not permit creating directory junctions: {res_link.stderr}")
+
+        junc_target = junc_path / "file_b.txt"
+
+        cfg = AppContainerConfig(
+            profile_name=f"Jarvis_Junc_{os.getpid()}_{time.time_ns()}",
+            grant_paths=[dir_a],
+            auto_cleanup_profile=True,
+        )
+
+        script = f"""
+import sys
+from pathlib import Path
+
+# 1. Granted Workspace A file: must succeed
+try:
+    val_a = Path(r'{file_a}').read_text(encoding='utf-8')
+    assert val_a == 'workspace_a_secret'
+except Exception as e:
+    sys.stderr.write(f'ALLOWED_WORKSPACE_READ_FAILED: {{e}}\\n')
+    sys.exit(10)
+
+# 2. Direct read of ungranted Workspace B file: must fail closed with winerror=5
+try:
+    Path(r'{file_b}').read_text(encoding='utf-8')
+    sys.stderr.write('SECURITY_VIOLATION: Direct read of ungranted Workspace B file succeeded!\\n')
+    sys.exit(20)
+except (PermissionError, OSError) as pe:
+    winerr = getattr(pe, 'winerror', None)
+    if winerr != 5 and pe.errno != 13:
+        sys.stderr.write(f'UNEXPECTED_DIRECT_PERM_ERROR: winerror={{winerr}}, errno={{pe.errno}}\\n')
+        sys.exit(21)
+
+# 3. Traversal read through directory junction to Workspace B file: must fail closed with winerror=5
+try:
+    Path(r'{junc_target}').read_text(encoding='utf-8')
+    sys.stderr.write('SECURITY_VIOLATION: Junction traversal read into ungranted Workspace B succeeded!\\n')
+    sys.exit(30)
+except (PermissionError, OSError) as pe:
+    winerr = getattr(pe, 'winerror', None)
+    if winerr != 5 and pe.errno != 13:
+        sys.stderr.write(f'UNEXPECTED_JUNCTION_PERM_ERROR: winerror={{winerr}}, errno={{pe.errno}}\\n')
+        sys.exit(31)
+
+print('JUNCTION_CONTAINMENT_VERIFIED: Access denied across junction traversal with winerror=5')
+sys.exit(0)
+"""
+        try:
+            res = _run_authorized_batch(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                use_appcontainer=True,
+                appcontainer_config=cfg,
+            )
+            self.assertEqual(res.returncode, 0, f"Containment verification script failed: {res.stderr}")
+            self.assertIn("JUNCTION_CONTAINMENT_VERIFIED", res.stdout)
+        finally:
+            subprocess.run(f'cmd /c rmdir "{junc_path}"', check=False, shell=True, capture_output=True)
+            shutil.rmtree(dir_a, ignore_errors=True)
+            shutil.rmtree(dir_b, ignore_errors=True)
+
+    @unittest.skipUnless(CAN_SPAWN_AC, "AppContainer execution requires non-nested AppContainer Windows host")
     def test_cwd_outside_approved_grant_list_never_receives_acl_grant(self):
         """Passing cwd to spawn_suspended_appcontainer must NOT append it to config.grant_paths."""
         unapproved_cwd = tempfile.mkdtemp(prefix="jarvis_unapproved_cwd_")
@@ -410,7 +544,7 @@ except OSError as oe:
             auto_cleanup_profile=True,
         )
         # Part A: sys.stdin.read() with communicate(None) must immediately observe EOF
-        res_eof = run_sandboxed_batch(
+        res_eof = _run_authorized_batch(
             [sys.executable, "-c", "import sys; txt = sys.stdin.read(); print(f'EOF_READ_LEN:{len(txt)}')"],
             input=None,
             capture_output=True,
@@ -423,7 +557,7 @@ except OSError as oe:
 
         # Part B: 128KB payload roundtrip without pipe buffer deadlock
         large_payload = "A" * 131072
-        res_large = run_sandboxed_batch(
+        res_large = _run_authorized_batch(
             [sys.executable, "-c", "import sys; data = sys.stdin.read(); print(f'RECEIVED:{len(data)}')"],
             input=large_payload,
             capture_output=True,
@@ -550,7 +684,7 @@ except OSError as oe:
             profile_name=f"Jarvis_Pipes_{os.getpid()}_{time.time_ns()}",
             auto_cleanup_profile=True,
         )
-        res = run_sandboxed_batch(
+        res = _run_authorized_batch(
             [sys.executable, "-c", "import sys; print(f'ECHO: {sys.stdin.read().strip()}')"],
             input="hello_from_parent_host\n",
             capture_output=True,
@@ -612,10 +746,12 @@ class TestAppContainerAttributeListLifecycle(unittest.TestCase):
             return orig_del(buf)
 
         cfg = AppContainerConfig(profile_name=f"J_Fault1_{os.getpid()}_{time.time_ns()}")
-        with mock.patch.object(appcontainer.kernel32, "InitializeProcThreadAttributeList", side_effect=mock_init), \
-             mock.patch.object(appcontainer.kernel32, "DeleteProcThreadAttributeList", side_effect=mock_del):
-            with self.assertRaises(AppContainerSecurityError):
-                AppContainerProcessLauncher.spawn_suspended_appcontainer([sys.executable, "-c", "pass"], config=cfg)
+        with (
+            mock.patch.object(appcontainer.kernel32, "InitializeProcThreadAttributeList", side_effect=mock_init),
+            mock.patch.object(appcontainer.kernel32, "DeleteProcThreadAttributeList", side_effect=mock_del),
+            self.assertRaises(AppContainerSecurityError),
+        ):
+            AppContainerProcessLauncher.spawn_suspended_appcontainer([sys.executable, "-c", "pass"], config=cfg)
         self.assertEqual(len(delete_called), 0, "DeleteProcThreadAttributeList called on uninitialized buffer!")
 
     @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
@@ -635,11 +771,13 @@ class TestAppContainerAttributeListLifecycle(unittest.TestCase):
             return orig_cleanup(*args, **kwargs)
 
         cfg = AppContainerConfig(profile_name=f"J_Fault2_{os.getpid()}_{time.time_ns()}")
-        with mock.patch.object(appcontainer.kernel32, "UpdateProcThreadAttribute", return_value=0), \
-             mock.patch.object(appcontainer.kernel32, "DeleteProcThreadAttributeList", side_effect=mock_del), \
-             mock.patch.object(AppContainerProcessLauncher, "_cleanup_pre_spawn", side_effect=mock_cleanup):
-            with self.assertRaises(AppContainerSecurityError):
-                AppContainerProcessLauncher.spawn_suspended_appcontainer([sys.executable, "-c", "pass"], config=cfg)
+        with (
+            mock.patch.object(appcontainer.kernel32, "UpdateProcThreadAttribute", return_value=0),
+            mock.patch.object(appcontainer.kernel32, "DeleteProcThreadAttributeList", side_effect=mock_del),
+            mock.patch.object(AppContainerProcessLauncher, "_cleanup_pre_spawn", side_effect=mock_cleanup),
+            self.assertRaises(AppContainerSecurityError),
+        ):
+            AppContainerProcessLauncher.spawn_suspended_appcontainer([sys.executable, "-c", "pass"], config=cfg)
         self.assertEqual(events, ["delete_attr_list", "cleanup_pre_spawn"])
 
     @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
@@ -665,15 +803,17 @@ class TestAppContainerAttributeListLifecycle(unittest.TestCase):
             return orig_cleanup(*args, **kwargs)
 
         cfg = AppContainerConfig(profile_name=f"J_Fault3_{os.getpid()}_{time.time_ns()}")
-        with mock.patch.object(appcontainer.kernel32, "UpdateProcThreadAttribute", side_effect=mock_update), \
-             mock.patch.object(appcontainer.kernel32, "DeleteProcThreadAttributeList", side_effect=mock_del), \
-             mock.patch.object(AppContainerProcessLauncher, "_cleanup_pre_spawn", side_effect=mock_cleanup):
-            with self.assertRaises(AppContainerSecurityError):
-                AppContainerProcessLauncher.spawn_suspended_appcontainer(
-                    [sys.executable, "-c", "pass"],
-                    stdin_handle=123,
-                    config=cfg,
-                )
+        with (
+            mock.patch.object(appcontainer.kernel32, "UpdateProcThreadAttribute", side_effect=mock_update),
+            mock.patch.object(appcontainer.kernel32, "DeleteProcThreadAttributeList", side_effect=mock_del),
+            mock.patch.object(AppContainerProcessLauncher, "_cleanup_pre_spawn", side_effect=mock_cleanup),
+            self.assertRaises(AppContainerSecurityError),
+        ):
+            AppContainerProcessLauncher.spawn_suspended_appcontainer(
+                [sys.executable, "-c", "pass"],
+                stdin_handle=123,
+                config=cfg,
+            )
         self.assertEqual(events, ["delete_attr_list", "cleanup_pre_spawn"])
 
     @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
@@ -693,11 +833,13 @@ class TestAppContainerAttributeListLifecycle(unittest.TestCase):
             return orig_cleanup(*args, **kwargs)
 
         cfg = AppContainerConfig(profile_name=f"J_Fault4_{os.getpid()}_{time.time_ns()}")
-        with mock.patch.object(appcontainer.kernel32, "CreateProcessW", return_value=0), \
-             mock.patch.object(appcontainer.kernel32, "DeleteProcThreadAttributeList", side_effect=mock_del), \
-             mock.patch.object(AppContainerProcessLauncher, "_cleanup_pre_spawn", side_effect=mock_cleanup):
-            with self.assertRaises(AppContainerSecurityError):
-                AppContainerProcessLauncher.spawn_suspended_appcontainer([sys.executable, "-c", "pass"], config=cfg)
+        with (
+            mock.patch.object(appcontainer.kernel32, "CreateProcessW", return_value=0),
+            mock.patch.object(appcontainer.kernel32, "DeleteProcThreadAttributeList", side_effect=mock_del),
+            mock.patch.object(AppContainerProcessLauncher, "_cleanup_pre_spawn", side_effect=mock_cleanup),
+            self.assertRaises(AppContainerSecurityError),
+        ):
+            AppContainerProcessLauncher.spawn_suspended_appcontainer([sys.executable, "-c", "pass"], config=cfg)
         self.assertEqual(events, ["delete_attr_list", "cleanup_pre_spawn"])
 
     @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
@@ -727,6 +869,7 @@ class TestAppContainerAttributeListLifecycle(unittest.TestCase):
         self.assertTrue(cleanup_called[0].get("is_new_profile", False))
 
 
+@unittest.skipUnless(CAN_SPAWN_AC, "AppContainer execution requires non-nested AppContainer Windows host")
 class TestAppContainerACLOwnership(unittest.TestCase):
     """Verifies ownership-aware ACL management for reused profiles and directory grants."""
 
@@ -1059,7 +1202,7 @@ class TestAppContainerRuntimeAccess(unittest.TestCase):
 class TestAppContainerCapabilities(unittest.TestCase):
     """Verifies capability parsing, resolution, and fail-closed validation."""
 
-    @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
+    @unittest.skipUnless(CAN_SPAWN_AC, "AppContainer execution requires non-nested AppContainer Windows host")
     def test_valid_capability_resolves_and_launches(self):
         """Valid capability name resolves to SID and launches successfully."""
         cfg = AppContainerConfig(
@@ -1093,6 +1236,7 @@ class TestAppContainerCapabilities(unittest.TestCase):
         self.assertIn("completely_invalid_capability_xyz_999", str(ctx.exception))
 
 
+@unittest.skipUnless(CAN_SPAWN_AC, "AppContainer execution requires non-nested AppContainer Windows host")
 class TestAppContainerCommunicator(unittest.TestCase):
     """Verifies stdin/stdout/stderr pipe communication, error propagation, and EOF semantics."""
 
@@ -1144,7 +1288,7 @@ class TestAppContainerCommunicator(unittest.TestCase):
     @unittest.skipUnless(IS_WIN, "AppContainer APIs require Windows")
     def test_communicate_child_closes_stdin_early_preserves_broken_pipe(self):
         """When child closes stdin early, communicate handles broken pipe cleanly without error."""
-        res = run_sandboxed_batch(
+        res = _run_authorized_batch(
             [sys.executable, "-c", "import sys; sys.exit(0)"],
             input="excess payload data " * 5000,
             capture_output=True,
@@ -1153,6 +1297,7 @@ class TestAppContainerCommunicator(unittest.TestCase):
         self.assertEqual(res.returncode, 0)
 
 
+@unittest.skipUnless(CAN_SPAWN_AC, "AppContainer execution requires non-nested AppContainer Windows host")
 class TestAppContainerTerminationTruthfulness(unittest.TestCase):
     """Fault injection tests verifying terminate() and poll() do not fabricate return codes."""
 
@@ -1303,6 +1448,7 @@ class TestAppContainerTerminationTruthfulness(unittest.TestCase):
             proc_mgr.terminate_tree()
 
 
+@unittest.skipUnless(CAN_SPAWN_AC, "AppContainer execution requires non-nested AppContainer Windows host")
 class TestAppContainerTeardownLifecycle(unittest.TestCase):
     """Verifies single-owner exactly-once teardown, handle release, ACL revocation, and profile cleanup."""
 

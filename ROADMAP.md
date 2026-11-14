@@ -1,5 +1,9 @@
 # Hardening Roadmap & Milestone Status
 
+> [!NOTE]
+> For the historical register of verified software milestones (M-01 through M-06), Git merge commits, and dynamic test execution records, see:
+> [`docs/milestones/MILESTONES.md`](docs/milestones/MILESTONES.md)
+
 ## P0 — Close Confirmed Security Gaps (Completed & Verified)
 
 1. [x] **PowerShell Sandboxing & SafetyGate:** Direct `execute_powershell()` gated with `SafetyGate`; verified with `BackgroundTaskManager` checks and non-elevated validation tests.

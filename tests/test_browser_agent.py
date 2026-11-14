@@ -2,6 +2,35 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+try:
+    import pytest
+except ImportError:  # pragma: no cover
+    # Restricted fallback shim for running under Python standard library unittest.
+    # Strictly limited to known harmless custom marker tags.
+    # Control markers (e.g. skip, skipif, xfail, parametrize) fail loudly
+    # to prevent silent omission of test control flow when pytest is absent.
+    _ALLOWED_CUSTOM_MARKERS = frozenset({"browser_integration", "loopback"})
+
+    class _DummyPytestMark:
+        def __getattr__(self, name: str):
+            if name not in _ALLOWED_CUSTOM_MARKERS:
+                raise AttributeError(
+                    f"Unsupported pytest marker: {name}. Control markers "
+                    f"like skip/skipif/parametrize require native pytest."
+                )
+
+            def identity_marker(*args, **kwargs):
+                if len(args) == 1 and callable(args[0]) and not kwargs:
+                    return args[0]
+                return lambda fn: fn
+
+            return identity_marker
+
+    class _DummyPytest:
+        mark = _DummyPytestMark()
+
+    pytest = _DummyPytest()  # type: ignore[assignment]
+
 from jarvis.skills import browser_agent
 
 
@@ -52,6 +81,7 @@ class TestBrowserAgentSSRFSuite(unittest.TestCase):
             res = browser_agent.capture_webpage_screenshot(url, filename="test_leak.png")
             self.assertIn("Security violation blocked screenshot operation", res)
 
+    @pytest.mark.browser_integration
     def test_capture_webpage_screenshot_navigates_to_safe_url(self):
         """Verifies capture_webpage_screenshot navigates to the validated safe_url, not the raw argument."""
         mock_page = MagicMock()
@@ -115,6 +145,7 @@ class TestBrowserAgentSSRFSuite(unittest.TestCase):
         self.assertIsNotNone(violation[0])
         self.assertIn("169.254.169.254", violation[0])
 
+    @pytest.mark.browser_integration
     def test_playwright_ssrf_guard_aborts_multi_hop_redirect_chain_to_private(self):
         """Verifies _setup_playwright_ssrf_guard follows a multi-hop chain and aborts before requesting private destination."""
         mock_context = MagicMock()
@@ -149,6 +180,7 @@ class TestBrowserAgentSSRFSuite(unittest.TestCase):
         self.assertIsNotNone(violation[0])
         self.assertIn("10.0.0.1", violation[0])
 
+    @pytest.mark.browser_integration
     def test_playwright_ssrf_guard_relative_location_resolution(self):
         """Verifies _setup_playwright_ssrf_guard resolves relative Location headers and blocks loopback."""
         mock_context = MagicMock()
@@ -171,6 +203,7 @@ class TestBrowserAgentSSRFSuite(unittest.TestCase):
         self.assertIsNotNone(violation[0])
         self.assertIn("127.0.0.1", violation[0])
 
+    @pytest.mark.browser_integration
     def test_playwright_ssrf_guard_redirect_loop_detection(self):
         """Verifies _setup_playwright_ssrf_guard detects circular redirect loops and halts."""
         mock_context = MagicMock()
@@ -200,6 +233,7 @@ class TestBrowserAgentSSRFSuite(unittest.TestCase):
         self.assertIsNotNone(violation[0])
         self.assertIn("Redirect loop detected", violation[0])
 
+    @pytest.mark.browser_integration
     def test_playwright_ssrf_guard_hop_limit_exceeded(self):
         """Verifies _setup_playwright_ssrf_guard terminates chains that exceed max_hops."""
         mock_context = MagicMock()
@@ -226,6 +260,7 @@ class TestBrowserAgentSSRFSuite(unittest.TestCase):
         self.assertIsNotNone(violation[0])
         self.assertIn("Redirect limit exceeded", violation[0])
 
+    @pytest.mark.browser_integration
     def test_playwright_ssrf_guard_blocks_https_to_http_downgrade(self):
         """Verifies _setup_playwright_ssrf_guard rejects insecure protocol downgrade on redirect."""
         mock_context = MagicMock()
@@ -247,6 +282,7 @@ class TestBrowserAgentSSRFSuite(unittest.TestCase):
         self.assertIsNotNone(violation[0])
         self.assertIn("Insecure redirect downgrade", violation[0])
 
+    @pytest.mark.browser_integration
     def test_playwright_ssrf_guard_fulfills_safe_public_response(self):
         """Verifies _setup_playwright_ssrf_guard fulfills safe non-redirect responses."""
         mock_context = MagicMock()
@@ -310,6 +346,7 @@ class TestBrowserAgentSSRFSuite(unittest.TestCase):
         mock_ws_safe.close.assert_not_called()
         self.assertIsNone(violation[0])
 
+    @pytest.mark.browser_integration
     def test_browse_and_read_webpage_playwright_reports_ssrf_on_redirect(self):
         """Verifies browse_and_read_webpage surfaces the SSRF violation error when Playwright aborts due to redirect."""
         mock_page = MagicMock()
@@ -343,6 +380,7 @@ class TestBrowserAgentSSRFSuite(unittest.TestCase):
             self.assertIn("Security violation blocked browsing operation", res)
             self.assertIn("169.254.169.254", res)
 
+    @pytest.mark.browser_integration
     def test_browse_and_read_webpage_fallback_uses_hardened_opener(self):
         """Verifies the HTTP fallback path uses build_safe_url_opener and blocks redirect bypasses."""
         from jarvis.core.security_boundaries import SecurityBoundaryViolation
@@ -355,6 +393,7 @@ class TestBrowserAgentSSRFSuite(unittest.TestCase):
                 self.assertIn("Security violation blocked fallback browsing operation", res)
                 self.assertIn("SafeRedirectHandler", res)
 
+    @pytest.mark.browser_integration
     def test_browse_and_read_webpage_fallback_successful_extraction(self):
         """Verifies the HTTP fallback path correctly parses HTML and extracts text when safe."""
         mock_resp = MagicMock()
@@ -372,6 +411,7 @@ class TestBrowserAgentSSRFSuite(unittest.TestCase):
             self.assertIn("Core system invariants", res)
 
 
+    @pytest.mark.browser_integration
     def test_browse_and_read_webpage_and_screenshot_enforce_service_workers_block(self):
         """Verifies both browsing and screenshot operations explicitly configure service_workers='block'."""
         mock_page = MagicMock()
@@ -402,6 +442,7 @@ class TestBrowserAgentSSRFSuite(unittest.TestCase):
                 mock_browser.new_context.assert_called_with(service_workers="block")
 
 
+@pytest.mark.browser_integration
 class TestBrowserAgentLiveChromiumSSRF(unittest.TestCase):
     """Real-browser integration tests verifying SSRF guard against popups, service workers, and web workers in Chromium."""
 
@@ -486,7 +527,7 @@ class TestBrowserAgentLiveChromiumSSRF(unittest.TestCase):
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, chromium_sandbox=True)
             context = browser.new_context(service_workers="block")
             violation_ref = [None]
 
@@ -523,7 +564,7 @@ class TestBrowserAgentLiveChromiumSSRF(unittest.TestCase):
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, chromium_sandbox=True)
             context = browser.new_context(service_workers="block")
             violation_ref = [None]
             browser_agent._setup_playwright_ssrf_guard(context, violation_ref, allow_localhost=True)
@@ -554,6 +595,7 @@ class TestBrowserAgentLiveChromiumSSRF(unittest.TestCase):
         """Proves dedicated Web Worker fetch requests to private destinations are intercepted and rejected by production SSRF guard."""
         import socket
         from unittest.mock import patch
+
         from playwright.sync_api import sync_playwright
 
         real_getaddrinfo = socket.getaddrinfo
@@ -564,9 +606,9 @@ class TestBrowserAgentLiveChromiumSSRF(unittest.TestCase):
                 return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("10.0.0.1", port or 80))]
             return real_getaddrinfo(host, port, *args, **kwargs)
 
-        with patch("socket.getaddrinfo", side_effect=controlled_getaddrinfo):
+        with patch("socket.getaddrinfo", side_effect=controlled_getaddrinfo):  # noqa: SIM117
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(headless=True, chromium_sandbox=True)
                 context = browser.new_context(service_workers="block")
                 violation_ref = [None]
                 intercepted_urls = []

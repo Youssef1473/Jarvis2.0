@@ -1,11 +1,10 @@
 """Unit tests for the Graphify codebase knowledge graph skill integration."""
-import os
+import subprocess
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from jarvis.skills.base import SkillRegistry
-import jarvis.skills.dev_shell
 
 
 class TestGraphifySkillSuite(unittest.TestCase):
@@ -16,8 +15,20 @@ class TestGraphifySkillSuite(unittest.TestCase):
         self.assertIn("query_codebase_graph", tools)
 
     def test_query_codebase_graph_real_or_mock(self):
-        with patch.object(Path, "exists", return_value=True), patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="Graph result for ManagedServiceManager", stderr="")
+        # 1. Negative test: Unauthorized execution fails closed
+        with patch.object(Path, "exists", return_value=True):
+            unauth_res = SkillRegistry.execute("query_codebase_graph", query="ManagedServiceManager")
+            self.assertIn("Authorization Required", unauth_res)
+
+        # 2. Contained batch execution mock
+        mock_proc = subprocess.CompletedProcess(
+            args=["graphify"],
+            returncode=0,
+            stdout="Graph result for ManagedServiceManager",
+            stderr="",
+        )
+        with patch.object(Path, "exists", return_value=True), \
+             patch("jarvis.skills.dev_shell.run_sandboxed_batch", return_value=mock_proc):
             res = SkillRegistry.execute("query_codebase_graph", query="ManagedServiceManager")
             self.assertIn("ManagedServiceManager", res)
 
@@ -27,12 +38,23 @@ class TestGraphifySkillSuite(unittest.TestCase):
             self.assertIn("No codebase knowledge graph found", res)
 
     def test_explain_and_path_modes(self):
-        with patch.object(Path, "exists", return_value=True), patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="Path found: A -> B", stderr="")
+        mock_path_proc = subprocess.CompletedProcess(
+            args=["graphify", "path"],
+            returncode=0,
+            stdout="Path found: A -> B",
+            stderr="",
+        )
+        mock_explain_proc = subprocess.CompletedProcess(
+            args=["graphify", "explain"],
+            returncode=0,
+            stdout="Explain: SafetyGate guards high risk tools",
+            stderr="",
+        )
+        with patch.object(Path, "exists", return_value=True), \
+             patch("jarvis.skills.dev_shell.run_sandboxed_batch", side_effect=[mock_path_proc, mock_explain_proc]):
             res_path = SkillRegistry.execute("query_codebase_graph", query="JarvisBrain SafetyGate", mode="path")
             self.assertIn("Path found", res_path)
 
-            mock_run.return_value = MagicMock(returncode=0, stdout="Explain: SafetyGate guards high risk tools", stderr="")
             res_explain = SkillRegistry.execute("query_codebase_graph", query="SafetyGate", mode="explain")
             self.assertIn("SafetyGate", res_explain)
 

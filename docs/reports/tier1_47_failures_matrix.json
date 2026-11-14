@@ -1,0 +1,472 @@
+[
+  {
+    "class": "tests.test_phase4_deep_audit.TestPhase4TruthfulCancellation",
+    "name": "test_cancel_before_launch_returns_cancelled_confirmed",
+    "file": "tests\\test_phase4_deep_audit.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Process Execution Auth Gate",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Authorization Required: Process execution requires active human authorization.",
+    "snippet_summary": "def test_cancel_before_launch_returns_cancelled_confirmed(self):\n        \"\"\"Cancelling before launch reports cancelled_confirmed=True and never spawns process.\"\"\"\n        token = ToolCancellationToken()\n        token.cancel()\n        self.assertTrue(token.is_cancelled)\n"
+  },
+  {
+    "class": "tests.test_phase4_deep_audit.TestPhase4AffinityFallbackAndTracking",
+    "name": "test_sandboxed_process_reports_affinity_degraded_field",
+    "file": "tests\\test_phase4_deep_audit.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Process Execution Auth Gate",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Authorization Required: Process execution requires active human authorization.",
+    "snippet_summary": "def test_sandboxed_process_reports_affinity_degraded_field(self):\n        \"\"\"run_job_sandboxed_process returns explicit affinity_degraded boolean.\"\"\"\n        res = run_job_sandboxed_process(\n            command=[\"cmd.exe\", \"/c\", \"echo test\"],\n            requested_affinity=0,\n            timeout_sec=5.0,"
+  },
+  {
+    "class": "tests.test_fail_closed_ingestion.TestFailClosedIngestion",
+    "name": "test_filesystem_reading_operation_with_unknown_provenance_is_conservative",
+    "file": "tests\\test_fail_closed_ingestion.py",
+    "called_tool": "execute_sandboxed_powershell",
+    "intention": "Negative Security (Assertion expects older gate error string)",
+    "category": "Gate Error String Mismatch (Dual-Key vs Critical Authorization Gate)",
+    "error_message": "AssertionError: 'Dual-Key Safety Gate' not found in \"Critical Authorization Gate: Tool 'execute_sandboxed_powershell' (risk_level=1) modifies the host environment or live Python runtime and requires explicit, out-of-band user confirmation regardless of turn taint state.\"",
+    "snippet_summary": "def test_filesystem_reading_operation_with_unknown_provenance_is_conservative(self):\n        \"\"\"14. Filesystem reading tools with unknown provenance execute safely but taint the turn.\"\"\"\n        self.assertFalse(self.tracker.is_tainted)\n        # read_file execution is allowed (read-only), but taints the turn\n        decision = self.tracker.evaluate_tool_execution(\"read_file\", {\"file_path\": \"test.txt\"})\n        self.assertTrue(decision.allowed)"
+  },
+  {
+    "class": "tests.test_fail_closed_ingestion.TestFailClosedIngestion",
+    "name": "test_normal_trusted_local_tool_no_unnecessary_taint",
+    "file": "tests\\test_fail_closed_ingestion.py",
+    "called_tool": "execute_sandboxed_powershell",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Gate Error String Mismatch (Dual-Key vs Critical Authorization Gate)",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Critical Authorization Gate: Tool 'execute_sandboxed_powershell' (risk_level=1) modifies the host environment or live Python runtime and requires explicit, out-of-band user confirmation regardless of turn taint state.",
+    "snippet_summary": "def test_normal_trusted_local_tool_no_unnecessary_taint(self):\n        \"\"\"6. Normal trusted local builtin read-only tool must not cause unnecessary taint.\"\"\"\n        tool_name = \"test_trusted_local_read_only\"\n\n        SkillRegistry.certify_test_read_only_tool(tool_name)\n"
+  },
+  {
+    "class": "tests.test_fail_closed_ingestion.TestFailClosedIngestion",
+    "name": "test_privileged_authorization_boundary_level1_and_level2",
+    "file": "tests\\test_fail_closed_ingestion.py",
+    "called_tool": "execute_sandboxed_powershell",
+    "intention": "Negative Security (Assertion expects older gate error string)",
+    "category": "Gate Error String Mismatch (Dual-Key vs Critical Authorization Gate)",
+    "error_message": "AssertionError: 'Dual-Key Safety Gate' not found in \"Critical Authorization Gate: Tool 'execute_sandboxed_powershell' (risk_level=1) modifies the host environment or live Python runtime and requires explicit, out-of-band user confirmation regardless of turn taint state.\"",
+    "snippet_summary": "def test_privileged_authorization_boundary_level1_and_level2(self):\n        \"\"\"11. Proof: End-to-end authorization gates for Level 1 mutations and Level 2 critical operations.\"\"\"\n        # 1. Normal ingestion taints turn -> Level 1 mutation without approval is blocked\n        self.tracker.evaluate_tool_execution(\"web_search\", {\"query\": \"sample query\"})\n        self.assertTrue(self.tracker.is_tainted)\n"
+  },
+  {
+    "class": "tests.test_fail_closed_ingestion.TestFailClosedIngestion",
+    "name": "test_speculative_taint_failure_locks_down_turn_and_blocks_mutation",
+    "file": "tests\\test_fail_closed_ingestion.py",
+    "called_tool": "execute_sandboxed_powershell",
+    "intention": "Negative Security (Assertion expects older gate error string)",
+    "category": "Gate Error String Mismatch (Dual-Key vs Critical Authorization Gate)",
+    "error_message": "AssertionError: 'Dual-Key Safety Gate' not found in \"Critical Authorization Gate: Tool 'execute_sandboxed_powershell' (risk_level=1) modifies the host environment or live Python runtime and requires explicit, out-of-band user confirmation regardless of turn taint state.\"",
+    "snippet_summary": "def test_speculative_taint_failure_locks_down_turn_and_blocks_mutation(self):\n        \"\"\"18. When speculative taint propagation fails, turn is compromised and subsequent mutations blocked.\"\"\"\n        from jarvis.speculative.engine import SpeculativeExecutionEngine\n\n        spec_engine = SpeculativeExecutionEngine.get_instance()\n"
+  },
+  {
+    "class": "tests.test_browser_cdp.TestBrowserCDPSuite",
+    "name": "test_execute_cdp_javascript_and_skill",
+    "file": "tests\\test_browser_cdp.py",
+    "called_tool": "execute_browser_javascript",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Security Approval Violation: execute_browser_javascript requires a valid non-empty 'unique_context_id' at approval creation.",
+    "snippet_summary": "def test_execute_cdp_javascript_and_skill(self):\n        \"\"\"Verifies execute_cdp_javascript evaluates arbitrary script in target tab.\"\"\"\n        fake_tabs = [\n            {\"id\": \"math_tab\", \"title\": \"Calculator\", \"url\": \"https://calc.org\", \"ws_url\": \"ws://127.0.0.1:9222/devtools/page/math_tab\"}\n        ]\n        ws_mock = MagicMock()"
+  },
+  {
+    "class": "tests.test_antigravity_integration.TestAntigravityIntegration",
+    "name": "test_bridge_binary_discovery_mocked",
+    "file": "tests\\test_antigravity_integration.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Path Resolver Mock Configuration",
+    "error_message": "AssertionError: False is not true",
+    "snippet_summary": "def test_bridge_binary_discovery_mocked(self):\n        \"\"\"Verifies is_available behavior when binary is present vs absent.\"\"\"\n        clean_cfg = {k: v for k, v in self.config.items() if k != \"llm\"}\n        clean_cfg[\"llm\"] = {k: v for k, v in self.config.get(\"llm\", {}).items() if k not in {\"antigravity_resolver\", \"antigravity_executable_resolver\"}}\n        with patch.object(AntigravityBridge, \"_find_agy_executable\", return_value=\"mock_agy.exe\"), \\\n             patch(\"os.path.exists\", return_value=True):"
+  },
+  {
+    "class": "tests.test_claude_token_exhaustion_fallback.TestClaudeTokenExhaustionFallback",
+    "name": "test_brain_antigravity_query_switches_when_exhausted",
+    "file": "tests\\test_claude_token_exhaustion_fallback.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "API Return Signature Mismatch (Brain / Provider)",
+    "error_message": "TypeError: cannot unpack non-iterable NoneType object",
+    "snippet_summary": "def test_brain_antigravity_query_switches_when_exhausted(self):\n        \"\"\"Verifies JarvisBrain switches target_model to Flash High or Flash Medium when Claude is exhausted.\"\"\"\n        self.brain.antigravity_bridge.mark_claude_exhausted(duration_seconds=300.0, reason=\"Out of tokens\")\n\n        complex_query = \"Jarvis, optimize yourself and refactor the entire concurrency architecture\"\n        moderate_query = \"Jarvis, check git status and run the tests\""
+  },
+  {
+    "class": "tests.test_claude_token_exhaustion_fallback.TestClaudeTokenExhaustionFallback",
+    "name": "test_brain_fails_over_to_claude_when_flash_exhausted",
+    "file": "tests\\test_claude_token_exhaustion_fallback.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "API Return Signature Mismatch (Brain / Provider)",
+    "error_message": "TypeError: cannot unpack non-iterable NoneType object",
+    "snippet_summary": "def test_brain_fails_over_to_claude_when_flash_exhausted(self):\n        \"\"\"Verifies JarvisBrain switches target_model to Claude Sonnet when Gemini Flash is exhausted.\"\"\"\n        self.brain.antigravity_bridge.mark_gemini_flash_exhausted(duration_seconds=300.0, reason=\"Out of Flash tokens\")\n        self.brain.antigravity_bridge.reset_claude_exhaustion()\n\n        with patch.object(self.brain.antigravity_bridge, \"generate_response\") as mock_gen:"
+  },
+  {
+    "class": "tests.test_claude_token_exhaustion_fallback.TestClaudeTokenExhaustionFallback",
+    "name": "test_explicit_user_directive_resets_exhaustion",
+    "file": "tests\\test_claude_token_exhaustion_fallback.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "API Return Signature Mismatch (Brain / Provider)",
+    "error_message": "TypeError: cannot unpack non-iterable NoneType object",
+    "snippet_summary": "def test_explicit_user_directive_resets_exhaustion(self):\n        \"\"\"Verifies that an explicit user request ('use claude', 'with sonnet') resets exhaustion cooldown.\"\"\"\n        self.brain.antigravity_bridge.mark_claude_exhausted(duration_seconds=300.0, reason=\"Out of tokens\")\n        self.assertTrue(self.brain.antigravity_bridge.is_claude_exhausted())\n\n        with patch.object(self.brain.antigravity_bridge, \"generate_response\") as mock_gen:"
+  },
+  {
+    "class": "tests.test_ast_grep_and_ruff_skills.TestAstGrepAndRuffSkills",
+    "name": "test_ast_search_live_execution",
+    "file": "tests\\test_ast_grep_and_ruff_skills.py",
+    "called_tool": "ast_search_codebase",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "AssertionError: 'jarvis' not found in 'ast-grep search error: authorization required: batch process execution requires active human authorization.'",
+    "snippet_summary": "def test_ast_search_live_execution(self):\n        \"\"\"Runs a real ast-grep pattern search on safety.py.\"\"\"\n        if not jarvis.skills.dev_shell._find_ast_grep():\n            self.skipTest(\"ast-grep binary is not installed in the environment\")\n        res = SkillRegistry.execute(\n            \"ast_search_codebase\","
+  },
+  {
+    "class": "tests.test_ast_grep_and_ruff_skills.TestAstGrepAndRuffSkills",
+    "name": "test_ast_search_no_matches",
+    "file": "tests\\test_ast_grep_and_ruff_skills.py",
+    "called_tool": "ast_search_codebase",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Batch Process Auth Gate",
+    "error_message": "AssertionError: 'No AST nodes matched pattern' not found in 'ast-grep search error: Authorization Required: Batch process execution requires active human authorization.'",
+    "snippet_summary": "def test_ast_search_no_matches(self):\n        if not jarvis.skills.dev_shell._find_ast_grep():\n            self.skipTest(\"ast-grep binary is not installed in the environment\")\n        res = SkillRegistry.execute(\n            \"ast_search_codebase\",\n            pattern=\"def non_existent_function_xyz_123($$$ARGS): $$$BODY\","
+  },
+  {
+    "class": "tests.test_ast_grep_and_ruff_skills.TestAstGrepAndRuffSkills",
+    "name": "test_ast_search_truncation",
+    "file": "tests\\test_ast_grep_and_ruff_skills.py",
+    "called_tool": "ast_search_codebase",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Batch Process Auth Gate",
+    "error_message": "AssertionError: 'Output truncated: showing first 10 of 100 matched lines' not found in 'ast-grep search error: Authorization Required: Batch process execution requires active human authorization.'",
+    "snippet_summary": "def test_ast_search_truncation(self):\n        \"\"\"Verifies output truncation when exceeding max_lines.\"\"\"\n        long_output = \"\\n\".join([f\"line_{i}: code\" for i in range(100)])\n        with patch.object(jarvis.skills.dev_shell, \"_find_ast_grep\", return_value=Path(\"mock/ast-grep.exe\")), \\\n             patch(\"subprocess.run\") as mock_run:\n            mock_run.return_value = MagicMock(returncode=0, stdout=long_output, stderr=\"\")"
+  },
+  {
+    "class": "tests.test_ast_grep_and_ruff_skills.TestAstGrepAndRuffSkills",
+    "name": "test_ruff_diagnostics_live_execution",
+    "file": "tests\\test_ast_grep_and_ruff_skills.py",
+    "called_tool": "check_code_diagnostics",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Batch Process Auth Gate",
+    "error_message": "AssertionError: 'All diagnostics clean' not found in 'Ruff diagnostics check error: Authorization Required: Batch process execution requires active human authorization.'",
+    "snippet_summary": "def test_ruff_diagnostics_live_execution(self):\n        \"\"\"Runs a real ruff check with select E9,F821 on safety.py.\"\"\"\n        if not jarvis.skills.dev_shell._find_ruff():\n            self.skipTest(\"Ruff binary is not installed in the environment\")\n        res = SkillRegistry.execute(\n            \"check_code_diagnostics\","
+  },
+  {
+    "class": "tests.test_ast_grep_and_ruff_skills.TestAstGrepAndRuffSkills",
+    "name": "test_ruff_diagnostics_truncation",
+    "file": "tests\\test_ast_grep_and_ruff_skills.py",
+    "called_tool": "check_code_diagnostics",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Batch Process Auth Gate",
+    "error_message": "AssertionError: 'Output truncated: showing first 15 of 80 diagnostic messages' not found in 'Ruff diagnostics check error: Authorization Required: Batch process execution requires active human authorization.'",
+    "snippet_summary": "def test_ruff_diagnostics_truncation(self):\n        long_output = \"\\n\".join([f\"error_{i}: violation\" for i in range(80)])\n        with patch.object(jarvis.skills.dev_shell, \"_find_ruff\", return_value=Path(\"mock/ruff.exe\")), \\\n             patch(\"subprocess.run\") as mock_run:\n            mock_run.return_value = MagicMock(returncode=1, stdout=long_output, stderr=\"\")\n            res = SkillRegistry.execute("
+  },
+  {
+    "class": "tests.test_ast_grep_and_ruff_skills.TestAstGrepAndRuffSkills",
+    "name": "test_ruff_diagnostics_with_findings",
+    "file": "tests\\test_ast_grep_and_ruff_skills.py",
+    "called_tool": "check_code_diagnostics",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Batch Process Auth Gate",
+    "error_message": "AssertionError: 'F401' not found in 'Ruff diagnostics check error: Authorization Required: Batch process execution requires active human authorization.'",
+    "snippet_summary": "def test_ruff_diagnostics_with_findings(self):\n        with patch.object(jarvis.skills.dev_shell, \"_find_ruff\", return_value=Path(\"mock/ruff.exe\")), \\\n             patch(\"subprocess.run\") as mock_run:\n            mock_run.return_value = MagicMock(\n                returncode=1,\n                stdout=\"jarvis\\\\core\\\\test.py:1:1: F401 `os` imported but unused\","
+  },
+  {
+    "class": "tests.test_subprocess_output_provenance.TestSubprocessOutputProvenance",
+    "name": "test_1_execute_powershell_cannot_return_output_as_trusted",
+    "file": "tests\\test_subprocess_output_provenance.py",
+    "called_tool": "execute_powershell",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "PowerShell Auth Gate",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Authorization Required: execute_powershell requires explicit human approval.",
+    "snippet_summary": "def test_1_execute_powershell_cannot_return_output_as_trusted(self):\n        \"\"\"1. execute_powershell cannot return arbitrary output as trusted.\"\"\"\n        self.assertFalse(self.tracker.is_tainted)\n\n        # Run safe echo command\n        res = execute_powershell(\"Write-Output 'arbitrary_powershell_stdout_99'\")"
+  },
+  {
+    "class": "tests.test_subprocess_output_provenance.TestSubprocessOutputProvenance",
+    "name": "test_2_execute_sandboxed_powershell_taints_turn_before_reaching_llm",
+    "file": "tests\\test_subprocess_output_provenance.py",
+    "called_tool": "execute_sandboxed_powershell",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Authorization Required: execute_sandboxed_powershell requires explicit human approval.",
+    "snippet_summary": "def test_2_execute_sandboxed_powershell_taints_turn_before_reaching_llm(self):\n        \"\"\"2. execute_sandboxed_powershell taints the turn before its result reaches the LLM.\"\"\"\n        self.assertFalse(self.tracker.is_tainted)\n\n        res = execute_sandboxed_powershell(\"Write-Output 'sandboxed_output_val'\")\n        self.assertIn(\"sandboxed_output_val\", res)"
+  },
+  {
+    "class": "tests.test_subprocess_output_provenance.TestSubprocessOutputProvenance",
+    "name": "test_3_run_job_sandboxed_process_preserves_untrusted_output_provenance",
+    "file": "tests\\test_subprocess_output_provenance.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Process Execution Auth Gate",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Authorization Required: Process execution requires active human authorization.",
+    "snippet_summary": "def test_3_run_job_sandboxed_process_preserves_untrusted_output_provenance(self):\n        \"\"\"3. run_job_sandboxed_process preserves untrusted output provenance.\"\"\"\n        self.assertFalse(self.tracker.is_tainted)\n\n        res = run_job_sandboxed_process([\"cmd.exe\", \"/c\", \"echo untrusted_job_stdout\"])\n        self.assertEqual(res.get(\"status\"), \"ok\")"
+  },
+  {
+    "class": "tests.test_subprocess_output_provenance.TestSubprocessOutputProvenance",
+    "name": "test_5_subsequent_level_1_mutation_encounters_expected_approval_gate",
+    "file": "tests\\test_subprocess_output_provenance.py",
+    "called_tool": "execute_sandboxed_powershell",
+    "intention": "Negative Security (Verifies unauthorized rejection)",
+    "category": "Other",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Authorization Required: execute_sandboxed_powershell requires explicit human approval.",
+    "snippet_summary": "def test_5_subsequent_level_1_mutation_encounters_expected_approval_gate(self):\n        \"\"\"5. A subsequent Level 1 mutation encounters the expected approval gate.\"\"\"\n        self.assertFalse(self.tracker.is_tainted)\n\n        # Step 1: Subprocess tool executes and returns output\n        execute_sandboxed_powershell(\"Write-Output 'reconnaissance_output'\")"
+  },
+  {
+    "class": "tests.test_subprocess_output_provenance.TestSubprocessOutputProvenance",
+    "name": "test_6_subprocess_failures_and_timeouts_do_not_bypass_provenance_boundary",
+    "file": "tests\\test_subprocess_output_provenance.py",
+    "called_tool": "execute_powershell",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "PowerShell Auth Gate",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Authorization Required: execute_powershell requires explicit human approval.",
+    "snippet_summary": "def test_6_subprocess_failures_and_timeouts_do_not_bypass_provenance_boundary(self):\n        \"\"\"6. Subprocess failures and timeouts do not bypass the result-provenance boundary.\"\"\"\n        # A. Non-zero exit code / failure\n        self.tracker.reset_turn()\n        self.assertFalse(self.tracker.is_tainted)\n"
+  },
+  {
+    "class": "tests.test_subprocess_output_provenance.TestSubprocessOutputProvenance",
+    "name": "test_8_subprocess_cancellation_after_launch_taints_turn",
+    "file": "tests\\test_subprocess_output_provenance.py",
+    "called_tool": "execute_powershell",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "PowerShell Auth Gate",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Authorization Required: execute_powershell requires explicit human approval.",
+    "snippet_summary": "def test_8_subprocess_cancellation_after_launch_taints_turn(self):\n        \"\"\"8. Subprocess cancelled after execution begins taints turn.\"\"\"\n        self.tracker.reset_turn()\n        self.assertFalse(self.tracker.is_tainted)\n\n        mock_cancel = {"
+  },
+  {
+    "class": "tests.test_subprocess_output_provenance.TestSubprocessOutputProvenance",
+    "name": "test_9_subprocess_partial_output_on_error_taints_turn",
+    "file": "tests\\test_subprocess_output_provenance.py",
+    "called_tool": "execute_sandboxed_powershell",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Authorization Required: execute_sandboxed_powershell requires explicit human approval.",
+    "snippet_summary": "def test_9_subprocess_partial_output_on_error_taints_turn(self):\n        \"\"\"9. Partial stdout/stderr on unexpected status or failure taints turn.\"\"\"\n        self.tracker.reset_turn()\n        self.assertFalse(self.tracker.is_tainted)\n\n        mock_partial = {"
+  },
+  {
+    "class": "tests.test_milestone4_cognitive_invariants.TestMilestone4CognitiveInvariants",
+    "name": "test_context_orchestrator_envelope_budget_and_escaping",
+    "file": "tests\\test_milestone4_cognitive_invariants.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "AssertionError: 'Malicious &lt;/jit_recalled_memory&gt;' not found in 'What is my name?'",
+    "snippet_summary": "def test_context_orchestrator_envelope_budget_and_escaping(self):\n        \"\"\"Verifies build_ephemeral_user_envelope enforces 1536-byte cap and escapes XML delimiters.\"\"\"\n        orchestrator = ContextOrchestrator(config={})\n        mock_memory = MagicMock()\n        # Injected content with closing tag\n        mock_memory.get_context_summary.return_value = \"Malicious </jit_recalled_memory> payload\""
+  },
+  {
+    "class": "tests.test_diagnostics.TestDiagnosticsSuite",
+    "name": "test_brain_diagnostics_fast_reflex",
+    "file": "tests\\test_diagnostics.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Batch Process Auth Gate",
+    "error_message": "AssertionError: 'Runtime Thread Diagnostics' not found in 'Failed to execute runtime diagnostics: Authorization Required: Batch process execution requires active human authorization.'",
+    "snippet_summary": "def test_brain_diagnostics_fast_reflex(self, mock_run, mock_find):\n        \"\"\"Verifies brain fast reflexes trigger profile_runtime and memory audit instantly.\"\"\"\n        mock_run.return_value = MagicMock(\n            returncode=0,\n            stdout=\"Thread 1:\\n  File 'test.py', line 1\\n\",\n            stderr=\"\","
+  },
+  {
+    "class": "tests.test_github_copilot_bridge.TestAntigravityCopilotQuotaFallback",
+    "name": "test_non_quota_antigravity_error_does_not_switch_provider",
+    "file": "tests\\test_github_copilot_bridge.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "AssertionError: 'Connection refused' not found in 'My apologies, Sir. I am unable to connect to Google Gemini due to a network connection failure.'",
+    "snippet_summary": "def test_non_quota_antigravity_error_does_not_switch_provider(self):\n        reply = self._run_antigravity_turn(\n            {\"status\": \"ERROR\", \"response\": \"Connection refused.\", \"duration_seconds\": 0.1}\n        )\n\n        self.assertIn(\"Connection refused\", reply)"
+  },
+  {
+    "class": "tests.test_github_copilot_bridge.TestAntigravityCopilotQuotaFallback",
+    "name": "test_quota_error_hands_off_to_copilot_without_executing_its_text_as_a_tool",
+    "file": "tests\\test_github_copilot_bridge.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "AssertionError: 'My apologies, Sir. I am unable to connect[50 chars]ure.' != '{\"tool\":\"lock_workstation\",\"arguments\":{}}'\n- My apologies, Sir. I am unable to connect to Google Gemini due to a network connection failure.\n+ {\"tool\":\"lock_workstation\",\"arguments\":{}}",
+    "snippet_summary": "def test_quota_error_hands_off_to_copilot_without_executing_its_text_as_a_tool(self):\n        self.brain.antigravity_bridge.generate_response.return_value = {\n            \"status\": \"ERROR\",\n            \"response\": \"RESOURCE_EXHAUSTED: quota reached\",\n            \"duration_seconds\": 0.1,\n        }"
+  },
+  {
+    "class": "tests.test_diagnostics.TestDiagnosticsSuite",
+    "name": "test_profile_runtime_access_notice",
+    "file": "tests\\test_diagnostics.py",
+    "called_tool": "profile_runtime",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Batch Process Auth Gate",
+    "error_message": "AssertionError: 'Diagnostic profiling encountered an access notice' not found in 'Failed to execute runtime diagnostics: Authorization Required: Batch process execution requires active human authorization.'",
+    "snippet_summary": "def test_profile_runtime_access_notice(self, mock_run, mock_find):\n        \"\"\"Verifies profile_runtime handles non-zero exit codes gracefully.\"\"\"\n        mock_run.return_value = MagicMock(\n            returncode=1,\n            stdout=\"\",\n            stderr=\"Access is denied\","
+  },
+  {
+    "class": "tests.test_diagnostics.TestDiagnosticsSuite",
+    "name": "test_profile_runtime_execution",
+    "file": "tests\\test_diagnostics.py",
+    "called_tool": "profile_runtime",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Batch Process Auth Gate",
+    "error_message": "AssertionError: 'Runtime Thread Diagnostics' not found in 'Failed to execute runtime diagnostics: Authorization Required: Batch process execution requires active human authorization.'",
+    "snippet_summary": "def test_profile_runtime_execution(self, mock_run, mock_find):\n        \"\"\"Verifies profile_runtime parses sampling dump output correctly.\"\"\"\n        mock_run.return_value = MagicMock(\n            returncode=0,\n            stdout=(\n                \"Thread 1234 (active):\\n\""
+  },
+  {
+    "class": "tests.test_github_copilot_bridge.TestAntigravityCopilotQuotaFallback",
+    "name": "test_unknown_antigravity_quota_error_is_not_reported_as_success",
+    "file": "tests\\test_github_copilot_bridge.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "AssertionError: 'quota reached' not found in 'My apologies, Sir. I am unable to connect to Google Gemini due to a network connection failure.'",
+    "snippet_summary": "def test_unknown_antigravity_quota_error_is_not_reported_as_success(self):\n        self.brain.github_bridge.is_available.return_value = False\n        reply = self._run_antigravity_turn(\n            {\"status\": \"ERROR\", \"response\": \"RESOURCE_EXHAUSTED: quota reached\", \"duration_seconds\": 0.1}\n        )\n"
+  },
+  {
+    "class": "tests.test_everything_search_and_self_editing.TestEverythingSearchAndSelfEditing",
+    "name": "test_search_everything_mocked_success",
+    "file": "tests\\test_everything_search_and_self_editing.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Mock/Formatting Return Count Mismatch",
+    "error_message": "AssertionError: 'Found 2 instant result(s)' not found in 'Found 1 file(s), Sir:\\n- C:\\\\Users\\\\Youssef\\\\Projects\\\\Jarvis_2.0\\\\jarvis\\\\core\\\\brain.py'",
+    "snippet_summary": "def test_search_everything_mocked_success(self):\n        \"\"\"Verifies search_everything formatting on successful CLI output.\"\"\"\n        mock_output = (\n            \"C:\\\\Users\\\\Youssef\\\\Projects\\\\Jarvis_2.0\\\\jarvis\\\\core\\\\brain.py\\n\"\n            \"C:\\\\Users\\\\Youssef\\\\Projects\\\\Jarvis_2.0\\\\jarvis\\\\skills\\\\dev_shell.py\\n\"\n        )"
+  },
+  {
+    "class": "tests.test_autonomous_failure_recovery.TestAutonomousFailureRecovery",
+    "name": "test_close_application_wm_close_fallback",
+    "file": "tests\\test_autonomous_failure_recovery.py",
+    "called_tool": "close_application",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Authorization Required: close_application requires explicit human approval.",
+    "snippet_summary": "def test_close_application_wm_close_fallback(self):\n        \"\"\"When no process matches by name, close_application attempts graceful window close via WM_CLOSE.\"\"\"\n        fake_proc_iter = []\n        with patch(\"psutil.process_iter\", return_value=fake_proc_iter), \\\n             patch(\"win32gui.EnumWindows\") as mock_enum, \\\n             patch(\"win32gui.IsWindowVisible\", return_value=True), \\"
+  },
+  {
+    "class": "tests.test_autonomous_failure_recovery.TestAutonomousFailureRecovery",
+    "name": "test_focus_window_unknown_app_returns_no_match",
+    "file": "tests\\test_autonomous_failure_recovery.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "AssertionError: 'no open window matching' not found in \"failed to focus window 'nonexistent_phantom_app_8492': authorization required: launch_application requires explicit human approval.\"",
+    "snippet_summary": "def test_focus_window_unknown_app_returns_no_match(self):\n        \"\"\"When an unknown target is queried and not open, focus_window returns standard not found.\"\"\"\n        with patch(\"jarvis.skills.windows_uia.focus_window_uia\", return_value=None), \\\n             patch(\"win32gui.EnumWindows\") as mock_enum:\n            \n            def no_match_enum(cb, _):"
+  },
+  {
+    "class": "tests.test_browser_dom_provenance.TestBrowserDOMProvenanceSuite",
+    "name": "test_subsequent_level1_privileged_operation_blocked_after_dom_taint",
+    "file": "tests\\test_browser_dom_provenance.py",
+    "called_tool": "close_application",
+    "intention": "Negative Security (Assertion expects older gate error string)",
+    "category": "Gate Error String Mismatch (Dual-Key vs Critical Authorization Gate)",
+    "error_message": "AssertionError: \"Dual-Key Safety Gate: blocked high-privilege tool 'close_application'\" not found in \"Critical Authorization Gate: Tool 'close_application' (risk_level=1) modifies the host environment or live Python runtime and requires explicit, out-of-band user confirmation regardless of turn taint state.\"",
+    "snippet_summary": "def test_subsequent_level1_privileged_operation_blocked_after_dom_taint(self):\n        \"\"\"Verifies a subsequent Level 1 mutation encounters the Dual-Key Safety Gate after DOM interaction.\"\"\"\n        self.assertFalse(self.tracker.is_tainted)\n        mock_ws = _make_mock_ws(element_name=\"Untrusted Forum Button\", role=\"button\")\n\n        with patch(\"jarvis.skills.hybrid_actuator.is_cdp_available\", return_value=True), \\"
+  },
+  {
+    "class": "tests.test_closed_loop_and_core_preferences.TestClosedLoopAndCorePreferencesSuite",
+    "name": "test_launch_or_focus_application_closed_loop",
+    "file": "tests\\test_closed_loop_and_core_preferences.py",
+    "called_tool": "launch_or_focus_application",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Gate Error String Mismatch (Dual-Key vs Critical Authorization Gate)",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Critical Authorization Gate: Tool 'launch_application' (risk_level=2) modifies the host environment or live Python runtime and requires explicit, out-of-band user confirmation regardless of turn taint state.",
+    "snippet_summary": "def test_launch_or_focus_application_closed_loop(self):\n        \"\"\"Verifies launch_or_focus_application invokes launch and verifies focus.\"\"\"\n        with patch(\"jarvis.skills.windows_uia.focus_window_uia\", side_effect=[None, \"Spotify Premium\"]), \\\n             patch(\"jarvis.skills.os_control.focus_window\", return_value=\"No open Spotify window was found\"), \\\n             patch(\"jarvis.skills.os_control.launch_application\", return_value=\"Application 'spotify' launched, Sir.\") as mock_launch:\n            res = SkillRegistry.execute(\"launch_or_focus_application\", app_name=\"spotify\")"
+  },
+  {
+    "class": "tests.test_ast_code_surgeon_pillar3.TestASTCodeSurgeonPillar3",
+    "name": "test_apply_patch_commits_when_target_and_regression_tests_pass",
+    "file": "tests\\test_ast_code_surgeon_pillar3.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "AssertionError: 'rejected_execution_error' != 'committed'\n- rejected_execution_error\n+ committed",
+    "snippet_summary": "def test_apply_patch_commits_when_target_and_regression_tests_pass(self):\n        \"\"\"Valid patch that satisfies target and regression tests commits cleanly.\"\"\"\n        valid_fix = (\n            \"def calculate_total(subtotal: float, tax_rate: float) -> float:\\n\"\n            \"    tax = subtotal * tax_rate\\n\"\n            \"    return subtotal + tax\\n\""
+  },
+  {
+    "class": "tests.test_ast_code_surgeon_pillar3.TestASTCodeSurgeonPillar3",
+    "name": "test_apply_patch_rolls_back_when_regression_test_fails",
+    "file": "tests\\test_ast_code_surgeon_pillar3.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "AssertionError: 'rejected_execution_error' != 'rejected_regression_failed'\n- rejected_execution_error\n+ rejected_regression_failed",
+    "snippet_summary": "def test_apply_patch_rolls_back_when_regression_test_fails(self):\n        \"\"\"Patch that passes target test but breaks regression test must roll back.\"\"\"\n        # Hardcodes 110.0: passes test_calc, but breaks test_calc_regression (which expects 50.0 for 50.0 + 0)\n        hardcoded_patch = (\n            \"def calculate_total(subtotal: float, tax_rate: float) -> float:\\n\"\n            \"    return 110.0\\n\""
+  },
+  {
+    "class": "tests.test_ast_code_surgeon_pillar3.TestASTCodeSurgeonPillar3",
+    "name": "test_apply_patch_rolls_back_when_target_test_fails",
+    "file": "tests\\test_ast_code_surgeon_pillar3.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "AssertionError: 'rejected_execution_error' != 'rejected_target_test_failed'\n- rejected_execution_error\n+ rejected_target_test_failed",
+    "snippet_summary": "def test_apply_patch_rolls_back_when_target_test_fails(self):\n        \"\"\"Semantically failing replacement must execute in sandbox, fail, and roll back byte-for-byte.\"\"\"\n        still_failing_code = (\n            \"def calculate_total(subtotal: float, tax_rate: float) -> float:\\n\"\n            \"    return subtotal + 999.0\\n\"\n        )"
+  },
+  {
+    "class": "tests.test_background_tasks.TestBackgroundTasksSuite",
+    "name": "test_skill_wrappers_execution",
+    "file": "tests\\test_background_tasks.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "jarvis.core.security_boundaries.SecurityBoundaryViolation: Authorization Required: Background command execution requires explicit human approval.",
+    "snippet_summary": "def test_skill_wrappers_execution(self):\n        \"\"\"Verifies dev_shell skill wrappers interact with BackgroundTaskManager.\"\"\"\n        res = dev_shell.run_background_task(\"Write-Output 'Skill Test'\", task_name=\"Wrapper Test\", notify_voice=False)\n        self.assertIn(\"Launched background task 'Wrapper Test'\", res)\n\n        list_out = dev_shell.list_background_tasks()"
+  },
+  {
+    "class": "tests.test_plugin_integrations.TestPluginIntegrations",
+    "name": "test_modern_web_guidance_retrieve",
+    "file": "tests\\test_plugin_integrations.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Batch Process Auth Gate",
+    "error_message": "AssertionError: 'Modern Web Guidance: declarative-dialog-popover-control' not found in \"Error retrieving modern web guide 'declarative-dialog-popover-control': Authorization Required: Batch process execution requires active human authorization.\"",
+    "snippet_summary": "def test_modern_web_guidance_retrieve(self, mock_subproc):\n        \"\"\"Tests retrieve_modern_web_guide returns guide content.\"\"\"\n        guide_text = \"Use invoker commands to toggle dialogs.\"\n        mock_subproc.return_value = MagicMock(returncode=0, stdout=guide_text, stderr=\"\")\n\n        res = modern_web.retrieve_modern_web_guide(\"declarative-dialog-popover-control\")"
+  },
+  {
+    "class": "tests.test_plugin_integrations.TestPluginIntegrations",
+    "name": "test_modern_web_guidance_search",
+    "file": "tests\\test_plugin_integrations.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Batch Process Auth Gate",
+    "error_message": "AssertionError: 'declarative-dialog-popover-control' not found in 'Error querying modern web guidance: Authorization Required: Batch process execution requires active human authorization.'",
+    "snippet_summary": "def test_modern_web_guidance_search(self, mock_subproc):\n        \"\"\"Tests search_modern_web_guidance formats CLI results properly.\"\"\"\n        mock_output = json.dumps([\n            {\n                \"id\": \"declarative-dialog-popover-control\",\n                \"description\": \"Toggle dialog or popover with buttons.\","
+  },
+  {
+    "class": "tests.test_context_orchestrator.TestContextOrchestrator",
+    "name": "test_build_ephemeral_user_envelope_full_assembly",
+    "file": "tests\\test_context_orchestrator.py",
+    "called_tool": "None",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Other",
+    "error_message": "AssertionError: '<jit_recalled_memory>' not found in '<live_telemetry_envelope>focus=deep</live_telemetry_envelope>\\n\\nrefactor the parser'",
+    "snippet_summary": "def test_build_ephemeral_user_envelope_full_assembly(self):\n        \"\"\"Verifies envelope orders telemetry, JIT memory, episodic lessons, and user utterance.\"\"\"\n        mock_twin = MagicMock()\n        mock_twin.build_persona_telemetry_envelope.return_value = \"<live_telemetry_envelope>focus=deep</live_telemetry_envelope>\"\n\n        mock_memory = MagicMock()"
+  },
+  {
+    "class": "tests.test_graphify_skill.TestGraphifySkillSuite",
+    "name": "test_explain_and_path_modes",
+    "file": "tests\\test_graphify_skill.py",
+    "called_tool": "query_codebase_graph",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Batch Process Auth Gate",
+    "error_message": "AssertionError: 'Path found' not found in 'Graph query error: Authorization Required: Batch process execution requires active human authorization.'",
+    "snippet_summary": "def test_explain_and_path_modes(self):\n        with patch.object(Path, \"exists\", return_value=True), patch(\"subprocess.run\") as mock_run:\n            mock_run.return_value = MagicMock(returncode=0, stdout=\"Path found: A -> B\", stderr=\"\")\n            res_path = SkillRegistry.execute(\"query_codebase_graph\", query=\"JarvisBrain SafetyGate\", mode=\"path\")\n            self.assertIn(\"Path found\", res_path)\n"
+  },
+  {
+    "class": "tests.test_graphify_skill.TestGraphifySkillSuite",
+    "name": "test_query_codebase_graph_real_or_mock",
+    "file": "tests\\test_graphify_skill.py",
+    "called_tool": "query_codebase_graph",
+    "intention": "Positive Functionality (Verifies tool output under normal execution)",
+    "category": "Batch Process Auth Gate",
+    "error_message": "AssertionError: 'ManagedServiceManager' not found in 'Graph query error: Authorization Required: Batch process execution requires active human authorization.'",
+    "snippet_summary": "def test_query_codebase_graph_real_or_mock(self):\n        with patch.object(Path, \"exists\", return_value=True), patch(\"subprocess.run\") as mock_run:\n            mock_run.return_value = MagicMock(returncode=0, stdout=\"Graph result for ManagedServiceManager\", stderr=\"\")\n            res = SkillRegistry.execute(\"query_codebase_graph\", query=\"ManagedServiceManager\")\n            self.assertIn(\"ManagedServiceManager\", res)"
+  },
+  {
+    "class": "tests.test_hybrid_and_timers",
+    "name": "test_gemini_candidate_pool",
+    "file": "tests\\test_hybrid_and_timers.py",
+    "called_tool": "None",
+    "intention": "Unknown",
+    "category": "Model Catalog Threshold (Candidate models list pruned)",
+    "error_message": "AssertionError: assert 3 >= 8\n +  where 3 = len(['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'])\n +    where ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'] = JarvisBrain.GEMINI_CANDIDATE_MODELS",
+    "snippet_summary": ""
+  },
+  {
+    "class": "tests.test_dev_skills",
+    "name": "test_dev_skills",
+    "file": "tests\\test_dev_skills.py",
+    "called_tool": "None",
+    "intention": "Unknown",
+    "category": "Batch Process Auth Gate",
+    "error_message": "AssertionError: assert 'Branch:' in 'Git error: Authorization Required: Batch process execution requires active human authorization.'",
+    "snippet_summary": ""
+  }
+]

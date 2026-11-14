@@ -20,9 +20,10 @@ from jarvis.skills.os_control import search_desktop_files_fast
 class TestEverythingSearchAndSelfEditing(unittest.TestCase):
     def setUp(self):
         self.config = load_config()
+        self.config.setdefault("llm", {})["antigravity_resolver"] = lambda: None
         self.memory = MemoryManager(self.config)
         self.safety = SafetyGate(self.config)
-        self.brain = JarvisBrain(self.config, self.memory, self.safety)
+        self.brain = JarvisBrain(self.config, self.memory, self.safety, antigravity_resolver=lambda: None)
 
     def test_everything_skill_registration(self):
         """Verifies search_everything is properly registered in SkillRegistry."""
@@ -53,7 +54,7 @@ class TestEverythingSearchAndSelfEditing(unittest.TestCase):
         mock_proc.stdout = mock_output
         mock_proc.stderr = ""
 
-        with patch("subprocess.run", return_value=mock_proc), \
+        with patch("jarvis.skills.job_object_sandbox.run_sandboxed_batch", return_value=mock_proc), \
              patch("jarvis.skills.everything_search.ensure_everything_service", return_value=True):
             res = search_everything("brain.py", max_results=5)
             self.assertIn("Found 2 instant result(s)", res)

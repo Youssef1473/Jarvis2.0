@@ -1,9 +1,10 @@
 """Tests for autonomous failure recovery and deterministic fallback cascades across core desktop tools."""
 import unittest
-from unittest.mock import patch, MagicMock
-from jarvis.skills.base import SkillRegistry
+from unittest.mock import MagicMock, patch
+
 import jarvis.skills.os_control as os_ctrl
 import jarvis.skills.windows_uia as w_uia
+from jarvis.core.security_boundaries import DualKeyApprovalManager
 
 
 class TestAutonomousFailureRecovery(unittest.TestCase):
@@ -26,7 +27,8 @@ class TestAutonomousFailureRecovery(unittest.TestCase):
     def test_focus_window_unknown_app_returns_no_match(self):
         """When an unknown target is queried and not open, focus_window returns standard not found."""
         with patch("jarvis.skills.windows_uia.focus_window_uia", return_value=None), \
-             patch("win32gui.EnumWindows") as mock_enum:
+             patch("win32gui.EnumWindows") as mock_enum, \
+             patch("jarvis.skills.os_control.launch_application", return_value="Application 'nonexistent_phantom_app_8492' could not be found, Sir."):
             
             def no_match_enum(cb, _):
                 return True
@@ -38,24 +40,30 @@ class TestAutonomousFailureRecovery(unittest.TestCase):
     def test_close_application_wm_close_fallback(self):
         """When no process matches by name, close_application attempts graceful window close via WM_CLOSE."""
         fake_proc_iter = []
-        with patch("psutil.process_iter", return_value=fake_proc_iter), \
-             patch("win32gui.EnumWindows") as mock_enum, \
-             patch("win32gui.IsWindowVisible", return_value=True), \
-             patch("win32gui.GetWindowText", return_value="Custom App Window"), \
-             patch("win32process.GetWindowThreadProcessId", return_value=(1, 9999)), \
-             patch("psutil.Process") as mock_proc, \
-             patch("win32gui.PostMessage") as mock_post:
-            
-            mock_proc.return_value.name.return_value = "custom_app.exe"
+        mgr = DualKeyApprovalManager.get_instance()
+        grant = mgr.grant_approval("close_application", {"app_name": "custom app"})
+        ctx_token = mgr.bind_active_grant(grant)
+        try:
+            with patch("psutil.process_iter", return_value=fake_proc_iter), \
+                 patch("win32gui.EnumWindows") as mock_enum, \
+                 patch("win32gui.IsWindowVisible", return_value=True), \
+                 patch("win32gui.GetWindowText", return_value="Custom App Window"), \
+                 patch("win32process.GetWindowThreadProcessId", return_value=(1, 9999)), \
+                 patch("psutil.Process") as mock_proc, \
+                 patch("win32gui.PostMessage") as mock_post:
 
-            def match_enum(cb, _):
-                cb(1234, None)
-                return True
-            mock_enum.side_effect = match_enum
+                mock_proc.return_value.name.return_value = "custom_app.exe"
 
-            res = os_ctrl.close_application("custom app")
-            self.assertIn("graceful window termination", res)
-            mock_post.assert_called_once()
+                def match_enum(cb, _):
+                    cb(1234, None)
+                    return True
+                mock_enum.side_effect = match_enum
+
+                res = os_ctrl.close_application("custom app")
+                self.assertIn("graceful window termination", res)
+                mock_post.assert_called_once()
+        finally:
+            mgr.clear_active_authorized(ctx_token)
 
     def test_close_browser_tab_cdp_unverified_fallback(self):
         """When CDP reports tab not found, close_browser_tab falls back to UIA focus and native Win32 Ctrl+W."""

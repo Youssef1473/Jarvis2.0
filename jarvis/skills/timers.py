@@ -186,4 +186,9 @@ def list_active_timers() -> str:
             rem = max(0, int(t_info["end_time"] - now))
             lines.append(f"• {t_info['label']}: {_format_seconds(rem)} remaining (originally {_format_seconds(t_info['duration'])})")
 
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        TurnTaintTracker.get_instance().mark_tainted(
+            source="in_memory_telemetry:list_active_timers",
+            metadata={"count": len(_active_timers)},
+        )
         return f"Active Timers, Sir ({len(_active_timers)}):\n" + "\n".join(lines)

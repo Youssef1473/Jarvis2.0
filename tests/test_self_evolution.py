@@ -2,6 +2,9 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 # Add project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -19,6 +22,13 @@ from jarvis.skills.self_evolution import (
 
 class TestSelfEvolution(unittest.TestCase):
     def setUp(self):
+        self.env_patcher = patch.dict("os.environ", {"CI": "true"})
+        self.env_patcher.start()
+        self.hmac_patcher = patch(
+            "jarvis.core.evolution.sandbox.get_or_create_evolution_hmac_key",
+            return_value=b"test_secret_evolution_key_32bytes!"
+        )
+        self.hmac_patcher.start()
         TurnTaintTracker.get_instance().reset_turn()
         DualKeyApprovalManager.get_instance().reset()
         DualKeyApprovalManager.get_instance().set_approval_handler(lambda req: True)
@@ -36,6 +46,8 @@ class TestSelfEvolution(unittest.TestCase):
         DualKeyApprovalManager.get_instance().set_approval_handler(None)
         DualKeyApprovalManager.get_instance().reset()
         TurnTaintTracker.get_instance().reset_turn()
+        self.hmac_patcher.stop()
+        self.env_patcher.stop()
 
     def test_syntax_error_rejection(self):
         """Verifies that invalid Python code is caught by the AST parser before saving."""
@@ -49,6 +61,7 @@ class TestSelfEvolution(unittest.TestCase):
         # Verify the file was not written to disk
         self.assertFalse((CUSTOM_SKILLS_DIR / "test_broken_skill.py").exists())
 
+    @pytest.mark.windows_integration
     def test_dynamic_skill_creation_and_hot_reload(self):
         """Verifies that valid Python code is saved, hot-reloaded into SkillRegistry, and executable."""
         skill_code = '''
@@ -108,7 +121,7 @@ def test_mock_greeter(target_name: str = "Sir") -> str:
         config = load_config()
         memory = MemoryManager(config)
         safety = SafetyGate(config)
-        brain = JarvisBrain(config, memory, safety)
+        brain = JarvisBrain(config, memory, safety, antigravity_resolver=lambda: None)
 
         # 1. User locks model to Gemini 3.8 Flash High
         brain.antigravity_model = "gemini-3.8-flash-high"

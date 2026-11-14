@@ -370,8 +370,15 @@ class TestActionBoundAuthorizationAndHardening(unittest.TestCase):
     def test_autonomous_browser_javascript_rejects_unmanaged_9222(self):
         """execute_browser_javascript refuses connection to unmanaged port 9222 by default."""
         self.approval_mgr.set_approval_handler(lambda req: True)
+        script = "2+2"
+        digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
         with patch.object(b_cdp, "get_managed_cdp_port", return_value=None):
-            res = SkillRegistry.execute("execute_browser_javascript", script="2+2")
+            res = SkillRegistry.execute(
+                "execute_browser_javascript",
+                script=script,
+                unique_context_id="ctx_v8_test_9222",
+                script_digest=digest,
+            )
             self.assertIn("Browser DevTools Protocol execution blocked", res)
             self.assertIn("No managed browser session is active", res)
 
@@ -379,10 +386,18 @@ class TestActionBoundAuthorizationAndHardening(unittest.TestCase):
         """Explicit allow_unmanaged=True permits developer connection to port 9222 when authorized."""
         self.approval_mgr.set_approval_handler(lambda req: True)
         self.approval_mgr.authorize_unmanaged_browser(ttl_seconds=10.0)
+        script = "2+2"
+        digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
         with patch.object(b_cdp, "get_managed_cdp_port", return_value=None), \
              patch.object(b_cdp, "is_cdp_available", return_value=True), \
              patch.object(b_cdp, "execute_cdp_javascript", return_value=4):
-            res = SkillRegistry.execute("execute_browser_javascript", script="2+2", allow_unmanaged=True)
+            res = SkillRegistry.execute(
+                "execute_browser_javascript",
+                script=script,
+                allow_unmanaged=True,
+                unique_context_id="ctx_v8_test_9222",
+                script_digest=digest,
+            )
             self.assertIn("JavaScript Evaluation Result", res)
             self.assertIn("4", res)
 
@@ -608,7 +623,14 @@ class TestActionBoundAuthorizationAndHardening(unittest.TestCase):
             # 5. execute_browser_javascript
             self.tracker.reset_turn()
             self.approval_mgr.set_approval_handler(lambda req: True)
-            res_js = SkillRegistry.execute("execute_browser_javascript", script="1+1")
+            script_entry = "1+1"
+            digest_entry = hashlib.sha256(script_entry.encode("utf-8")).hexdigest()
+            res_js = SkillRegistry.execute(
+                "execute_browser_javascript",
+                script=script_entry,
+                unique_context_id="ctx_v8_entry_5",
+                script_digest=digest_entry,
+            )
             self.assertIn("Browser DevTools Protocol execution blocked", res_js)
             self.assertIn("No managed browser session is active", res_js)
 
@@ -653,6 +675,20 @@ class TestActionBoundAuthorizationAndHardening(unittest.TestCase):
         orchestrator = ToolOrchestrator()
         with patch.object(b_cdp, "get_managed_cdp_port", return_value=None), \
              patch.object(b_cdp, "is_cdp_available", return_value=True):
+            # Verify via synchronous execute_step
+            res_sync = orchestrator.execute_step(
+                tool_name="list_open_browser_tabs",
+                arguments={"allow_unmanaged": True},
+                step_index=1,
+            )
+            self.assertIn("Browser DevTools Protocol execution blocked", res_sync)
+
+            # Probe loopback availability for ProactorEventLoop self-pipe
+            from tools.run_fast_tests import probe_loopback_available
+            loopback_probe = probe_loopback_available()
+            if not loopback_probe:
+                self.skipTest(f"ProactorEventLoop self-pipe blocked by sandbox environment filter: {loopback_probe.detail}")
+
             res = asyncio.run(orchestrator.execute_step_async(
                 tool_name="list_open_browser_tabs",
                 arguments={"allow_unmanaged": True},

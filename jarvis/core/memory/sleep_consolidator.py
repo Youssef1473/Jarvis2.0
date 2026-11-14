@@ -234,19 +234,26 @@ class SleepPhaseConsolidator:
         return conn
 
     def discover_redundant_facts_readonly(
-        self, distance_threshold: float = 0.70
+        self, distance_threshold: float = 0.70, workspace_id: str = "ws_default"
     ) -> list[tuple[dict[str, Any], dict[str, Any], float]]:
         """Phase 1: Runs on an isolated WAL read snapshot (?mode=ro).
 
         In SQLite WAL mode, readers NEVER block writers. Finds near-duplicate
         facts via sqlite-vec KNN search where cosine distance <= distance_threshold,
-        or where values are textually identical.
+        or where values are textually identical within the specified workspace.
         """
+        if not workspace_id or str(workspace_id).strip().lower() == "unscoped":
+            raise ValueError("Invalid workspace_id: must be a non-empty, scoped workspace")
+        clean_ws = str(workspace_id).strip()
+
         ro_conn = self._connect(read_only=True)
         redundant_pairs: list[tuple[dict[str, Any], dict[str, Any], float]] = []
         try:
             cursor = ro_conn.cursor()
-            cursor.execute("SELECT id, category, key, value FROM facts ORDER BY id ASC")
+            cursor.execute(
+                "SELECT id, category, key, value FROM facts WHERE workspace_id = ? AND scope = 'workspace' ORDER BY id ASC",
+                (clean_ws,)
+            )
             all_facts = [dict(r) for r in cursor.fetchall()]
 
             import sqlite_vec
@@ -264,10 +271,10 @@ class SleepPhaseConsolidator:
                     SELECT f.id, f.category, f.key, f.value, v.distance
                     FROM facts_vec v
                     JOIN facts f ON v.fact_id = f.id
-                    WHERE v.embedding MATCH ? AND k = 4
-                      AND f.id > ?
+                    WHERE v.workspace_id = ? AND v.embedding MATCH ? AND k = 4
+                      AND f.id > ? AND f.workspace_id = ? AND f.scope = 'workspace'
                     ORDER BY v.distance ASC
-                """, (blob, f["id"]))
+                """, (clean_ws, blob, f["id"], clean_ws))
 
                 neighbors = cursor.fetchall()
                 for n in neighbors:
@@ -290,8 +297,12 @@ class SleepPhaseConsolidator:
 
         return redundant_pairs
 
-    def discover_consolidatable_lessons_readonly(self) -> list[dict[str, Any]]:
-        """Phase 1b: Discovers repeated episodic lessons that can be clustered."""
+    def discover_consolidatable_lessons_readonly(self, workspace_id: str = "ws_default") -> list[dict[str, Any]]:
+        """Phase 1b: Discovers repeated episodic lessons that can be clustered within a workspace."""
+        if not workspace_id or str(workspace_id).strip().lower() == "unscoped":
+            raise ValueError("Invalid workspace_id: must be a non-empty, scoped workspace")
+        clean_ws = str(workspace_id).strip()
+
         ro_conn = self._connect(read_only=True)
         consolidatable: list[dict[str, Any]] = []
         try:
@@ -300,9 +311,10 @@ class SleepPhaseConsolidator:
                 SELECT tool_name, COUNT(*) as cnt, SUM(hit_count) as total_hits,
                        GROUP_CONCAT(id) as ids, GROUP_CONCAT(lesson, ' | ') as all_lessons
                 FROM episodic_lessons
+                WHERE workspace_id = ?
                 GROUP BY tool_name
                 HAVING cnt > 3
-            """)
+            """, (clean_ws,))
             rows = cursor.fetchall()
             for r in rows:
                 consolidatable.append({
@@ -324,10 +336,15 @@ class SleepPhaseConsolidator:
         stale_fact_ids: list[int],
         is_user_active_fn: Callable[[], bool] | None = None,
         batch_size: int = 20,
+        workspace_id: str = "ws_default",
     ) -> int:
-        """Phase 2: Applies removals/consolidations in <1.5ms micro-transactions."""
+        """Phase 2: Applies removals/consolidations in <1.5ms micro-transactions scoped to a workspace."""
         if not stale_fact_ids:
             return 0
+
+        if not workspace_id or str(workspace_id).strip().lower() == "unscoped":
+            raise ValueError("Invalid workspace_id: cannot consolidate unscoped or empty workspace")
+        clean_ws = str(workspace_id).strip()
 
         if is_user_active_fn is None:
             is_user_active_fn = lambda: get_win32_idle_seconds() < self.idle_threshold_sec
@@ -352,21 +369,21 @@ class SleepPhaseConsolidator:
                     placeholders = ",".join("?" for _ in batch)
                     try:
                         rw_conn.execute(
-                            f"DELETE FROM facts_vec WHERE fact_id IN ({placeholders})",
-                            batch,
+                            f"DELETE FROM facts_vec WHERE fact_id IN ({placeholders}) AND workspace_id = ?",
+                            [*batch, clean_ws],
                         )
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110
                         pass
                     rw_conn.execute(
-                        f"DELETE FROM facts WHERE id IN ({placeholders})",
-                        batch,
+                        f"DELETE FROM facts WHERE id IN ({placeholders}) AND workspace_id = ? AND scope = 'workspace'",
+                        [*batch, clean_ws],
                     )
                     rw_conn.execute("COMMIT;")
                     total_consolidated += len(batch)
                 except (sqlite3.OperationalError, sqlite3.DatabaseError) as b_err:
                     try:
                         rw_conn.execute("ROLLBACK;")
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110
                         pass
                     logger.debug("Consolidation micro-batch yielded or backoff: %s", b_err)
                     break
@@ -389,35 +406,31 @@ class SleepPhaseConsolidator:
         self,
         conn: sqlite3.Connection,
         is_user_active_fn: Callable[[], bool] | None = None,
+        workspace_id: str = "ws_default",
     ) -> tuple[int, int]:
         """Pass A: Merges duplicate rows in facts matching normalized (category, key, value)
-        and promotes structured subject.predicate facts into active knowledge_edges.
+        and promotes structured subject.predicate facts into active knowledge_edges within a workspace.
         """
+        if not workspace_id or str(workspace_id).strip().lower() == "unscoped":
+            raise ValueError("Invalid workspace_id: cannot consolidate unscoped or empty workspace")
+        clean_ws = str(workspace_id).strip()
+
         duplicates_merged = 0
         edges_promoted = 0
 
-        # Ensure knowledge_edges table exists matching canonical schema
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS knowledge_edges (
-                edge_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                subject         TEXT NOT NULL COLLATE NOCASE,
-                predicate       TEXT NOT NULL COLLATE NOCASE,
-                object          TEXT NOT NULL,
-                is_functional   INTEGER NOT NULL DEFAULT 1,
-                confidence      REAL NOT NULL DEFAULT 1.0,
-                access_count    INTEGER NOT NULL DEFAULT 1,
-                decay_lambda    REAL NOT NULL DEFAULT 0.01,
-                valid_from      REAL NOT NULL,
-                valid_until     REAL DEFAULT NULL,
-                last_accessed   REAL NOT NULL,
-                superseded_by   INTEGER DEFAULT NULL REFERENCES knowledge_edges(edge_id),
-                source_context  TEXT DEFAULT NULL
-            )
-        """)
-
-        # 1. Normalize and deduplicate facts table
+        # 1. Normalize and deduplicate facts table scoped to workspace
         cursor = conn.cursor()
-        cursor.execute("SELECT id, category, key, value FROM facts ORDER BY id ASC")
+        cursor.execute("PRAGMA table_info(facts)")
+        facts_cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+        has_facts_ws = "workspace_id" in facts_cols
+
+        if has_facts_ws:
+            cursor.execute(
+                "SELECT id, category, key, value FROM facts WHERE (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped') AND (scope = 'workspace' OR scope = 'unscoped') ORDER BY id ASC",
+                (clean_ws,)
+            )
+        else:
+            cursor.execute("SELECT id, category, key, value FROM facts ORDER BY id ASC")
         rows = cursor.fetchall()
 
         seen_normalized: dict[tuple[str, str, str], int] = {}
@@ -440,15 +453,52 @@ class SleepPhaseConsolidator:
                 if is_user_active_fn and is_user_active_fn():
                     break
                 try:
-                    conn.execute("DELETE FROM facts_vec WHERE fact_id = ?", (s_id,))
-                except Exception:
+                    if has_facts_ws:
+                        conn.execute("DELETE FROM facts_vec WHERE fact_id = ? AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')", (s_id, clean_ws))
+                    else:
+                        conn.execute("DELETE FROM facts_vec WHERE fact_id = ?", (s_id,))
+                except Exception:  # noqa: BLE001, S110
                     pass
-                conn.execute("DELETE FROM facts WHERE id = ?", (s_id,))
+                if has_facts_ws:
+                    conn.execute("DELETE FROM facts WHERE id = ? AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')", (s_id, clean_ws))
+                else:
+                    conn.execute("DELETE FROM facts WHERE id = ?", (s_id,))
                 duplicates_merged += 1
 
-        # 2. Promote structured subject.predicate facts into active knowledge_edges
-        cursor.execute("SELECT category, key, value FROM facts WHERE key LIKE '%.%'")
+        # 2. Promote structured subject.predicate facts into active knowledge_edges within workspace
+        cursor.execute("PRAGMA table_info(knowledge_edges)")
+        kg_cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+        if not kg_cols:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_edges (
+                    edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    subject TEXT NOT NULL,
+                    predicate TEXT NOT NULL,
+                    object TEXT NOT NULL,
+                    is_functional INTEGER NOT NULL DEFAULT 1,
+                    confidence REAL NOT NULL DEFAULT 1.0,
+                    access_count INTEGER NOT NULL DEFAULT 1,
+                    decay_lambda REAL NOT NULL DEFAULT 0.01,
+                    valid_from REAL NOT NULL,
+                    valid_until REAL DEFAULT NULL,
+                    last_accessed REAL NOT NULL,
+                    source_context TEXT DEFAULT NULL
+                )
+            """)
+            cursor.execute("PRAGMA table_info(knowledge_edges)")
+            kg_cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+
+        if has_facts_ws:
+            cursor.execute("SELECT category, key, value FROM facts WHERE key LIKE '%.%' AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')", (clean_ws,))
+        else:
+            cursor.execute("SELECT category, key, value FROM facts WHERE key LIKE '%.%'")
         dot_rows = cursor.fetchall()
+
+        cursor.execute("PRAGMA table_info(knowledge_edges)")
+        kg_cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+        has_kg_ws = "workspace_id" in kg_cols
+        has_kg_access = "access_count" in kg_cols
+
         for dr in dot_rows:
             if is_user_active_fn and is_user_active_fn():
                 break
@@ -458,19 +508,42 @@ class SleepPhaseConsolidator:
                 subj, pred = parts[0].strip(), parts[1].strip()
                 val = (dr["value"] or "").strip()
                 if subj and pred and val:
-                    cursor.execute("""
-                        SELECT edge_id FROM knowledge_edges
-                        WHERE subject = ? AND predicate = ? AND object = ? AND valid_until IS NULL
-                    """, (subj, pred, val))
+                    if has_kg_ws:
+                        cursor.execute("""
+                            SELECT edge_id FROM knowledge_edges
+                            WHERE subject = ? AND predicate = ? AND object = ? AND valid_until IS NULL AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')
+                        """, (subj, pred, val, clean_ws))
+                    else:
+                        cursor.execute("""
+                            SELECT edge_id FROM knowledge_edges
+                            WHERE subject = ? AND predicate = ? AND object = ? AND valid_until IS NULL
+                        """, (subj, pred, val))
                     if not cursor.fetchone():
                         now_ts = time.time()
-                        conn.execute("""
-                            INSERT INTO knowledge_edges (
-                                subject, predicate, object, is_functional,
-                                confidence, access_count, decay_lambda,
-                                valid_from, valid_until, last_accessed, source_context
-                            ) VALUES (?, ?, ?, 1, 1.0, 1, 0.01, ?, NULL, ?, 'sleep_consolidation_pass_a')
-                        """, (subj, pred, val, now_ts, now_ts))
+                        if has_kg_ws:
+                            conn.execute("""
+                                INSERT INTO knowledge_edges (
+                                    workspace_id, scope, subject, predicate, object, is_functional,
+                                    confidence, access_count, decay_lambda,
+                                    valid_from, valid_until, last_accessed, source_context
+                                ) VALUES (?, 'workspace', ?, ?, ?, 1, 1.0, 1, 0.01, ?, NULL, ?, 'sleep_consolidation_pass_a')
+                            """, (clean_ws, subj, pred, val, now_ts, now_ts))
+                        elif has_kg_access:
+                            conn.execute("""
+                                INSERT INTO knowledge_edges (
+                                    subject, predicate, object, is_functional,
+                                    confidence, access_count, decay_lambda,
+                                    valid_from, valid_until, last_accessed, source_context
+                                ) VALUES (?, ?, ?, 1, 1.0, 1, 0.01, ?, NULL, ?, 'sleep_consolidation_pass_a')
+                            """, (subj, pred, val, now_ts, now_ts))
+                        else:
+                            conn.execute("""
+                                INSERT INTO knowledge_edges (
+                                    subject, predicate, object, is_functional,
+                                    confidence,
+                                    valid_from, valid_until, last_accessed, source_context
+                                ) VALUES (?, ?, ?, 1, 1.0, ?, NULL, ?, 'sleep_consolidation_pass_a')
+                            """, (subj, pred, val, now_ts, now_ts))
                         edges_promoted += 1
 
         return duplicates_merged, edges_promoted
@@ -479,17 +552,22 @@ class SleepPhaseConsolidator:
         self,
         conn: sqlite3.Connection,
         is_user_active_fn: Callable[[], bool] | None = None,
+        workspace_id: str = "ws_default",
     ) -> int:
-        """Pass B: Scans interactions for contiguous tool sequences (N>=3) repeated >=3 times,
-        compiling them into compiled_reflex_macros.
+        """Pass B: Scans interactions for contiguous tool sequences (N>=3) repeated >=3 times
+        within the specified workspace, compiling them into compiled_reflex_macros.
         """
+        if not workspace_id or str(workspace_id).strip().lower() == "unscoped":
+            raise ValueError("Invalid workspace_id: must be a non-empty, scoped workspace")
+        clean_ws = str(workspace_id).strip()
+
         from jarvis.skills.base import SkillRegistry
 
         reflex_macros_compiled = 0
 
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(compiled_reflex_macros)")
-        cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row.keys() else row[1] for row in cursor.fetchall()}
+        cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
         if cols and "macro_name" not in cols:
             conn.execute("DROP TABLE compiled_reflex_macros")
 
@@ -507,13 +585,26 @@ class SleepPhaseConsolidator:
                 last_compiled_ts REAL DEFAULT 0.0
             ) WITHOUT ROWID
         """)
+        cursor.execute("PRAGMA table_info(interactions)")
+        inter_cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+        has_inter_ws = "workspace_id" in inter_cols
+
         try:
-            cursor.execute("""
-                SELECT tool_calls FROM interactions
-                WHERE tool_calls IS NOT NULL AND tool_calls != ''
-                  AND created_at >= datetime('now', '-7 days')
-                ORDER BY id ASC
-            """)
+            if has_inter_ws:
+                cursor.execute("""
+                    SELECT tool_calls FROM interactions
+                    WHERE tool_calls IS NOT NULL AND tool_calls != ''
+                      AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')
+                      AND created_at >= datetime('now', '-7 days')
+                    ORDER BY id ASC
+                """, (clean_ws,))
+            else:
+                cursor.execute("""
+                    SELECT tool_calls FROM interactions
+                    WHERE tool_calls IS NOT NULL AND tool_calls != ''
+                      AND created_at >= datetime('now', '-7 days')
+                    ORDER BY id ASC
+                """)
             rows = cursor.fetchall()
         except sqlite3.OperationalError:
             return 0
@@ -589,8 +680,11 @@ class SleepPhaseConsolidator:
         batch_size: int = 20,
         extractor_fn: Callable[[str], dict[str, Any]] | None = None,
         pin_ecores: bool = True,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
-        """Orchestrates full sleep-phase consolidation with snapshot isolation and micro-batching."""
+        """Orchestrates full sleep-phase consolidation with snapshot isolation and micro-batching.
+        Executes per-workspace consolidation loop across active workspaces.
+        """
         t0 = time.perf_counter()
 
         if pin_ecores:
@@ -598,6 +692,27 @@ class SleepPhaseConsolidator:
 
         if is_user_active_fn is None:
             is_user_active_fn = lambda: get_win32_idle_seconds() < self.idle_threshold_sec
+
+        # Determine target workspaces
+        if workspace_id is not None:
+            clean_ws = str(workspace_id).strip()
+            if not clean_ws or clean_ws.lower() == "unscoped":
+                raise ValueError("Invalid workspace_id: cannot consolidate unscoped or empty workspace")
+            target_workspaces = [clean_ws]
+        else:
+            target_workspaces = []
+            ro_conn = self._connect(read_only=True)
+            try:
+                cur = ro_conn.cursor()
+                cur.execute("SELECT workspace_id FROM workspaces WHERE is_archived = 0 AND workspace_id != 'unscoped'")
+                target_workspaces = [r["workspace_id"] for r in cur.fetchall() if r["workspace_id"]]
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Failed querying workspaces for consolidation loop: %s", e)
+            finally:
+                ro_conn.close()
+
+            if not target_workspaces:
+                target_workspaces = ["ws_default"]
 
         distillation_summary = {"status": "skipped", "turns_processed": 0, "traits_extracted": 0}
         if not is_user_active_fn():
@@ -609,104 +724,105 @@ class SleepPhaseConsolidator:
                     max_turns=25,
                     extractor_fn=extractor_fn,
                 )
-            except Exception as d_err:
+            except Exception as d_err:  # noqa: BLE001
                 logger.debug("Sleep consolidation transcript distillation notice: %s", d_err)
 
-        if is_user_active_fn():
-            elapsed_ms = (time.perf_counter() - t0) * 1000.0
-            return {
-                "status": "yielded",
-                "aborted_by_user": True,
-                "distillation": distillation_summary,
-                "redundant_pairs_found": 0,
-                "facts_pruned": 0,
-                "duplicates_merged": 0,
-                "edges_promoted": 0,
-                "reflex_macros_compiled": 0,
-                "wal_pages_checkpointed": 0,
-                "decayed_habits": 0,
-                "elapsed_ms": round(elapsed_ms, 2),
-            }
+        total_redundant_found = 0
+        total_facts_pruned = 0
+        total_duplicates_merged = 0
+        total_edges_promoted = 0
+        total_reflex_macros = 0
+        was_aborted = False
 
-        pairs = self.discover_redundant_facts_readonly()
-        stale_ids = [stale["id"] for _, stale, _ in pairs]
+        for ws in target_workspaces:
+            if is_user_active_fn():
+                was_aborted = True
+                break
 
-        if is_user_active_fn():
-            elapsed_ms = (time.perf_counter() - t0) * 1000.0
-            return {
-                "status": "yielded",
-                "aborted_by_user": True,
-                "distillation": distillation_summary,
-                "redundant_pairs_found": len(pairs),
-                "facts_pruned": 0,
-                "duplicates_merged": 0,
-                "edges_promoted": 0,
-                "reflex_macros_compiled": 0,
-                "wal_pages_checkpointed": 0,
-                "decayed_habits": 0,
-                "elapsed_ms": round(elapsed_ms, 2),
-            }
+            pairs = self.discover_redundant_facts_readonly(workspace_id=ws)
+            total_redundant_found += len(pairs)
+            stale_ids = [stale["id"] for _, stale, _ in pairs]
 
-        pruned_count = self.apply_consolidation_micro_batches(
-            stale_fact_ids=stale_ids,
-            is_user_active_fn=is_user_active_fn,
-            batch_size=batch_size,
-        )
+            if is_user_active_fn():
+                was_aborted = True
+                break
 
-        duplicates_merged = 0
-        edges_promoted = 0
-        reflex_macros_compiled = 0
+            pruned = self.apply_consolidation_micro_batches(
+                stale_fact_ids=stale_ids,
+                is_user_active_fn=is_user_active_fn,
+                batch_size=batch_size,
+                workspace_id=ws,
+            )
+            total_facts_pruned += pruned
+
+            if is_user_active_fn():
+                was_aborted = True
+                break
+
+            # Execute Pass A and Pass B on interruptible connection for this workspace
+            rw_conn = self._open_interruptible_connection(
+                read_only=False,
+                is_user_active_fn=is_user_active_fn,
+                progress_steps=250,
+            )
+            try:
+                if not is_user_active_fn():
+                    dups, edges = self.run_pass_a_entity_deduplication(
+                        rw_conn, is_user_active_fn=is_user_active_fn, workspace_id=ws
+                    )
+                    total_duplicates_merged += dups
+                    total_edges_promoted += edges
+
+                if not is_user_active_fn():
+                    macros = self.run_pass_b_workflow_distillation(
+                        rw_conn, is_user_active_fn=is_user_active_fn, workspace_id=ws
+                    )
+                    total_reflex_macros += macros
+            except (sqlite3.OperationalError, sqlite3.DatabaseError) as opt_err:
+                logger.debug("Interruptible consolidation pass caught for ws %s: %s", ws, opt_err)
+            finally:
+                rw_conn.set_progress_handler(None, 0)
+                rw_conn.close()
+
+        # Pass C (WAL maintenance) runs once per cycle across the database file if not aborted
         wal_pages_checkpointed = 0
-
-        # Execute Pass A, Pass B, Pass C on interruptible connection
-        rw_conn = self._open_interruptible_connection(
-            read_only=False,
-            is_user_active_fn=is_user_active_fn,
-            progress_steps=250,
-        )
-        try:
-            if not is_user_active_fn():
-                duplicates_merged, edges_promoted = self.run_pass_a_entity_deduplication(
-                    rw_conn, is_user_active_fn=is_user_active_fn
-                )
-
-            if not is_user_active_fn():
-                reflex_macros_compiled = self.run_pass_b_workflow_distillation(
-                    rw_conn, is_user_active_fn=is_user_active_fn
-                )
-
-            if not is_user_active_fn():
+        if not is_user_active_fn() and not was_aborted:
+            rw_conn = self._open_interruptible_connection(
+                read_only=False,
+                is_user_active_fn=is_user_active_fn,
+                progress_steps=250,
+            )
+            try:
                 wal_pages_checkpointed = self.run_pass_c_wal_maintenance(rw_conn)
-        except (sqlite3.OperationalError, sqlite3.DatabaseError) as opt_err:
-            logger.debug("Interruptible consolidation pass caught: %s", opt_err)
-        finally:
-            rw_conn.set_progress_handler(None, 0)
-            rw_conn.close()
+            finally:
+                rw_conn.set_progress_handler(None, 0)
+                rw_conn.close()
 
         decayed_habits = 0
-        if not is_user_active_fn():
+        if not is_user_active_fn() and not was_aborted:
             decayed_habits = self.decay_action_transitions(
                 half_life_days=14.0,
                 is_user_active_fn=is_user_active_fn,
             )
 
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        was_aborted = bool(is_user_active_fn())
+        if is_user_active_fn():
+            was_aborted = True
 
         logger.info(
-            "Sleep-Phase Consolidation finished: %d duplicates merged, %d edges promoted, %d macros compiled, %d WAL pages checkpointed in %.2fms.",
-            duplicates_merged, edges_promoted, reflex_macros_compiled, wal_pages_checkpointed, elapsed_ms
+            "Sleep-Phase Consolidation finished: %d duplicates merged, %d edges promoted, %d macros compiled, %d WAL pages checkpointed in %.2fms across %d workspaces.",
+            total_duplicates_merged, total_edges_promoted, total_reflex_macros, wal_pages_checkpointed, elapsed_ms, len(target_workspaces)
         )
 
         return {
             "status": "yielded" if was_aborted else "success",
             "aborted_by_user": was_aborted,
             "distillation": distillation_summary,
-            "redundant_pairs_found": len(pairs),
-            "facts_pruned": pruned_count,
-            "duplicates_merged": duplicates_merged,
-            "edges_promoted": edges_promoted,
-            "reflex_macros_compiled": reflex_macros_compiled,
+            "redundant_pairs_found": total_redundant_found,
+            "facts_pruned": total_facts_pruned,
+            "duplicates_merged": total_duplicates_merged,
+            "edges_promoted": total_edges_promoted,
+            "reflex_macros_compiled": total_reflex_macros,
             "wal_pages_checkpointed": wal_pages_checkpointed,
             "decayed_habits": decayed_habits,
             "elapsed_ms": round(elapsed_ms, 2),

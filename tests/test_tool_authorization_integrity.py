@@ -16,6 +16,7 @@ Verifies:
 """
 from __future__ import annotations
 
+import hashlib
 import sys
 import tempfile
 import threading
@@ -91,7 +92,14 @@ class TestToolAuthorizationIntegrity(unittest.TestCase):
 
     def test_03_execute_browser_javascript_permitted_with_valid_approval_and_consumed(self):
         """3. A valid approval authorizes execute_browser_javascript and is consumed safely."""
-        args = {"script": "document.title", "tab_name": "ActiveTab"}
+        script = "document.title"
+        digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+        args = {
+            "script": script,
+            "tab_name": "ActiveTab",
+            "unique_context_id": "ctx_v8_test_integ",
+            "script_digest": digest,
+        }
         self.approval_mgr.grant_approval("execute_browser_javascript", args)
 
         decision = self.tracker.evaluate_tool_execution(

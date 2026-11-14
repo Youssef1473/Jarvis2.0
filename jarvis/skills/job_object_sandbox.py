@@ -23,6 +23,7 @@ load it); ``run_job_sandboxed_process`` then returns an error result.
 from __future__ import annotations
 
 import ctypes
+import hmac
 import logging
 import os
 import subprocess
@@ -968,6 +969,39 @@ def run_sandboxed_batch(
     Preserves subprocess.run() semantics while ensuring all child and grandchild
     processes are cleanly terminated upon completion, timeout, cancellation, or error.
     """
+    from jarvis.core.security_boundaries import (
+        SecurityBoundaryViolation,
+        _active_auth_context,
+        compute_action_hash,
+    )
+
+    active_token = _active_auth_context.get()
+    if active_token is None or not active_token.is_valid:
+        raise SecurityBoundaryViolation(
+            "Authorization Required: Batch process execution requires active human authorization."
+        )
+
+    ALLOWED_BATCH_TOOLS = {
+        "run_sandboxed_batch",
+        "run_project_tests",
+    }
+    if active_token.tool_name not in ALLOWED_BATCH_TOOLS:
+        raise SecurityBoundaryViolation(
+            f"Authorization Mismatch: Active authorization for '{active_token.tool_name}' cannot authorize batch execution."
+        )
+
+    if active_token.tool_name == "run_sandboxed_batch":
+        clean_args = {"command": command}
+        expected_hash = compute_action_hash("run_sandboxed_batch", clean_args)
+        if not hmac.compare_digest(active_token.action_hash, expected_hash):
+            raise SecurityBoundaryViolation(
+                "Action Hash Mismatch: Batch commands do not match approved action hash."
+            )
+
+    if not active_token.consume_for_process(ALLOWED_BATCH_TOOLS):
+        raise SecurityBoundaryViolation(
+            "Single-Use Authorization Violation: Batch authorization grant was already consumed or invalidated."
+        )
     # If subprocess.run is mocked in unit tests, preserve mock transparency
     is_mocked_run = (
         hasattr(subprocess.run, "_mock_name")
@@ -1071,6 +1105,69 @@ def run_job_sandboxed_process(
         return {"status": "error", "reason": "Empty command provided"}
     if kernel32 is None:
         return {"status": "error", "reason": "Job Object sandbox requires Windows"}
+
+    from jarvis.core.security_boundaries import (
+        SecurityBoundaryViolation,
+        _active_auth_context,
+        compute_action_hash,
+    )
+
+    active_token = _active_auth_context.get()
+    if active_token is None:
+        raise SecurityBoundaryViolation(
+            "Authorization Required: Process execution requires active human authorization."
+        )
+
+    ALLOWED_PARENT_TOOLS = {
+        "run_job_sandboxed_process",
+        "run_process_in_job",
+        "execute_sandboxed_powershell",
+        "execute_powershell",
+        "run_background_task",
+        "run_command_in_background",
+        "run_sandboxed_batch",
+    }
+    if active_token.tool_name not in ALLOWED_PARENT_TOOLS:
+        raise SecurityBoundaryViolation(
+            f"Authorization Mismatch: Active authorization for '{active_token.tool_name}' cannot authorize process launch."
+        )
+
+    current_time = time.monotonic()
+    if active_token._disarmed or active_token._invalidated or current_time >= active_token.expires_at:
+        raise SecurityBoundaryViolation(
+            "Authorization Expired: Process authorization grant has expired or been invalidated."
+        )
+
+    if active_token.tool_name in ("run_job_sandboxed_process", "run_process_in_job"):
+        clean_args = {"command": command}
+        expected_hash = compute_action_hash(active_token.tool_name, clean_args)
+        if not hmac.compare_digest(active_token.action_hash, expected_hash):
+            raise SecurityBoundaryViolation(
+                "Action Hash Mismatch: Command arguments do not match approved action hash."
+            )
+        if not active_token.consume_for_process(ALLOWED_PARENT_TOOLS):
+            raise SecurityBoundaryViolation(
+                "Single-Use Authorization Violation: Process authorization grant was already consumed or invalidated."
+            )
+        if not active_token.mark_process_launched():
+            raise SecurityBoundaryViolation(
+                "Single-Use Authorization Violation: Process actuation has already occurred for this grant."
+            )
+    elif active_token.tool_name in ("execute_sandboxed_powershell", "execute_powershell"):
+        ps_cmd = command[-1] if command else ""
+        expected_hash = compute_action_hash(active_token.tool_name, {"command": ps_cmd})
+        if not hmac.compare_digest(active_token.action_hash, expected_hash):
+            raise SecurityBoundaryViolation(
+                "Action Hash Mismatch: PowerShell command does not match parent authorization grant."
+            )
+        if not active_token.is_consumed:
+            raise SecurityBoundaryViolation(
+                "Authorization Violation: Parent wrapper must consume authorization before process execution."
+            )
+        if not active_token.mark_process_launched():
+            raise SecurityBoundaryViolation(
+                "Single-Use Authorization Violation: Process actuation has already occurred for this grant."
+            )
 
     if cancel_token is None:
         try:
@@ -1219,6 +1316,18 @@ def run_job_sandboxed_process(
         else:
             status = "ok" if proc.returncode == 0 else "failed"
 
+        # CORE-SEC-03B: Establish untrusted subprocess output provenance before delivering result to caller/LLM
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        cmd_meta = " ".join(command[:3]) if isinstance(command, list) else str(command)[:64]
+        TurnTaintTracker.get_instance().mark_tainted(
+            source="subprocess_output:run_job_sandboxed_process",
+            metadata={
+                "command": cmd_meta,
+                "status": status,
+                "exit_code": proc.returncode,
+            }
+        )
+
         return {
             "status": status,
             "exit_code": proc.returncode,
@@ -1249,6 +1358,36 @@ def run_job_sandboxed_process(
                 proc.wait(timeout=0.5)
             except Exception:
                 pass
+
+
+@SkillRegistry.register(
+    name="run_process_in_job",
+    description="Executes a command inside a kernel-governed Windows Job Object.",
+    risk_level=1,
+)
+def run_process_in_job(
+    command: list[str],
+    cwd: str | None = None,
+    max_memory_mb: int = 1536,
+    max_processes: int = 16,
+    timeout_sec: float = 15.0,
+    requested_affinity: int = 0xFF00,
+    cancel_token: Any | None = None,
+    tail_chars: int = 2000,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Alias for run_job_sandboxed_process."""
+    return run_job_sandboxed_process(
+        command=command,
+        cwd=cwd,
+        max_memory_mb=max_memory_mb,
+        max_processes=max_processes,
+        timeout_sec=timeout_sec,
+        requested_affinity=requested_affinity,
+        cancel_token=cancel_token,
+        tail_chars=tail_chars,
+        env=env,
+    )
 
 
 class ContainedProcess:

@@ -448,7 +448,7 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
                     break
                 except ValueError:
                     pass
-            mem.add_calendar_event(title, start, end or None, loc or None)
+            mem.add_calendar_event(title, start, end or None, loc or None, source_provenance="staged_upload")
             scheduled_count += 1
 
     tasks_count = 0
@@ -456,7 +456,7 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
         desc = t.get("description", "").strip()
         due = t.get("due_date", "")
         if desc:
-            mem.add_task(desc, due or None)
+            mem.add_task(desc, due or None, source_provenance="staged_upload")
             tasks_count += 1
 
     facts_count = 0
@@ -465,7 +465,7 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
         v = str(fact.get("value", "")).strip()
         cat = str(fact.get("category", "document")).strip() or "document"
         if k and v:
-            mem.remember_fact(k, v, category=cat)
+            mem.remember_fact(k, v, category=cat, source_provenance="staged_upload")
             facts_count += 1
 
     doc_title = knowledge_doc.get("title", filename)

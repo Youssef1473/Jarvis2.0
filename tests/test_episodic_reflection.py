@@ -29,7 +29,7 @@ class TestEpisodicReflectionSuite(unittest.TestCase):
         self.config = {
             "_base_dir": self.temp_dir,
             "memory": {"db_path": "test_memory.db", "background_learning": False},
-            "llm": {"provider": "ollama", "temperature": 0.2},
+            "llm": {"provider": "ollama", "temperature": 0.2, "antigravity_resolver": lambda: None},
         }
         self.memory = MemoryManager(self.config)
         self.safety = SafetyGate(self.config)

@@ -1,0 +1,254 @@
+[
+  {
+    "scenario_id": "HOLDOUT-01",
+    "scenario_type": "PARAPHRASED_HOST_APPLICABILITY",
+    "description": "Paraphrased host execution: running directly on host machine",
+    "prompt": "Run pytest socket loopback integration test directly on the host machine",
+    "expected_categories": ["TESTING_VERIFICATION"],
+    "relevant_lessons": ["LES-012"],
+    "rationale": "Directly specifies host execution on host machine; matches host lesson LES-012 and strictly excludes sandbox lesson LES-001."
+  },
+  {
+    "scenario_id": "HOLDOUT-02",
+    "scenario_type": "PARAPHRASED_HOST_APPLICABILITY",
+    "description": "Paraphrased host execution: outside managed environment with open network",
+    "prompt": "Execute socket test outside the managed environment where network is open",
+    "expected_categories": ["TESTING_VERIFICATION"],
+    "relevant_lessons": ["LES-012"],
+    "rationale": "Outside managed environment denotes host environment; matches LES-012 and excludes sandbox LES-001."
+  },
+  {
+    "scenario_id": "HOLDOUT-03",
+    "scenario_type": "PARAPHRASED_HOST_APPLICABILITY",
+    "description": "Paraphrased host execution: network restrictions are not applied",
+    "prompt": "Run loopback socket test where network restrictions are not applied on dedicated Windows host",
+    "expected_categories": ["TESTING_VERIFICATION"],
+    "relevant_lessons": ["LES-012"],
+    "rationale": "Explicitly declares unconstrained network on Windows host; matches LES-012 and excludes LES-001."
+  },
+  {
+    "scenario_id": "HOLDOUT-04",
+    "scenario_type": "PARAPHRASED_SANDBOX_APPLICABILITY",
+    "description": "Paraphrased sandbox execution: inside restricted AppContainer sandbox",
+    "prompt": "Investigate loopback socket timeout when running unit test inside restricted AppContainer sandbox",
+    "expected_categories": ["TESTING_VERIFICATION", "WINDOWS_PROCESS_CONTAINMENT"],
+    "relevant_lessons": ["LES-001"],
+    "rationale": "Inside restricted sandbox matches LES-001 and excludes host lesson LES-012."
+  },
+  {
+    "scenario_id": "HOLDOUT-05",
+    "scenario_type": "PARAPHRASED_SANDBOX_APPLICABILITY",
+    "description": "Paraphrased sandbox execution: inside restricted sandbox environment",
+    "prompt": "Run pytest suite inside the restricted sandbox environment with dropped UDP datagrams",
+    "expected_categories": ["TESTING_VERIFICATION", "SECURITY_BOUNDARY"],
+    "relevant_lessons": ["LES-001"],
+    "rationale": "Inside restricted sandbox environment matches LES-001."
+  },
+  {
+    "scenario_id": "HOLDOUT-06",
+    "scenario_type": "TECHNICAL_KEYWORD_COLLISION",
+    "description": "Technical keyword collision: WASAPI audio loopback capture",
+    "prompt": "Configure WASAPI audio loopback endpoint capture to record system sounds",
+    "expected_categories": ["AUDIO_THREADING"],
+    "relevant_lessons": [],
+    "rationale": "WASAPI loopback refers to speaker audio loopback capture, not network socket IPC; network socket lessons must not be retrieved."
+  },
+  {
+    "scenario_id": "HOLDOUT-07",
+    "scenario_type": "TECHNICAL_KEYWORD_COLLISION",
+    "description": "Technical keyword collision: physical CPU socket topography",
+    "prompt": "Inspect physical CPU socket core topography and thread allocation for Alder Lake hybrid processor",
+    "expected_categories": ["AUDIO_THREADING", "ARCHITECTURE"],
+    "relevant_lessons": [],
+    "rationale": "CPU socket refers to hardware CPU topography; network socket lessons must not be retrieved."
+  },
+  {
+    "scenario_id": "HOLDOUT-08",
+    "scenario_type": "TECHNICAL_KEYWORD_COLLISION",
+    "description": "Technical keyword collision: Win32 Job Object sandbox",
+    "prompt": "Spawn child process with CREATE_SUSPENDED and assign to Win32 Job Object sandbox with kill-on-close",
+    "expected_categories": ["WINDOWS_PROCESS_CONTAINMENT"],
+    "relevant_lessons": ["LES-006"],
+    "rationale": "Job Object sandbox matches LES-006; network socket lesson LES-001 must not be retrieved."
+  },
+  {
+    "scenario_id": "HOLDOUT-09",
+    "scenario_type": "TECHNICAL_KEYWORD_COLLISION",
+    "description": "Technical keyword collision: audio frame packet buffer",
+    "prompt": "Investigate audio frame packet buffer underrun in Kokoro neural TTS synthesis worker",
+    "expected_categories": ["AUDIO_THREADING"],
+    "relevant_lessons": [],
+    "rationale": "Audio packet buffer relates to real-time audio frame queues, not network IPC; socket lessons must not be retrieved."
+  },
+  {
+    "scenario_id": "HOLDOUT-10",
+    "scenario_type": "MULTIPLE_APPLICABLE_LESSONS",
+    "description": "Multiple applicable lessons: SQLite deadlock and sqlite-vec KNN search",
+    "prompt": "Fix SQLite SingleWriterActor deadlock in write transaction and tune sqlite-vec KNN search query batch size",
+    "expected_categories": ["SQLITE_PERSISTENCE"],
+    "relevant_lessons": ["LES-002", "LES-003"],
+    "rationale": "Explicitly addresses both SingleWriterActor transaction deadlock (LES-002) and sqlite-vec batch search memory (LES-003)."
+  },
+  {
+    "scenario_id": "HOLDOUT-11",
+    "scenario_type": "MULTIPLE_APPLICABLE_LESSONS",
+    "description": "Multiple applicable lessons: SQLite read pool and FTS5 BM25 index",
+    "prompt": "Diagnose SQLite read pool connection starvation and rebuild corrupted FTS5 BM25 search index",
+    "expected_categories": ["SQLITE_PERSISTENCE"],
+    "relevant_lessons": ["LES-004", "LES-005"],
+    "rationale": "Explicitly addresses read-only connection starvation (LES-004) and FTS5 BM25 index corruption (LES-005)."
+  },
+  {
+    "scenario_id": "HOLDOUT-12",
+    "scenario_type": "DEPRECATED_LESSON_FILTERING",
+    "description": "Deprecated lesson query: legacy WASAPI buffer size 512",
+    "prompt": "Configure legacy WASAPI playback buffer size 512 samples for low latency",
+    "expected_categories": ["AUDIO_THREADING"],
+    "relevant_lessons": [],
+    "rationale": "LES-007 is marked DEPRECATED; deprecated lessons must be strictly suppressed from context injection."
+  },
+  {
+    "scenario_id": "HOLDOUT-13",
+    "scenario_type": "SUPERSEDED_LESSON_FILTERING",
+    "description": "Superseded lesson query: SQLite synchronous OFF pragma",
+    "prompt": "Tune SQLite performance by setting PRAGMA synchronous = OFF",
+    "expected_categories": ["SQLITE_PERSISTENCE"],
+    "relevant_lessons": [],
+    "rationale": "LES-008 is marked SUPERSEDED by ADR-001; superseded lessons must be strictly suppressed from context injection."
+  },
+  {
+    "scenario_id": "HOLDOUT-14",
+    "scenario_type": "DOMAIN_SPECIFIC_MATCHING",
+    "description": "Audio threading: WASAPI ring buffer lock contention",
+    "prompt": "Eliminate blocking mutex locks in WASAPI audio frame capture loop and switch to lock-free ring buffer",
+    "expected_categories": ["AUDIO_THREADING"],
+    "relevant_lessons": ["LES-011"],
+    "rationale": "Directly matches LES-011 prevention rules regarding lock-free ring buffers in real-time audio threads."
+  },
+  {
+    "scenario_id": "HOLDOUT-15",
+    "scenario_type": "DOMAIN_SPECIFIC_MATCHING",
+    "description": "Security boundary: webhook taint tracking and DualKey approval",
+    "prompt": "Sanitize inbound webhook telemetry and track untrusted input via TurnTaintTracker before DualKeyApprovalManager dispatch",
+    "expected_categories": ["SECURITY_BOUNDARY"],
+    "relevant_lessons": ["LES-009"],
+    "rationale": "Matches LES-009 governing external webhook taint tracking and DualKeyApprovalManager enforcement."
+  },
+  {
+    "scenario_id": "HOLDOUT-16",
+    "scenario_type": "DOMAIN_SPECIFIC_MATCHING",
+    "description": "API compatibility: SkillRegistry tool registration decorator signature",
+    "prompt": "Ensure SkillRegistry tool registration decorator preserves backward compatibility for public API caller shims",
+    "expected_categories": ["API_COMPATIBILITY"],
+    "relevant_lessons": ["LES-010"],
+    "rationale": "Matches LES-010 governing SkillRegistry public method signature preservation and deprecation shims."
+  },
+  {
+    "scenario_id": "HOLDOUT-17",
+    "scenario_type": "CROSS_DOMAIN_DISAMBIGUATION",
+    "description": "Cross-domain disambiguation: WASAPI audio buffer vs SQLite pool buffer",
+    "prompt": "Tune WASAPI ring buffer allocation in audio playback worker",
+    "expected_categories": ["AUDIO_THREADING"],
+    "relevant_lessons": ["LES-011"],
+    "rationale": "Contains 'buffer' in audio context; must retrieve audio LES-011 and never SQLite read pool LES-004."
+  },
+  {
+    "scenario_id": "HOLDOUT-18",
+    "scenario_type": "UNRELATED_DOMAIN_NO_LESSON",
+    "description": "General engineering topic: aerodynamic properties of supercritical airfoils",
+    "prompt": "Explain the aerodynamic properties of supercritical airfoils in commercial transport aircraft",
+    "expected_categories": ["UNKNOWN"],
+    "relevant_lessons": [],
+    "rationale": "General external query completely orthogonal to Jarvis 2.0; no lesson must be injected."
+  },
+  {
+    "scenario_id": "HOLDOUT-19",
+    "scenario_type": "UNRELATED_DOMAIN_NO_LESSON",
+    "description": "Documentation maintenance: developer session log update",
+    "prompt": "Update chronological developer session log in docs/agent/SESSION_LOG.md",
+    "expected_categories": ["DOCUMENTATION"],
+    "relevant_lessons": [],
+    "rationale": "Routine session logging does not trigger post-mortem engineering lessons."
+  },
+  {
+    "scenario_id": "HOLDOUT-20",
+    "scenario_type": "UNRELATED_DOMAIN_NO_LESSON",
+    "description": "Architecture orientation: epistemic hierarchy inspection",
+    "prompt": "Review epistemic authority hierarchy and master architectural blueprint in docs/architecture/INDEX.md",
+    "expected_categories": ["ARCHITECTURE"],
+    "relevant_lessons": [],
+    "rationale": "Architectural documentation review does not involve active bug post-mortems."
+  },
+  {
+    "scenario_id": "HOLDOUT-21",
+    "scenario_type": "AMBIGUOUS_QUERY_NO_LESSON",
+    "description": "Ambiguous query without domain keywords",
+    "prompt": "Check the status of system components and verify recent updates",
+    "expected_categories": ["UNKNOWN"],
+    "relevant_lessons": [],
+    "rationale": "Lacks specific domain keywords; must abstain from injecting engineering lessons."
+  },
+  {
+    "scenario_id": "HOLDOUT-22",
+    "scenario_type": "CONFLICTING_APPLICABILITY_BOUNDARIES",
+    "description": "Conflicting applicability: host vs sandbox socket execution",
+    "prompt": "Run standalone Windows integration tests on host machine outside sandbox where network loopback is permitted",
+    "expected_categories": ["TESTING_VERIFICATION"],
+    "relevant_lessons": ["LES-012"],
+    "rationale": "Explicitly designates host machine outside sandbox; matches host lesson LES-012 and rejects sandbox lesson LES-001."
+  },
+  {
+    "scenario_id": "HOLDOUT-23",
+    "scenario_type": "CAPACITY_BOUND_CAPPING",
+    "description": "Capacity bounding: query with four candidate SQLite lessons (retrieval capacity capped at 3 with max recall 75%)",
+    "prompt": "Optimize SQLite database transactions: fix SingleWriterActor deadlock, batch sqlite-vec KNN search, expand read pool connections, and check FTS5 index",
+    "expected_categories": ["SQLITE_PERSISTENCE"],
+    "relevant_lessons": ["LES-002", "LES-003", "LES-004", "LES-005"],
+    "rationale": "Matches 4 active SQLite lessons (LES-002, LES-003, LES-004, LES-005); retrieval engine must cap output to top 3 lessons, yielding capacity-bounded recall of 3/4 = 75%."
+  },
+  {
+    "scenario_id": "HOLDOUT-24",
+    "scenario_type": "SIMILAR_INCORRECT_LESSON_REJECTION",
+    "description": "Similar incorrect lesson rejection: generic SQLite cache query",
+    "prompt": "Tune SQLite database in-memory cache size for transient queries",
+    "expected_categories": ["SQLITE_PERSISTENCE"],
+    "relevant_lessons": [],
+    "rationale": "Matches SQLite category but does not match any specific post-mortem problem pattern (deadlock, vec memory, read pool starvation, FTS5 corruption)."
+  },
+  {
+    "scenario_id": "HOLDOUT-25",
+    "scenario_type": "LEGACY_LESSON_RETRIEVAL",
+    "description": "Legacy lesson retrieval: sandbox socket drop in pytest",
+    "prompt": "Investigate dropped UDP loopback packets in pytest unit tests under standard sandbox",
+    "expected_categories": ["TESTING_VERIFICATION", "SECURITY_BOUNDARY"],
+    "relevant_lessons": ["LES-001"],
+    "rationale": "Legacy lesson LES-001 with status ACTIVE_LEGACY must be retrieved when sandbox test execution conditions are satisfied."
+  },
+  {
+    "scenario_id": "HOLDOUT-26",
+    "scenario_type": "SCOPE_EXCLUSION_FILTERING",
+    "description": "Scope exclusion: production audio worker telemetry vs test socket",
+    "prompt": "Evaluate sending telemetry packet over loopback socket from live production audio worker thread",
+    "expected_categories": ["AUDIO_THREADING"],
+    "relevant_lessons": [],
+    "rationale": "Task specifies live production audio worker thread; LES-001 requires test scope (tests/) and is excluded from production worker scope."
+  },
+  {
+    "scenario_id": "HOLDOUT-27",
+    "scenario_type": "PARAPHRASED_HOST_APPLICABILITY",
+    "description": "Paraphrased host execution: standalone local Windows execution",
+    "prompt": "Run local standalone Windows execution of network tests without sandbox restrictions",
+    "expected_categories": ["TESTING_VERIFICATION"],
+    "relevant_lessons": ["LES-012"],
+    "rationale": "Local standalone Windows execution without sandbox matches host lesson LES-012."
+  },
+  {
+    "scenario_id": "HOLDOUT-28",
+    "scenario_type": "UNSPECIFIED_ENVIRONMENT_TEST",
+    "description": "Unspecified environment test execution with socket failure",
+    "prompt": "Fix loopback socket timeout during pytest test execution",
+    "expected_categories": ["TESTING_VERIFICATION"],
+    "relevant_lessons": ["LES-001"],
+    "rationale": "Unit test execution with loopback socket problem defaults to sandbox lesson LES-001 in repository context where host is not declared."
+  }
+]

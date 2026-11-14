@@ -8,6 +8,8 @@ import re
 import time
 from typing import Any
 
+from jarvis.core.antigravity_bridge import AntigravityBridge
+from jarvis.core.cognition.cognitive_router import OPENROUTER_FREE_MODELS
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Brain.Antigravity")
@@ -16,10 +18,26 @@ logger = logging.getLogger("Jarvis.Brain.Antigravity")
 class AntigravityProviderMixin:
     """Provides local Antigravity CLI pipe streaming, GitHub Copilot CLI, and OpenRouter fleet reasoning."""
 
+    @staticmethod
+    def _format_action_result(last_tool_result: str, is_success: bool = True) -> str:
+        """Formats an honest verbal status for Sir reflecting actual tool execution outcome."""
+        res_lower = (last_tool_result or "").lower()
+        if any(k in res_lower for k in ("authorization gate", "blocked", "permission denied", "rejected", "unauthorized")):
+            return f"Action authorization required, Sir: {last_tool_result}"
+        if not is_success or any(k in res_lower for k in ("action halted", "failed to", "error:", "exception:")) or "fail" in res_lower:
+            return f"Action halted or failed, Sir: {last_tool_result}"
+        return f"Action completed, Sir: {last_tool_result}"
+
     def _init_antigravity(self) -> bool:
         """Initializes the local Antigravity CLI bridge using the user's Google AI Pro subscription."""
         if not self.antigravity_bridge.is_available():
-            logger.error("Antigravity CLI ('agy') is not available on this machine.")
+            status = getattr(self.antigravity_bridge, "availability_status", "UNAVAILABLE")
+            diag = getattr(self.antigravity_bridge, "availability_diagnostic", "Antigravity CLI ('agy') is not available on this machine.")
+            logger.warning(
+                "Antigravity CLI ('agy') is unavailable (%s: %s).",
+                status,
+                diag,
+            )
             return False
         logger.info(f"Jarvis Antigravity Core initialized with model: {self.antigravity_model}")
         return True
@@ -44,14 +62,15 @@ class AntigravityProviderMixin:
             return False
 
         llm_cfg = self.config.get("llm", {})
-        primary_model = llm_cfg.get("openrouter_model", self.OPENROUTER_FREE_MODELS[0])
+        free_models = getattr(self, "OPENROUTER_FREE_MODELS", OPENROUTER_FREE_MODELS)
+        primary_model = llm_cfg.get("openrouter_model", free_models[0])
         max_tokens = int(llm_cfg.get("max_output_tokens", 512))
 
         self.openrouter_provider = OpenRouterProvider(
             model=primary_model,
             api_key=or_key,
             temperature=self.temperature,
-            candidate_models=list(self.OPENROUTER_FREE_MODELS),
+            candidate_models=list(free_models),
             config={"max_output_tokens": max_tokens},
         )
         self.openai_messages = [
@@ -70,7 +89,7 @@ class AntigravityProviderMixin:
 
         logger.info(
             "Jarvis OpenRouter fleet initialized — primary: '%s' | %d free candidates ready | %d prior turns restored.",
-            primary_model, len(self.OPENROUTER_FREE_MODELS), len(recent_turns),
+            primary_model, len(free_models), len(recent_turns),
         )
         return True
 
@@ -192,6 +211,17 @@ class AntigravityProviderMixin:
 
     def _process_antigravity_query(self, user_text: str, sentence_callback: Any = None) -> str:
         """Processes queries using the local Antigravity CLI (Gemini 3.8 Flash High/Low, Claude Sonnet, Claude Opus)."""
+        if not self.antigravity_bridge.is_available():
+            status = getattr(self.antigravity_bridge, "availability_status", "UNAVAILABLE")
+            diag = getattr(self.antigravity_bridge, "availability_diagnostic", "Antigravity CLI ('agy') executable is not installed or accessible in PATH.")
+            reply = (
+                f"My apologies, Sir. My primary reasoning provider ('antigravity') is unavailable ({status}). "
+                f"{diag}"
+            )
+            if sentence_callback:
+                sentence_callback(reply)
+            return reply
+
         t_start = time.perf_counter()
         tools = SkillRegistry.get_openai_tools(self.active_tool_names)
         system_instruction = self._get_system_instruction(user_text)
@@ -255,6 +285,7 @@ class AntigravityProviderMixin:
         iterations = 0
         current_prompt = prompt
         last_tool_result = ""
+        last_tool_ok = True
         had_tool_call = False
         reply = ""
         final_reply_streamed = False
@@ -312,45 +343,107 @@ class AntigravityProviderMixin:
             error_text = " ".join(
                 str(res.get(field) or "") for field in ("response", "error")
             )
-            if (
-                res.get("status") != "SUCCESS"
-                and self.antigravity_bridge._is_token_exhaustion_error(error_text)
-                and self.github_bridge.is_available()
-            ):
-                logger.warning("Antigravity quota exhausted; handing this turn to GitHub Copilot CLI.")
-                copilot_result = self.github_bridge.generate_response(
-                    prompt=current_prompt,
-                    system_instruction=system_instruction,
-                    timeout=90.0,
-                )
-                copilot_text = (copilot_result.get("response") or "").strip()
-                self.last_latencies["github"] = float(
-                    copilot_result.get("duration_seconds", 0.0)
-                ) * 1000.0
-                if copilot_result.get("status") == "SUCCESS" and copilot_text:
-                    response_provider = "github"
-                    reply = copilot_text
-                    if sentence_callback:
-                        speech_buffer = reply
-                        while speech_buffer:
-                            speech_chunk, speech_buffer = self._extract_next_speech_chunk(speech_buffer)
-                            if speech_chunk is None:
-                                speech_chunk, speech_buffer = speech_buffer, ""
-                            spoken = self._clean_speech_clause(speech_chunk)
-                            if spoken:
-                                sentence_callback(spoken)
-                else:
-                    copilot_error = (
-                        copilot_text or "GitHub Copilot CLI returned no usable response."
-                    )
-                    logger.error("GitHub Copilot CLI quota fallback failed: %s", copilot_error[:300])
-                    reply = (
-                        "Antigravity has reached its quota, and the GitHub Copilot CLI "
-                        f"fallback failed: {copilot_error}"
-                    )
+            if res.get("status") != "SUCCESS":
+                error_msg = res.get("error") or "Antigravity process exited abnormally."
+
+                is_auth_failure = AntigravityBridge._is_auth_error(error_text)
+                if is_auth_failure:
+                    logger.error("Antigravity authentication failure: %s", error_text)
+                    reply = f"My apologies, Sir. Antigravity authentication failed ({res.get('response') or error_msg}). Please verify your credentials."
                     if sentence_callback:
                         sentence_callback(reply)
-                break
+                    return reply
+
+                if had_tool_call:
+                    logger.warning(
+                        "Antigravity subsequent turn failed (%s) after tool execution; "
+                        "returning action result without provider switching.",
+                        error_msg,
+                    )
+                    reply = self._format_action_result(last_tool_result, is_success=last_tool_ok)
+                    if sentence_callback:
+                        sentence_callback(reply)
+                        final_reply_streamed = True
+                    break
+
+                if getattr(self, "_is_gemini_configured", lambda: False)():
+                    logger.warning(
+                        "Antigravity generation failed (%s). Seamlessly failing over to secondary Gemini API...",
+                        error_msg,
+                    )
+                    gemini_reply = self._process_gemini_query(user_text, sentence_callback)
+                    is_gemini_quota = any(k in (gemini_reply or "").lower() for k in ("congestion", "congested", "429", "resource_exhausted"))
+                    if is_gemini_quota and getattr(self, "github_bridge", None) and self.github_bridge.is_available():
+                        logger.warning("Secondary Gemini API quota exhausted; cascading to tertiary GitHub Copilot CLI.")
+                        copilot_result = self.github_bridge.generate_response(
+                            prompt=current_prompt,
+                            system_instruction=system_instruction,
+                            timeout=90.0,
+                        )
+                        copilot_text = (copilot_result.get("response") or "").strip()
+                        self.last_latencies["github"] = float(
+                            copilot_result.get("duration_seconds", 0.0)
+                        ) * 1000.0
+                        if copilot_result.get("status") == "SUCCESS" and copilot_text:
+                            reply = copilot_text
+                            if sentence_callback:
+                                speech_buffer = reply
+                                while speech_buffer:
+                                    speech_chunk, speech_buffer = self._extract_next_speech_chunk(speech_buffer)
+                                    if speech_chunk is None:
+                                        speech_chunk, speech_buffer = speech_buffer, ""
+                                    spoken = self._clean_speech_clause(speech_chunk)
+                                    if spoken:
+                                        sentence_callback(spoken)
+                            return reply
+                    return gemini_reply
+
+                if (
+                    not had_tool_call
+                    and self.antigravity_bridge._is_token_exhaustion_error(error_text)
+                    and getattr(self, "github_bridge", None)
+                    and self.github_bridge.is_available()
+                ):
+                    logger.warning("Antigravity quota exhausted; handing this turn to GitHub Copilot CLI.")
+                    copilot_result = self.github_bridge.generate_response(
+                        prompt=current_prompt,
+                        system_instruction=system_instruction,
+                        timeout=90.0,
+                    )
+                    copilot_text = (copilot_result.get("response") or "").strip()
+                    self.last_latencies["github"] = float(
+                        copilot_result.get("duration_seconds", 0.0)
+                    ) * 1000.0
+                    if copilot_result.get("status") == "SUCCESS" and copilot_text:
+                        response_provider = "github"
+                        reply = copilot_text
+                        if sentence_callback:
+                            speech_buffer = reply
+                            while speech_buffer:
+                                speech_chunk, speech_buffer = self._extract_next_speech_chunk(speech_buffer)
+                                if speech_chunk is None:
+                                    speech_chunk, speech_buffer = speech_buffer, ""
+                                spoken = self._clean_speech_clause(speech_chunk)
+                                if spoken:
+                                    sentence_callback(spoken)
+                    else:
+                        copilot_error = (
+                            copilot_text or "GitHub Copilot CLI returned no usable response."
+                        )
+                        logger.error("GitHub Copilot CLI quota fallback failed: %s", copilot_error[:300])
+                        reply = (
+                            "Antigravity has reached its quota, and the GitHub Copilot CLI "
+                            f"fallback failed: {copilot_error}"
+                        )
+                        if sentence_callback:
+                            sentence_callback(reply)
+                    break
+                else:
+                    reply = reply_text or f"Antigravity generation failed: {error_msg}"
+                    if sentence_callback:
+                        sentence_callback(reply)
+                        final_reply_streamed = True
+                    break
 
             if self._active_cancel_token and getattr(self._active_cancel_token, "is_cancelled", False):
                 logger.info("Antigravity turn cancelled by user interrupt after generation.")
@@ -368,7 +461,7 @@ class AntigravityProviderMixin:
 
             logger.info("ANTIGRAVITY Tool call [%d/%d]: %s(%s)", iterations, max_tool_iterations, fn_name, fn_args)
             try:
-                tool_result, _ = self._dispatch_tool_pipeline(
+                tool_result, tool_ok = self._dispatch_tool_pipeline(
                     fn_name, fn_args, step_index=iterations, sentence_callback=sentence_callback
                 )
             except RuntimeError as err:
@@ -377,6 +470,7 @@ class AntigravityProviderMixin:
                     return "Command cancelled, Sir."
                 raise
             last_tool_result = str(tool_result)
+            last_tool_ok = bool(tool_ok)
             logger.info("ANTIGRAVITY Tool result: %s", last_tool_result[:250])
 
             if fn_name == "create_or_update_custom_skill":
@@ -400,7 +494,7 @@ class AntigravityProviderMixin:
             )
 
         if not reply:
-            reply = reply_text or (f"Action completed, Sir: {last_tool_result}" if had_tool_call else "At your service, Sir.")
+            reply = self._format_action_result(last_tool_result, is_success=last_tool_ok) if had_tool_call else (reply_text or "At your service, Sir.")
 
         if sentence_callback and not final_reply_streamed and reply:
             sentences = [s.strip() for s in re.split(r"(?<!\d)(?<=[.!?])(?!\d)\s+", reply) if s.strip()]

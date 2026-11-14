@@ -24,12 +24,21 @@ class GeminiProvider(BaseProvider):
         api_key: str | None = None,
         use_antigravity: bool = True,
         config: dict[str, Any] | None = None,
+        *,
+        antigravity_bridge: AntigravityBridge | None = None,
+        antigravity_resolver: Callable[[], str | None] | None = None,
     ):
         super().__init__(name="gemini", model=model, config=config)
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", "").strip()
         self.use_antigravity = use_antigravity
-        bridge_config = config or {"llm": {"antigravity_model": model}}
-        self.antigravity_bridge = AntigravityBridge(config=bridge_config)
+        if antigravity_bridge is not None:
+            self.antigravity_bridge = antigravity_bridge
+        else:
+            bridge_config = config or {"llm": {"antigravity_model": model}}
+            resolver = antigravity_resolver
+            if resolver is None and isinstance(config, dict) and "llm" in config and isinstance(config["llm"], dict):
+                resolver = config["llm"].get("antigravity_resolver")
+            self.antigravity_bridge = AntigravityBridge(config=bridge_config, executable_resolver=resolver)
         self.client = None
 
         if self.api_key:

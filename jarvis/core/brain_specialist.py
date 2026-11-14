@@ -9,6 +9,8 @@ from urllib.request import Request, urlopen
 from google import genai
 from google.genai import types
 
+from jarvis.core.cognition.cognitive_router import OPENROUTER_FREE_MODELS
+
 logger = logging.getLogger("Jarvis.Brain.Specialist")
 
 
@@ -60,7 +62,7 @@ class SpecialistConsultationMixin:
                     return "OpenRouter is not connected. Add OPENROUTER_API_KEY to .env to use the free fleet, Sir."
                 or_provider = OpenRouterProvider(
                     api_key=or_key,
-                    candidate_models=list(self.OPENROUTER_FREE_MODELS),
+                    candidate_models=list(getattr(self, "OPENROUTER_FREE_MODELS", OPENROUTER_FREE_MODELS)),
                     config={"max_output_tokens": int(llm_cfg.get("max_output_tokens", 512))},
                 )
             from jarvis.core.providers.base import UnifiedRunner
@@ -150,7 +152,7 @@ class SpecialistConsultationMixin:
                     max_tokens=int(llm_cfg.get("max_output_tokens", 1024)),
                 )
                 return (response.choices[0].message.content or "Groq returned no text, Sir.").strip()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("Explicit Groq consultation failed: %s", exc)
                 return "Groq could not complete that consultation. Your local Ollama conversation is still available, Sir."
 
@@ -173,7 +175,7 @@ class SpecialistConsultationMixin:
                     ),
                 )
                 return (response.text or "Gemini returned no text, Sir.").strip()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("Explicit Gemini consultation failed: %s", exc)
                 return "Gemini could not complete that consultation. Your local Ollama conversation is still available, Sir."
 
@@ -194,7 +196,7 @@ class SpecialistConsultationMixin:
                     max_tokens=int(llm_cfg.get("max_output_tokens", 1024)),
                 )
                 return (response.choices[0].message.content or "Grok returned no text, Sir.").strip()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("Explicit Grok consultation failed: %s", exc)
                 return "Grok could not complete that consultation. Your local Ollama conversation is still available, Sir."
 
@@ -222,7 +224,7 @@ class SpecialistConsultationMixin:
                 body = json.loads(response.read().decode("utf-8"))
             answer = "".join(block.get("text", "") for block in body.get("content", []) if block.get("type") == "text")
             return answer.strip() or "Claude returned no text, Sir."
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             err_msg = str(exc)
             logger.warning("Explicit Claude consultation failed: %s", exc)
             if hasattr(self, "antigravity_bridge") and self.antigravity_bridge.is_available() and self.antigravity_bridge._is_token_exhaustion_error(err_msg):

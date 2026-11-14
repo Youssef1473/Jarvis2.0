@@ -18,9 +18,10 @@ class TestPCControlAndPerformance(unittest.TestCase):
         self.config["llm"]["provider"] = "antigravity"
         self.config["llm"]["antigravity_model"] = "gemini-3.8-flash-high"
         self.config["llm"]["antigravity_auto_tiering"] = False
+        self.config["llm"]["antigravity_resolver"] = lambda: None
         self.memory = MemoryManager(self.config)
         self.safety = SafetyGate(self.config)
-        self.brain = JarvisBrain(self.config, self.memory, self.safety)
+        self.brain = JarvisBrain(self.config, self.memory, self.safety, antigravity_resolver=lambda: None)
 
     def test_os_control_skills_registered(self):
         """Ensures all PC control skills are registered in the SkillRegistry."""
