@@ -3950,3 +3950,30 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - Test manifest accounting invariant: `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed 100% (2,472 collected nodes accounted for, 0 drift).
 4. **Git Hygiene & Commit Execution:**
    - Staged strictly the 4 refactored files and committed `7b09bd2fe0ed61e029935a702896d4832ddb50e7`.
+
+
+---
+
+## Session Log: 2026-11-14 — Main Merge & Untangle-Codebase Skill Installation Closure
+
+- **Session Timestamp:** 2026-11-14T10:05:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `main`
+- **Starting Git HEAD SHA:** `c6cce7fc340476ebd2261f74662556acb839d04f` (prior `main` HEAD)
+- **Merged Branch HEAD SHA:** `669d8c22bbfa45564c74a0019fa71597fca40ca1`
+- **Main Merge Commit SHA:** `674d54d0fb55d759f3d74dda34fd5ec386549e97` (`674d54d`)
+- **Merge Subject:** `Merge branch 'feat/reliability-engineering-governance': Phase 3/4 security, workspace isolation, and core triad decomposition`
+- **Active Milestone:** `Production Baseline Verified on main`
+
+### Summary of Actions & Deliverables
+1. **Installed Jarvis-Guarded Untangle-Codebase Skill:**
+   - Authored `.agents/skills/untangle-codebase/SKILL.md` (156 lines) with frontmatter (`disable-model-invocation: true`, `argument-hint: "[target subsystem or module path]"`).
+   - Encoded 5-step Parnas/Ousterhout refactoring protocol, 2-pass execution discipline (Pass 1 read-only Decision Log gate), 64-bit Win32 ctypes ABI handle rules, defensive partial-mock introspection, and test manifest accounting invariants (`2,472` nodes).
+   - Committed under SHA `999ecc692f8fa42095818967b57fc6a5390e1fc8`.
+2. **Executed Non-Fast-Forward Merge to `main`:**
+   - Switched to `main` and merged `feat/reliability-engineering-governance` preserving the full history of Phase 3, Phase 4, Governance & Skills, and Core Triad decomposition under merge commit `674d54d0fb55d759f3d74dda34fd5ec386549e97`.
+3. **Post-Merge Empirical Verification on `main`:**
+   - Test Manifest Accounting Invariant: `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed 100% (2,472 collected nodes accounted for, 0 drift).
+   - Core Suites: `tests/test_phase4_workspace_isolation.py`, `tests/test_provider_routing_audit.py`, `tests/test_appcontainer_sandbox.py` passed with 56 passed, 31 skipped, 0 failed in 11.47s (exit code 0).
+   - Production Database Contracts: `data/jarvis_memory.db` verified in read-only mode (`PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = `0` violations, 234 quarantined `'unscoped'` rows + 2 `'ws_default'` rows preserved intact).

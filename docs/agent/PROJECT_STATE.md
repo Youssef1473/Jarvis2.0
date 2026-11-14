@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-14T09:58:00+01:00 (CET)
-- **Active Git Branch:** `feat/reliability-engineering-governance`
-- **Recorded HEAD Commit SHA:** `999ecc692f8fa42095818967b57fc6a5390e1fc8`
-- **HEAD Commit Subject:** `docs(skills): add Jarvis-guarded untangle-codebase skill`
-- **Milestone State:** **Reliability, Governance & Untangle-Codebase: COMPLETED & SEALED**
-- **Active Milestone:** **Reliability & Engineering Governance (Merging to main)**
+- **Validation Timestamp:** 2026-11-14T10:05:00+01:00 (CET)
+- **Active Git Branch:** `main`
+- **Recorded HEAD Commit SHA:** `6ab99f3c5f49e1e27a76c8c4342fc2b3f15c1e54`
+- **HEAD Commit Subject:** `docs(governance): reconcile baseline and record main merge closure`
+- **Milestone State:** **Production Baseline: Phase 3, Phase 4, Reliability Governance & Core Triad Untangling Landed on main**
+- **Active Milestone:** **Production Operations & Verification**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
