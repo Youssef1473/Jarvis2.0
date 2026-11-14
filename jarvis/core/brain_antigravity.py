@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from jarvis.core.antigravity_bridge import AntigravityBridge
+from jarvis.core.cognition.cognitive_router import OPENROUTER_FREE_MODELS
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Brain.Antigravity")
@@ -61,14 +62,15 @@ class AntigravityProviderMixin:
             return False
 
         llm_cfg = self.config.get("llm", {})
-        primary_model = llm_cfg.get("openrouter_model", self.OPENROUTER_FREE_MODELS[0])
+        free_models = getattr(self, "OPENROUTER_FREE_MODELS", OPENROUTER_FREE_MODELS)
+        primary_model = llm_cfg.get("openrouter_model", free_models[0])
         max_tokens = int(llm_cfg.get("max_output_tokens", 512))
 
         self.openrouter_provider = OpenRouterProvider(
             model=primary_model,
             api_key=or_key,
             temperature=self.temperature,
-            candidate_models=list(self.OPENROUTER_FREE_MODELS),
+            candidate_models=list(free_models),
             config={"max_output_tokens": max_tokens},
         )
         self.openai_messages = [
@@ -87,7 +89,7 @@ class AntigravityProviderMixin:
 
         logger.info(
             "Jarvis OpenRouter fleet initialized — primary: '%s' | %d free candidates ready | %d prior turns restored.",
-            primary_model, len(self.OPENROUTER_FREE_MODELS), len(recent_turns),
+            primary_model, len(free_models), len(recent_turns),
         )
         return True
 

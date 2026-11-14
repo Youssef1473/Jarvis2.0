@@ -319,6 +319,8 @@ class SkillRegistry:
     _metadata: ClassVar[dict[str, SkillMetadata]] = {}
     _openai_tools_cache: ClassVar[dict[tuple[str, ...], list[dict[str, Any]]]] = {}
     _test_certified_read_only_tools: ClassVar[set[str]] = set()
+    _skills_loaded: ClassVar[bool] = False
+    _skills_lock: ClassVar[threading.Lock] = threading.Lock()
     _aliases: ClassVar[dict[str, str]] = {
         "store_fact": "remember_fact",
         "save_fact": "remember_fact",
@@ -327,6 +329,63 @@ class SkillRegistry:
         "remember": "remember_fact",
         "recall": "recall_fact",
     }
+
+    @classmethod
+    def ensure_skills_loaded(cls) -> None:
+        """Idempotently discovers and loads all built-in skill modules."""
+        if cls._skills_loaded:
+            return
+        with cls._skills_lock:
+            if cls._skills_loaded:
+                return
+            import importlib
+            skill_modules = (
+                "ast_code_surgeon",
+                "briefing",
+                "browser_agent",
+                "browser_cdp",
+                "calendar_manager",
+                "chrome_devtools",
+                "deep_research",
+                "dev_shell",
+                "diagnostics",
+                "document_ingest",
+                "email_manager",
+                "everything_search",
+                "gemini_intelligence",
+                "hybrid_actuator",
+                "job_object_sandbox",
+                "mcp_manager",
+                "media_dj",
+                "modern_web",
+                "notes",
+                "nvml_dxgi_vram_arbiter",
+                "os_control",
+                "photo_manager",
+                "productivity",
+                "project_manager",
+                "protocols",
+                "reflex_macro_compiler",
+                "rstrtmgr_lock_surgeon",
+                "screen_vision",
+                "self_evolution",
+                "system_maintenance",
+                "system_watchdog",
+                "timers",
+                "usn_journal_delta_radar",
+                "voice_control",
+                "web_search",
+                "windows_uia",
+            )
+            for mod_name in skill_modules:
+                try:
+                    importlib.import_module(f"jarvis.skills.{mod_name}")
+                except Exception as err:  # noqa: BLE001
+                    import logging
+                    logging.getLogger("Jarvis.SkillRegistry").warning(
+                        "Failed to load skill module %s: %s", mod_name, err
+                    )
+            cls._skills_loaded = True
 
     @classmethod
     def resolve_canonical_name(cls, name: str) -> str:
