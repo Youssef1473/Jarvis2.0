@@ -30,6 +30,9 @@ from jarvis.ui.routes.command import CommandRoutesMixin
 from jarvis.ui.routes.media import MediaRoutesMixin, resolve_safe_photo_path
 from jarvis.ui.routes.memory import MemoryRoutesMixin
 from jarvis.ui.security import (
+    MAX_QUERY_STRING_BYTES,
+    OVERSIZED_QUERY_PLACEHOLDER_BYTES,
+    OVERSIZED_QUERY_PLACEHOLDER_TEXT,
     AccessLogRedactionMiddleware,
     SecurityHeadersMiddleware,
     SensitiveQueryRedactionFilter,
@@ -52,6 +55,9 @@ from jarvis.ui.telemetry import TelemetryConnectionManager
 
 # Backward-compatible module-level re-exports for external callers and tests
 __all__ = [
+    "MAX_QUERY_STRING_BYTES",
+    "OVERSIZED_QUERY_PLACEHOLDER_BYTES",
+    "OVERSIZED_QUERY_PLACEHOLDER_TEXT",
     "AccessLogRedactionMiddleware",
     "JarvisUIService",
     "SecurityHeadersMiddleware",
