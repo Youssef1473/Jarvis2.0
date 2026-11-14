@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-14T09:50:00+01:00 (CET)
+- **Validation Timestamp:** 2026-11-14T09:58:00+01:00 (CET)
 - **Active Git Branch:** `feat/reliability-engineering-governance`
-- **Recorded HEAD Commit SHA:** `7b09bd2fe0ed61e029935a702896d4832ddb50e7`
-- **HEAD Commit Subject:** `refactor(orchestrator): extract speech capture, lifecycle shutdown, and intent acknowledgments`
-- **Milestone State:** **Core Triad (brain.py, server.py, orchestrator.py) Untangle-Codebase: COMPLETED & SEALED**
-- **Active Milestone:** **Reliability & Engineering Governance (Branch Merge-Readiness Review)**
+- **Recorded HEAD Commit SHA:** `999ecc692f8fa42095818967b57fc6a5390e1fc8`
+- **HEAD Commit Subject:** `docs(skills): add Jarvis-guarded untangle-codebase skill`
+- **Milestone State:** **Reliability, Governance & Untangle-Codebase: COMPLETED & SEALED**
+- **Active Milestone:** **Reliability & Engineering Governance (Merging to main)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
