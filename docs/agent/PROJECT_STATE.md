@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-14T12:39:00+01:00 (CET)
-- **Active Git Branch:** `refactor/untangle-vision`
-- **Recorded HEAD Commit SHA:** `9efc7ded9c1217c8eaf7cd05fe460630a367c98d`
-- **HEAD Commit Subject:** `refactor(vision): centralize 64-bit Win32 ABI, RAII desktop handles, and vision module boundaries`
-- **Milestone State:** **Production Baseline Verified on main; dev_shell.py and jarvis/vision/ Modularized**
-- **Active Milestone:** **Production Operations & Subsystem Refactoring**
+- **Validation Timestamp:** 2026-11-14T14:05:00+01:00 (CET)
+- **Active Git Branch:** `main`
+- **Recorded HEAD Commit SHA:** `2d8662573afcb61a354e5dcbc424832db4c8b2a8`
+- **HEAD Commit Subject:** `Merge pull request #17 from Youssef1473/refactor/untangle-vision`
+- **Milestone State:** **Production Baseline Verified on main; PRs #15, #16, and #17 Merged & Closed**
+- **Active Milestone:** **Production Operations & Clean Baseline Alignment**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)

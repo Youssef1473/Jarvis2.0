@@ -4049,3 +4049,43 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - Test Manifest Accounting Invariant: `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed 100% (2,472 collected nodes accounted for, 0 drift).
 4. **Git Hygiene & Commit Execution:**
    - Staged strictly the 6 refactored vision files and committed `9efc7de`.
+
+---
+
+## Session Log: 2026-11-14 — Tri-Branch Merge, Cross-Platform CI Stabilization & Main Baseline Closure
+
+- **Session Timestamp:** 2026-11-14T14:05:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `main`
+- **Starting Git HEAD SHA:** `ce8bc09` (from merge `674d54d`)
+- **Ending Git HEAD SHA:** `2d8662573afcb61a354e5dcbc424832db4c8b2a8` (`2d86625`)
+- **Merged Pull Requests:**
+  - **PR #15:** `feat(core): Phase 3/4 security, workspace isolation, and core triad decomposition` (Merged)
+  - **PR #16:** `refactor(skills): decompose dev_shell.py into confinement, fs operations, code intelligence, and background tasks` (Merged)
+  - **PR #17:** `refactor(vision): centralize 64-bit Win32 ABI, RAII desktop handles, and vision module boundaries` (Merged)
+- **Active Milestone:** `Production Operations & Clean Baseline Alignment`
+
+### Summary of Actions & Deliverables
+1. **Cross-Platform & Concurrency CI Fixes:**
+   - **Dynamic `REPO_ROOT` Interpolation:** Replaced hardcoded `C:\Users\Youssef\Projects\Jarvis_2.0` in `_WORKER_18_CODE` and `_mp_worker_bootstrap_candidate` inside `tests/test_persistence_concurrency.py` with dynamic `REPO_ROOT` resolution via `sys.argv[3]` / `Path(__file__).resolve().parent.parent`. Fixed `ModuleNotFoundError` on GitHub Actions runner `D:` drives.
+   - **Concurrent Candidate Seed Safety:** Hardened `FailureCandidatePipeline._init_candidate_registry()` in `tools/continuity_manager.py` with `INSERT OR IGNORE INTO candidate_records` and explicit `sqlite3.IntegrityError` exception handling, eliminating candidate bootstrap race conditions across concurrent processes on multi-worker CI VMs.
+   - **In-Connection Rollback & Reread:** Refactored `FailureCandidatePipeline._safe_bootstrap_candidate()` to query existing `conn` following rollback instead of opening a conflicting nested connection.
+2. **Pull Request CI Verification & Sequential Landing:**
+   - Pushed fixes across all three topic branches (`32aa3f7`, `8847458`, `e6fe6b0`).
+   - GitHub Actions CI verified 100% green:
+     - PR #15: Fast Parallel Test Suite passed in 4m22s; Security Gate passed in 2m4s.
+     - PR #16: Fast Parallel Test Suite passed in 4m27s; Security Gate passed in 2m21s.
+     - PR #17: Fast Parallel Test Suite passed in 4m32s; Security Gate passed in 2m8s.
+   - Sequentially merged PR #15 $\to$ PR #16 $\to$ PR #17 via `gh pr merge --merge`.
+3. **Git Baseline Synchronization & Branch Pruning:**
+   - Fast-forwarded local `main` to `2d86625` (`git pull --ff-only origin main`).
+   - Verified 0 tree divergence between local `main` and `origin/main` (`git diff origin/main` is empty).
+   - Deleted merged local branches (`feat/reliability-engineering-governance`, `refactor/untangle-dev-shell`, `refactor/untangle-vision`).
+   - Deleted merged remote tracking branches on `origin` and pruned references.
+4. **Post-Merge Invariant Verification:**
+   - **Test Manifest Accounting:** `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed (2,472 collected nodes accounted for, 0 drift).
+   - **Targeted Security & Vision Verification:** 20/20 tests passed across `test_phase4_workspace_isolation.py`, `test_filesystem_toctou_security_audit.py`, and `test_privacy_guard_zorder.py` in 1.37s.
+   - **Persistence Concurrency:** 29/29 tests passed in `tests/test_persistence_concurrency.py`.
+   - **Static Diagnostics:** All newly refactored modules verified with 0 Ruff errors and 0 AST-Grep violations.
+   - **SQLite WAL Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` $\to$ `[('ok',)]`, `PRAGMA foreign_key_check` $\to$ `[]` (0 violations), and 234 quarantined unscoped rows + 2 `ws_default` rows intact.
