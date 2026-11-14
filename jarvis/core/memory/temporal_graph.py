@@ -5,6 +5,7 @@ import datetime
 import json
 import logging
 import math
+import sqlite3
 import time
 from typing import Any
 
@@ -37,7 +38,7 @@ class TemporalGraphMixin:
             embed_text = f"{clean_subj} {clean_pred} {clean_obj}"
             vec = self.vector_engine.dense_vectorize(embed_text)
             blob = sqlite_vec.serialize_float32(vec)
-        except Exception as e:
+        except (ImportError, RuntimeError, ValueError) as e:
             logger.warning("sqlite-vec knowledge edge vectorization failed (%s); continuing without vector index.", e)
 
         # Step 2: Route SQLite write strictly through SingleWriterActor
@@ -65,7 +66,7 @@ class TemporalGraphMixin:
                 try:
                     cursor.execute("DELETE FROM kg_edges_vec WHERE edge_id = ?", (edge_id,))
                     cursor.execute("INSERT INTO kg_edges_vec(edge_id, embedding) VALUES (?, ?)", (edge_id, blob))
-                except Exception as e:
+                except (sqlite3.Error, RuntimeError, ValueError) as e:
                     logger.warning("sqlite-vec knowledge edge indexing failed (%s); continuing without vector index.", e)
             return edge_id
 
@@ -116,7 +117,7 @@ class TemporalGraphMixin:
 
             try:
                 self.execute_write(_write_access)
-            except Exception as e:
+            except (sqlite3.Error, RuntimeError, OSError) as e:
                 logger.debug("knowledge_edges access tracking update notice: %s", e)
 
         return sorted(rows, key=lambda x: x.get("temporal_score", 0.0), reverse=True)
@@ -217,7 +218,7 @@ class TemporalGraphMixin:
         inv_skill = act_dict["inverse_skill"]
         try:
             inv_args = json.loads(act_dict["inverse_payload"])
-        except Exception:
+        except (json.JSONDecodeError, TypeError, ValueError):
             inv_args = {}
 
         from jarvis.skills.base import SkillRegistry
@@ -229,5 +230,5 @@ class TemporalGraphMixin:
 
             self.execute_write(_mark_reverted)
             return True, f"Successfully reverted action '{act_dict['skill_name']}': {res}"
-        except Exception as e:
+        except (sqlite3.Error, RuntimeError, OSError, ValueError) as e:
             return False, f"Failed to revert action '{act_dict['skill_name']}': {e}"
