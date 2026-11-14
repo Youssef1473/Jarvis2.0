@@ -69,7 +69,7 @@ def get_win32_idle_seconds() -> float:
                 tick = k32.GetTickCount()
             return ((tick - lii.dwTime) & 0xFFFFFFFF) / 1000.0
         return 0.0
-    except Exception:
+    except (OSError, AttributeError, TypeError):
         return 0.0
 
 
@@ -90,7 +90,7 @@ def check_power_gate(min_battery_pct: int = 60) -> tuple[bool, str]:
             if sps.BatteryLifePercent >= min_battery_pct:
                 return True, f"Battery adequate: {sps.BatteryLifePercent}% (threshold: {min_battery_pct}%)."
             return False, f"Battery level too low: {sps.BatteryLifePercent}% (threshold: {min_battery_pct}%)."
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("Power gate check notice: %s", e)
     return True, "Power check fallback passed."
 
@@ -106,7 +106,7 @@ def check_vram_gate(max_vram_ratio: float = 0.75) -> tuple[bool, str]:
             ratio = allocated / total
             if ratio > max_vram_ratio:
                 return False, f"VRAM budget pressured: {ratio:.1%} > {max_vram_ratio:.1%} threshold."
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("VRAM gate check notice: %s", e)
     return True, "VRAM budget adequate or unconstrained."
 
@@ -163,7 +163,7 @@ def pin_worker_to_ecores(mask: int = MASK_ECORE_BACKGROUND) -> bool:
         k32.SetThreadAffinityMask(h_thread, ctypes.c_size_t(target_mask))
         k32.SetThreadPriority(h_thread, 0)
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("E-core thread pinning notice: %s", e)
         return False
 
@@ -176,10 +176,39 @@ class SleepPhaseConsolidator:
     guaranteed to yield instantly when the user wakes the system.
     """
 
-    def __init__(self, db_path: str, vector_engine: Any, idle_threshold_sec: float = 300.0):
+    def __init__(
+        self,
+        db_path: str,
+        vector_engine: Any,
+        idle_threshold_sec: float = 300.0,
+        writer_actor: Any = None,
+    ):
         self.db_path = str(db_path)
         self.vector_engine = vector_engine
         self.idle_threshold_sec = idle_threshold_sec
+        self._writer_actor = writer_actor
+
+    @property
+    def writer_actor(self) -> Any:
+        """Retrieves or re-creates the active SingleWriterActor singleton for this database."""
+        if self._writer_actor is not None:
+            try:
+                from .sqlite_base import SingleWriterActor
+                if hasattr(self._writer_actor, "state") and self._writer_actor.state != SingleWriterActor.STATE_RUNNING:
+                    self._writer_actor = SingleWriterActor.get_or_create(self.db_path)
+            except Exception:  # noqa: BLE001, S110
+                pass
+            return self._writer_actor
+        try:
+            from .sqlite_base import SingleWriterActor
+            self._writer_actor = SingleWriterActor.get_or_create(self.db_path)
+            return self._writer_actor
+        except Exception:  # noqa: BLE001
+            return None
+
+    @writer_actor.setter
+    def writer_actor(self, value: Any) -> None:
+        self._writer_actor = value
 
     def check_hardware_and_idle_gates(
         self,
@@ -212,7 +241,7 @@ class SleepPhaseConsolidator:
             import sqlite_vec
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("SleepPhaseConsolidator: sqlite_vec extension unavailable (%s); vector clustering degraded.", e)
         return conn
 
@@ -228,7 +257,7 @@ class SleepPhaseConsolidator:
             def _vdbe_progress_hook() -> int:
                 try:
                     return 1 if is_user_active_fn() else 0
-                except Exception:
+                except Exception:  # noqa: BLE001
                     return 0
             conn.set_progress_handler(_vdbe_progress_hook, progress_steps)
         return conn
@@ -290,7 +319,7 @@ class SleepPhaseConsolidator:
                         redundant_pairs.append((f, n_dict, dist))
                         seen_stale_ids.add(n["id"])
 
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001
             logger.debug("Read-only redundant facts discovery notice: %s", err)
         finally:
             ro_conn.close()
@@ -324,7 +353,7 @@ class SleepPhaseConsolidator:
                     "ids": [int(x) for x in r["ids"].split(",") if x.strip().isdigit()],
                     "lessons_summary": r["all_lessons"][:300],
                 })
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001
             logger.debug("Read-only lessons discovery notice: %s", err)
         finally:
             ro_conn.close()
@@ -338,7 +367,10 @@ class SleepPhaseConsolidator:
         batch_size: int = 20,
         workspace_id: str = "ws_default",
     ) -> int:
-        """Phase 2: Applies removals/consolidations in <1.5ms micro-transactions scoped to a workspace."""
+        """Phase 2: Applies removals/consolidations in <1.5ms micro-transactions scoped to a workspace.
+
+        Routes mutations through SingleWriterActor to prevent database lock contention.
+        """
         if not stale_fact_ids:
             return 0
 
@@ -349,56 +381,87 @@ class SleepPhaseConsolidator:
         if is_user_active_fn is None:
             is_user_active_fn = lambda: get_win32_idle_seconds() < self.idle_threshold_sec
 
-        rw_conn = self._connect(read_only=False)
         total_consolidated = 0
 
-        def _progress_abort_guard() -> int:
-            return 1 if is_user_active_fn() else 0
+        for i in range(0, len(stale_fact_ids), batch_size):
+            if is_user_active_fn():
+                logger.info("User activity detected during sleep consolidation; yielding WAL lock in <1ms.")
+                break
 
-        rw_conn.set_progress_handler(_progress_abort_guard, 5000)
+            batch = stale_fact_ids[i : i + batch_size]
+            placeholders = ",".join("?" for _ in batch)
 
-        try:
-            for i in range(0, len(stale_fact_ids), batch_size):
-                if is_user_active_fn():
-                    logger.info("User activity detected during sleep consolidation; yielding WAL lock in <1ms.")
-                    break
+            def _batch_delete(
+                conn: sqlite3.Connection,
+                target_batch: list[int] = batch,
+                target_placeholders: str = placeholders,
+            ) -> None:
+                cur = conn.cursor()
+                cur.execute("PRAGMA table_info(facts)")
+                f_cols = {r["name"] if hasattr(r, "__getitem__") and "name" in r else r[1] for r in cur.fetchall()}
+                has_ws = "workspace_id" in f_cols
 
-                batch = stale_fact_ids[i : i + batch_size]
                 try:
-                    rw_conn.execute("BEGIN IMMEDIATE;")
-                    placeholders = ",".join("?" for _ in batch)
-                    try:
-                        rw_conn.execute(
-                            f"DELETE FROM facts_vec WHERE fact_id IN ({placeholders}) AND workspace_id = ?",
-                            [*batch, clean_ws],
+                    if has_ws:
+                        conn.execute(
+                            f"DELETE FROM facts_vec WHERE fact_id IN ({target_placeholders}) AND workspace_id = ? AND workspace_id IS NOT NULL AND workspace_id != 'unscoped'",
+                            [*target_batch, clean_ws],
                         )
-                    except Exception:  # noqa: BLE001, S110
-                        pass
-                    rw_conn.execute(
-                        f"DELETE FROM facts WHERE id IN ({placeholders}) AND workspace_id = ? AND scope = 'workspace'",
-                        [*batch, clean_ws],
-                    )
-                    rw_conn.execute("COMMIT;")
-                    total_consolidated += len(batch)
-                except (sqlite3.OperationalError, sqlite3.DatabaseError) as b_err:
-                    try:
-                        rw_conn.execute("ROLLBACK;")
-                    except Exception:  # noqa: BLE001, S110
-                        pass
-                    logger.debug("Consolidation micro-batch yielded or backoff: %s", b_err)
-                    break
-
-                time.sleep(0.001)
-
-            if not is_user_active_fn():
-                try:
-                    rw_conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
-                except Exception:
+                    else:
+                        conn.execute(
+                            f"DELETE FROM facts_vec WHERE fact_id IN ({target_placeholders})",
+                            [*target_batch],
+                        )
+                except Exception:  # noqa: BLE001, S110
                     pass
 
-        finally:
-            rw_conn.set_progress_handler(None, 0)
-            rw_conn.close()
+                if has_ws:
+                    conn.execute(
+                        f"DELETE FROM facts WHERE id IN ({target_placeholders}) AND workspace_id = ? AND workspace_id IS NOT NULL AND workspace_id != 'unscoped' AND scope = 'workspace'",
+                        [*target_batch, clean_ws],
+                    )
+                else:
+                    conn.execute(
+                        f"DELETE FROM facts WHERE id IN ({target_placeholders})",
+                        [*target_batch],
+                    )
+
+            try:
+                if self.writer_actor is not None:
+                    self.writer_actor.execute_write(_batch_delete)
+                else:
+                    rw_conn = self._connect(read_only=False)
+                    try:
+                        rw_conn.execute("BEGIN IMMEDIATE;")
+                        _batch_delete(rw_conn)
+                        rw_conn.execute("COMMIT;")
+                    except Exception:
+                        try:
+                            rw_conn.execute("ROLLBACK;")
+                        except Exception:  # noqa: BLE001, S110
+                            pass
+                        raise
+                    finally:
+                        rw_conn.close()
+                total_consolidated += len(batch)
+            except (sqlite3.OperationalError, sqlite3.DatabaseError, RuntimeError) as b_err:
+                logger.debug("Consolidation micro-batch yielded or backoff: %s", b_err)
+                break
+
+            time.sleep(0.001)
+
+        if not is_user_active_fn():
+            try:
+                if self.writer_actor is not None:
+                    self.writer_actor.execute_write(lambda conn: conn.execute("PRAGMA wal_checkpoint(PASSIVE);"))
+                else:
+                    rw_conn = self._connect(read_only=False)
+                    try:
+                        rw_conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+                    finally:
+                        rw_conn.close()
+            except Exception:  # noqa: BLE001, S110
+                pass
 
         return total_consolidated
 
@@ -426,7 +489,7 @@ class SleepPhaseConsolidator:
 
         if has_facts_ws:
             cursor.execute(
-                "SELECT id, category, key, value FROM facts WHERE (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped') AND (scope = 'workspace' OR scope = 'unscoped') ORDER BY id ASC",
+                "SELECT id, category, key, value FROM facts WHERE workspace_id = ? AND workspace_id IS NOT NULL AND workspace_id != 'unscoped' AND scope = 'workspace' ORDER BY id ASC",
                 (clean_ws,)
             )
         else:
@@ -454,13 +517,13 @@ class SleepPhaseConsolidator:
                     break
                 try:
                     if has_facts_ws:
-                        conn.execute("DELETE FROM facts_vec WHERE fact_id = ? AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')", (s_id, clean_ws))
+                        conn.execute("DELETE FROM facts_vec WHERE fact_id = ? AND workspace_id = ? AND workspace_id IS NOT NULL AND workspace_id != 'unscoped'", (s_id, clean_ws))
                     else:
                         conn.execute("DELETE FROM facts_vec WHERE fact_id = ?", (s_id,))
                 except Exception:  # noqa: BLE001, S110
                     pass
                 if has_facts_ws:
-                    conn.execute("DELETE FROM facts WHERE id = ? AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')", (s_id, clean_ws))
+                    conn.execute("DELETE FROM facts WHERE id = ? AND workspace_id = ? AND workspace_id IS NOT NULL AND workspace_id != 'unscoped' AND scope = 'workspace'", (s_id, clean_ws))
                 else:
                     conn.execute("DELETE FROM facts WHERE id = ?", (s_id,))
                 duplicates_merged += 1
@@ -489,7 +552,7 @@ class SleepPhaseConsolidator:
             kg_cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
 
         if has_facts_ws:
-            cursor.execute("SELECT category, key, value FROM facts WHERE key LIKE '%.%' AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')", (clean_ws,))
+            cursor.execute("SELECT category, key, value FROM facts WHERE key LIKE '%.%' AND workspace_id = ? AND workspace_id IS NOT NULL AND workspace_id != 'unscoped' AND scope = 'workspace'", (clean_ws,))
         else:
             cursor.execute("SELECT category, key, value FROM facts WHERE key LIKE '%.%'")
         dot_rows = cursor.fetchall()
@@ -511,7 +574,7 @@ class SleepPhaseConsolidator:
                     if has_kg_ws:
                         cursor.execute("""
                             SELECT edge_id FROM knowledge_edges
-                            WHERE subject = ? AND predicate = ? AND object = ? AND valid_until IS NULL AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')
+                            WHERE subject = ? AND predicate = ? AND object = ? AND valid_until IS NULL AND workspace_id = ? AND workspace_id IS NOT NULL AND workspace_id != 'unscoped'
                         """, (subj, pred, val, clean_ws))
                     else:
                         cursor.execute("""
@@ -594,10 +657,10 @@ class SleepPhaseConsolidator:
                 cursor.execute("""
                     SELECT tool_calls FROM interactions
                     WHERE tool_calls IS NOT NULL AND tool_calls != ''
-                      AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')
+                      AND (workspace_id = ? OR (workspace_id IS NULL AND ? = 'ws_default'))
                       AND created_at >= datetime('now', '-7 days')
                     ORDER BY id ASC
-                """, (clean_ws,))
+                """, (clean_ws, clean_ws))
             else:
                 cursor.execute("""
                     SELECT tool_calls FROM interactions
@@ -626,7 +689,7 @@ class SleepPhaseConsolidator:
                                 tools_in_turn.append(str(t_name))
                         elif isinstance(item, str):
                             tools_in_turn.append(item)
-            except Exception:
+            except Exception:  # noqa: BLE001, S112
                 continue
 
             if len(tools_in_turn) >= 3:
@@ -661,7 +724,7 @@ class SleepPhaseConsolidator:
         wal_pages = 0
         try:
             conn.execute("PRAGMA incremental_vacuum(64);")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("Incremental vacuum notice: %s", e)
 
         try:
@@ -669,7 +732,7 @@ class SleepPhaseConsolidator:
             row = cursor.fetchone()
             if row and len(row) >= 3:
                 wal_pages = int(row[2])
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("WAL checkpoint notice: %s", e)
 
         return wal_pages
@@ -759,44 +822,62 @@ class SleepPhaseConsolidator:
                 was_aborted = True
                 break
 
-            # Execute Pass A and Pass B on interruptible connection for this workspace
-            rw_conn = self._open_interruptible_connection(
-                read_only=False,
-                is_user_active_fn=is_user_active_fn,
-                progress_steps=250,
-            )
-            try:
+            # Execute Pass A and Pass B via SingleWriterActor (or interruptible fallback) for this workspace
+            def _run_pass_a_b(
+                conn: sqlite3.Connection,
+                target_ws: str = ws,
+            ) -> tuple[int, int, int]:
+                dups, edges, macros = 0, 0, 0
                 if not is_user_active_fn():
                     dups, edges = self.run_pass_a_entity_deduplication(
-                        rw_conn, is_user_active_fn=is_user_active_fn, workspace_id=ws
+                        conn, is_user_active_fn=is_user_active_fn, workspace_id=target_ws
                     )
-                    total_duplicates_merged += dups
-                    total_edges_promoted += edges
-
                 if not is_user_active_fn():
                     macros = self.run_pass_b_workflow_distillation(
-                        rw_conn, is_user_active_fn=is_user_active_fn, workspace_id=ws
+                        conn, is_user_active_fn=is_user_active_fn, workspace_id=target_ws
                     )
-                    total_reflex_macros += macros
-            except (sqlite3.OperationalError, sqlite3.DatabaseError) as opt_err:
-                logger.debug("Interruptible consolidation pass caught for ws %s: %s", ws, opt_err)
-            finally:
-                rw_conn.set_progress_handler(None, 0)
-                rw_conn.close()
+                return dups, edges, macros
+
+            try:
+                if self.writer_actor is not None:
+                    dups, edges, macros = self.writer_actor.execute_write(_run_pass_a_b)
+                else:
+                    rw_conn = self._open_interruptible_connection(
+                        read_only=False,
+                        is_user_active_fn=is_user_active_fn,
+                        progress_steps=250,
+                    )
+                    try:
+                        dups, edges, macros = _run_pass_a_b(rw_conn)
+                    finally:
+                        rw_conn.set_progress_handler(None, 0)
+                        rw_conn.close()
+
+                total_duplicates_merged += dups
+                total_edges_promoted += edges
+                total_reflex_macros += macros
+            except (sqlite3.OperationalError, sqlite3.DatabaseError, RuntimeError) as opt_err:
+                logger.debug("Consolidation pass caught for ws %s: %s", ws, opt_err)
 
         # Pass C (WAL maintenance) runs once per cycle across the database file if not aborted
         wal_pages_checkpointed = 0
         if not is_user_active_fn() and not was_aborted:
-            rw_conn = self._open_interruptible_connection(
-                read_only=False,
-                is_user_active_fn=is_user_active_fn,
-                progress_steps=250,
-            )
             try:
-                wal_pages_checkpointed = self.run_pass_c_wal_maintenance(rw_conn)
-            finally:
-                rw_conn.set_progress_handler(None, 0)
-                rw_conn.close()
+                if self.writer_actor is not None:
+                    wal_pages_checkpointed = self.writer_actor.execute_write(self.run_pass_c_wal_maintenance)
+                else:
+                    rw_conn = self._open_interruptible_connection(
+                        read_only=False,
+                        is_user_active_fn=is_user_active_fn,
+                        progress_steps=250,
+                    )
+                    try:
+                        wal_pages_checkpointed = self.run_pass_c_wal_maintenance(rw_conn)
+                    finally:
+                        rw_conn.set_progress_handler(None, 0)
+                        rw_conn.close()
+            except (sqlite3.OperationalError, sqlite3.DatabaseError, RuntimeError) as c_err:
+                logger.debug("Pass C WAL maintenance notice: %s", c_err)
 
         decayed_habits = 0
         if not is_user_active_fn() and not was_aborted:
@@ -841,6 +922,6 @@ class SleepPhaseConsolidator:
             from jarvis.core.cognition.habit_graph import TemporalHabitGraph
             graph = TemporalHabitGraph(self.db_path, sync_writes=True)
             return graph.apply_exponential_decay(half_life_days=half_life_days)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("Habit transition decay in sleep consolidator notice: %s", e)
             return 0
