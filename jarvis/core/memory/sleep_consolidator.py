@@ -420,10 +420,17 @@ class SleepPhaseConsolidator:
 
         # 1. Normalize and deduplicate facts table scoped to workspace
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, category, key, value FROM facts WHERE workspace_id = ? AND scope = 'workspace' ORDER BY id ASC",
-            (clean_ws,)
-        )
+        cursor.execute("PRAGMA table_info(facts)")
+        facts_cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+        has_facts_ws = "workspace_id" in facts_cols
+
+        if has_facts_ws:
+            cursor.execute(
+                "SELECT id, category, key, value FROM facts WHERE (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped') AND (scope = 'workspace' OR scope = 'unscoped') ORDER BY id ASC",
+                (clean_ws,)
+            )
+        else:
+            cursor.execute("SELECT id, category, key, value FROM facts ORDER BY id ASC")
         rows = cursor.fetchall()
 
         seen_normalized: dict[tuple[str, str, str], int] = {}
@@ -446,15 +453,52 @@ class SleepPhaseConsolidator:
                 if is_user_active_fn and is_user_active_fn():
                     break
                 try:
-                    conn.execute("DELETE FROM facts_vec WHERE fact_id = ? AND workspace_id = ?", (s_id, clean_ws))
+                    if has_facts_ws:
+                        conn.execute("DELETE FROM facts_vec WHERE fact_id = ? AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')", (s_id, clean_ws))
+                    else:
+                        conn.execute("DELETE FROM facts_vec WHERE fact_id = ?", (s_id,))
                 except Exception:  # noqa: BLE001, S110
                     pass
-                conn.execute("DELETE FROM facts WHERE id = ? AND workspace_id = ? AND scope = 'workspace'", (s_id, clean_ws))
+                if has_facts_ws:
+                    conn.execute("DELETE FROM facts WHERE id = ? AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')", (s_id, clean_ws))
+                else:
+                    conn.execute("DELETE FROM facts WHERE id = ?", (s_id,))
                 duplicates_merged += 1
 
         # 2. Promote structured subject.predicate facts into active knowledge_edges within workspace
-        cursor.execute("SELECT category, key, value FROM facts WHERE key LIKE '%.%' AND workspace_id = ? AND scope = 'workspace'", (clean_ws,))
+        cursor.execute("PRAGMA table_info(knowledge_edges)")
+        kg_cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+        if not kg_cols:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_edges (
+                    edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    subject TEXT NOT NULL,
+                    predicate TEXT NOT NULL,
+                    object TEXT NOT NULL,
+                    is_functional INTEGER NOT NULL DEFAULT 1,
+                    confidence REAL NOT NULL DEFAULT 1.0,
+                    access_count INTEGER NOT NULL DEFAULT 1,
+                    decay_lambda REAL NOT NULL DEFAULT 0.01,
+                    valid_from REAL NOT NULL,
+                    valid_until REAL DEFAULT NULL,
+                    last_accessed REAL NOT NULL,
+                    source_context TEXT DEFAULT NULL
+                )
+            """)
+            cursor.execute("PRAGMA table_info(knowledge_edges)")
+            kg_cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+
+        if has_facts_ws:
+            cursor.execute("SELECT category, key, value FROM facts WHERE key LIKE '%.%' AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')", (clean_ws,))
+        else:
+            cursor.execute("SELECT category, key, value FROM facts WHERE key LIKE '%.%'")
         dot_rows = cursor.fetchall()
+
+        cursor.execute("PRAGMA table_info(knowledge_edges)")
+        kg_cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+        has_kg_ws = "workspace_id" in kg_cols
+        has_kg_access = "access_count" in kg_cols
+
         for dr in dot_rows:
             if is_user_active_fn and is_user_active_fn():
                 break
@@ -464,19 +508,42 @@ class SleepPhaseConsolidator:
                 subj, pred = parts[0].strip(), parts[1].strip()
                 val = (dr["value"] or "").strip()
                 if subj and pred and val:
-                    cursor.execute("""
-                        SELECT edge_id FROM knowledge_edges
-                        WHERE subject = ? AND predicate = ? AND object = ? AND valid_until IS NULL AND workspace_id = ?
-                    """, (subj, pred, val, clean_ws))
+                    if has_kg_ws:
+                        cursor.execute("""
+                            SELECT edge_id FROM knowledge_edges
+                            WHERE subject = ? AND predicate = ? AND object = ? AND valid_until IS NULL AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')
+                        """, (subj, pred, val, clean_ws))
+                    else:
+                        cursor.execute("""
+                            SELECT edge_id FROM knowledge_edges
+                            WHERE subject = ? AND predicate = ? AND object = ? AND valid_until IS NULL
+                        """, (subj, pred, val))
                     if not cursor.fetchone():
                         now_ts = time.time()
-                        conn.execute("""
-                            INSERT INTO knowledge_edges (
-                                workspace_id, scope, subject, predicate, object, is_functional,
-                                confidence, access_count, decay_lambda,
-                                valid_from, valid_until, last_accessed, source_provenance, source_context
-                            ) VALUES (?, 'workspace', ?, ?, ?, 1, 1.0, 1, 0.01, ?, NULL, ?, 'trusted_internal', 'sleep_consolidation_pass_a')
-                        """, (clean_ws, subj, pred, val, now_ts, now_ts))
+                        if has_kg_ws:
+                            conn.execute("""
+                                INSERT INTO knowledge_edges (
+                                    workspace_id, scope, subject, predicate, object, is_functional,
+                                    confidence, access_count, decay_lambda,
+                                    valid_from, valid_until, last_accessed, source_context
+                                ) VALUES (?, 'workspace', ?, ?, ?, 1, 1.0, 1, 0.01, ?, NULL, ?, 'sleep_consolidation_pass_a')
+                            """, (clean_ws, subj, pred, val, now_ts, now_ts))
+                        elif has_kg_access:
+                            conn.execute("""
+                                INSERT INTO knowledge_edges (
+                                    subject, predicate, object, is_functional,
+                                    confidence, access_count, decay_lambda,
+                                    valid_from, valid_until, last_accessed, source_context
+                                ) VALUES (?, ?, ?, 1, 1.0, 1, 0.01, ?, NULL, ?, 'sleep_consolidation_pass_a')
+                            """, (subj, pred, val, now_ts, now_ts))
+                        else:
+                            conn.execute("""
+                                INSERT INTO knowledge_edges (
+                                    subject, predicate, object, is_functional,
+                                    confidence,
+                                    valid_from, valid_until, last_accessed, source_context
+                                ) VALUES (?, ?, ?, 1, 1.0, ?, NULL, ?, 'sleep_consolidation_pass_a')
+                            """, (subj, pred, val, now_ts, now_ts))
                         edges_promoted += 1
 
         return duplicates_merged, edges_promoted
@@ -500,7 +567,7 @@ class SleepPhaseConsolidator:
 
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(compiled_reflex_macros)")
-        cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row.keys() else row[1] for row in cursor.fetchall()}
+        cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
         if cols and "macro_name" not in cols:
             conn.execute("DROP TABLE compiled_reflex_macros")
 
@@ -518,14 +585,26 @@ class SleepPhaseConsolidator:
                 last_compiled_ts REAL DEFAULT 0.0
             ) WITHOUT ROWID
         """)
+        cursor.execute("PRAGMA table_info(interactions)")
+        inter_cols = {row["name"] if hasattr(row, "__getitem__") and "name" in row else row[1] for row in cursor.fetchall()}
+        has_inter_ws = "workspace_id" in inter_cols
+
         try:
-            cursor.execute("""
-                SELECT tool_calls FROM interactions
-                WHERE tool_calls IS NOT NULL AND tool_calls != ''
-                  AND workspace_id = ?
-                  AND created_at >= datetime('now', '-7 days')
-                ORDER BY id ASC
-            """, (clean_ws,))
+            if has_inter_ws:
+                cursor.execute("""
+                    SELECT tool_calls FROM interactions
+                    WHERE tool_calls IS NOT NULL AND tool_calls != ''
+                      AND (workspace_id = ? OR workspace_id IS NULL OR workspace_id = 'unscoped')
+                      AND created_at >= datetime('now', '-7 days')
+                    ORDER BY id ASC
+                """, (clean_ws,))
+            else:
+                cursor.execute("""
+                    SELECT tool_calls FROM interactions
+                    WHERE tool_calls IS NOT NULL AND tool_calls != ''
+                      AND created_at >= datetime('now', '-7 days')
+                    ORDER BY id ASC
+                """)
             rows = cursor.fetchall()
         except sqlite3.OperationalError:
             return 0

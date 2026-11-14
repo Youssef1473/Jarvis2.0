@@ -450,8 +450,8 @@ class TestMemoryAuthorizationAudit(unittest.TestCase):
         # Insert directly into interactions table unscrubbed (simulating pre-existing legacy record)
         def _raw_insert(conn: sqlite3.Connection) -> None:
             conn.execute(
-                "INSERT INTO interactions (user_input, jarvis_reply, tool_calls, source_provenance) "
-                "VALUES (?, ?, '', 'user_supplied')",
+                "INSERT INTO interactions (workspace_id, session_id, scope, user_input, jarvis_reply, tool_calls, source_provenance) "
+                "VALUES ('ws_default', 'sess_legacy', 'session', ?, ?, '', 'user_supplied')",
                 (user_text, reply_text),
             )
         self.mem.execute_write(_raw_insert)
