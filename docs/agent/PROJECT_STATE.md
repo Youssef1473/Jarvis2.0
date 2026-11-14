@@ -14,11 +14,11 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-14T11:35:00+01:00 (CET)
-- **Active Git Branch:** `refactor/untangle-dev-shell`
-- **Recorded HEAD Commit SHA:** `4c52948f22144fae9532588137357c2a74c65306`
-- **HEAD Commit Subject:** `test(sandbox): align job_object_sandbox_hardening with DualKey auth and re-export server query constants`
-- **Milestone State:** **Production Baseline: Phase 3, Phase 4, Reliability Governance & Core Triad Untangling Landed on main; dev_shell.py Modularized**
+- **Validation Timestamp:** 2026-11-14T12:39:00+01:00 (CET)
+- **Active Git Branch:** `refactor/untangle-vision`
+- **Recorded HEAD Commit SHA:** `9efc7ded9c1217c8eaf7cd05fe460630a367c98d`
+- **HEAD Commit Subject:** `refactor(vision): centralize 64-bit Win32 ABI, RAII desktop handles, and vision module boundaries`
+- **Milestone State:** **Production Baseline Verified on main; dev_shell.py and jarvis/vision/ Modularized**
 - **Active Milestone:** **Production Operations & Subsystem Refactoring**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
@@ -36,8 +36,19 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Reliability & Engineering Governance` (`refactor/untangle-dev-shell`)
+- **Active Milestone:** `Reliability & Engineering Governance` (`refactor/untangle-vision`)
 - **Completed Work:**
+  - **Untangle-Codebase — `jarvis/vision/` Architectural Decomposition & Win32 ABI Hardening (COMPLETED & SEALED):**
+    - **Refactor Commit SHA (`9efc7de`):** `refactor(vision): centralize 64-bit Win32 ABI, RAII desktop handles, and vision module boundaries`
+    - **Centralized 64-bit Win32 ABI (`win32_vision_abi.py`, 456 lines):** Declared explicit 64-bit `ctypes` ABI signatures (`argtypes`/`restype`) for `user32`, `kernel32`, `dwmapi`, and `shcore`. Implemented `scoped_desktop_access()` RAII context manager restoring `orig_hdesk` before `CloseDesktop` to eliminate `ERROR_BUSY` (`170`) leaks. Provided dynamic late-bound resolvers for `dwmapi`, `user32`, and `kernel32` so `mock.patch("ctypes.windll...")` targets remain 100% interceptable.
+    - **Hook Daemon Hardening (`window_hook_daemon.py`, 255 lines):** Replaced 32-bit `DWORD` hook handle declarations with explicit 64-bit `HWINEVENTHOOK` (`wintypes.HANDLE`) to eliminate `ERROR_INVALID_HANDLE` (`0x6`) on `UnhookWinEvent`. Narrowed event loop exception handling from blind catches to explicit `queue.Empty`, retained persistent `_hook_proc` reference, and declared sorted `__all__`.
+    - **Screen Capture Pipeline (`screen_capture.py`, 66 lines):** Replaced unmanaged desktop switching with `scoped_desktop_access()`, eliminating permanent desktop handle leaks. Delegated DPI awareness to `enable_per_monitor_v2_dpi()`, preserved `ScreenPerception` public API, and declared sorted `__all__`.
+    - **Privacy Guard Hardening (`privacy_guard.py`, 273 lines):** Routed `DwmGetWindowAttribute`, `GetWindowRect`, window title, and process lookup through `win32_vision_abi.py`. Preserved public exports (`BoundingRect`, `ZOrderPrivacyGuard`, and `is_window_dwm_cloaked`), eliminated blind exception swallowing, and declared sorted `__all__`.
+    - **Passive dHash Background Monitor (`dhash_monitor.py`, 288 lines):** Removed inline `class LASTINPUTINFO` and circular fallback loops. Retained module-level `_get_window_title_and_proc(hwnd)` delegating to `win32_vision_abi` so `@patch("jarvis.vision.dhash_monitor._get_window_title_and_proc")` remains 100% transparent. Narrowed exception handling to specific OS/runtime tuples and declared sorted `__all__`.
+    - **Set-of-Mark Visual Grounding (`som_grounding.py`, 580 lines):** Routed window geometry, DPI awareness, and window title queries to `win32_vision_abi.py`. Preserved all public data classes and compatibility aliases (`MarkElement`, `MarkedUIElement`, `MarkRegistry`, `SetOfMarkAnnotator`, `is_window_privacy_blocked`, `enable_per_monitor_v2_dpi`, `UIElementCandidate`, `INTERACTIVE_CONTROL_TYPES`). Replaced 20 blind `except Exception:` blocks with narrow runtime/OS exception tuples and declared sorted `__all__`.
+    - **Static Hygiene:** 0 Ruff diagnostics across all 6 vision files (`tools/lint.py`) and 0 AST structural invariant violations (`tools/diagnostics.py`).
+    - **Empirical Regression Verification:** Targeted 7-suite vision tests passed with **42 passed, 0 failed in 2.03s (Exit code 0)**; Tier 1 Fast Test Suite passed with **1,492 passed, 0 failed, 10 skipped in 146.52s (Exit code 0)**; Post-convergence suite passed with **10 passed, 0 failed in 3.11s (Exit code 0)**.
+    - **Test Manifest Accounting:** Verified exact 2,472 collected node manifest accounting invariant via `test_17_accurate_total_test_accounting` (0 node drift).
   - **Untangle-Codebase — `jarvis/skills/dev_shell.py` Architectural Decomposition (COMPLETED & SEALED):**
     - **Refactor Commit SHA (`bc5e2a5`):** `refactor(skills): decompose dev_shell.py into confinement, fs operations, code intelligence, and background tasks`
     - **Hardening Commit SHA (`4c52948`):** `test(sandbox): align job_object_sandbox_hardening with DualKey auth and re-export server query constants`

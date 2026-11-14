@@ -4014,3 +4014,38 @@ Following independent engineering reviews of the Context B ingestion audit, the 
 4. **Git Hygiene & Commit Execution:**
    - Staged strictly the 6 refactored files and committed `bc5e2a5`.
    - Staged hardening test adjustments and committed `4c52948`.
+
+---
+
+## Session Log: 2026-11-14 — Vision Subsystem: `jarvis/vision/` Untangling & 64-Bit Win32 ABI Closure
+
+- **Session Timestamp:** 2026-11-14T12:39:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `refactor/untangle-vision`
+- **Starting Git HEAD SHA:** `5abafffe86ff1efa1c3e28876aed3a159369aa04` (`5abafff`)
+- **Refactoring Commit SHA:** `9efc7ded9c1217c8eaf7cd05fe460630a367c98d` (`9efc7de`)
+- **Commit Subject:** `refactor(vision): centralize 64-bit Win32 ABI, RAII desktop handles, and vision module boundaries`
+- **Active Milestone:** `Production Baseline Verified on main; dev_shell.py and jarvis/vision/ Modularized`
+
+### Summary of Actions & Deliverables
+1. **Architectural Decomposition of `jarvis/vision/`:**
+   - Centralized 64-bit Win32 user32, kernel32, dwmapi, and shcore ctypes declarations into `jarvis/vision/win32_vision_abi.py` (456 lines).
+   - Implemented `scoped_desktop_access()` RAII context manager restoring `orig_hdesk = user32.GetThreadDesktop(...)` before `CloseDesktop(hdesk)` to eliminate `ERROR_BUSY` (`170`) leaks.
+   - Provided dynamic late-bound resolvers for `dwmapi`, `user32`, and `kernel32` so `mock.patch("ctypes.windll...")` targets remain 100% interceptable.
+   - Replaced 32-bit `DWORD` hook handle declarations in `jarvis/vision/window_hook_daemon.py` (255 lines) with explicit 64-bit `HWINEVENTHOOK` (`wintypes.HANDLE`), eliminating `ERROR_INVALID_HANDLE` (`0x6`) on `UnhookWinEvent`.
+   - Streamlined `jarvis/vision/screen_capture.py` (66 lines) to use `scoped_desktop_access()`, eliminating permanent desktop handle leaks.
+   - Routed `DwmGetWindowAttribute`, `GetWindowRect`, window title, and process lookup in `jarvis/vision/privacy_guard.py` (273 lines) through `win32_vision_abi.py`, preserving `is_window_dwm_cloaked` and all public exports.
+   - Removed inline `class LASTINPUTINFO` and circular fallback loops in `jarvis/vision/dhash_monitor.py` (288 lines) while preserving module-level `_get_window_title_and_proc` for mock transparency.
+   - Routed window geometry, DPI awareness, and window title queries in `jarvis/vision/som_grounding.py` (580 lines) to `win32_vision_abi.py`, replacing 20 blind `except Exception:` blocks with narrow runtime/OS exception tuples and declaring sorted `__all__`.
+2. **Static Analysis & Structural Diagnostics:**
+   - `python tools/lint.py check jarvis/vision/` verified 0 errors across all 6 files.
+   - `python tools/diagnostics.py check jarvis/vision/` confirmed 0 AST-Grep structural invariant violations (ALL DIAGNOSTICS PASSED).
+3. **Empirical Regression Verification:**
+   - Targeted 7-suite vision tests: 42 tests across 7 files passed 100% in 2.03s (Exit code 0).
+   - Post-convergence suite (`tests/test_post_9aeec4c_convergence.py`): 10 passed in 3.11s (Exit code 0).
+   - Full Tier 1 Fast Test Suite: `python tools/run_fast_tests.py --fast -w 4 --timeout 500` passed across 4 workers:
+     `Passed: 1492, Failed: 0, Errors: 0, Skipped: 10 in 146.52s (Status: COMPLETED, Exit code: 0)`.
+   - Test Manifest Accounting Invariant: `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed 100% (2,472 collected nodes accounted for, 0 drift).
+4. **Git Hygiene & Commit Execution:**
+   - Staged strictly the 6 refactored vision files and committed `9efc7de`.
