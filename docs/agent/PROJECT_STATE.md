@@ -14,74 +14,53 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-14T00:35:00+01:00 (CET)
+- **Validation Timestamp:** 2026-11-14T01:00:00+01:00 (CET)
 - **Active Git Branch:** `feat/reliability-engineering-governance`
-- **Recorded HEAD Commit SHA:** `93ecbf587d60f4e48b598ec920b72ebfbeab0636`
-- **HEAD Commit Subject:** `feat(memory,runtime,ui): enforce end-to-end workspace propagation and consolidator isolation (Phase 4)`
-- **Milestone State:** **Phase 4 Implementation & Empirical Verification: COMMITTED & CLOSED (Parent: bfae7ccfe983b766e272d4fa679b8f86cb75d92e)**
-- **Active Milestone:** **Reliability and Engineering Governance (Phase 4 Complete — Batch 5)**
+- **Recorded HEAD Commit SHA:** `0d12bdd89bb8e469cfbe317bc2d2121342aa68fb`
+- **HEAD Commit Subject:** `docs(skills,governance): add Jarvis engineering skills and reliability milestone reports`
+- **Milestone State:** **Option A Workstream Verification, Triage & Atomic Commits: COMPLETED (Zero Tracked Modifications Remaining)**
+- **Active Milestone:** **Reliability and Engineering Governance (Option A Complete — Clean Baseline)**
 - **Staged Modifications:** `0 files` (clean staging index)
-- **Unstaged Tracked Modifications (32 files):**
-  1. `.github/workflows/ci.yml` (Added `security-gate` job with merge_group)
-  2. `jarvis/core/antigravity_bridge.py` (Added `_is_auth_error`, auth break in candidate cascade, atomic registry write fallback for sandbox)
-  3. `jarvis/core/brain_antigravity.py` (Auth fail-closed, Copilot cascade on Gemini quota, `had_tool_call` failover suppression, `_format_action_result`)
-  4. `jarvis/core/brain_gemini.py` (Truth-in-reporting error policies: eliminated generic greeting fallbacks, added explicit empty stream/candidate/malformed/safety handling)
-  5. `jarvis/skills/dev_shell.py` (Fixed action hash token consumption in run_background_task)
-  6. `tests/test_antigravity_integration.py` (Sub-Batch 3D discovery mock with isfile/access)
-  7. `tests/test_ast_code_surgeon_pillar3.py` (Sub-Batch 3B process mock & rollback)
-  8. `tests/test_ast_grep_and_ruff_skills.py` (Sub-Batch 3B batch permits & mocks)
-  9. `tests/test_autonomous_failure_recovery.py` (Sub-Batch 3C app close & focus recovery permits/mocks)
-  10. `tests/test_background_tasks.py` (Sub-Batch 3C background task action-bound permit)
-  11. `tests/test_browser_cdp.py` (Sub-Batch 3C unique_context_id & script_digest binding)
-  12. `tests/test_browser_dom_provenance.py` (Sub-Batch 3A assertion updates)
-  13. `tests/test_claude_token_exhaustion_fallback.py` (Sub-Batch 3D antigravity bridge availability mock)
-  14. `tests/test_closed_loop_and_core_preferences.py` (Sub-Batch 3C launch_application registry mock & permit)
-  15. `tests/test_context_orchestrator.py` (Sub-Batch 3D memory mock spec and relevant knowledge contract)
-  16. `tests/test_dev_skills.py` (Sub-Batch 3B git status batch mock & negative test)
-  17. `tests/test_diagnostics.py` (Sub-Batch 3B batch mocks, restored dropped test node)
-  18. `tests/test_document_provenance.py` (Workstream 3: corrected test 12 to use launch_or_focus_application Level 1 gate)
-  19. `tests/test_everything_search_and_self_editing.py` (Sub-Batch 3D sandboxed batch execution mock)
-  20. `tests/test_fail_closed_ingestion.py` (Sub-Batches 3A & 3C gate assertions & permits)
-  21. `tests/test_four_tier_runner.py` (Workstream 3: added test 18 verifying teardown errors fail suites & scorecards)
-  22. `tests/test_github_copilot_bridge.py` (Sub-Batch 3D provider tier isolation for Copilot fallback)
-  23. `tests/test_graphify_skill.py` (Sub-Batch 3B batch mocks)
-  24. `tests/test_hybrid_and_timers.py` (Sub-Batch 3D candidate models pool contract)
-  25. `tests/test_milestone4_cognitive_invariants.py` (Sub-Batch 3D context envelope escaping and budget cap)
-  26. `tests/test_p1_stage6b_addendum_security.py` (Hardened timer loop iterations to prevent load flakiness)
-  27. `tests/test_phase4_deep_audit.py` (Sub-Batch 3C job process permits & cancellation)
-  28. `tests/test_plugin_integrations.py` (Sub-Batch 3B modern web mocks)
-  29. `tests/test_provider_routing_failover.py` (Updated test 08 to expect truthful failure notice instead of generic greeting)
-  30. `tests/test_subprocess_output_provenance.py` (Sub-Batch 3C action-bound permits & negative gates)
-  31. `tools/run_fast_tests.py` (Workstream 3: supervisor error accounting, errors in TierScorecard, failure on teardown errors)
-  32. `tools/test_supervisor.py` (Supervisor temp directory fallback, cache_dir isolation, clean JUnit XML handling)
+- **Unstaged Tracked Modifications (0 files):**
+  - None (clean working tree on tracked files)
 
-- **Untracked Items (21 items):**
-  1. `.agents/skills/jarvis-repo-orientation/` (Skill directory)
-  2. `.agents/skills/jarvis-safe-implementation/` (Skill directory)
-  3. `.agents/skills/jarvis-security-boundary-review/` (Skill directory)
-  4. `.agents/skills/jarvis-test-governance/` (Skill directory)
-  5. `.agents/skills/jarvis-windows-native-interop/` (Skill directory)
-  6. `data/agy_112_nodes.json` (Diagnostic node map)
-  7. `data/agy_112_pytest_nodes.json` (Remediation test inventory)
-  8. `data/execution_evidence/` (Audit evidence directory)
-  9. `data/learning_candidates/` (Candidate learning records)
-  10. `data/learning_events/` (Persisted learning events)
-  11. `data/regression_scorecard.json` (Test regression metrics)
-  12. `data/supplemental_test_manifest.json` (Auxiliary test map)
-  13. `docs/milestones/RELIABILITY_AND_ENGINEERING_GOVERNANCE_PLAN.md` (Milestone plan)
-  14. `docs/reports/TIER_1_47_FAILURES_ANALYSIS_MATRIX.md` (47-node analysis matrix)
-  15. `docs/reports/benchmark_sqlite_wal_results.json` (WAL benchmark records)
-  16. `docs/reports/benchmark_sqlite_wal_validation_round.json` (WAL validation records)
-  17. `docs/reports/tier1_47_failures_matrix.json` (Failure taxonomy matrix)
-  18. `scratch/` (Temporary scratch directory)
-  19. `tests/test_antigravity_registry_atomicity.py` (Workstream 1 audit suite: 8 tests)
-  20. `tests/test_context_orchestration_audit.py` (Workstream 2 audit suite: 37 tests)
-  21. `tests/test_provider_routing_audit.py` (Workstream 1 audit suite: 28 tests)
+- **Untracked Items (8 items):**
+  1. `data/agy_112_nodes.json` (Diagnostic node map)
+  2. `data/agy_112_pytest_nodes.json` (Remediation test inventory)
+  3. `data/execution_evidence/` (Audit evidence directory)
+  4. `data/learning_candidates/` (Candidate learning records)
+  5. `data/learning_events/` (Persisted learning events)
+  6. `data/regression_scorecard.json` (Test regression metrics)
+  7. `data/supplemental_test_manifest.json` (Auxiliary test map)
+  8. `scratch/` (Temporary scratch directory)
 
 ## 2. Current Engineering Focus
 
 - **Active Milestone:** `Reliability & Engineering Governance` (`feat/reliability-engineering-governance`)
 - **Completed Work:**
+  - **Option A (Workstream Verification, Triage & Atomic Commits — COMPLETED & CLOSED):**
+    - **Commit 1 (`2eb2451`):** `feat(providers): enforce truth-in-reporting error policies and atomic bridge registry`
+      - Packaged truth-in-reporting error handling in `brain_gemini.py` (eliminating false-success generic greetings on empty stream/candidates, malformed responses, thought-only parts, safety blocks).
+      - Hardened fail-closed auth boundaries (401/403 abort), provider quota cascading, and mid-turn tool outcome preservation (`_format_action_result()`) in `brain_antigravity.py`.
+      - Packaged atomic multi-lease registry swapping in `antigravity_bridge.py`.
+      - Landed Workstream 1 audit suites (`test_antigravity_registry_atomicity.py`, `test_provider_routing_audit.py`) and Workstream 2 audit suite (`test_context_orchestration_audit.py`).
+      - Verified 122 passed, 3 skipped, 32 subtests passed in 12.13s (Exit code 0).
+    - **Commit 2 (`292d3d3`):** `ci(governance): add merge_group security gate and harden test supervisor accounting`
+      - Added CI security gate with `merge_group` trigger in `.github/workflows/ci.yml`.
+      - Fixed action hash token consumption in `jarvis/skills/dev_shell.py` for background tasks.
+      - Restored `import jarvis.skills.dev_shell` in `tests/test_dev_skills.py` for complete tool registration.
+      - Hardened `tools/test_supervisor.py` and `tools/run_fast_tests.py` with supervisor tempdir fallback, cache_dir isolation, explicit `errors: int` field in `TierScorecard`, and failure classification on teardown/collection errors.
+      - Landed regression test `tests/test_four_tier_runner.py::test_18_teardown_errors_fail_suite_and_aggregate_scorecard`.
+      - Verified 29 passed across `tests/test_four_tier_runner.py` and `tests/test_dev_skills.py` (Exit code 0).
+    - **Commit 3 (`7d61206`):** `test(security): align Sub-Batch 3A-3D suites with single-use action-bound permits and fail-closed checks`
+      - Remediated 20 security and unit test suites across Sub-Batches 3A-3D with single-use action-bound permits, CDP context IDs, and contained mocks with negative fail-closed checks.
+      - Corrected `tests/test_document_provenance.py` line 407 to align with `close_application` Level 2 critical privilege authorization gate.
+      - Re-exported canonical test manifest `data/test_classification_manifest.json` via `tools/test_classifier.py --export`, reconciling 2,472 collected nodes (Tier 1: 1,502; Tier 2A: 273; Tier 2B: 201; Tier 3: 225; Tier 4: 251; Browser: 20; 0 orphans, 0 unclassified).
+      - Verified `test_17_accurate_total_test_accounting` passed 100%. Verified 238 passed in full run across all 21 test files (Exit code 0).
+    - **Commit 4 (`0d12bdd`):** `docs(skills,governance): add Jarvis engineering skills and reliability milestone reports`
+      - Staged and committed 5 custom Jarvis engineering skills in `.agents/skills/` (`jarvis-repo-orientation`, `jarvis-safe-implementation`, `jarvis-security-boundary-review`, `jarvis-test-governance`, `jarvis-windows-native-interop`).
+      - Staged and committed milestone governance plan `docs/milestones/RELIABILITY_AND_ENGINEERING_GOVERNANCE_PLAN.md` and failure taxonomy reports in `docs/reports/` (`TIER_1_47_FAILURES_ANALYSIS_MATRIX.md`, WAL benchmark records, `tier1_47_failures_matrix.json`).
+    - **Tracked Working Tree State:** Reconciled to exactly 0 modified tracked files (100% clean baseline).
   - **Batch 1 (Governance & Manifest):** Canonical 2,374 test nodes classified in `data/test_classification_manifest.json`; zero orphans verified; `--security` test runner integrated with 13 suites (**195 passed, 0 failed, 1 skipped**).
   - **Batch 2 (Failure Analysis):** Reconciled all 47 failures into 4 distinct remediation sub-batches with 1-to-1 node ID mapping (`docs/reports/TIER_1_47_FAILURES_ANALYSIS_MATRIX.md`).
   - **Sub-Batch 3A (Assertion Mismatches):** 4 negative security tests updated to expect `Critical Authorization Gate` (100% passed).

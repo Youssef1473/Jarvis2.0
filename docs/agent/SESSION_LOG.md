@@ -3757,3 +3757,57 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - Verified live database invariants on `data/jarvis_memory.db`: `PRAGMA integrity_check` = `ok`, `0` foreign key violations, exactly 234 quarantined `'unscoped'` facts and vectors intact.
 5. **Commit Execution:**
    - Staged exactly 10 Phase 4 implementation, test, and manifest artifacts and executed authorized commit `93ecbf587d60f4e48b598ec920b72ebfbeab0636`.
+
+---
+
+## Session Log: 2026-11-14 — Option A: Workstream Verification, Triage & Atomic Commits Closure
+
+- **Session Timestamp:** 2026-11-14T01:00:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Starting Git HEAD SHA:** `a5f627ba4477b8dfa3203f568a994ef0ee82df31` (Phase 4 Governance Seal)
+- **Committed Git HEAD SHAs:**
+  - Commit 1: `2eb2451fdbdc9550b18fa9aa9bca5b7969399eb2` — `feat(providers): enforce truth-in-reporting error policies and atomic bridge registry`
+  - Commit 2: `292d3d37a1e0500be2a0957b7f16f194fb2bead5` — `ci(governance): add merge_group security gate and harden test supervisor accounting`
+  - Commit 3: `7d61206b001dd46f7f2b963a8fe90799659b8c9b` — `test(security): align Sub-Batch 3A-3D suites with single-use action-bound permits and fail-closed checks`
+  - Commit 4: `0d12bdd89bb8e469cfbe317bc2d2121342aa68fb` — `docs(skills,governance): add Jarvis engineering skills and reliability milestone reports`
+- **Active Milestone:** `Reliability and Engineering Governance (Option A Formally Closed — Clean Baseline)`
+
+### Summary of Actions & Deliverables
+1. **Commit 1: Provider Routing & Audit Suites (`2eb2451`):**
+   - Packaged and verified truth-in-reporting error policies in `jarvis/core/brain_gemini.py`, eliminating false-success greetings on empty stream/candidates, malformed responses, thought-only parts, and safety blocks.
+   - Packaged fail-closed auth handling (401/403 abort), provider quota cascade (Antigravity -> Gemini -> Copilot), mid-turn tool outcome preservation (`had_tool_call` suppression and `_format_action_result()`) in `jarvis/core/brain_antigravity.py`.
+   - Packaged atomic directory entry swapping with fail-closed registration in `jarvis/core/antigravity_bridge.py`.
+   - Landed Workstream 1 audit suite `tests/test_antigravity_registry_atomicity.py` (8 tests), `tests/test_provider_routing_audit.py` (28 tests), and Workstream 2 audit suite `tests/test_context_orchestration_audit.py` (37 tests).
+   - Verified 122 passed, 3 skipped, 32 subtests passed in 12.13s; static linters clean.
+2. **Commit 2: CI Security Gate & Test Supervisor Hardening (`292d3d3`):**
+   - Packaged `.github/workflows/ci.yml` adding `security-gate` job triggered on `merge_group` and `pull_request`.
+   - Fixed action hash token consumption in `jarvis/skills/dev_shell.py` for `run_background_task`.
+   - Restored `import jarvis.skills.dev_shell` in `tests/test_dev_skills.py` for complete tool registration.
+   - Hardened `tools/test_supervisor.py` and `tools/run_fast_tests.py` with supervisor temp directory fallback, cache_dir isolation, explicit `errors: int` field in `TierScorecard`, and failure classification on teardown/collection errors.
+   - Landed regression test `tests/test_four_tier_runner.py::test_18_teardown_errors_fail_suite_and_aggregate_scorecard`.
+   - Verified 29 passed across `tests/test_four_tier_runner.py` and `tests/test_dev_skills.py`; static linters clean.
+3. **Commit 3: Remediated Security/Unit Tests & Manifest Reconciliation (`7d61206`):**
+   - Packaged 20 remediated test suites across Sub-Batches 3A-3D with single-use action-bound permits, CDP context IDs, and contained mocks with negative fail-closed checks.
+   - Updated `tests/test_document_provenance.py` line 407 to align with `close_application` Level 2 critical privilege authorization gate.
+   - Re-exported canonical test classification manifest `data/test_classification_manifest.json` via `tools/test_classifier.py --export`, reconciling 2,472 collected nodes (Tier 1: 1,502; Tier 2A: 273; Tier 2B: 201; Tier 3: 225; Tier 4: 251; Browser: 20).
+   - Verified `test_17_accurate_total_test_accounting` passed 100% with 0 orphaned nodes, 0 duplicates, and 0 unclassified nodes.
+   - Verified 238 passed in full run across all 21 remediated test files; static linters clean.
+4. **Commit 4: Engineering Skills & Governance Reports (`0d12bdd`):**
+   - Staged and committed 5 custom Jarvis engineering skills in `.agents/skills/`:
+     - `jarvis-repo-orientation/SKILL.md`
+     - `jarvis-safe-implementation/SKILL.md`
+     - `jarvis-security-boundary-review/SKILL.md`
+     - `jarvis-test-governance/SKILL.md`
+     - `jarvis-windows-native-interop/SKILL.md`
+   - Staged and committed milestone governance plan `docs/milestones/RELIABILITY_AND_ENGINEERING_GOVERNANCE_PLAN.md`.
+   - Staged and committed empirical failure taxonomy matrix and WAL benchmark reports in `docs/reports/`:
+     - `TIER_1_47_FAILURES_ANALYSIS_MATRIX.md`
+     - `benchmark_sqlite_wal_results.json`
+     - `benchmark_sqlite_wal_validation_round.json`
+     - `tier1_47_failures_matrix.json`
+5. **Option A Working Tree & Clean Baseline Audit:**
+   - Tracked working tree reconciled to 0 unstaged modifications, 0 staged modifications.
+   - Remaining untracked runtime artifacts in `data/` and `scratch/` inventoried: `data/agy_112_nodes.json`, `data/agy_112_pytest_nodes.json`, `data/execution_evidence/`, `data/learning_candidates/`, `data/learning_events/`, `data/regression_scorecard.json`, `data/supplemental_test_manifest.json`, `scratch/`.
+   - Zero modifications to production database `data/jarvis_memory.db`; all 234 quarantined unscoped records preserved intact.
