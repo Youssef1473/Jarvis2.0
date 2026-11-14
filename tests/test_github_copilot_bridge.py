@@ -77,8 +77,10 @@ class TestGitHubCopilotBridge(unittest.TestCase):
 class TestAntigravityCopilotQuotaFallback(unittest.TestCase):
     def setUp(self):
         self.config = load_config()
+        self.config.setdefault("llm", {})["antigravity_resolver"] = lambda: None
         self.memory = MemoryManager(self.config)
-        self.brain = JarvisBrain(self.config, self.memory, SafetyGate(self.config))
+        self.brain = JarvisBrain(self.config, self.memory, SafetyGate(self.config), antigravity_resolver=lambda: None)
+        self.brain._is_gemini_configured = lambda: False
         self.brain.active_tool_names = frozenset()
         self.brain.antigravity_auto_tiering = False
         self.brain.antigravity_model = "gemini-3.8-flash-low"
@@ -145,7 +147,10 @@ class TestAntigravityCopilotQuotaFallback(unittest.TestCase):
         self.assertNotEqual(reply, "Request acknowledged, Sir.")
 
     def test_quota_signal_survives_later_candidate_error(self):
-        bridge = AntigravityBridge({"llm": {"antigravity_use_daemon": False}})
+        bridge = AntigravityBridge(
+            {"llm": {"antigravity_use_daemon": False}},
+            executable_resolver=lambda: None,
+        )
         bridge.use_daemon = False
         results = [
             {"status": "ERROR", "response": "429 RESOURCE_EXHAUSTED: quota reached"},

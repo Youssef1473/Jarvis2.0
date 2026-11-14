@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from typing import Any
 
 logger = logging.getLogger("Jarvis.Memory.TasksCalendar")
@@ -11,16 +12,19 @@ class TasksCalendarMixin:
     """Provides task list operations, calendar event scheduling, and schedule query methods."""
 
     # Tasks & Reminders
-    def add_task(self, description: str, due_date: str | None = None) -> str:
+    def add_task(self, description: str, due_date: str | None = None, source_provenance: str | None = None) -> str:
         """Adds a task or reminder serialized through SingleWriterActor."""
         clean_desc = description.strip()
+
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        source_provenance = TurnTaintTracker.resolve_write_provenance(source_provenance, default_if_clean="user_supplied")
 
         def _write(conn: sqlite3.Connection) -> int:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO tasks (description, due_date, is_completed)
-                VALUES (?, ?, 0)
-            """, (clean_desc, due_date))
+                INSERT INTO tasks (description, due_date, is_completed, source_provenance)
+                VALUES (?, ?, 0, ?)
+            """, (clean_desc, due_date, source_provenance))
             return cursor.lastrowid
 
         task_id = self.execute_write(_write)
@@ -30,7 +34,7 @@ class TasksCalendarMixin:
         """Retrieves all incomplete tasks."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, description, due_date, created_at FROM tasks WHERE is_completed = 0")
+            cursor.execute("SELECT id, description, due_date, source_provenance, created_at FROM tasks WHERE is_completed = 0")
             return [dict(row) for row in cursor.fetchall()]
 
     def complete_task(self, task_id: int) -> str:
@@ -46,10 +50,20 @@ class TasksCalendarMixin:
         return f"Task #{task_id} not found."
 
     # Calendar Events
-    def add_calendar_event(self, title: str, start_time: str, end_time: str | None = None, location: str | None = None) -> str:
+    def add_calendar_event(
+        self,
+        title: str,
+        start_time: str,
+        end_time: str | None = None,
+        location: str | None = None,
+        source_provenance: str | None = None,
+    ) -> str:
         """Adds a calendar event with deduplication for identical title and start time."""
         clean_title = title.strip()
         clean_start = start_time.strip()
+
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        source_provenance = TurnTaintTracker.resolve_write_provenance(source_provenance, default_if_clean="user_supplied")
 
         def _write(conn: sqlite3.Connection) -> tuple[int, bool]:
             cursor = conn.cursor()
@@ -63,15 +77,16 @@ class TasksCalendarMixin:
                 cursor.execute("""
                     UPDATE calendar_events
                     SET end_time = COALESCE(?, end_time),
-                        location = COALESCE(?, location)
+                        location = COALESCE(?, location),
+                        source_provenance = ?
                     WHERE id = ?
-                """, (end_time, location, event_id))
+                """, (end_time, location, source_provenance, event_id))
                 return event_id, True
 
             cursor.execute("""
-                INSERT INTO calendar_events (title, start_time, end_time, location, is_cancelled)
-                VALUES (?, ?, ?, ?, 0)
-            """, (clean_title, clean_start, end_time, location))
+                INSERT INTO calendar_events (title, start_time, end_time, location, is_cancelled, source_provenance)
+                VALUES (?, ?, ?, ?, 0, ?)
+            """, (clean_title, clean_start, end_time, location, source_provenance))
             return cursor.lastrowid, False
 
         event_id, is_updated = self.execute_write(_write)
@@ -83,9 +98,9 @@ class TasksCalendarMixin:
         """Retrieves active calendar events."""
         with self._get_ro_connection() as conn:
             cursor = conn.cursor()
-            query = "SELECT id, title, start_time, end_time, location, created_at FROM calendar_events WHERE is_cancelled = 0 ORDER BY start_time"
+            query = "SELECT id, title, start_time, end_time, location, source_provenance, created_at FROM calendar_events WHERE is_cancelled = 0 ORDER BY start_time"
             if include_cancelled:
-                query = "SELECT id, title, start_time, end_time, location, created_at, is_cancelled FROM calendar_events ORDER BY start_time"
+                query = "SELECT id, title, start_time, end_time, location, source_provenance, created_at, is_cancelled FROM calendar_events ORDER BY start_time"
             cursor.execute(query)
             return [dict(row) for row in cursor.fetchall()]
 

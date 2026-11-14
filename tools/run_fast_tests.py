@@ -1,156 +1,894 @@
-"""High-Performance Test Runner for Jarvis 2.0.
-Implements two-tier intelligent test sharding:
-- Tier 1: Fast Parallel Suite (pytest -n auto) for non-hardware/non-GPU tests.
-- Tier 2: Isolated Serial Suite for ONNX/CUDA, WASAPI, COM, and Audio tests.
-Provides a 4x execution speedup while guaranteeing zero GPU driver crashes.
+"""High-Performance Four-Tier Test Runner and Regression Governor for Jarvis 2.0.
+
+Provides rigorous, parent-supervised process tree isolation and bounded test execution:
+- Tier 1: Hermetic Unit (parallelized with pytest-xdist, zero network/hardware/browser)
+- Tier 2: Async and IPC (Subtier 2A: Async Safe, Subtier 2B: Loopback & IPC)
+- Tier 3: Windows OS Integration (serial, desktop handles, MMCSS, Win32 Job Objects)
+- Tier 4: Hardware Integration (serial, CUDA, Kokoro ONNX neural TTS, faster-whisper, WASAPI)
+- Browser Integration: Isolated real Chromium / Playwright execution
+
+Guarantees:
+- Hard process-tree containment under Win32 Job Objects with KILL_ON_JOB_CLOSE.
+- Wall-clock deadline supervision (eliminates the historical ~26% runner stall).
+- Disaggregated scorecards (Passed, Failed, Skipped, Timed Out, Environment Blocked).
+- Zero global monkeypatching.
 """
+from __future__ import annotations
+
 import argparse
-import os
+import errno
+import json
+import select
+import socket
+import subprocess
 import sys
 import time
-import subprocess
+from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
+from typing import Any
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 
-# Test suites that initialize native ONNX GPU / CUDA DLLs or audio endpoints
-HARDWARE_SERIAL_TESTS = [
-    "tests/test_tts.py",
-    "tests/test_audio_streaming_pipeline.py",
-    "tests/test_audio_affinity.py",
-    "tests/test_bettany_voice_and_dsp.py",
-    "tests/test_council_batch_2.py",
-    "tests/test_council_batch_3.py",
-    "tests/test_streaming_voice_reflex.py",
-    "tests/test_voice_control_and_skills.py",
-    "tests/test_speech_normalizer.py",
-    "tests/test_whisper_prosody.py",
-    "tests/test_wake_word.py",
+# Ensure workspace root is in sys.path
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
+
+from tools.test_classifier import (
+    TIER_1_HERMETIC_UNIT,
+    TIER_2A_ASYNC_SAFE,
+    TIER_2B_LOOPBACK_IPC,
+    TIER_3_WINDOWS_INTEGRATION,
+    TIER_4_HARDWARE_INTEGRATION,
+    TIER_BROWSER_INTEGRATION,
+    TestClassifier,
+    get_python_executable,
+)
+from tools.test_supervisor import TestSupervisor
+
+SECURITY_SUITES: list[str] = [
+    "tests/test_filesystem_toctou_security_audit.py",
+    "tests/test_gemini_dispatch_security_audit.py",
+    "tests/test_p0_security_remediation.py",
+    "tests/test_p1_stage6a_execution_security.py",
+    "tests/test_p1_stage6b_mutation_security.py",
+    "tests/test_p1_stage6b_addendum_security.py",
+    "tests/test_p1_stage6c_approval_transparency.py",
+    "tests/test_tool_authorization_integrity.py",
+    "tests/test_flagship_features.py",
+    "tests/test_p0_action_bound_authorization.py",
+    "tests/test_job_object_sandbox.py",
     "tests/test_os_skills.py",
-    "tests/test_phase3_onnx_router.py",
-    "tests/test_onnx_embeddings.py",
-    "tests/test_windows_uia.py",
-    "tests/test_win32_affinity.py",
-    "tests/test_window_hook_daemon.py",
+    "tests/test_email_integration.py",
+    "tests/test_provider_routing_audit.py",
 ]
 
 
-def get_pytest_cmd() -> list[str]:
-    """Resolves the pytest command across local, workspace, and system virtualenvs."""
-    # 1. Direct pytest.exe next to active python executable
-    pytest_bin = Path(sys.executable).parent / "pytest.exe"
-    if pytest_bin.exists():
-        return [str(pytest_bin)]
-
-    # 2. Primary workspace .venv (C:\Users\Youssef\Projects\.venv)
-    parent_pytest = WORKSPACE_ROOT.parent / ".venv" / "Scripts" / "pytest.exe"
-    if parent_pytest.exists():
-        return [str(parent_pytest)]
-
-    # 3. Local repository .venv
-    local_pytest = WORKSPACE_ROOT / ".venv" / "Scripts" / "pytest.exe"
-    if local_pytest.exists():
-        return [str(local_pytest)]
-
-    # 4. Fallback to active python -m pytest
-    return [sys.executable, "-m", "pytest"]
+class LoopbackStatus(str, Enum):
+    AVAILABLE = "AVAILABLE"
+    BLOCKED_FILTER = "BLOCKED_FILTER"
+    REFUSED = "REFUSED"
+    TIMEOUT = "TIMEOUT"
+    ERROR = "ERROR"
 
 
-def run_parallel_fast_suite(workers: int = 2, verbose: bool = False) -> int:
-    """Runs all non-hardware test suites sharded across worker processes."""
-    cmd = get_pytest_cmd() + ["-n", str(workers), "--dist", "loadfile"]
-    if verbose:
-        cmd.append("-v")
-    else:
-        cmd.append("-q")
-    
-    # Exclude hardware tests from parallel execution
-    for hw_test in HARDWARE_SERIAL_TESTS:
-        cmd.append(f"--ignore={hw_test}")
+@dataclass
+class LoopbackProbeResult:
+    """Rigorous diagnostic result of an empirical localhost loopback Winsock probe."""
+    status: LoopbackStatus
+    error_code: int | None = None
+    detail: str = ""
+    duration_ms: float = 0.0
 
-    print(f"\n[Tier 1] Launching fast parallel test suites ({workers} workers)...")
+    def __bool__(self) -> bool:
+        """Enables backward-compatible truthiness checks: `if probe_loopback_available():`."""
+        return self.status == LoopbackStatus.AVAILABLE
+
+
+# Environmental Probes
+def probe_loopback_available(timeout_sec: float = 0.1) -> LoopbackProbeResult:
+    """Probes whether localhost loopback TCP connectivity is functional in this process.
+
+    Implements a fail-closed 2-way Winsock handshake test:
+    - Binds an ephemeral listener on 127.0.0.1:0.
+    - Initiates non-blocking connect from client socket.
+    - Treats WSAEWOULDBLOCK / BlockingIOError as pending connection.
+    - Bounded select() wait on listener (read) and connector (write/except).
+    - Inspects SO_ERROR to distinguish OS access blocks (10013) from refused (10061) or timeouts.
+    - Completes server-side accept and verifies 2-way byte transfer.
+    - Closes listener, client, and accepted connection on every path.
+    """
+    s = None
+    c = None
+    server_conn = None
     t0 = time.perf_counter()
-    res = subprocess.run(cmd, cwd=str(WORKSPACE_ROOT))
-    elapsed = time.perf_counter() - t0
-    print(f"[Tier 1] Parallel suites completed in {elapsed:.2f}s (Exit code: {res.returncode})\n")
-    return res.returncode
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setblocking(False)
+        s.bind(("127.0.0.1", 0))
+        s.listen(1)
+        port = s.getsockname()[1]
+
+        c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        c.setblocking(False)
+        try:
+            c.connect(("127.0.0.1", port))
+        except BlockingIOError:
+            pass  # Pending connection under non-blocking Winsock
+
+        r, w, x = select.select([s], [c], [c], timeout_sec)
+        dur = (time.perf_counter() - t0) * 1000.0
+
+        if not r and not w and not x:
+            return LoopbackProbeResult(
+                status=LoopbackStatus.TIMEOUT,
+                error_code=10060,
+                detail=f"Loopback connection timed out after {dur:.1f}ms without response (SYN dropped).",
+                duration_ms=dur,
+            )
+
+        # Inspect connector socket error
+        err = c.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+        if err in (10013, getattr(errno, "EACCES", 13)):
+            return LoopbackProbeResult(
+                status=LoopbackStatus.BLOCKED_FILTER,
+                error_code=err,
+                detail="Winsock returned WSAEACCES (10013); loopback connection forbidden by host sandbox filter.",
+                duration_ms=dur,
+            )
+        if err in (10061, getattr(errno, "ECONNREFUSED", 111)):
+            return LoopbackProbeResult(
+                status=LoopbackStatus.REFUSED,
+                error_code=err,
+                detail="Winsock returned WSAECONNREFUSED (10061); target port refused connection.",
+                duration_ms=dur,
+            )
+        if err != 0:
+            return LoopbackProbeResult(
+                status=LoopbackStatus.ERROR,
+                error_code=err,
+                detail=f"Winsock error {err} during loopback connection.",
+                duration_ms=dur,
+            )
+
+        # If connector succeeded, verify server-side accept and two-way handshake
+        if s in r:
+            server_conn, _ = s.accept()
+            server_conn.setblocking(False)
+            c.send(b"\x00")
+            sr, _, _ = select.select([server_conn], [], [], 0.05)
+            if sr and server_conn.recv(1) == b"\x00":
+                return LoopbackProbeResult(
+                    status=LoopbackStatus.AVAILABLE,
+                    error_code=0,
+                    detail=f"Loopback 2-way handshake confirmed in {dur:.2f}ms.",
+                    duration_ms=dur,
+                )
+
+        return LoopbackProbeResult(
+            status=LoopbackStatus.ERROR,
+            error_code=None,
+            detail="Loopback connection incomplete: handshake verification failed.",
+            duration_ms=dur,
+        )
+    except (OSError, ValueError) as exc:
+        dur = (time.perf_counter() - t0) * 1000.0
+        return LoopbackProbeResult(
+            status=LoopbackStatus.ERROR,
+            error_code=getattr(exc, "winerror", getattr(exc, "errno", None)),
+            detail=f"Probe encountered unexpected exception: {exc}",
+            duration_ms=dur,
+        )
+    finally:
+        if server_conn:
+            try:
+                server_conn.close()
+            except (OSError, ValueError):
+                pass
+        if c:
+            try:
+                c.close()
+            except (OSError, ValueError):
+                pass
+        if s:
+            try:
+                s.close()
+            except (OSError, ValueError):
+                pass
 
 
-def run_serial_hardware_suite(verbose: bool = False) -> int:
-    """Runs audio, ONNX GPU, and hardware test suites serially to prevent DLL conflicts."""
-    existing_hw_tests = [t for t in HARDWARE_SERIAL_TESTS if (WORKSPACE_ROOT / t).exists()]
-    if not existing_hw_tests:
-        print("[Tier 2] No hardware tests found to run.")
-        return 0
+def probe_hardware_available() -> dict[str, bool]:
+    """Probes availability of local GPU, CUDA, and ONNX execution providers."""
+    res = {"cuda": False, "onnx": False, "audio": True}
+    try:
+        import torch
+        res["cuda"] = bool(torch.cuda.is_available())
+    except ImportError:
+        pass
 
-    cmd = list(get_pytest_cmd())
-    if not verbose:
-        cmd.append("-q")
-    cmd.extend(existing_hw_tests)
+    try:
+        import onnxruntime as ort
+        res["onnx"] = bool(ort.get_available_providers())
+    except ImportError:
+        pass
 
-    print(f"\n[Tier 2] Launching isolated serial hardware suites ({len(existing_hw_tests)} files)...")
-    t0 = time.perf_counter()
-    res = subprocess.run(cmd, cwd=str(WORKSPACE_ROOT))
-    elapsed = time.perf_counter() - t0
-    print(f"[Tier 2] Serial hardware suites completed in {elapsed:.2f}s (Exit code: {res.returncode})\n")
-    return res.returncode
+    return res
 
 
-def run_targeted_test(target: str, verbose: bool = False) -> int:
-    """Runs a specific test file or directory directly."""
-    target_path = Path(target)
-    if not target_path.is_absolute() and not str(target).startswith("tests"):
-        target_path = Path("tests") / target
+def probe_browser_available() -> bool:
+    """Probes availability of local Chromium executable."""
+    candidate_paths = [
+        Path(r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"),
+        Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+        Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+    ]
+    return any(p.exists() for p in candidate_paths)
 
-    cmd = list(get_pytest_cmd())
-    if verbose:
-        cmd.append("-v")
-    cmd.append(str(target_path))
 
-    print(f"\n[Targeted] Running tests in '{target_path}'...")
-    t0 = time.perf_counter()
-    res = subprocess.run(cmd, cwd=str(WORKSPACE_ROOT))
-    elapsed = time.perf_counter() - t0
-    print(f"[Targeted] Test completed in {elapsed:.2f}s (Exit code: {res.returncode})\n")
-    return res.returncode
+@dataclass
+class TierScorecard:
+    """Disaggregated accounting scorecard for a single execution tier."""
+    tier_name: str
+    status: str  # "COMPLETED", "TIMEOUT", "ENVIRONMENT_BLOCKED", "HARDWARE_UNAVAILABLE", "FAILED"
+    total_collected: int = 0
+    passed: int = 0
+    failed: int = 0
+    errors: int = 0
+    skipped: int = 0
+    timed_out: int = 0
+    env_blocked: int = 0
+    hardware_unavailable: int = 0
+    duration_sec: float = 0.0
+    exit_code: int = 0
+    reason: str = ""
+    details: list[dict[str, Any]] = field(default_factory=list)
+
+
+def format_scorecard_table(scorecards: list[TierScorecard], total_wall_clock: float) -> str:
+    """Renders a disaggregated ASCII scorecard table."""
+    lines = [
+        "=" * 105,
+        "                         JARVIS 2.0 FOUR-TIER TEST REGRESSION SCORECARD",
+        "=" * 105,
+        f"{'Tier':<26} {'Status':<16} {'Total':>6} {'Pass':>6} {'Fail':>6} {'Error':>6} {'Skip':>6} {'TimeOut':>7} {'Blocked':>7} {'Duration':>9}",
+        "-" * 105,
+    ]
+    tot_total = tot_pass = tot_fail = tot_errors = tot_skip = tot_timeout = tot_blocked = 0
+    for sc in scorecards:
+        tot_total += sc.total_collected
+        tot_pass += sc.passed
+        tot_fail += sc.failed
+        tot_errors += sc.errors
+        tot_skip += sc.skipped
+        tot_timeout += sc.timed_out
+        tot_blocked += (sc.env_blocked + sc.hardware_unavailable)
+        dur_str = f"{sc.duration_sec:.2f}s"
+        lines.append(
+            f"{sc.tier_name:<26} {sc.status:<16} {sc.total_collected:>6} {sc.passed:>6} {sc.failed:>6} {sc.errors:>6} {sc.skipped:>6} {sc.timed_out:>7} {(sc.env_blocked + sc.hardware_unavailable):>7} {dur_str:>9}"
+        )
+    lines.append("-" * 105)
+    lines.append(
+        f"{'TOTALS':<26} {'':<16} {tot_total:>6} {tot_pass:>6} {tot_fail:>6} {tot_errors:>6} {tot_skip:>6} {tot_timeout:>7} {tot_blocked:>7} {total_wall_clock:>8.2f}s"
+    )
+    lines.append("=" * 105)
+    return "\n".join(lines)
+
+
+class FourTierTestRunner:
+    """Orchestrates test execution across the four operational tiers."""
+
+    def __init__(
+        self,
+        workspace_root: Path | None = None,
+        supervisor: TestSupervisor | None = None,
+        classifier: TestClassifier | None = None,
+    ):
+        self.workspace_root = workspace_root or WORKSPACE_ROOT
+        self.supervisor = supervisor or TestSupervisor(workspace_root=self.workspace_root)
+        self.classifier = classifier or TestClassifier(workspace_root=self.workspace_root)
+        self._manifest_cache: dict[str, Any] | None = None
+
+    def _get_manifest(self) -> dict[str, Any]:
+        if self._manifest_cache is None:
+            self._manifest_cache = self.classifier.get_manifest()
+        return self._manifest_cache
+
+    def _build_tier_targets(self, tier_nodes: list[str], manifest: dict[str, Any]) -> list[str]:
+        """Builds minimal safe target arguments, collapsing non-split files and isolating split-file nodes."""
+        tier_files = sorted({n.split("::")[0] for n in tier_nodes})
+        targets: list[str] = []
+        for fpath in tier_files:
+            file_tier_nodes = [n for n in tier_nodes if n.split("::")[0] == fpath]
+            all_file_nodes = [
+                n for t_nodes in manifest.get("node_ids_by_tier", {}).values()
+                if isinstance(t_nodes, list) for n in t_nodes if n.split("::")[0] == fpath
+            ]
+            if len(file_tier_nodes) < len(all_file_nodes):
+                targets.extend(file_tier_nodes)
+            else:
+                targets.append(fpath)
+        return targets
+
+    def run_tier1_hermetic_unit(
+        self,
+        workers: int = 4,
+        timeout_sec: float = 300.0,
+        verbose: bool = False,
+    ) -> TierScorecard:
+        """Executes Tier 1: Hermetic Unit tests sharded across worker processes."""
+        manifest = self._get_manifest()
+        nodes = manifest.get("node_ids_by_tier", {}).get(TIER_1_HERMETIC_UNIT, [])
+        total_collected = len(nodes)
+
+        t1_files = sorted({n.split("::")[0] for n in nodes})
+        if not t1_files:
+            return TierScorecard(
+                tier_name="Tier 1: Hermetic Unit",
+                status="COMPLETED",
+                total_collected=0,
+            )
+
+        pytest_args = [
+            "-n", str(workers),
+            "--dist", "loadfile",
+            "-m", "not browser_integration and not loopback and not windows_integration and not hardware",
+        ]
+        if verbose:
+            pytest_args.append("-v")
+        else:
+            pytest_args.append("-q")
+
+        print(f"\n[Tier 1] Launching Hermetic Unit suite ({total_collected} tests across {len(t1_files)} files, {workers} workers)...")
+        result = self.supervisor.run_pytest(
+            targets=t1_files,
+            pytest_args=pytest_args,
+            timeout_sec=timeout_sec,
+            run_id="tier1_hermetic_unit",
+            record_junit=True,
+        )
+
+        if result.timed_out:
+            status = "TIMEOUT"
+            exit_code = 124
+        elif result.exit_code != 0 or result.failed_count > 0 or result.error_count > 0:
+            status = "FAILED"
+            exit_code = result.exit_code if result.exit_code != 0 else 1
+        else:
+            status = "COMPLETED"
+            exit_code = 0
+
+        print(f"[Tier 1] Completed in {result.duration_sec:.2f}s (Status: {status}, Exit code: {exit_code})")
+        print(f"Passed: {result.passed_count}, Failed: {result.failed_count}, Errors: {result.error_count}, Skipped: {result.skipped_count}\n")
+
+        return TierScorecard(
+            tier_name="Tier 1: Hermetic Unit",
+            status=status,
+            total_collected=total_collected,
+            passed=result.passed_count,
+            failed=result.failed_count,
+            errors=result.error_count,
+            skipped=result.skipped_count,
+            timed_out=1 if result.timed_out else 0,
+            duration_sec=result.duration_sec,
+            exit_code=exit_code,
+            details=result.details,
+        )
+
+    def run_tier2_async_and_ipc(
+        self,
+        timeout_sec: float = 120.0,
+        verbose: bool = False,
+    ) -> list[TierScorecard]:
+        """Executes Tier 2: Async Safe (2A) and Loopback & IPC (2B)."""
+        manifest = self._get_manifest()
+        nodes_2a = manifest.get("node_ids_by_tier", {}).get(TIER_2A_ASYNC_SAFE, [])
+        nodes_2b = manifest.get("node_ids_by_tier", {}).get(TIER_2B_LOOPBACK_IPC, [])
+
+        scorecards = []
+        loopback_available = probe_loopback_available()
+
+        # Subtier 2B: Loopback & IPC
+        if not loopback_available:
+            print(f"\n[Tier 2B] Localhost loopback TCP socketpair blocked by sandbox; marking {len(nodes_2b)} tests ENVIRONMENT_BLOCKED.")
+            scorecards.append(
+                TierScorecard(
+                    tier_name="Tier 2B: Loopback & IPC",
+                    status="ENVIRONMENT_BLOCKED",
+                    total_collected=len(nodes_2b),
+                    env_blocked=len(nodes_2b),
+                    reason="Localhost loopback TCP connection is blocked by host/sandbox environment filter.",
+                )
+            )
+        else:
+            t2b_files = sorted({n.split("::")[0] for n in nodes_2b})
+            targets_2b = self._build_tier_targets(nodes_2b, manifest)
+            print(f"\n[Tier 2B] Launching Loopback & IPC suite ({len(nodes_2b)} tests across {len(t2b_files)} files)...")
+            res_2b = self.supervisor.run_pytest(
+                targets=targets_2b,
+                pytest_args=["-v" if verbose else "-q"],
+                timeout_sec=timeout_sec,
+                run_id="tier2b_loopback_ipc",
+                record_junit=True,
+            )
+            if res_2b.timed_out:
+                st_2b = "TIMEOUT"
+                ec_2b = 124
+            elif res_2b.exit_code != 0 or res_2b.failed_count > 0 or res_2b.error_count > 0:
+                st_2b = "FAILED"
+                ec_2b = res_2b.exit_code if res_2b.exit_code != 0 else 1
+            else:
+                st_2b = "COMPLETED"
+                ec_2b = 0
+            print(f"[Tier 2B] Completed in {res_2b.duration_sec:.2f}s (Status: {st_2b}, Exit code: {ec_2b})")
+            print(f"Passed: {res_2b.passed_count}, Failed: {res_2b.failed_count}, Errors: {res_2b.error_count}, Skipped: {res_2b.skipped_count}\n")
+            scorecards.append(
+                TierScorecard(
+                    tier_name="Tier 2B: Loopback & IPC",
+                    status=st_2b,
+                    total_collected=len(nodes_2b),
+                    passed=res_2b.passed_count,
+                    failed=res_2b.failed_count,
+                    errors=res_2b.error_count,
+                    skipped=res_2b.skipped_count,
+                    timed_out=1 if res_2b.timed_out else 0,
+                    duration_sec=res_2b.duration_sec,
+                    exit_code=ec_2b,
+                    details=res_2b.details,
+                )
+            )
+
+        # Subtier 2A: Async Safe
+        # On Windows, asyncio event loops require socket.socketpair(). If loopback is blocked, event loops hang.
+        if not loopback_available:
+            print(f"\n[Tier 2A] Windows ProactorEventLoop requires loopback socketpair; marking {len(nodes_2a)} async tests ENVIRONMENT_BLOCKED.")
+            scorecards.append(
+                TierScorecard(
+                    tier_name="Tier 2A: Async Safe",
+                    status="ENVIRONMENT_BLOCKED",
+                    total_collected=len(nodes_2a),
+                    env_blocked=len(nodes_2a),
+                    reason="Windows asyncio event loop initialization requires socket.socketpair() loopback access.",
+                )
+            )
+        else:
+            t2a_files = sorted({n.split("::")[0] for n in nodes_2a})
+            targets_2a = self._build_tier_targets(nodes_2a, manifest)
+            print(f"\n[Tier 2A] Launching Async Safe suite ({len(nodes_2a)} tests across {len(t2a_files)} files)...")
+            res_2a = self.supervisor.run_pytest(
+                targets=targets_2a,
+                pytest_args=["-v" if verbose else "-q"],
+                timeout_sec=timeout_sec,
+                run_id="tier2a_async_safe",
+                record_junit=True,
+            )
+            if res_2a.timed_out:
+                st_2a = "TIMEOUT"
+                ec_2a = 124
+            elif res_2a.exit_code != 0 or res_2a.failed_count > 0 or res_2a.error_count > 0:
+                st_2a = "FAILED"
+                ec_2a = res_2a.exit_code if res_2a.exit_code != 0 else 1
+            else:
+                st_2a = "COMPLETED"
+                ec_2a = 0
+            print(f"[Tier 2A] Completed in {res_2a.duration_sec:.2f}s (Status: {st_2a}, Exit code: {ec_2a})")
+            print(f"Passed: {res_2a.passed_count}, Failed: {res_2a.failed_count}, Errors: {res_2a.error_count}, Skipped: {res_2a.skipped_count}\n")
+            scorecards.append(
+                TierScorecard(
+                    tier_name="Tier 2A: Async Safe",
+                    status=st_2a,
+                    total_collected=len(nodes_2a),
+                    passed=res_2a.passed_count,
+                    failed=res_2a.failed_count,
+                    errors=res_2a.error_count,
+                    skipped=res_2a.skipped_count,
+                    timed_out=1 if res_2a.timed_out else 0,
+                    duration_sec=res_2a.duration_sec,
+                    exit_code=ec_2a,
+                    details=res_2a.details,
+                )
+            )
+
+        return scorecards
+
+    def run_tier3_windows_integration(
+        self,
+        timeout_sec: float = 30.0,
+        verbose: bool = False,
+    ) -> TierScorecard:
+        """Executes Tier 3: Windows OS Integration serially file-by-file with per-file bounds."""
+        manifest = self._get_manifest()
+        nodes = manifest.get("node_ids_by_tier", {}).get(TIER_3_WINDOWS_INTEGRATION, [])
+        t3_files = sorted({n.split("::")[0] for n in nodes})
+
+        print(f"\n[Tier 3] Launching Windows OS Integration suite ({len(nodes)} tests across {len(t3_files)} files, serial)...")
+        total_passed = total_failed = total_errors = total_skipped = total_timed_out = 0
+        total_duration = 0.0
+        max_exit = 0
+        all_details = []
+
+        for fpath in t3_files:
+            run_id = f"tier3_{Path(fpath).stem}_{int(time.time() * 1000) % 1000000}"
+            file_tier_nodes = [n for n in nodes if n.split("::")[0] == fpath]
+            all_file_nodes = [n for t_nodes in manifest.get("node_ids_by_tier", {}).values() if isinstance(t_nodes, list) for n in t_nodes if n.split("::")[0] == fpath]
+            targets = file_tier_nodes if len(file_tier_nodes) < len(all_file_nodes) else fpath
+            res = self.supervisor.run_pytest(
+                targets=targets,
+                pytest_args=["-v" if verbose else "-q"],
+                timeout_sec=timeout_sec,
+                run_id=run_id,
+                record_junit=True,
+            )
+            total_duration += res.duration_sec
+            total_passed += res.passed_count
+            total_failed += res.failed_count
+            total_errors += res.error_count
+            total_skipped += res.skipped_count
+            if res.timed_out:
+                total_timed_out += 1
+                max_exit = max(max_exit, 124)
+            elif res.exit_code != 0:
+                max_exit = max(max_exit, res.exit_code)
+            all_details.extend(res.details)
+
+        if total_timed_out > 0:
+            status = "TIMEOUT"
+        elif total_failed > 0 or total_errors > 0 or max_exit != 0:
+            status = "FAILED"
+            if max_exit == 0:
+                max_exit = 1
+        else:
+            status = "COMPLETED"
+
+        return TierScorecard(
+            tier_name="Tier 3: Windows Integration",
+            status=status,
+            total_collected=len(nodes),
+            passed=total_passed,
+            failed=total_failed,
+            errors=total_errors,
+            skipped=total_skipped,
+            timed_out=total_timed_out,
+            duration_sec=total_duration,
+            exit_code=max_exit,
+            details=all_details,
+        )
+
+    def run_tier4_hardware_integration(
+        self,
+        timeout_sec: float = 30.0,
+        verbose: bool = False,
+    ) -> TierScorecard:
+        """Executes Tier 4: Hardware Integration serially file-by-file, probing CUDA / ONNX."""
+        manifest = self._get_manifest()
+        nodes = manifest.get("node_ids_by_tier", {}).get(TIER_4_HARDWARE_INTEGRATION, [])
+        t4_files = sorted({n.split("::")[0] for n in nodes})
+
+        hw_info = probe_hardware_available()
+        if not (hw_info["cuda"] or hw_info["onnx"]):
+            print(f"\n[Tier 4] Required hardware (CUDA/ONNX) not available; reporting {len(nodes)} tests as HARDWARE_UNAVAILABLE.")
+            return TierScorecard(
+                tier_name="Tier 4: Hardware Integration",
+                status="HARDWARE_UNAVAILABLE",
+                total_collected=len(nodes),
+                hardware_unavailable=len(nodes),
+                reason="Local GPU, CUDA, and ONNX execution providers are not available.",
+            )
+
+        print(f"\n[Tier 4] Launching Hardware Integration suite ({len(nodes)} tests across {len(t4_files)} files, serial)...")
+        total_passed = total_failed = total_errors = total_skipped = total_timed_out = 0
+        total_duration = 0.0
+        max_exit = 0
+        all_details = []
+
+        for fpath in t4_files:
+            run_id = f"tier4_{Path(fpath).stem}_{int(time.time() * 1000) % 1000000}"
+            file_tier_nodes = [n for n in nodes if n.split("::")[0] == fpath]
+            all_file_nodes = [n for t_nodes in manifest.get("node_ids_by_tier", {}).values() if isinstance(t_nodes, list) for n in t_nodes if n.split("::")[0] == fpath]
+            targets = file_tier_nodes if len(file_tier_nodes) < len(all_file_nodes) else fpath
+            res = self.supervisor.run_pytest(
+                targets=targets,
+                pytest_args=["-v" if verbose else "-q"],
+                timeout_sec=timeout_sec,
+                run_id=run_id,
+                record_junit=True,
+            )
+            total_duration += res.duration_sec
+            total_passed += res.passed_count
+            total_failed += res.failed_count
+            total_errors += res.error_count
+            total_skipped += res.skipped_count
+            if res.timed_out:
+                total_timed_out += 1
+                max_exit = max(max_exit, 124)
+            elif res.exit_code != 0:
+                max_exit = max(max_exit, res.exit_code)
+            all_details.extend(res.details)
+
+        if total_timed_out > 0:
+            status = "TIMEOUT"
+        elif total_failed > 0 or total_errors > 0 or max_exit != 0:
+            status = "FAILED"
+            if max_exit == 0:
+                max_exit = 1
+        else:
+            status = "COMPLETED"
+
+        return TierScorecard(
+            tier_name="Tier 4: Hardware Integration",
+            status=status,
+            total_collected=len(nodes),
+            passed=total_passed,
+            failed=total_failed,
+            errors=total_errors,
+            skipped=total_skipped,
+            timed_out=total_timed_out,
+            duration_sec=total_duration,
+            exit_code=max_exit,
+            details=all_details,
+        )
+
+    def run_browser_integration(
+        self,
+        timeout_sec: float = 60.0,
+        verbose: bool = False,
+    ) -> TierScorecard:
+        """Executes Browser Integration suite serially."""
+        manifest = self._get_manifest()
+        nodes = manifest.get("node_ids_by_tier", {}).get(TIER_BROWSER_INTEGRATION, [])
+        browser_files = sorted({n.split("::")[0] for n in nodes})
+
+        browser_avail = probe_browser_available()
+        loopback_avail = probe_loopback_available()
+
+        if not browser_avail or not loopback_avail:
+            reason = "Chromium executable not located" if not browser_avail else "Sandbox blocks loopback DevTools socket"
+            print(f"\n[Browser] Environment blocked ({reason}); marking {len(nodes)} tests ENVIRONMENT_BLOCKED.")
+            return TierScorecard(
+                tier_name="Browser Integration",
+                status="ENVIRONMENT_BLOCKED",
+                total_collected=len(nodes),
+                env_blocked=len(nodes),
+                reason=reason,
+            )
+
+        print(f"\n[Browser] Launching Browser Integration suite ({len(nodes)} tests across {len(browser_files)} files)...")
+        result = self.supervisor.run_pytest(
+            targets=browser_files,
+            pytest_args=["-m", "browser_integration", "-v" if verbose else "-q"],
+            timeout_sec=timeout_sec,
+            run_id="browser_integration",
+            record_junit=True,
+        )
+
+        if result.timed_out:
+            status = "TIMEOUT"
+            ec = 124
+        elif result.exit_code != 0 or result.failed_count > 0 or result.error_count > 0:
+            status = "FAILED"
+            ec = result.exit_code if result.exit_code != 0 else 1
+        else:
+            status = "COMPLETED"
+            ec = 0
+        return TierScorecard(
+            tier_name="Browser Integration",
+            status=status,
+            total_collected=len(nodes),
+            passed=result.passed_count,
+            failed=result.failed_count,
+            errors=result.error_count,
+            skipped=result.skipped_count,
+            timed_out=1 if result.timed_out else 0,
+            duration_sec=result.duration_sec,
+            exit_code=ec,
+            details=result.details,
+        )
+
+    def run_security_suite(
+        self,
+        timeout_sec: float = 180.0,
+        verbose: bool = False,
+    ) -> TierScorecard:
+        """Executes the Phase 2 Security Regression Suite (14 canonical suites) under supervisor."""
+        print(f"\n[Security] Launching Phase 2 Security Regression Suite ({len(SECURITY_SUITES)} files)...")
+        pytest_args = ["-v" if verbose else "-q"]
+        result = self.supervisor.run_pytest(
+            targets=SECURITY_SUITES,
+            pytest_args=pytest_args,
+            timeout_sec=timeout_sec,
+            run_id="security_regression_gate",
+            record_junit=True,
+        )
+
+        if result.timed_out:
+            status = "TIMEOUT"
+            ec = 124
+        elif result.exit_code != 0 or result.failed_count > 0 or result.error_count > 0:
+            status = "FAILED"
+            ec = result.exit_code if result.exit_code != 0 else 1
+        else:
+            status = "COMPLETED"
+            ec = 0
+        print(f"[Security] Completed in {result.duration_sec:.2f}s (Status: {status}, Exit code: {ec})")
+        print(f"Passed: {result.passed_count}, Failed: {result.failed_count}, Errors: {result.error_count}, Skipped: {result.skipped_count}\n")
+        if ec != 0:
+            if result.stdout:
+                print(f"[Security Stdout]\n{result.stdout[-1500:]}\n")
+            if result.stderr:
+                print(f"[Security Stderr]\n{result.stderr[-1500:]}\n")
+
+        total = result.passed_count + result.failed_count + result.skipped_count + result.error_count
+        return TierScorecard(
+            tier_name="Security Regression Suite",
+            status=status,
+            total_collected=total,
+            passed=result.passed_count,
+            failed=result.failed_count,
+            errors=result.error_count,
+            skipped=result.skipped_count,
+            timed_out=1 if result.timed_out else 0,
+            duration_sec=result.duration_sec,
+            exit_code=ec,
+            details=result.details,
+        )
+
+    def run_targeted(
+        self,
+        target: str,
+        timeout_sec: float = 60.0,
+        verbose: bool = False,
+    ) -> int:
+        """Runs an individual targeted test file or directory with supervisor containment."""
+        t_path = Path(target)
+        if not t_path.is_absolute() and not str(target).startswith("tests"):
+            t_path = Path("tests") / target
+
+        print(f"\n[Targeted] Running tests in '{t_path}' under supervisor...")
+        args = ["-v"] if verbose else ["-q"]
+        result = self.supervisor.run_pytest(
+            targets=str(t_path),
+            pytest_args=args,
+            timeout_sec=timeout_sec,
+            run_id=f"targeted_{int(time.time())}",
+            record_junit=True,
+        )
+        if result.timed_out:
+            status = "TIMEOUT"
+            ec = 124
+        elif result.exit_code != 0 or result.failed_count > 0 or result.error_count > 0:
+            status = "FAILED"
+            ec = result.exit_code if result.exit_code != 0 else 1
+        else:
+            status = "COMPLETED"
+            ec = 0
+        print(f"[Targeted] Completed in {result.duration_sec:.2f}s (Status: {status}, Exit code: {ec})")
+        if result.timed_out:
+            print(f"[Targeted] Execution TIMED OUT after {timeout_sec:.1f}s.")
+        print(f"Passed: {result.passed_count}, Failed: {result.failed_count}, Errors: {result.error_count}, Skipped: {result.skipped_count}\n")
+        return ec
+
+    def run_all(
+        self,
+        workers: int = 4,
+        verbose: bool = False,
+        scorecard_json_path: Path | None = None,
+    ) -> tuple[int, list[TierScorecard]]:
+        """Executes all tiers in deterministic sequence and compiles disaggregated scorecard."""
+        t_start = time.perf_counter()
+        scorecards: list[TierScorecard] = []
+
+        # 1. Tier 1: Hermetic Unit
+        sc1 = self.run_tier1_hermetic_unit(workers=workers, verbose=verbose)
+        scorecards.append(sc1)
+
+        # 2. Tier 2: Async and IPC (2A and 2B)
+        sc2 = self.run_tier2_async_and_ipc(verbose=verbose)
+        scorecards.extend(sc2)
+
+        # 3. Tier 3: Windows OS Integration
+        sc3 = self.run_tier3_windows_integration(verbose=verbose)
+        scorecards.append(sc3)
+
+        # 4. Tier 4: Hardware Integration
+        sc4 = self.run_tier4_hardware_integration(verbose=verbose)
+        scorecards.append(sc4)
+
+        # 5. Browser Integration
+        sc_b = self.run_browser_integration(verbose=verbose)
+        scorecards.append(sc_b)
+
+        total_elapsed = time.perf_counter() - t_start
+        table_str = format_scorecard_table(scorecards, total_elapsed)
+        print("\n" + table_str)
+
+        if scorecard_json_path:
+            payload = {
+                "timestamp": time.time(),
+                "total_wall_clock_sec": total_elapsed,
+                "scorecards": [asdict(sc) for sc in scorecards],
+            }
+            scorecard_json_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(scorecard_json_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            print(f"\n[Scorecard] Exported disaggregated metrics to {scorecard_json_path}")
+
+        # Exit code logic: fail if any tier failed, timed out, has errors, or non-zero exit
+        has_failure = any(
+            sc.failed > 0
+            or sc.errors > 0
+            or sc.timed_out > 0
+            or sc.status in ("FAILED", "TIMEOUT")
+            or sc.exit_code != 0
+            for sc in scorecards
+        )
+        max_exit_code = max(sc.exit_code for sc in scorecards)
+        return (1 if has_failure else max_exit_code), scorecards
 
 
 def main():
-    parser = argparse.ArgumentParser(description="High-Performance Test Runner for Jarvis 2.0")
+    parser = argparse.ArgumentParser(description="Jarvis 2.0 Four-Tier High-Performance Test Runner")
     parser.add_argument("target", nargs="?", default=None, help="Specific test file or directory to run")
-    parser.add_argument("--all", action="store_true", help="Run both parallel fast suite and serial hardware suite")
-    parser.add_argument("--hardware", action="store_true", help="Run only the serial hardware/audio suite")
-    parser.add_argument("--fast", action="store_true", help="Run only the parallel non-hardware suite (default if no target)")
-    parser.add_argument("-w", "--workers", type=int, default=4, help="Number of worker processes for parallel suite (default: 4)")
+    parser.add_argument("--unit", action="store_true", help="Run Tier 1: Hermetic Unit tests")
+    parser.add_argument("--async", dest="run_async", action="store_true", help="Run Tier 2: Async and IPC tests")
+    parser.add_argument("--win32", action="store_true", help="Run Tier 3: Windows OS Integration tests")
+    parser.add_argument("--hardware", action="store_true", help="Run Tier 4: Hardware Integration tests")
+    parser.add_argument("--browser", action="store_true", help="Run Browser Integration tests")
+    parser.add_argument("--security", action="store_true", help="Run Phase 2 Security Regression Suite")
+    parser.add_argument("--all", action="store_true", help="Run all tiers in sequence and generate scorecard")
+    parser.add_argument("--fast", action="store_true", help="Synonym for --unit (for backward compatibility)")
+    parser.add_argument("-w", "--workers", type=int, default=4, help="Worker count for parallel tests (default: 4)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose pytest output")
+    parser.add_argument("--timeout", type=float, default=None, help="Custom timeout override in seconds")
+    parser.add_argument("--scorecard-json", type=str, default=None, help="Path to export JSON scorecard")
     parser.add_argument("--failed", action="store_true", help="Rerun only last failed tests (--lf)")
 
     args = parser.parse_args()
+    runner = FourTierTestRunner()
 
     if args.failed:
-        cmd = get_pytest_cmd() + ["--lf"]
+        py_exec = get_python_executable()
+        cmd = [py_exec, "-m", "pytest", "--lf"]
         if args.verbose:
             cmd.append("-v")
-        return subprocess.run(cmd, cwd=str(WORKSPACE_ROOT)).returncode
+        return subprocess.run(cmd, cwd=str(WORKSPACE_ROOT), check=False).returncode
 
     if args.target:
-        return run_targeted_test(args.target, verbose=args.verbose)
-
-    if args.hardware:
-        return run_serial_hardware_suite(verbose=args.verbose)
+        timeout = args.timeout if args.timeout is not None else 60.0
+        return runner.run_targeted(args.target, timeout_sec=timeout, verbose=args.verbose)
 
     if args.all:
-        t_start = time.perf_counter()
-        code1 = run_parallel_fast_suite(workers=args.workers, verbose=args.verbose)
-        code2 = run_serial_hardware_suite(verbose=args.verbose)
-        total_time = time.perf_counter() - t_start
-        print(f"============================================================")
-        print(f"Full Test Suite Completed in {total_time:.2f}s (Fast: exit {code1}, Hardware: exit {code2})")
-        print(f"============================================================")
-        return max(code1, code2)
+        json_path = Path(args.scorecard_json) if args.scorecard_json else None
+        code, _ = runner.run_all(workers=args.workers, verbose=args.verbose, scorecard_json_path=json_path)
+        return code
 
-    # Default: Run parallel fast suite
-    return run_parallel_fast_suite(workers=args.workers, verbose=args.verbose)
+    if args.hardware:
+        timeout = args.timeout if args.timeout is not None else 180.0
+        sc = runner.run_tier4_hardware_integration(timeout_sec=timeout, verbose=args.verbose)
+        return sc.exit_code
+
+    if args.win32:
+        timeout = args.timeout if args.timeout is not None else 120.0
+        sc = runner.run_tier3_windows_integration(timeout_sec=timeout, verbose=args.verbose)
+        return sc.exit_code
+
+    if args.run_async:
+        timeout = args.timeout if args.timeout is not None else 120.0
+        scs = runner.run_tier2_async_and_ipc(timeout_sec=timeout, verbose=args.verbose)
+        return max((s.exit_code for s in scs), default=0)
+
+    if args.browser:
+        timeout = args.timeout if args.timeout is not None else 60.0
+        sc = runner.run_browser_integration(timeout_sec=timeout, verbose=args.verbose)
+        return sc.exit_code
+
+    if args.security:
+        timeout = args.timeout if args.timeout is not None else 180.0
+        sc = runner.run_security_suite(timeout_sec=timeout, verbose=args.verbose)
+        return sc.exit_code
+
+    # Default / --unit / --fast
+    timeout = args.timeout if args.timeout is not None else 300.0
+    sc = runner.run_tier1_hermetic_unit(workers=args.workers, timeout_sec=timeout, verbose=args.verbose)
+    return sc.exit_code
 
 
 if __name__ == "__main__":

@@ -79,7 +79,7 @@ class TestHotStandbyDaemonPool(unittest.TestCase):
     """Verifies LRU pool management and workspace hygiene in AntigravityBridge."""
 
     def test_hot_standby_daemon_pool_lru(self):
-        bridge = AntigravityBridge({"llm": {"antigravity_use_daemon": True}})
+        bridge = AntigravityBridge({"llm": {"antigravity_use_daemon": True}}, agy_path="mock_agy.exe")
         bridge.agy_path = "mock_agy.exe"
         bridge.max_warm_daemons = 2
 

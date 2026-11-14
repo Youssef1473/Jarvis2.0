@@ -107,7 +107,7 @@ class OllamaProvider(BaseProvider):
                 for clause in chunker.flush():
                     sentence_callback(clause)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error("Ollama generation turn failed: %s", e)
             return LLMResponse(
                 content=f"Local Ollama error: {e}",
@@ -124,7 +124,7 @@ class OllamaProvider(BaseProvider):
             fn_name = tc_data["name"]
             try:
                 fn_args = json.loads(tc_data["arguments"] or "{}")
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 fn_args = {}
             final_tool_calls.append(ToolCall(
                 id=tc_data["id"],
@@ -140,7 +140,7 @@ class OllamaProvider(BaseProvider):
                 fn_name = fn_match.group(1).strip()
                 try:
                     fn_args = json.loads(args_match.group(1)) if args_match else {}
-                except Exception:
+                except (json.JSONDecodeError, TypeError):
                     fn_args = {}
                 final_tool_calls.append(ToolCall(
                     id=f"ollama_xml_{int(time.time()*1000)}",
@@ -154,3 +154,28 @@ class OllamaProvider(BaseProvider):
             latency_ms=elapsed_ms,
             model=self.model,
         )
+
+    @classmethod
+    def unload_model(
+        cls,
+        base_url: str = "http://127.0.0.1:11434/v1",
+        model: str = "qwen3.5:2b-q4_K_M",
+        timeout: float = 1.0,
+    ) -> bool:
+        """Unloads Ollama models from GPU VRAM by sending keep_alive: 0 to /api/generate."""
+        try:
+            import urllib.request
+            base = base_url.split("/v1", 1)[0].rstrip("/")
+            req = urllib.request.Request(
+                f"{base}/api/generate",
+                data=json.dumps({"model": model, "keep_alive": 0}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout):
+                pass
+            logger.info("Unloaded Ollama model '%s' from GPU VRAM.", model)
+            return True
+        except (OSError, TimeoutError, ValueError) as err:
+            logger.debug("Ollama VRAM unload notice (server likely offline): %s", err)
+            return False

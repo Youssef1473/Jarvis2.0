@@ -63,7 +63,8 @@ class TemporalGraphMixin:
             edge_id = cursor.lastrowid
             if blob is not None:
                 try:
-                    cursor.execute("INSERT OR REPLACE INTO kg_edges_vec(edge_id, embedding) VALUES (?, ?)", (edge_id, blob))
+                    cursor.execute("DELETE FROM kg_edges_vec WHERE edge_id = ?", (edge_id,))
+                    cursor.execute("INSERT INTO kg_edges_vec(edge_id, embedding) VALUES (?, ?)", (edge_id, blob))
                 except Exception as e:
                     logger.warning("sqlite-vec knowledge edge indexing failed (%s); continuing without vector index.", e)
             return edge_id

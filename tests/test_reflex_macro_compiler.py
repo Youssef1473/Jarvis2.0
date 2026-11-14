@@ -17,9 +17,16 @@ class TestReflexMacroCompiler(unittest.TestCase):
     def setUp(self):
         self.tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
         # Register a mock test tool
-        @SkillRegistry.register(name="_mock_reflex_step", description="Mock step for macro test")
+        @SkillRegistry.register(
+            name="_mock_reflex_step",
+            description="Mock step for macro test",
+            read_only=True,
+            data_provenance="trusted_system",
+        )
         def _mock_reflex_step(val: str = "ok"):
             return {"echo": val, "status": "done"}
+
+        SkillRegistry.certify_test_read_only_tool("_mock_reflex_step")
 
     def tearDown(self):
         SkillRegistry.unregister("_mock_reflex_step")

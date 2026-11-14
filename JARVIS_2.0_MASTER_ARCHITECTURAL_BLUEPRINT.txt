@@ -2,7 +2,8 @@
 MASTER ARCHITECTURAL SPECIFICATION, PERFECTION RULES & HARDENING DIRECTIVE
 PROJECT: Jarvis 2.0 (Autonomous Desktop Assistant)
 REPOSITORY: https://github.com/Youssef1473/Jarvis2.0 (Branch: main)
-VERIFIED COMMIT BASELINE: 0697eb5128380a34d23d97baf1e8d9361191e717
+HISTORICAL REFERENCE BASELINE: 0697eb5128380a34d23d97baf1e8d9361191e717
+CURRENT REPOSITORY HEAD: Dynamically determined via `git rev-parse HEAD` (never assume a fixed hash)
 TARGET ENGINE: Antigravity CLI (Gemini 3.8 Flash / High)
 HOST HARDWARE ENVELOPE:
   - CPU: Intel Core i5-12500H (4 P-Cores / 8 Threads + 8 E-Cores)

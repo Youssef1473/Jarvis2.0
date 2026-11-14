@@ -22,7 +22,7 @@ def test_groq_candidate_models():
     cfg = load_config()
     mem = MemoryManager(cfg)
     safety = SafetyGate(cfg)
-    brain = JarvisBrain(cfg, mem, safety)
+    brain = JarvisBrain(cfg, mem, safety, antigravity_resolver=lambda: None)
     assert hasattr(brain, "groq_candidates")
     assert brain.groq_candidates[0] == "qwen/qwen3.8-27b"
     assert "openai/gpt-oss-120b" in brain.groq_candidates
@@ -35,7 +35,7 @@ def test_post_tool_synthesis_429_resilience():
     cfg = load_config()
     mem = MemoryManager(cfg)
     safety = SafetyGate(cfg)
-    brain = JarvisBrain(cfg, mem, safety)
+    brain = JarvisBrain(cfg, mem, safety, antigravity_resolver=lambda: None)
 
     # Mock Skill execution
     sample_tool_result = "Scheduled 6 calendar events for college timetable, Sir."
@@ -107,7 +107,7 @@ def test_deterministic_fallback_when_all_llms_fail():
     cfg = load_config()
     mem = MemoryManager(cfg)
     safety = SafetyGate(cfg)
-    brain = JarvisBrain(cfg, mem, safety)
+    brain = JarvisBrain(cfg, mem, safety, antigravity_resolver=lambda: None)
 
     mock_groq_client = MagicMock()
     mock_groq_client.chat.completions.create.side_effect = Exception("All network links down")

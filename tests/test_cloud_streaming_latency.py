@@ -21,11 +21,19 @@ class TestCloudStreamingLatency(unittest.TestCase):
         self.config = {
             "_base_dir": self.temp_dir,
             "memory": {"db_path": "memory.db"},
-            "llm": {"provider": "gemini"},
+            "llm": {
+                "provider": "gemini",
+                "antigravity_resolver": lambda: None,
+            },
         }
         self.memory = MemoryManager(self.config)
         self.safety = SafetyGate()
-        self.brain = JarvisBrain(self.config, self.memory, self.safety)
+        self.brain = JarvisBrain(
+            self.config,
+            self.memory,
+            self.safety,
+            antigravity_resolver=lambda: None,
+        )
         # Ensure gemini chat session state matches active brain attributes so mock_chat is not overwritten
         self.brain.gemini_model = self.brain.gemini_candidates[self.brain.gemini_model_idx]
         self.brain.gemini_task_mode = self.brain.active_task_mode

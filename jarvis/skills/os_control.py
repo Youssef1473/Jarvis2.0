@@ -1,8 +1,11 @@
 """Operating system and desktop automation tools for Windows."""
+import contextlib
 import datetime
+import hmac
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -11,7 +14,9 @@ import time
 import warnings
 import webbrowser
 import winreg
+from collections.abc import Generator
 from pathlib import Path
+from typing import Any, ClassVar
 
 # Suppress benign pywinauto STA COM mode revert warning on Windows
 warnings.filterwarnings("ignore", message=".*Revert to STA COM threading mode.*")
@@ -31,6 +36,216 @@ SW_RESTORE = 9
 VK_MENU = 0x12
 KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
+
+PROCESS_TERMINATE = 0x0001
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_ACCESS_RIGHTS = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION
+
+
+def _open_process_handle(pid: int) -> int | None:
+    if not IS_WINDOWS:
+        return None
+    with contextlib.suppress(Exception):
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_ACCESS_RIGHTS, False, ctypes.c_ulong(pid))
+        if handle and handle != 0 and handle != -1:
+            return int(handle)
+    return None
+
+
+def _close_process_handle(handle: int) -> None:
+    if not IS_WINDOWS or not handle or handle == -1:
+        return
+    with contextlib.suppress(Exception):
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+class ProcessHandleRegistry:
+    """Thread-safe registry for retaining Windows process handles during two-phase termination.
+
+    Ensures that as long as a handle is held:
+    - The Windows kernel EPROCESS object reference count remains > 0.
+    - Windows will not recycle the PID for any new process.
+    - Bounded TTL prevents handle leaks if human approval is deferred or rejected.
+    """
+    _lock: ClassVar[threading.RLock] = threading.RLock()
+    _handles: ClassVar[dict[str, dict[str, Any]]] = {}
+    DEFAULT_TTL: ClassVar[float] = 60.0
+
+    @classmethod
+    def register(cls, pid: int, handle: int, create_time: float, exe_path: str, ttl: float = DEFAULT_TTL) -> str:
+        with cls._lock:
+            cls._prune_expired()
+            handle_id = f"proc_handle_{pid}_{secrets.token_hex(8)}"
+            timer = threading.Timer(ttl, cls._prune_expired)
+            timer.daemon = True
+            cls._handles[handle_id] = {
+                "handle": handle,
+                "pid": pid,
+                "create_time": create_time,
+                "exe_path": exe_path,
+                "expires_at": time.monotonic() + ttl,
+                "timer": timer,
+                "active_leases": 0,
+                "pending_close": False,
+                "closed": False,
+                "invalidated": False,
+            }
+            timer.start()
+            return handle_id
+
+    @classmethod
+    @contextlib.contextmanager
+    def lease(
+        cls, handle_id: str | None = None, pid: int | None = None, auto_close: bool = True
+    ) -> Generator[dict[str, Any] | None, None, None]:
+        """Synchronously acquires an active handle lease for the duration of the context block.
+
+        Guarantees:
+        1. Expiration or cancellation prevents new acquisitions (returns None).
+        2. An in-flight operation retains a valid handle until the context block exits.
+        3. Even if expiry timer or cancellation fires during the operation, physical CloseHandle
+           is deferred until all active leases drop to zero.
+        4. The handle is closed exactly once after the final active lease completes.
+        """
+        target_entry = None
+        hid_to_use = None
+        with cls._lock:
+            cls._prune_expired()
+            now = time.monotonic()
+            if handle_id:
+                entry = cls._handles.get(handle_id)
+                if entry and (now + 0.005) < entry["expires_at"] and not entry.get("invalidated"):
+                    target_entry = entry
+                    hid_to_use = handle_id
+            elif pid is not None:
+                for hid, entry in cls._handles.items():
+                    if entry["pid"] == pid and (now + 0.005) < entry["expires_at"] and not entry.get("invalidated"):
+                        target_entry = entry
+                        hid_to_use = hid
+                        break
+            if target_entry:
+                target_entry["active_leases"] = target_entry.get("active_leases", 0) + 1
+
+        try:
+            yield target_entry
+        finally:
+            if target_entry:
+                with cls._lock:
+                    target_entry["active_leases"] = max(0, target_entry.get("active_leases", 1) - 1)
+                    if auto_close:
+                        target_entry["pending_close"] = True
+                    if target_entry["active_leases"] == 0 and (
+                        target_entry.get("pending_close", False)
+                        or target_entry.get("invalidated", False)
+                        or (hid_to_use and hid_to_use not in cls._handles)
+                    ):
+                        if hid_to_use:
+                            cls._handles.pop(hid_to_use, None)
+                        timer = target_entry.get("timer")
+                        if timer:
+                            timer.cancel()
+                        if target_entry.get("handle") and not target_entry.get("closed"):
+                            target_entry["closed"] = True
+                            _close_process_handle(target_entry["handle"])
+
+    @classmethod
+    def get(cls, handle_id: str) -> dict[str, Any] | None:
+        with cls._lock:
+            cls._prune_expired()
+            entry = cls._handles.get(handle_id)
+            if entry and not entry.get("invalidated"):
+                return entry
+            return None
+
+    @classmethod
+    def get_by_pid(cls, pid: int) -> dict[str, Any] | None:
+        with cls._lock:
+            cls._prune_expired()
+            for entry in cls._handles.values():
+                if entry["pid"] == pid and not entry.get("invalidated"):
+                    return entry
+            return None
+
+    @classmethod
+    def release(cls, handle_id: str) -> None:
+        with cls._lock:
+            entry = cls._handles.get(handle_id)
+            if entry:
+                entry["invalidated"] = True
+                entry["pending_close"] = True
+                timer = entry.get("timer")
+                if timer:
+                    timer.cancel()
+                if entry.get("active_leases", 0) == 0:
+                    cls._handles.pop(handle_id, None)
+                    if entry.get("handle") and not entry.get("closed"):
+                        entry["closed"] = True
+                        _close_process_handle(entry["handle"])
+                else:
+                    cls._handles.pop(handle_id, None)
+
+    @classmethod
+    def release_for_pid(cls, pid: int) -> None:
+        with cls._lock:
+            to_remove = [hid for hid, e in cls._handles.items() if e["pid"] == pid]
+            for hid in to_remove:
+                entry = cls._handles.get(hid)
+                if entry:
+                    entry["invalidated"] = True
+                    entry["pending_close"] = True
+                    timer = entry.get("timer")
+                    if timer:
+                        timer.cancel()
+                    if entry.get("active_leases", 0) == 0:
+                        cls._handles.pop(hid, None)
+                        if entry.get("handle") and not entry.get("closed"):
+                            entry["closed"] = True
+                            _close_process_handle(entry["handle"])
+                    else:
+                        cls._handles.pop(hid, None)
+
+    @classmethod
+    def clear(cls) -> None:
+        with cls._lock:
+            for entry in list(cls._handles.values()):
+                entry["invalidated"] = True
+                entry["pending_close"] = True
+                timer = entry.get("timer")
+                if timer:
+                    timer.cancel()
+                if entry.get("active_leases", 0) == 0 and entry.get("handle") and not entry.get("closed"):
+                    entry["closed"] = True
+                    _close_process_handle(entry["handle"])
+            cls._handles.clear()
+
+    @classmethod
+    def _prune_expired(cls) -> None:
+        with cls._lock:
+            now = time.monotonic()
+            expired = [hid for hid, e in cls._handles.items() if (now + 0.005) >= e["expires_at"]]
+            for hid in expired:
+                entry = cls._handles.pop(hid)
+                entry["invalidated"] = True
+                entry["pending_close"] = True
+                timer = entry.get("timer")
+                if timer:
+                    timer.cancel()
+                if entry.get("active_leases", 0) == 0 and entry.get("handle") and not entry.get("closed"):
+                    entry["closed"] = True
+                    _close_process_handle(entry["handle"])
+
+            for entry in cls._handles.values():
+                timer = entry.get("timer")
+                if timer and not timer.is_alive():
+                    remaining = max(0.01, entry["expires_at"] - now)
+                    new_timer = threading.Timer(remaining, cls._prune_expired)
+                    new_timer.daemon = True
+                    entry["timer"] = new_timer
+                    new_timer.start()
 
 
 def safe_set_foreground_window(target_hwnd: int) -> bool:
@@ -203,14 +418,72 @@ COMMON_APP_ALIASES = {
 
 @SkillRegistry.register(
     name="launch_application",
-    description="Launches a desktop application by name (e.g., 'browser', 'chrome', 'discord', 'spotify', 'code', 'calculator', 'settings', 'notepad', 'terminal').",
-    risk_level=1,
+    description="Launches a desktop application by name or path with human authorization.",
+    risk_level=2,
 )
-def launch_application(app_name: str) -> str:
-    """Launches an application by name, shortcut, or protocol scheme with detached process execution."""
+def launch_application(
+    app_name: str,
+    executable_path: str | None = None,
+    args: list[str] | None = None,
+    cwd: str | None = None,
+    launch_method: str | None = None,
+) -> str:
+    """Launches an application by name or path, protected by an inner capability gate and exact argument binding."""
+    from jarvis.core.security_boundaries import (
+        SecurityBoundaryViolation,
+        _active_auth_context,
+        compute_action_hash,
+    )
+
+    active_token = _active_auth_context.get()
+    if active_token is None or not active_token.is_valid:
+        raise SecurityBoundaryViolation(
+            "Authorization Required: launch_application requires explicit human approval."
+        )
+
+    if active_token.tool_name != "launch_application":
+        raise SecurityBoundaryViolation(
+            f"Authorization Mismatch: Active authorization is for '{active_token.tool_name}', not 'launch_application'."
+        )
+
+    call_args: dict[str, Any] = {"app_name": app_name}
+    if executable_path is not None:
+        call_args["executable_path"] = executable_path
+    if args is not None:
+        call_args["args"] = args
+    if cwd is not None:
+        call_args["cwd"] = cwd
+    if launch_method is not None:
+        call_args["launch_method"] = launch_method
+
+    expected_hash = compute_action_hash("launch_application", call_args)
+    if not hmac.compare_digest(active_token.action_hash, expected_hash):
+        raise SecurityBoundaryViolation(
+            "Action Hash Mismatch: Application launch parameters do not match approved action hash."
+        )
+
+    if not active_token.consume("launch_application", expected_hash):
+        raise SecurityBoundaryViolation(
+            "Single-Use Authorization Violation: launch_application authorization grant was already consumed or invalidated."
+        )
+
     cleaned = re.sub(r"[;&|<>$`\"]", "", app_name).lower().strip()
     if not cleaned:
         return "Application name cannot be empty, Sir."
+
+    # If explicit executable_path provided, launch directly
+    if executable_path:
+        cmd = [executable_path] + (args or [])
+        try:
+            subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                close_fds=True,
+            )
+            return f"Application '{app_name}' launched ({executable_path}), Sir."
+        except Exception as e:
+            return f"Failed to launch '{app_name}': {e}"
 
     # Handle browser requests naturally
     if cleaned in ("browser", "my browser", "web browser", "default browser"):
@@ -250,9 +523,9 @@ def launch_application(app_name: str) -> str:
         except Exception as e:
             return f"Failed to launch '{app_name}': {e}"
 
-    # 2b. Substring match in indexed applications
+    # 2b. Exact match in indexed applications
     for name, path in apps.items():
-        if resolved in name or name in resolved:
+        if resolved == name:
             try:
                 os.startfile(path)
                 return f"Application '{app_name}' ({name.title()}) launched, Sir."
@@ -263,8 +536,10 @@ def launch_application(app_name: str) -> str:
     which_path = shutil.which(resolved)
     if which_path:
         try:
+            cmd = [which_path] + (args or [])
             subprocess.Popen(
-                [which_path],
+                cmd,
+                cwd=cwd,
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
                 close_fds=True,
             )
@@ -309,8 +584,18 @@ def launch_or_focus_application(app_name: str) -> str:
     except Exception as e:
         logger.debug(f"focus_window check in launch_or_focus_application: {e}")
 
-    # Not currently open -> launch detached process
-    launch_res = launch_application(cleaned)
+    # Not currently open -> launch detached process via SkillRegistry to ensure
+    # critical privilege authorization gates are properly evaluated
+    launch_res = SkillRegistry.execute("launch_application", app_name=cleaned)
+    time.sleep(0.06)
+    try:
+        from jarvis.skills.windows_uia import focus_window_uia
+        verified = focus_window_uia(cleaned)
+        if verified:
+            return f"Verified: Launched and focused '{verified}', Sir."
+    except Exception:
+        pass
+    return launch_res
     time.sleep(0.06)
     try:
         from jarvis.skills.windows_uia import focus_window_uia
@@ -433,21 +718,21 @@ def adjust_volume(action: str = "set", percent: int = -1, steps: int = 5) -> str
         if target_pct is not None or "set" in action_str:
             target = max(0, min(100, target_pct if target_pct is not None else int(steps)))
             spk.volume_percent = float(target)
-            actual = int(round(float(spk.volume_percent or target)))
+            actual = round(float(spk.volume_percent or target))
             return f"Master volume set and verified at {actual}%, Sir."
 
         elif any(k in action_str for k in ("up", "louder", "increase", "higher")):
             curr = float(spk.volume_percent or 50.0)
-            target = max(0, min(100, int(round(curr + (int(steps) * 2)))))
+            target = max(0, min(100, round(curr + (int(steps) * 2))))
             spk.volume_percent = float(target)
-            actual = int(round(float(spk.volume_percent or target)))
+            actual = round(float(spk.volume_percent or target))
             return f"Volume increased and verified at {actual}%, Sir."
 
         elif any(k in action_str for k in ("down", "quieter", "decrease", "lower")):
             curr = float(spk.volume_percent or 50.0)
-            target = max(0, min(100, int(round(curr - (int(steps) * 2)))))
+            target = max(0, min(100, round(curr - (int(steps) * 2))))
             spk.volume_percent = float(target)
-            actual = int(round(float(spk.volume_percent or target)))
+            actual = round(float(spk.volume_percent or target))
             return f"Volume decreased and verified at {actual}%, Sir."
 
         elif any(k in action_str for k in ("mute", "unmute", "toggle")):
@@ -469,7 +754,7 @@ def adjust_volume(action: str = "set", percent: int = -1, steps: int = 5) -> str
         target = max(0, min(100, target_pct if target_pct is not None else 50))
         for _ in range(50):
             _send_vk(VK_VOLUME_DOWN)
-        up_steps = int(round(target / 2.0))
+        up_steps = round(target / 2.0)
         for _ in range(up_steps):
             _send_vk(VK_VOLUME_UP)
         return f"Volume set to {target}%, Sir."
@@ -611,6 +896,198 @@ def shutdown_jarvis() -> str:
     return "Powering down systems. Goodbye, Sir."
 
 
+def _get_window_title_for_pid(pid: int) -> str:
+    """Retrieves visible top-level window title for a given PID if available."""
+    if not IS_WINDOWS:
+        return ""
+    try:
+        import win32gui
+        import win32process
+
+        titles: list[str] = []
+
+        def enum_cb(hwnd: int, _: Any) -> bool:
+            if win32gui.IsWindowVisible(hwnd):
+                _, w_pid = win32process.GetWindowThreadProcessId(hwnd)
+                if w_pid == pid:
+                    t = win32gui.GetWindowText(hwnd).strip()
+                    if t:
+                        titles.append(t)
+            return True
+
+        win32gui.EnumWindows(enum_cb, None)
+        return titles[0] if titles else ""
+    except Exception:
+        return ""
+
+
+@SkillRegistry.register(
+    name="discover_application_processes",
+    description="Phase A Discovery: Enumerates running process instances matching an application name and returns verified identity tuples without terminating.",
+    risk_level=0,
+    read_only=True,
+)
+def discover_application_processes(app_name: str) -> list[dict[str, Any]]:
+    """Discovers matching process instances and captures verified identity anchors without terminating."""
+    cleaned = (app_name or "").lower().strip().removesuffix(".exe")
+    if not cleaned:
+        return []
+
+    alias_target = COMMON_APP_ALIASES.get(cleaned, cleaned).lower().removesuffix(".exe")
+    candidate_names = {cleaned, f"{cleaned}.exe", alias_target, f"{alias_target}.exe"}
+
+    candidates = []
+    for proc in psutil.process_iter(['pid', 'name', 'create_time', 'exe']):
+        try:
+            p_name = (proc.info.get('name') or "").lower()
+            if not p_name:
+                continue
+
+            if p_name in CRITICAL_PROCESS_DENYLIST or p_name.removesuffix(".exe") in ("explorer", "python", "pythonw", "system"):
+                continue
+
+            p_base = p_name.removesuffix(".exe")
+            if p_name in candidate_names or p_base in candidate_names:
+                pid = int(proc.info['pid'])
+                create_time = float(proc.info.get('create_time') or proc.create_time())
+                try:
+                    exe_path = str(proc.info.get('exe') or proc.exe() or "")
+                except Exception:
+                    exe_path = ""
+
+                window_title = _get_window_title_for_pid(pid)
+                handle = _open_process_handle(pid)
+                handle_id = ProcessHandleRegistry.register(pid, handle, create_time, exe_path) if handle else None
+
+                candidates.append({
+                    "pid": pid,
+                    "create_time": create_time,
+                    "exe_path": exe_path,
+                    "window_title": window_title,
+                    "app_name": proc.info.get('name') or p_name,
+                    "handle_id": handle_id,
+                })
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    return candidates
+
+
+@SkillRegistry.register(
+    name="terminate_process_instance",
+    description="Phase B Termination: Terminates an approved process instance matching verified PID, creation timestamp, and executable path.",
+    risk_level=2,
+)
+def terminate_process_instance(
+    pid: int,
+    create_time: float,
+    exe_path: str,
+    handle_id: str | None = None,
+) -> str:
+    """Terminates an approved process instance after verifying process identity and preventing PID reuse."""
+    from jarvis.core.security_boundaries import (
+        SecurityBoundaryViolation,
+        _active_auth_context,
+        compute_action_hash,
+    )
+
+    active_token = _active_auth_context.get()
+    if active_token is None or not active_token.is_valid:
+        raise SecurityBoundaryViolation(
+            "Authorization Required: terminate_process_instance requires explicit human approval."
+        )
+
+    if active_token.tool_name not in ("terminate_process_instance", "close_application"):
+        raise SecurityBoundaryViolation(
+            f"Authorization Mismatch: Active authorization is for '{active_token.tool_name}', not 'terminate_process_instance'."
+        )
+
+    base_exe = os.path.basename(exe_path)
+    cand_hashes = [
+        compute_action_hash(active_token.tool_name, {"pid": pid, "create_time": create_time, "exe_path": exe_path}),
+        compute_action_hash(active_token.tool_name, {"app_name": base_exe, "pid": pid, "create_time": create_time, "exe_path": exe_path}),
+        compute_action_hash(active_token.tool_name, {"app_name": base_exe.removesuffix(".exe"), "pid": pid, "create_time": create_time, "exe_path": exe_path}),
+    ]
+
+    matched_hash = None
+    for h in cand_hashes:
+        if hmac.compare_digest(active_token.action_hash, h):
+            matched_hash = h
+            break
+
+    if matched_hash is None:
+        raise SecurityBoundaryViolation(
+            "Action Hash Mismatch: Process identity parameters do not match approved action hash."
+        )
+
+    if not active_token.consume(active_token.tool_name, matched_hash):
+        raise SecurityBoundaryViolation(
+            "Single-Use Authorization Violation: terminate_process_instance authorization grant was already consumed or invalidated."
+        )
+
+    base_lower = base_exe.lower()
+    if base_lower in CRITICAL_PROCESS_DENYLIST or base_lower.removesuffix(".exe") in ("explorer", "python", "pythonw", "system"):
+        return f"Denied: Cannot terminate system-critical process '{base_lower}'."
+
+    # Identity Verification & Actuation via Synchronized Handle Lease
+    with ProcessHandleRegistry.lease(handle_id=handle_id, pid=pid) as retained_entry:
+        if retained_entry and retained_entry.get("handle"):
+            handle = retained_entry["handle"]
+            try:
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                exit_code = ctypes.c_ulong()
+                if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)) and exit_code.value != 259:  # STILL_ACTIVE
+                    return f"Process PID {pid} no longer exists; already terminated, Sir."
+
+                if kernel32.TerminateProcess(handle, 1):
+                    return f"Successfully terminated verified process instance PID {pid} ({exe_path}) via retained handle, Sir."
+            except OSError as e:
+                logger.warning(f"Retained handle termination failed for PID {pid}: {e}")
+
+    # Fallback / mockable verification path via psutil
+    try:
+        proc = psutil.Process(pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        ProcessHandleRegistry.release_for_pid(pid)
+        return f"Process PID {pid} no longer exists; already terminated, Sir."
+
+    # Verification 1: PID Reuse defense via create_time
+    proc_ct = proc.create_time()
+    if abs(proc_ct - create_time) > 1e-3:
+        ProcessHandleRegistry.release_for_pid(pid)
+        raise SecurityBoundaryViolation(
+            f"Process Identity Violation: Target PID {pid} creation time mismatch "
+            f"(expected {create_time}, got {proc_ct}). Possible PID reuse attack detected; actuation aborted."
+        )
+
+    # Verification 2: Binary Replacement defense via exe_path
+    proc_exe = ""
+    with contextlib.suppress(Exception):
+        proc_exe = str(proc.exe())
+
+    norm_proc_exe = os.path.normcase(os.path.normpath(proc_exe))
+    norm_expected_exe = os.path.normcase(os.path.normpath(exe_path))
+    if norm_proc_exe != norm_expected_exe:
+        ProcessHandleRegistry.release_for_pid(pid)
+        raise SecurityBoundaryViolation(
+            f"Process Identity Violation: Target PID {pid} executable path mismatch "
+            f"(expected '{exe_path}', got '{proc_exe}'). Possible binary replacement attack detected; actuation aborted."
+        )
+
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=1.0)
+        except psutil.TimeoutExpired:
+            with contextlib.suppress(Exception):
+                proc.kill()
+    finally:
+        ProcessHandleRegistry.release_for_pid(pid)
+
+    return f"Successfully terminated verified process instance PID {pid} ({exe_path}), Sir."
+
+
 CRITICAL_PROCESS_DENYLIST = {
     "explorer.exe", "python.exe", "pythonw.exe", "svchost.exe", "csrss.exe",
     "winlogon.exe", "lsass.exe", "dwm.exe", "services.exe", "system", "smss.exe",
@@ -626,6 +1103,34 @@ CRITICAL_PROCESS_DENYLIST = {
 )
 def close_application(app_name: str) -> str:
     """Closes matching running desktop processes, enforcing critical system process protection."""
+    from jarvis.core.security_boundaries import (
+        SecurityBoundaryViolation,
+        _active_auth_context,
+        compute_action_hash,
+    )
+
+    active_token = _active_auth_context.get()
+    if active_token is None or not active_token.is_valid:
+        raise SecurityBoundaryViolation(
+            "Authorization Required: close_application requires explicit human approval."
+        )
+
+    if active_token.tool_name != "close_application":
+        raise SecurityBoundaryViolation(
+            f"Authorization Mismatch: Active authorization is for '{active_token.tool_name}', not 'close_application'."
+        )
+
+    expected_hash = compute_action_hash("close_application", {"app_name": app_name.strip()})
+    if not hmac.compare_digest(active_token.action_hash, expected_hash):
+        raise SecurityBoundaryViolation(
+            "Action Hash Mismatch: Application name does not match approved action hash."
+        )
+
+    if not active_token.consume("close_application", expected_hash):
+        raise SecurityBoundaryViolation(
+            "Single-Use Authorization Violation: close_application authorization grant was already consumed or invalidated."
+        )
+
     cleaned = app_name.lower().strip()
     if not cleaned:
         return "Application name cannot be empty, Sir."
@@ -645,8 +1150,9 @@ def close_application(app_name: str) -> str:
 
     closed_count = 0
     closed_names = []
+    matching_procs = []
 
-    # 1. Process termination via psutil
+    # 1. Process termination via psutil - exact matching without fuzzy substring inclusion
     for proc in psutil.process_iter(['pid', 'name']):
         try:
             p_name = (proc.info['name'] or "").lower()
@@ -654,30 +1160,39 @@ def close_application(app_name: str) -> str:
                 continue
 
             # Skip any critical process
-            if p_name in CRITICAL_PROCESS_DENYLIST:
+            if p_name in CRITICAL_PROCESS_DENYLIST or p_name.removesuffix(".exe") in ("explorer", "python", "pythonw", "system"):
                 continue
 
-            # Match target or alias
+            # Exact match against target or alias only - NO fuzzy substring matching
             p_base = p_name.removesuffix(".exe")
-            is_match = any(
-                cand == p_name or cand == p_base or (len(cand) >= 4 and (cand in p_name or cand in p_base))
-                for cand in candidate_targets
-            )
-            if is_match:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=1.0)
-                except psutil.TimeoutExpired:
-                    proc.kill()
-                closed_count += 1
-                if proc.info['name'] not in closed_names:
-                    closed_names.append(proc.info['name'])
+            if any(cand == p_name or cand == p_base for cand in candidate_targets):
+                matching_procs.append(proc)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-    if closed_count > 0:
-        names_str = ", ".join(closed_names)
-        return f"Closed {closed_count} process(es) matching '{app_name}' ({names_str}), Sir."
+    if len(matching_procs) > 1:
+        pids = [p.info.get('pid') or getattr(p, 'pid', 'unknown') for p in matching_procs]
+        return (
+            f"Multiple running process instances match '{app_name}' (PIDs: {pids}). "
+            f"Blind bulk termination denied for safety. Please use discover_application_processes "
+            f"and terminate_process_instance with verified identity, Sir."
+        )
+
+    if len(matching_procs) == 1:
+        proc = matching_procs[0]
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1.0)
+            except (psutil.TimeoutExpired, psutil.Error, OSError):
+                with contextlib.suppress(Exception):
+                    proc.kill()
+            p_name = proc.info.get('name') or (proc.name() if callable(getattr(proc, 'name', None)) else app_name)
+            closed_names.append(p_name)
+            closed_count = 1
+            return f"Closed 1 process(es) matching '{app_name}' ({p_name}), Sir."
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return f"Process matching '{app_name}' was already terminated, Sir."
 
     # 2. Deterministic Fallback Cascade: If no process was found by name, attempt graceful window close via Win32 WM_CLOSE
     try:

@@ -41,6 +41,7 @@ KNOWN_READ_ONLY_TOOLS: set[str] = {
     "list_open_browser_tabs",
     "list_pending_tasks",
     "list_running_applications",
+    "discover_application_processes",
     "list_background_tasks",
     "list_staged_documents",
     "list_photos",
@@ -87,6 +88,8 @@ KNOWN_READ_ONLY_TOOLS: set[str] = {
     "inspect_screen_with_marks",
     "inspect_ram_hogs",
     "inspect_window_controls",
+    "get_focused_element",
+    "retrieve_element_patterns",
     "check_unread_emails",
     "check_hardware_health",
     "check_code_diagnostics",
@@ -113,6 +116,7 @@ class SkillMetadata:
     path_arg_names: tuple[str, ...] = ()
     default_timeout_ms: int = 1500
     origin: str = "builtin"
+    data_provenance: str = "unspecified"
 
 
 class ExecutionCapability:
@@ -250,6 +254,62 @@ class SkillExecutionResult:
     error_message: str | None = None
 
 
+def _resolve_json_schema_property(annotation: Any) -> dict[str, Any]:
+    """Converts a Python type annotation to an OpenAPI / JSON Schema property dictionary."""
+    if annotation == inspect.Parameter.empty or annotation is Any:
+        return {"type": "string"}
+
+    import types
+    import typing
+
+    origin = typing.get_origin(annotation)
+    args = typing.get_args(annotation)
+
+    # Unwrap Union / Optional (e.g. list[str] | None, Optional[int])
+    union_types = (typing.Union, getattr(types, "UnionType", None))
+    valid_union_types = tuple(u for u in union_types if u is not None)
+    if origin in valid_union_types:
+        non_none_args = [a for a in args if a not in (type(None), None)]
+        has_none = len(non_none_args) < len(args)
+        if non_none_args:
+            resolved = dict(_resolve_json_schema_property(non_none_args[0]))
+            if has_none:
+                # Under OpenAI Strict Mode (Structured Outputs), nullable types must use array format:
+                # e.g. type: ["string", "null"] or type: ["array", "null"]
+                orig_type = resolved.get("type", "string")
+                if isinstance(orig_type, list):
+                    if "null" not in orig_type:
+                        resolved["type"] = [*orig_type, "null"]
+                else:
+                    resolved["type"] = [orig_type, "null"]
+                resolved.pop("nullable", None)
+            return resolved
+        return {"type": ["string", "null"]} if has_none else {"type": "string"}
+
+    # Handle List / Sequence (e.g. list[str], list[int], list)
+    if origin in (list, tuple, set, typing.Sequence, typing.Iterable) or annotation in (list, tuple, set):
+        item_schema = {"type": "string"}
+        if args and args[0] is not Any:
+            item_schema = _resolve_json_schema_property(args[0])
+        return {"type": "array", "items": item_schema}
+
+    # Handle Dict / Mapping (e.g. dict[str, Any], dict)
+    if origin in (dict, typing.Mapping) or annotation in (dict,):
+        return {"type": "object"}
+
+    # Primitives
+    if annotation is str:
+        return {"type": "string"}
+    if annotation is int:
+        return {"type": "integer"}
+    if annotation is float:
+        return {"type": "number"}
+    if annotation is bool:
+        return {"type": "boolean"}
+
+    return {"type": "string"}
+
+
 class SkillRegistry:
     """Central registry holding all callable tools for Jarvis."""
 
@@ -259,6 +319,8 @@ class SkillRegistry:
     _metadata: ClassVar[dict[str, SkillMetadata]] = {}
     _openai_tools_cache: ClassVar[dict[tuple[str, ...], list[dict[str, Any]]]] = {}
     _test_certified_read_only_tools: ClassVar[set[str]] = set()
+    _skills_loaded: ClassVar[bool] = False
+    _skills_lock: ClassVar[threading.Lock] = threading.Lock()
     _aliases: ClassVar[dict[str, str]] = {
         "store_fact": "remember_fact",
         "save_fact": "remember_fact",
@@ -267,6 +329,63 @@ class SkillRegistry:
         "remember": "remember_fact",
         "recall": "recall_fact",
     }
+
+    @classmethod
+    def ensure_skills_loaded(cls) -> None:
+        """Idempotently discovers and loads all built-in skill modules."""
+        if cls._skills_loaded:
+            return
+        with cls._skills_lock:
+            if cls._skills_loaded:
+                return
+            import importlib
+            skill_modules = (
+                "ast_code_surgeon",
+                "briefing",
+                "browser_agent",
+                "browser_cdp",
+                "calendar_manager",
+                "chrome_devtools",
+                "deep_research",
+                "dev_shell",
+                "diagnostics",
+                "document_ingest",
+                "email_manager",
+                "everything_search",
+                "gemini_intelligence",
+                "hybrid_actuator",
+                "job_object_sandbox",
+                "mcp_manager",
+                "media_dj",
+                "modern_web",
+                "notes",
+                "nvml_dxgi_vram_arbiter",
+                "os_control",
+                "photo_manager",
+                "productivity",
+                "project_manager",
+                "protocols",
+                "reflex_macro_compiler",
+                "rstrtmgr_lock_surgeon",
+                "screen_vision",
+                "self_evolution",
+                "system_maintenance",
+                "system_watchdog",
+                "timers",
+                "usn_journal_delta_radar",
+                "voice_control",
+                "web_search",
+                "windows_uia",
+            )
+            for mod_name in skill_modules:
+                try:
+                    importlib.import_module(f"jarvis.skills.{mod_name}")
+                except Exception as err:  # noqa: BLE001
+                    import logging
+                    logging.getLogger("Jarvis.SkillRegistry").warning(
+                        "Failed to load skill module %s: %s", mod_name, err
+                    )
+            cls._skills_loaded = True
 
     @classmethod
     def resolve_canonical_name(cls, name: str) -> str:
@@ -307,6 +426,7 @@ class SkillRegistry:
         path_arg_names: tuple[str, ...] = (),
         default_timeout_ms: int = 1500,
         origin: str = "builtin",
+        data_provenance: str = "unspecified",
     ):
         """Decorator to register a Python function as a Jarvis skill tool.
         
@@ -342,6 +462,10 @@ class SkillRegistry:
                     raise PermissionError(
                         f"Security Violation: Custom or dynamically executed skill '{t_name}' cannot claim origin='builtin'."
                     )
+            if origin != "builtin" and data_provenance in ("trusted_system", "trusted_internal"):
+                raise PermissionError(
+                    f"Security Violation: Custom or dynamic skill '{t_name}' with origin='{origin}' cannot declare trusted data provenance."
+                )
 
         def _check_collision(t_name: str, incoming_origin: str):
             existing_meta = cls._metadata.get(t_name)
@@ -417,6 +541,7 @@ class SkillRegistry:
                 path_arg_names=tuple(path_arg_names),
                 default_timeout_ms=default_timeout_ms,
                 origin=origin,
+                data_provenance=data_provenance,
             )
             cls._openai_tools_cache.clear()
             return func
@@ -443,6 +568,7 @@ class SkillRegistry:
                 path_arg_names=tuple(path_arg_names),
                 default_timeout_ms=default_timeout_ms,
                 origin=origin,
+                data_provenance=data_provenance,
             )
             cls._openai_tools_cache.clear()
             return func
@@ -465,7 +591,7 @@ class SkillRegistry:
             return meta
         func = cls.get_tool(canonical)
         if func is not None:
-            return SkillMetadata(name=canonical, func=func, read_only=False, external_ingestion=False)
+            return SkillMetadata(name=canonical, func=func, read_only=False, external_ingestion=False, data_provenance="unspecified")
         return None
 
     @classmethod
@@ -505,14 +631,6 @@ class SkillRegistry:
             return cached
 
         openai_tools = []
-        type_map = {
-            str: "string",
-            int: "integer",
-            float: "number",
-            bool: "boolean",
-            list: "array",
-            dict: "object",
-        }
 
         for name in ordered_names:
             func = cls._tools[name]
@@ -534,13 +652,11 @@ class SkillRegistry:
                     or param.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
                 ):
                     continue
-                p_type = "string"
-                if param.annotation != inspect.Parameter.empty:
-                    p_type = type_map.get(param.annotation, "string")
 
-                props[p_name] = {"type": p_type}
-                if param.default == inspect.Parameter.empty:
-                    required.append(p_name)
+                props[p_name] = _resolve_json_schema_property(param.annotation)
+
+            # Under OpenAI Strict Mode (Structured Outputs), every declared property must be in required
+            required = list(props.keys())
 
             desc = cls._descriptions.get(name) or (func.__doc__ or name).strip()
             openai_tools.append({
@@ -548,10 +664,12 @@ class SkillRegistry:
                 "function": {
                     "name": name,
                     "description": desc,
+                    "strict": True,
                     "parameters": {
                         "type": "object",
                         "properties": props,
-                        "required": required
+                        "required": required,
+                        "additionalProperties": False,
                     }
                 }
             })
@@ -571,6 +689,21 @@ class SkillRegistry:
                 error_type="not_found",
                 error_message=f"Tool '{name}' not found.",
             )
+
+        # Enforce strict schema: reject undeclared arguments if tool does not accept **kwargs or is send_email
+        sig = inspect.signature(tool)
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        if not has_var_kw or resolved == "send_email":
+            allowed_params = set(sig.parameters.keys())
+            unexpected_args = set(kwargs.keys()) - allowed_params
+            if unexpected_args:
+                err_msg = f"Security Violation: Error executing tool '{name}': unexpected argument(s) {sorted(unexpected_args)} not accepted by '{resolved}'."
+                return SkillExecutionResult(
+                    result=err_msg,
+                    success=False,
+                    error_type="security_violation",
+                    error_message=err_msg,
+                )
 
         # CRITICAL SECURITY GATE: Direct execution boundary
         # Single-use authorization capability bound to exact tool authorized by orchestrator
@@ -613,6 +746,32 @@ class SkillRegistry:
                     error_message=str(sec_err),
                 )
 
+            # Model/untrusted tool calls cannot forge trusted provenance
+        if "source_provenance" in kwargs:
+            from jarvis.core.security_boundaries import TurnTaintTracker
+            prov_val = str(kwargs["source_provenance"]).strip().lower()
+            if prov_val in TurnTaintTracker.TRUSTED_PROVENANCES:
+                import logging
+                logging.getLogger("Jarvis.SkillRegistry").warning(
+                    "Blocked attempt to supply trusted provenance '%s' via tool call '%s'; downgrading to 'user_supplied'.",
+                    prov_val,
+                    name,
+                )
+                kwargs["source_provenance"] = "user_supplied"
+
+        ctx_token = None
+        if not is_authorized_orchestrator_call and gate_decision.grant is not None:
+            from jarvis.core.security_boundaries import DualKeyApprovalManager
+            try:
+                ctx_token = DualKeyApprovalManager.get_instance().bind_active_grant(gate_decision.grant)
+            except Exception as bind_err:  # noqa: BLE001
+                return SkillExecutionResult(
+                    result=f"Security Violation: Failed to bind authorization grant: {bind_err}",
+                    success=False,
+                    error_type="security_violation",
+                    error_message=str(bind_err),
+                )
+
         try:
             output = tool(**kwargs)
             return SkillExecutionResult(
@@ -620,6 +779,14 @@ class SkillRegistry:
                 success=True,
             )
         except Exception as e:  # noqa: BLE001 - catch arbitrary skill execution failures to return structured status
+            from jarvis.core.security_boundaries import SecurityBoundaryViolation
+            if isinstance(e, SecurityBoundaryViolation):
+                return SkillExecutionResult(
+                    result=f"Security Violation: {e}",
+                    success=False,
+                    error_type="security_violation",
+                    error_message=str(e),
+                )
             err_msg = f"Error executing tool '{name}': {e}"
             return SkillExecutionResult(
                 result=err_msg,
@@ -627,6 +794,10 @@ class SkillRegistry:
                 error_type="exception",
                 error_message=str(e),
             )
+        finally:
+            if ctx_token is not None:
+                from jarvis.core.security_boundaries import DualKeyApprovalManager
+                DualKeyApprovalManager.get_instance().clear_active_authorized(ctx_token)
 
     @classmethod
     def execute(cls, name: str, **kwargs) -> Any:

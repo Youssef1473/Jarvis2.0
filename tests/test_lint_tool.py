@@ -80,21 +80,29 @@ class TestLintToolResolution(unittest.TestCase):
         ws_root = self.base / "ws"
         untrusted_base = Path("C:\\untrusted\\env" if os.name == "nt" else "/tmp/untrusted/env")
         scripts_untrusted = untrusted_base / ("Scripts" if os.name == "nt" else "bin")
-        self._create_mock_ruff(scripts_untrusted)
+        fake_untrusted_ruff = scripts_untrusted / ("ruff.exe" if os.name == "nt" else "ruff")
 
         # Valid Tier 2 binary in python interpreter directory
         python_home = self.base / "python_home"
         expected = self._create_mock_ruff(python_home)
         sys_exec = python_home / "python.exe"
 
-        result = resolve_ruff_command(
-            workspace_root=ws_root,
-            environ={"VIRTUAL_ENV": str(untrusted_base)},
-            sys_exec=str(sys_exec),
-            which_func=lambda _: None,
-            module_checker=lambda: False,
-        )
-        self.assertEqual(result, [str(expected)])
+        orig_is_file = Path.is_file
+
+        def fake_isfile(p: Path) -> bool:
+            if p == fake_untrusted_ruff:
+                return True
+            return orig_is_file(p)
+
+        with patch("pathlib.Path.is_file", autospec=True, side_effect=fake_isfile):
+            result = resolve_ruff_command(
+                workspace_root=ws_root,
+                environ={"VIRTUAL_ENV": str(untrusted_base)},
+                sys_exec=str(sys_exec),
+                which_func=lambda _: None,
+                module_checker=lambda: False,
+            )
+            self.assertEqual(result, [str(expected)])
 
     def test_resolve_rejects_untrusted_virtual_env(self) -> None:
         """Rejects VIRTUAL_ENV candidate located outside trusted workspace roots."""

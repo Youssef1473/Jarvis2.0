@@ -122,7 +122,22 @@ git diff --stat
 
 ---
 
-## 3. Empirical Verification Reporting Format
+## 3. Empirical Verification Reporting & Evidence-Provenance Contract
+
+Every reported verification result must satisfy the **Evidence-Provenance Contract**. Results must be derived strictly from fresh tool execution in the active session.
+
+### The 4-Tier Evidence Hierarchy
+1. **Live Execution Output (Tier A, Authoritative):** Exact stdout/stderr and exit code from the specific command run in the current session strictly supersedes all documentation or prior claims.
+2. **Empirical Environmental Probes (Tier B):** Reproducible diagnostic checks demonstrating platform or sandbox boundaries (e.g. socket filtering, loopback drop).
+3. **Historical Test Records (Tier C, Informational Only):** Documented prior runs (e.g., in `docs/milestones/MILESTONES.md`) explain historical baseline context on other platforms, but can **never** substitute for, override, or be presented as current execution results.
+4. **Documentation Claims (Tier D, Non-Evidential):** Architectural narratives, specifications, or README descriptions.
+
+### Mandatory Verification Rules
+1. **No Historical Substitution:** Never infer a successful test result from historical documentation or reuse an old test count as the outcome of a new run.
+2. **Strict Exit Code Alignment:** Never report successful verification when a command returned a non-zero exit code (e.g. exit code 1 with 2 failures must be reported as failed).
+3. **Execution State Fidelity:** Distinguish command launch, running in background, process timeout, cancellation, and completed execution.
+4. **Discrepancy Reporting:** When live test output diverges from documentation, explicitly report the failure and divergence. Never silently report the favorable document claim.
+5. **No Output -> Not Verified:** If command output is unavailable, truncated, or unexecuted, report `NOT VERIFIED`.
 
 Always present verification results using this standardized structure. Do not omit exit codes or skip counts:
 
@@ -154,5 +169,6 @@ Always present verification results using this standardized structure. Do not om
 ## 4. Negative Constraints
 
 1. **PROHIBITED:** Asserting that a test passed if the command was not executed or resulted in non-zero exit code.
-2. **PROHIBITED:** Using hyperbolic claims such as "100% bug-free", "zero vulnerability exposure", or "flawless execution".
-3. **PROHIBITED:** Truncating working tree manifests with `etc.` or omitting unversioned files in audit reports.
+2. **PROHIBITED:** Using historical test records from `docs/milestones/MILESTONES.md` or prior commits as the reported outcome of a current session test run.
+3. **PROHIBITED:** Using hyperbolic claims such as "100% bug-free", "zero vulnerability exposure", or "flawless execution".
+4. **PROHIBITED:** Truncating working tree manifests with `etc.` or omitting unversioned files in audit reports.

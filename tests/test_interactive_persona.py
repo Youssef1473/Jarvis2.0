@@ -12,11 +12,12 @@ class TestInteractivePersona(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.config = load_config()
+        cls.config.setdefault("llm", {})["antigravity_resolver"] = lambda: None
         cls.memory = MagicMock(spec=MemoryManager)
         cls.safety = MagicMock(spec=SafetyGate)
 
     def setUp(self):
-        self.brain = JarvisBrain(self.config, self.memory, self.safety)
+        self.brain = JarvisBrain(self.config, self.memory, self.safety, antigravity_resolver=lambda: None)
 
     def test_system_prompt_contains_authentic_bettany_demeanor(self):
         """Verifies BASE_SYSTEM_PROMPT embeds Paul Bettany cadence, dry irony, and anti-corporate directives."""

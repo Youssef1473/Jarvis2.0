@@ -1,5 +1,5 @@
 ---
-trigger: always_on
+trigger: model_decision
 description: Consult the graphify knowledge graph at graphify-out/ for codebase and architecture questions.
 ---
 

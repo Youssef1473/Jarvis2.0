@@ -60,7 +60,10 @@ class TestGeminiSessionReliability(unittest.TestCase):
         self.config = {
             "_base_dir": self.temp_dir,
             "memory": {"db_path": "memory.db"},
-            "llm": {"provider": "gemini"},
+            "llm": {
+                "provider": "gemini",
+                "antigravity_resolver": lambda: None,
+            },
         }
         self.env_patcher = patch.dict(os.environ, {"GEMINI_API_KEY": "fake_gemini_api_key_for_testing"})
         self.env_patcher.start()
@@ -74,7 +77,7 @@ class TestGeminiSessionReliability(unittest.TestCase):
 
         self.memory = MemoryManager(self.config)
         self.safety = SafetyGate()
-        self.brain = JarvisBrain(self.config, self.memory, self.safety)
+        self.brain = JarvisBrain(self.config, self.memory, self.safety, antigravity_resolver=lambda: None)
         self.brain.gemini_model = self.brain.gemini_candidates[self.brain.gemini_model_idx]
         self.brain.gemini_task_mode = self.brain.active_task_mode
         self.brain.gemini_tool_names = self.brain.active_tool_names
@@ -388,9 +391,12 @@ class TestGeminiSessionReliability(unittest.TestCase):
             cfg2 = {
                 "_base_dir": temp_dir_2,
                 "memory": {"db_path": "memory.db"},
-                "llm": {"provider": "gemini"},
+                "llm": {
+                    "provider": "gemini",
+                    "antigravity_resolver": lambda: None,
+                },
             }
-            brain2 = JarvisBrain(cfg2, MemoryManager(cfg2), SafetyGate())
+            brain2 = JarvisBrain(cfg2, MemoryManager(cfg2), SafetyGate(), antigravity_resolver=lambda: None)
             brain2.gemini_model = brain2.gemini_candidates[brain2.gemini_model_idx]
             brain2.gemini_task_mode = brain2.active_task_mode
             brain2.gemini_tool_names = brain2.active_tool_names

@@ -1,17 +1,16 @@
 """End-to-End Verification Test for Context-Gated Document & PDF Ingestion Engine."""
 import datetime
-import os
-from pathlib import Path
 import sys
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.skills.base import SkillRegistry
-from jarvis.core.memory import MemoryManager
-from jarvis.core.config_loader import load_config
-import jarvis.skills.document_ingest
+
 import jarvis.skills.calendar_manager
-import pypdf
+import jarvis.skills.document_ingest
+from jarvis.core.config_loader import load_config
+from jarvis.core.memory import MemoryManager
+from jarvis.skills.base import SkillRegistry
 
 
 def create_sample_pdf(file_path: Path, title: str, content_lines: list[str]) -> None:
@@ -22,19 +21,6 @@ def create_sample_pdf(file_path: Path, title: str, content_lines: list[str]) -> 
     writer.add_blank_page(width=612, height=792)
     
     # We can also write standard PDF streams using reportlab or minimal PDF object syntax
-    # Minimal pure-python PDF with font and text:
-    pdf_content = (
-        "%PDF-1.4\n"
-        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
-        "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
-        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n"
-        "4 0 obj << /Length {length} >> stream\n"
-        "BT /F1 12 Tf 50 700 Td ({text}) Tj ET\n"
-        "endstream\n"
-        "endobj\n"
-        "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
-        "xref\n0 6\n0000000000 65535 f \n0000000010 00000 n \n0000000060 00000 n \n0000000117 00000 n \n0000000244 00000 n \n0000000350 00000 n \ntrailer << /Size 6 /Root 1 0 R >>\nstartxref\n436\n%%EOF"
-    )
     raw_text = "\\n".join(content_lines)
     stream_content = f"BT /F1 12 Tf 50 700 Td ({title}) Tj 0 -20 Td ({raw_text}) Tj ET"
     full_pdf = (
@@ -53,8 +39,8 @@ def create_sample_pdf(file_path: Path, title: str, content_lines: list[str]) -> 
 
 
 def test_document_ingestion_suite():
-    import tempfile
     import shutil
+    import tempfile
     print("=== Testing Context-Gated Universal Document Ingestion ===")
     temp_dir = tempfile.mkdtemp()
     temp_db_path = str(Path(temp_dir) / "test_doc_memory.db")
@@ -75,10 +61,10 @@ def test_document_ingestion_suite():
         
         today_iso = datetime.date.today().isoformat()
         syllabus_lines = [
-            f"Course: Advanced Quantum Mechanics (PHYS 401)",
+            "Course: Advanced Quantum Mechanics (PHYS 401)",
             f"Midterm Exam: {today_iso} at 10:00 AM in Hall B",
             f"Final Project Review: {today_iso} at 3:00 PM in Lab 4",
-            f"Required Action: Submit lab notebook by end of week"
+            "Required Action: Submit lab notebook by end of week"
         ]
         create_sample_pdf(test_pdf, "Spring 2026 Physics Syllabus", syllabus_lines)
         assert test_pdf.exists(), "Sample test PDF was not created!"
@@ -100,6 +86,8 @@ def test_document_ingestion_suite():
         assert test_pdf.name in staged_list_msg, "Staged document missing from list output!"
 
         # 5. Process Staged Document with User Context
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        TurnTaintTracker.get_instance().reset_turn()
         user_instruction = (
             "Jarvis, that PDF is my university quantum physics syllabus. "
             "Please register the Midterm Exam and Final Project Review in my calendar, "

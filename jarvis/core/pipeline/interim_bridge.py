@@ -4,6 +4,7 @@ Provides speculative, non-blocking conversational status updates during extended
 tool-use loops to eliminate awkward dead air while Kokoro-82M synthesizes speech.
 """
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -99,7 +100,7 @@ class InterimSpeechBridge:
                 if self.speak_fn:
                     try:
                         self.speak_fn(phrase)
-                    except Exception as err:
+                    except Exception as err:  # noqa: BLE001
                         logger.warning("Error dispatching interim speech: %s", err)
 
             self._pending_timer = threading.Timer(delay, _fire)
@@ -125,3 +126,48 @@ class InterimSpeechBridge:
     def spoken_count(self) -> int:
         with self._lock:
             return self._spoken_count
+
+
+def clean_speech_clause(text: str) -> str:
+    """Normalizes times, dates, numbers, units, and markdown for vocal delivery."""
+    if not text:
+        return ""
+    from jarvis.audio.normalizer import SpeechNormalizer
+
+    cleaned = SpeechNormalizer.normalize(text)
+    if not re.search(r"[a-zA-Z0-9]", cleaned):
+        return ""
+    return cleaned
+
+
+def extract_next_speech_chunk(buffer: str) -> tuple[str | None, str]:
+    """Extracts the next natural spoken clause or sentence from the streaming buffer
+    with speculative punctuation boundary emission for sub-100ms voice reflex latency.
+    """
+    # Terminal punctuation (. ! ? \n)
+    m_term = re.search(r"(?<!\d)(?<!\b[A-Za-z])[.!?\n]+(?!\d)(\s+|$)", buffer)
+    # Speculative clause punctuation (, ; : — –) guarding colons/commas between digits
+    m_clause = re.search(r"(?:[,;—–]|(?<!\d):(?!\d))(\s+|$)", buffer)
+
+    candidates = []
+    if m_term and m_term.start() >= 2:
+        candidates.append((m_term.end(), m_term.start()))
+    if m_clause and m_clause.start() >= 3:
+        prefix_candidate = buffer[:m_clause.start()].strip()
+        if prefix_candidate and len(prefix_candidate.split()) >= 1:
+            candidates.append((m_clause.end(), m_clause.start()))
+
+    if candidates:
+        candidates.sort(key=lambda x: x[1])
+        cut_idx = candidates[0][0]
+        prefix = buffer[:cut_idx].strip()
+        if prefix:
+            return prefix, buffer[cut_idx:]
+
+    # Fallback if buffer grows long without punctuation
+    if len(buffer) >= 80:
+        last_space = buffer.rfind(" ")
+        if last_space > 20:
+            return buffer[:last_space].strip(), buffer[last_space:]
+
+    return None, buffer

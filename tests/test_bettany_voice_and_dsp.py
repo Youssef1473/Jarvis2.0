@@ -1,22 +1,24 @@
 """Unit tests for Kokoro-82M Latent Style-Vector Blending & Signature MCU J.A.R.V.I.S. DSP Filter."""
-import os
 import shutil
 import tempfile
 import time
 import unittest
 from unittest.mock import MagicMock
+
 import numpy as np
 
+import jarvis.skills.voice_control as voice_skills
 from jarvis.audio.ring_buffer import AudioRingBuffer, apply_cinematic_jarvis_dsp
 from jarvis.audio.tts import TextToSpeech, create_bettanys_jarvis_voice_vector
+from jarvis.core.security_boundaries import TurnTaintTracker
 from jarvis.skills.base import SkillRegistry
-import jarvis.skills.voice_control as voice_skills
 
 
 class TestBettanyVoiceAndDsp(unittest.TestCase):
     """Verifies latent style blending in R^256 and cinematic J.A.R.V.I.S. DSP filtering."""
 
     def setUp(self):
+        TurnTaintTracker.get_instance().reset_turn()
         self.temp_dir = tempfile.mkdtemp()
         self.config = {
             "_base_dir": self.temp_dir,
@@ -31,6 +33,7 @@ class TestBettanyVoiceAndDsp(unittest.TestCase):
         }
 
     def tearDown(self):
+        TurnTaintTracker.get_instance().reset_turn()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_create_bettanys_jarvis_voice_vector(self):

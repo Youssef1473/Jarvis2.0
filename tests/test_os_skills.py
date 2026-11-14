@@ -1,13 +1,12 @@
 """Comprehensive automated tests for Jarvis OS automation & desktop awareness suite."""
-import os
 import sys
 from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.skills.base import SkillRegistry
 import jarvis.skills.os_control as os_ctrl
+from jarvis.skills.base import SkillRegistry
 
 
 def test_app_index():
@@ -20,16 +19,37 @@ def test_app_index():
 
 def test_launch_application_resolution():
     print("\n2. Testing launch_application resolution & injection safety...")
-    # Empty name test
-    res_empty = SkillRegistry.execute("launch_application", app_name="")
-    assert "cannot be empty" in res_empty.lower()
+    import pytest
 
-    # Injection metacharacters test
-    res_clean = os_ctrl.launch_application("notepad; calc & whoami")
-    assert "notepad" in res_clean.lower() or "calc" in res_clean.lower() or "could not find" in res_clean.lower()
+    from jarvis.core.security_boundaries import (
+        DualKeyApprovalManager,
+        SecurityBoundaryViolation,
+    )
+
+    # 1. Unapproved invocation must fail closed
+    with pytest.raises(SecurityBoundaryViolation):
+        SkillRegistry.execute("launch_application", app_name="calc.exe")
+
+    # 2. Approved invocation allows resolution testing
+    approval_mgr = DualKeyApprovalManager.get_instance()
+    approval_mgr.set_approval_handler(lambda req: True)
+    try:
+        # Empty name test
+        res_empty = SkillRegistry.execute("launch_application", app_name="")
+        assert "cannot be empty" in res_empty.lower()
+
+        # Injection metacharacters test
+        res_clean = SkillRegistry.execute("launch_application", app_name="notepad; calc & whoami")
+        assert (
+            "notepad" in res_clean.lower()
+            or "calc" in res_clean.lower()
+            or "could not find" in res_clean.lower()
+            or "launched" in res_clean.lower()
+        )
+    finally:
+        approval_mgr.set_approval_handler(None)
 
     # Browser alias test
-    # Do not actually pop open a browser window during tests, but verify resolution logic
     apps = os_ctrl._build_app_index()
     assert "brave" in apps or "discord" in apps or "spotify" in apps or len(apps) > 0
     print("Launch resolution & injection safety verified!")
@@ -37,24 +57,45 @@ def test_launch_application_resolution():
 
 def test_close_application_safety():
     print("\n3. Testing close_application safety gates & critical process denylist...")
-    # Attempting to kill critical system processes must be rejected
-    res_explorer = SkillRegistry.execute("close_application", app_name="explorer.exe")
-    assert "cannot terminate system-critical process" in res_explorer.lower(), f"Expected block on explorer, got: {res_explorer}"
+    from unittest.mock import patch
 
-    res_python = SkillRegistry.execute("close_application", app_name="python.exe")
-    assert "cannot terminate system-critical process" in res_python.lower(), f"Expected block on python, got: {res_python}"
+    import pytest
 
-    res_svchost = SkillRegistry.execute("close_application", app_name="svchost.exe")
-    assert "cannot terminate system-critical process" in res_svchost.lower(), f"Expected block on svchost, got: {res_svchost}"
+    from jarvis.core.security_boundaries import (
+        DualKeyApprovalManager,
+        SecurityBoundaryViolation,
+    )
 
-    # Non-existent app test
-    res_ghost = SkillRegistry.execute("close_application", app_name="nonexistent_app_xyz_987")
-    assert "no active process matching" in res_ghost.lower()
+    # 1. Unapproved invocation must fail closed
+    with pytest.raises(SecurityBoundaryViolation):
+        SkillRegistry.execute("close_application", app_name="explorer.exe")
+
+    # 2. Approved invocation still enforces system-critical process protection
+    approval_mgr = DualKeyApprovalManager.get_instance()
+    approval_mgr.set_approval_handler(lambda req: True)
+    try:
+        res_explorer = SkillRegistry.execute("close_application", app_name="explorer.exe")
+        assert "cannot terminate system-critical process" in res_explorer.lower(), f"Expected block on explorer, got: {res_explorer}"
+
+        res_python = SkillRegistry.execute("close_application", app_name="python.exe")
+        assert "cannot terminate system-critical process" in res_python.lower(), f"Expected block on python, got: {res_python}"
+
+        res_svchost = SkillRegistry.execute("close_application", app_name="svchost.exe")
+        assert "cannot terminate system-critical process" in res_svchost.lower(), f"Expected block on svchost, got: {res_svchost}"
+
+        # Non-existent app test with mocked process iterator
+        with patch("psutil.process_iter", return_value=[]):
+            res_ghost = SkillRegistry.execute("close_application", app_name="nonexistent_app_xyz_987")
+            assert "no active process matching" in res_ghost.lower()
+    finally:
+        approval_mgr.set_approval_handler(None)
     print("Critical process protection verified!")
 
 
 def test_desktop_windows_and_active():
     print("\n4. Testing desktop window inspection...")
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().reset_turn()
     active_res = SkillRegistry.execute("get_active_window")
     assert isinstance(active_res, str)
     assert len(active_res) > 0
@@ -77,17 +118,30 @@ def test_system_vitals():
 
 def test_clipboard_assistant():
     print("\n6. Testing clipboard assistant (copy & read)...")
+    from unittest.mock import patch
+
     from jarvis.core.security_boundaries import TurnTaintTracker
+
     TurnTaintTracker.get_instance().reset_turn()
-    original = SkillRegistry.execute("read_clipboard")
+    _ = SkillRegistry.execute("read_clipboard")
 
     TurnTaintTracker.get_instance().reset_turn()
     test_msg = "JARVIS 2.0 PROTOCOL VERIFIED // OMNIROUTE NEURAL LINK"
-    copy_res = SkillRegistry.execute("copy_to_clipboard", text=test_msg)
-    assert "Successfully copied" in copy_res
 
-    read_back = SkillRegistry.execute("read_clipboard")
-    assert test_msg in read_back, f"Expected '{test_msg}' in clipboard, got: {read_back}"
+    clip_store = {}
+
+    def mock_copy(txt):
+        clip_store["val"] = txt
+
+    def mock_paste():
+        return clip_store.get("val", "")
+
+    with patch("pyperclip.copy", side_effect=mock_copy), patch("pyperclip.paste", side_effect=mock_paste):
+        copy_res = SkillRegistry.execute("copy_to_clipboard", text=test_msg)
+        assert "Successfully copied" in copy_res
+
+        read_back = SkillRegistry.execute("read_clipboard")
+        assert test_msg in read_back, f"Expected '{test_msg}' in clipboard, got: {read_back}"
     print("Clipboard assistant verified cleanly!")
 
 
@@ -112,7 +166,7 @@ def test_brain_intent_routing():
     from jarvis.core.safety import SafetyGate
 
     cfg = load_config()
-    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg))
+    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg), antigravity_resolver=lambda: None)
 
     # Test 'open my browser'
     tools_browser = brain._select_tools_for_query("Can you please open my browser, Jarvis?")

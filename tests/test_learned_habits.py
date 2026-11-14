@@ -184,11 +184,11 @@ class TestFastBrowserUrlReflex(unittest.TestCase):
         self.config = {
             "_base_dir": self.temp_dir,
             "memory": {"db_path": "memory.db"},
-            "llm": {"provider": "ollama"},
+            "llm": {"provider": "ollama", "antigravity_resolver": lambda: None},
         }
         self.memory = MemoryManager(self.config)
         self.safety = SafetyGate()
-        self.brain = JarvisBrain(self.config, self.memory, self.safety)
+        self.brain = JarvisBrain(self.config, self.memory, self.safety, antigravity_resolver=lambda: None)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -243,11 +243,11 @@ class TestAdaptationProgressionAndVerification(unittest.TestCase):
         self.config = {
             "_base_dir": self.temp_dir,
             "memory": {"db_path": "memory.db"},
-            "llm": {"provider": "ollama"},
+            "llm": {"provider": "ollama", "antigravity_resolver": lambda: None},
         }
         self.memory = MemoryManager(self.config)
         self.safety = SafetyGate()
-        self.brain = JarvisBrain(self.config, self.memory, self.safety)
+        self.brain = JarvisBrain(self.config, self.memory, self.safety, antigravity_resolver=lambda: None)
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)

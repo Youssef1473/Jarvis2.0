@@ -32,6 +32,7 @@ class TestCognitiveTwinPipelineSuite(unittest.TestCase):
         self.config = {
             "_base_dir": self.temp_dir,
             "memory": {"db_path": "test_memory.db", "background_learning": False},
+            "llm": {"antigravity_resolver": lambda: None},
             "heartbeat": {
                 "enabled": True,
                 "idle_threshold_seconds": 300,
@@ -146,7 +147,7 @@ class TestCognitiveTwinPipelineSuite(unittest.TestCase):
     def test_brain_envelope_injection_contains_live_telemetry(self):
         """Verifies JarvisBrain.build_ephemeral_user_envelope injects live telemetry at prompt tail."""
         safety = SafetyGate(self.config)
-        brain = JarvisBrain(self.config, self.memory, safety)
+        brain = JarvisBrain(self.config, self.memory, safety, antigravity_resolver=lambda: None)
         brain.cognitive_twin = self.heartbeat.cognitive_twin
 
         self.heartbeat.cognitive_twin.state = CognitiveState.DEEP_FLOW

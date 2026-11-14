@@ -24,16 +24,19 @@ class TestContextOrchestrator(unittest.TestCase):
         mock_twin = MagicMock()
         mock_twin.build_persona_telemetry_envelope.return_value = "<live_telemetry_envelope>focus=deep</live_telemetry_envelope>"
 
-        mock_memory = MagicMock()
-        mock_memory.get_context_summary.return_value = "- User prefers Python 3.12"
+        mock_memory = MagicMock(spec=["get_context_summary", "recall_episodic_lessons"])
+        mock_memory.get_context_summary.return_value = (
+            "[Directly Relevant Knowledge to Current Context]\n- User prefers Python 3.12"
+        )
         mock_memory.recall_episodic_lessons.return_value = [
-            {"tool_name": "patch_file", "lesson": "Always read before patching."}
+            {"tool_name": "patch_file", "lesson": "Always read before patching.", "distance": 0.1}
         ]
 
         envelope = self.orchestrator.build_ephemeral_user_envelope(
             user_text="refactor the parser",
             memory=mock_memory,
             cognitive_twin=mock_twin,
+            active_task_mode="code",
         )
 
         self.assertIn("<live_telemetry_envelope>", envelope)

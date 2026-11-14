@@ -15,6 +15,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from jarvis.core.memory.vector_engine import (
+    contains_unredacted_credentials,
+    scrub_sensitive_credentials,
+)
+
 logger = logging.getLogger("Jarvis.Memory.TranscriptDistiller")
 
 # Canonical slots for Tier-1 core user profile to keep <core_user_preferences> strictly under 1KB
@@ -46,45 +51,7 @@ _TRIVIAL_UTTERANCES: frozenset[str] = frozenset({
     "exit", "quit", "clear", "ping", "test", "ready",
 })
 
-# Precise secret regexes targeting actual key-value assignments and known token signatures.
-# Bare words like 'auth' or 'token' are NOT matched to avoid discarding developer discussions.
-_SENSITIVE_PATTERNS: list[re.Pattern] = [
-    # Key-value assignments: api_key = "...", token: '...', password = "..."
-    re.compile(
-        r"(?:api[_-]?key|secret|password|token|bearer)\s*[:=]\s*['\"]?[A-Za-z0-9_\-\.~+/]{8,}['\"]?",
-        re.IGNORECASE,
-    ),
-    # GitHub personal access tokens
-    re.compile(r"\bghp_[A-Za-z0-9]{20,}\b", re.IGNORECASE),
-    # OpenAI API keys
-    re.compile(r"\bsk-[A-Za-z0-9]{20,}\b", re.IGNORECASE),
-    # Google API keys
-    re.compile(r"\bAIza[A-Za-z0-9_\-]{30,}\b", re.IGNORECASE),
-    # JWT tokens: eyJ...
-    re.compile(
-        r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b",
-        re.IGNORECASE,
-    ),
-    # Bearer authentication header
-    re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.]{15,}\b", re.IGNORECASE),
-]
 
-
-def scrub_sensitive_credentials(text: str) -> str:
-    """Replaces sensitive API keys, tokens, and passwords with [REDACTED_CREDENTIAL]."""
-    if not text:
-        return ""
-    scrubbed = text
-    for pat in _SENSITIVE_PATTERNS:
-        scrubbed = pat.sub("[REDACTED_CREDENTIAL]", scrubbed)
-    return scrubbed
-
-
-def contains_unredacted_credentials(text: str) -> bool:
-    """Returns True if the text contains recognizable credential tokens or secret assignments."""
-    if not text:
-        return False
-    return any(pat.search(text) for pat in _SENSITIVE_PATTERNS)
 
 
 class TranscriptDistiller:
@@ -121,7 +88,7 @@ class TranscriptDistiller:
             import sqlite_vec
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
-        except Exception as e:
+        except (sqlite3.OperationalError, ImportError, AttributeError) as e:
             logger.warning("TranscriptDistiller: sqlite_vec extension unavailable (%s); semantic clustering degraded.", e)
         return conn
 
@@ -156,15 +123,12 @@ class TranscriptDistiller:
                 (str(last_id),),
             )
 
-        try:
-            from jarvis.core.memory.sqlite_base import SingleWriterActor
-            SingleWriterActor.get_or_create(self.db_path).execute_write(_write)
-        except Exception:
-            conn = self._connect(read_only=False)
-            try:
-                _write(conn)
-            finally:
-                conn.close()
+        from jarvis.core.memory.sqlite_base import SingleWriterActor
+        SingleWriterActor.execute_or_fallback(
+            self.db_path,
+            _write,
+            lambda: self._connect(read_only=False),
+        )
 
     def get_unprocessed_interactions(
         self, limit: int = 25
@@ -300,7 +264,7 @@ class TranscriptDistiller:
                     m = re.search(r"(\{.*\})", clean_json, re.DOTALL)
                     if m:
                         extracted_data = json.loads(m.group(1))
-        except Exception as ag_err:
+        except (json.JSONDecodeError, KeyError, ValueError, RuntimeError) as ag_err:
             logger.debug("AntigravityBridge trait distillation notice: %s", ag_err)
 
         # Adjustment 5: Check physical activity immediately after LLM invocation
@@ -329,7 +293,7 @@ class TranscriptDistiller:
                 m = re.search(r"(\{.*\})", clean_json, re.DOTALL)
                 if m:
                     extracted_data = json.loads(m.group(1))
-            except Exception as ol_err:
+            except (json.JSONDecodeError, KeyError, ValueError, RuntimeError) as ol_err:
                 logger.debug("Local Ollama trait distillation notice: %s", ol_err)
 
         if not extracted_data:
@@ -544,7 +508,7 @@ class TranscriptDistiller:
                 is_user_active_fn=is_user_active_fn,
                 extractor_fn=extractor_fn,
             )
-        except Exception as ex:
+        except Exception as ex:  # noqa: BLE001 - Extraction failure must be isolated without killing background consolidation
             # Adjustment 4: Never advance cursor on an LLM exception
             logger.warning("Transcript distillation LLM error; cursor NOT advanced: %s", ex)
             return {"status": "extraction_error", "error": str(ex), "turns_processed": 0, "traits_extracted": 0}
@@ -561,3 +525,10 @@ class TranscriptDistiller:
         )
         commit_res["turns_processed"] = len(interactions)
         return commit_res
+
+
+__all__ = [
+    "TranscriptDistiller",
+    "contains_unredacted_credentials",
+    "scrub_sensitive_credentials",
+]

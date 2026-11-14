@@ -63,6 +63,13 @@ def profile_runtime(mode: str = "dump", target_pid: int | None = None) -> str:
             timeout=8.0,
             check=False,
         )
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        has_output = bool((res.stdout or "").strip() or (res.stderr or "").strip())
+        if res.returncode == 0 or has_output:
+            TurnTaintTracker.get_instance().mark_tainted(
+                source="subprocess_output:profile_runtime",
+                metadata={"pid": pid, "mode": clean_mode, "returncode": res.returncode},
+            )
         if res.returncode != 0:
             err = res.stderr.strip() or "Process inspection returned non-zero exit code"
             return f"Diagnostic profiling encountered an access notice for PID {pid}, Sir: {err}"
@@ -104,6 +111,11 @@ def profile_runtime(mode: str = "dump", target_pid: int | None = None) -> str:
         )
 
     except subprocess.TimeoutExpired:
+        from jarvis.core.security_boundaries import TurnTaintTracker
+        TurnTaintTracker.get_instance().mark_tainted(
+            source="subprocess_output:profile_runtime",
+            metadata={"pid": pid, "mode": clean_mode, "status": "timeout"},
+        )
         return f"Diagnostic profiling timed out while sampling PID {pid}, Sir."
     except Exception as e:
         logger.error(f"Failed to profile runtime: {e}")
@@ -181,6 +193,11 @@ def jarvis_doctor(verbose: bool = True) -> str:
         run_system_health_check,
     )
     report = run_system_health_check()
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().mark_tainted(
+        source="diagnostics:jarvis_doctor",
+        metadata={"subsystems": list(report.get("subsystems", {}).keys())},
+    )
     if not verbose:
         return format_spoken_summary(report)
     return format_health_report(report)

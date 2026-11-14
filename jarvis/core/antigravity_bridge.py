@@ -30,6 +30,145 @@ except ImportError:
 logger = logging.getLogger("Jarvis.Antigravity")
 
 
+def inspect_candidate_executable(candidate: str | Path | None) -> tuple[bool, str, str | None]:
+    """Inspects an executable candidate path without crashing on filesystem or permission errors.
+
+    Returns:
+        (is_valid, status, detail_or_path):
+        - is_valid: True only if candidate is an accessible, launchable executable file.
+        - status: One of "VALID", "NOT_FOUND", "INACCESSIBLE", "INVALID".
+        - detail_or_path: Canonical resolved path string when valid; reason string otherwise.
+    """
+    if candidate is None:
+        return False, "INVALID", "Candidate path is None"
+    cand_str = str(candidate).strip()
+    if not cand_str:
+        return False, "INVALID", "Candidate path is empty"
+
+    try:
+        cand_path = Path(cand_str)
+    except (TypeError, ValueError) as err:
+        return False, "INVALID", f"Malformed path: {err}"
+
+    # On Windows, check for non-executable file extensions
+    if sys.platform == "win32" and cand_path.suffix:
+        if cand_path.suffix.lower() not in {".exe", ".cmd", ".bat"}:
+            return False, "INVALID", f"Non-executable extension '{cand_path.suffix}' on Windows"
+
+    # Safely probe existence and file type
+    try:
+        if not cand_path.exists():
+            return False, "NOT_FOUND", f"Path does not exist: {cand_str}"
+        if cand_path.is_dir():
+            return False, "INVALID", f"Path is a directory, not an executable file: {cand_str}"
+        if not cand_path.is_file():
+            return False, "INVALID", f"Path is not a regular file: {cand_str}"
+    except PermissionError as pe:
+        return False, "INACCESSIBLE", f"Access denied (WinError 5 / PermissionError): {pe}"
+    except FileNotFoundError:
+        return False, "NOT_FOUND", f"Path does not exist: {cand_str}"
+    except OSError as oe:
+        return False, "INACCESSIBLE", f"OS error inspecting path: {oe}"
+
+    # Safely probe path resolution and readability
+    try:
+        resolved = cand_path.resolve()
+        if not os.access(str(resolved), os.R_OK):
+            return False, "INACCESSIBLE", f"File exists but is not readable: {resolved}"
+        return True, "VALID", str(resolved)
+    except PermissionError as pe:
+        return False, "INACCESSIBLE", f"Access denied resolving path: {pe}"
+    except OSError as oe:
+        return False, "INACCESSIBLE", f"OS error resolving path: {oe}"
+
+
+def validate_agy_executable(candidate: str | Path | None) -> bool:
+    """Validates that candidate is an acceptable executable format or file.
+
+    Returns True if candidate is a non-empty string or Path that is not a directory,
+    and on Windows does not have a non-executable extension (e.g. .txt, .py).
+    """
+    if candidate is None:
+        return False
+    cand_str = str(candidate).strip()
+    if not cand_str:
+        return False
+    cand_path = Path(cand_str)
+    # If candidate physically exists on disk, it must be a regular file, not a directory
+    try:
+        if cand_path.exists() and cand_path.is_dir():
+            return False
+    except (OSError, PermissionError):
+        return False
+    # On Windows, if an extension is present, ensure it is an executable extension
+    if sys.platform == "win32" and cand_path.suffix:
+        if cand_path.suffix.lower() not in {".exe", ".cmd", ".bat"}:
+            return False
+    return True
+
+
+def find_agy_executable(diagnostics: list[dict[str, Any]] | None = None) -> str | None:
+    """Locates the agy CLI binary across PATH and standard installation paths without crashing.
+
+    Resolution order:
+    1. System PATH via shutil.which("agy") or shutil.which("agy.exe")
+    2. %LOCALAPPDATA%/agy/bin/agy.exe
+    3. ~/.gemini/antigravity-cli/bin/agy.exe
+
+    Returns:
+        Canonical resolved path string if candidate is found and valid.
+        None if no valid candidate is found.
+    """
+    diag_list = diagnostics if diagnostics is not None else []
+
+    # 1. System PATH
+    try:
+        found = shutil.which("agy") or shutil.which("agy.exe")
+        if found:
+            is_valid, status, detail = inspect_candidate_executable(found)
+            diag_list.append({"candidate": found, "source": "PATH", "status": status, "detail": detail})
+            if is_valid and detail:
+                logger.debug("Antigravity CLI discovered in PATH: %s", detail)
+                return detail
+            logger.debug("Antigravity candidate in PATH not usable (%s): %s", status, detail)
+        else:
+            diag_list.append({"candidate": "agy / agy.exe", "source": "PATH", "status": "NOT_FOUND", "detail": "shutil.which returned None"})
+    except (OSError, PermissionError) as path_err:
+        diag_list.append({"candidate": "agy / agy.exe", "source": "PATH", "status": "INACCESSIBLE", "detail": f"PATH lookup failed: {path_err}"})
+        logger.debug("PATH lookup failed: %s", path_err)
+
+    # 2. Local AppData / agy / bin
+    try:
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        if local_app_data:
+            candidate = Path(local_app_data) / "agy" / "bin" / "agy.exe"
+            is_valid, status, detail = inspect_candidate_executable(candidate)
+            diag_list.append({"candidate": str(candidate), "source": "LOCALAPPDATA", "status": status, "detail": detail})
+            if is_valid and detail:
+                logger.debug("Antigravity CLI discovered in LOCALAPPDATA: %s", detail)
+                return detail
+            logger.debug("Antigravity candidate in LOCALAPPDATA not usable (%s): %s", status, detail)
+    except (OSError, PermissionError) as appdata_err:
+        diag_list.append({"candidate": "%LOCALAPPDATA%/agy/bin/agy.exe", "source": "LOCALAPPDATA", "status": "INACCESSIBLE", "detail": f"Inspection failed: {appdata_err}"})
+        logger.debug("LOCALAPPDATA candidate check failed: %s", appdata_err)
+
+    # 3. User home .gemini / antigravity-cli / bin
+    try:
+        home = Path.home()
+        candidate2 = home / ".gemini" / "antigravity-cli" / "bin" / "agy.exe"
+        is_valid, status, detail = inspect_candidate_executable(candidate2)
+        diag_list.append({"candidate": str(candidate2), "source": "USER_HOME", "status": status, "detail": detail})
+        if is_valid and detail:
+            logger.debug("Antigravity CLI discovered in USER_HOME: %s", detail)
+            return detail
+        logger.debug("Antigravity candidate in USER_HOME not usable (%s): %s", status, detail)
+    except (OSError, PermissionError) as home_err:
+        diag_list.append({"candidate": "~/.gemini/antigravity-cli/bin/agy.exe", "source": "USER_HOME", "status": "INACCESSIBLE", "detail": f"Inspection failed: {home_err}"})
+        logger.debug("USER_HOME candidate check failed: %s", home_err)
+
+    return None
+
+
 class AntigravityDaemon:
     """Persistent warm agy.exe sidecar worker utilizing --input-format stream-json.
     Eliminates 3.1s process creation and workspace indexing overhead on every turn,
@@ -250,21 +389,132 @@ class AntigravityDaemon:
 
     @classmethod
     def _write_registry_atomic(cls, workspace: Path, registry: dict[str, Any], pid_for_tmp: int) -> bool:
-        """Atomically persists registry to data/agy_runtime_workspace/.agy_lock via atomic rename."""
+        """Atomically persists registry to data/agy_runtime_workspace/.agy_lock via atomic rename.
+
+        Enforces strict fail-closed preservation of prior valid state:
+        1. Staging file content is written and synchronously flushed to device via FlushFileBuffers
+           (or os.fsync on POSIX) before attempting namespace publication.
+        2. ReplaceFileW is invoked with dwReplaceFlags=0 for default DACL and metadata merging.
+           REPLACEFILE_WRITE_THROUGH (0x1) is excluded as unsupported by ReplaceFileW.
+           REPLACEFILE_IGNORE_MERGE_ERRORS (0x2) and REPLACEFILE_IGNORE_ACL_ERRORS (0x4) are
+           strictly excluded so replacement fails closed if security descriptors cannot merge.
+        3. On Win32 ReplaceFileW partial-failure states (1176, 1177), temporary replacement
+           artifacts are strictly preserved for recovery rather than unlinked.
+        """
         lock_file = workspace / ".agy_lock"
         tmp_lock = workspace / f".agy_lock.tmp.{pid_for_tmp}.{time.time_ns()}"
+        preserve_tmp = False
         try:
             content = json.dumps(registry, indent=2)
-            tmp_lock.write_text(content, encoding="utf-8")
-            tmp_lock.replace(lock_file)
+            # 1. Write staging content and flush buffers to storage device before namespace replacement
+            with open(tmp_lock, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+                if sys.platform == "win32":
+                    import ctypes
+                    import msvcrt
+                    from ctypes import wintypes
+
+                    h_file = msvcrt.get_osfhandle(f.fileno())
+                    if h_file != -1:
+                        kernel32 = ctypes.windll.kernel32
+                        kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+                        kernel32.FlushFileBuffers.restype = wintypes.BOOL
+                        kernel32.GetLastError.argtypes = []
+                        kernel32.GetLastError.restype = wintypes.DWORD
+                        if not kernel32.FlushFileBuffers(wintypes.HANDLE(h_file)):
+                            win_err = kernel32.GetLastError()
+                            raise OSError(f"FlushFileBuffers failed with Win32 error {win_err}")
+
+            # 2. Atomic namespace replacement
+            try:
+                tmp_lock.replace(lock_file)
+            except OSError as replace_err:
+                # If direct replace failed on Windows and destination exists, attempt Win32 ReplaceFileW
+                if sys.platform == "win32" and lock_file.exists():
+                    import ctypes
+                    from ctypes import wintypes
+
+                    kernel32 = ctypes.windll.kernel32
+                    kernel32.ReplaceFileW.argtypes = [
+                        wintypes.LPCWSTR,
+                        wintypes.LPCWSTR,
+                        wintypes.LPCWSTR,
+                        wintypes.DWORD,
+                        wintypes.LPVOID,
+                        wintypes.LPVOID,
+                    ]
+                    kernel32.ReplaceFileW.restype = wintypes.BOOL
+                    kernel32.GetLastError.argtypes = []
+                    kernel32.GetLastError.restype = wintypes.DWORD
+
+                    # Strictly preserve ACLs and metadata:
+                    # - dwReplaceFlags=0: standard replacement with default metadata/DACL merging.
+                    # - REPLACEFILE_WRITE_THROUGH (0x1) is NOT supported by ReplaceFileW per Win32 docs.
+                    # - REPLACEFILE_IGNORE_MERGE_ERRORS (0x2) and REPLACEFILE_IGNORE_ACL_ERRORS (0x4)
+                    #   are strictly EXCLUDED so replacement fails closed if security descriptors cannot be merged.
+                    res = kernel32.ReplaceFileW(
+                        str(lock_file.resolve()),
+                        str(tmp_lock.resolve()),
+                        None,
+                        wintypes.DWORD(0),
+                        None,
+                        None,
+                    )
+                    if not res:
+                        win_err = kernel32.GetLastError()
+                        ERROR_UNABLE_TO_REMOVE_REPLACED = 1175
+                        ERROR_UNABLE_TO_MOVE_REPLACEMENT = 1176
+                        ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 = 1177
+
+                        if win_err == ERROR_UNABLE_TO_MOVE_REPLACEMENT:
+                            # 1176: The replaced file no longer exists under its original name,
+                            # but the replacement file still retains its temporary name.
+                            # MUST NOT delete tmp_lock: it holds the only valid copy!
+                            preserve_tmp = True
+                            logger.error(
+                                "Win32 ReplaceFileW failed with ERROR_UNABLE_TO_MOVE_REPLACEMENT (1176). "
+                                "Destination may no longer exist; preserving temporary replacement artifact: %s",
+                                tmp_lock,
+                            )
+                        elif win_err == ERROR_UNABLE_TO_MOVE_REPLACEMENT_2:
+                            # 1177: Both replacement and replaced files may have changed names/attributes.
+                            # MUST NOT delete tmp_lock: ambiguous state requires manual reconciliation.
+                            preserve_tmp = True
+                            logger.error(
+                                "Win32 ReplaceFileW failed with ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 (1177). "
+                                "Ambiguous filesystem state; preserving all recovery artifacts: %s and %s",
+                                lock_file,
+                                tmp_lock,
+                            )
+                        elif win_err == ERROR_UNABLE_TO_REMOVE_REPLACED:
+                            # 1175: Both files retain their original names. Existing destination intact.
+                            preserve_tmp = False
+                            logger.warning(
+                                "Win32 ReplaceFileW failed with ERROR_UNABLE_TO_REMOVE_REPLACED (1175). "
+                                "Existing registry preserved intact; cleaning staging tmp file.",
+                            )
+                        else:
+                            # Other errors: Both files retain their original names.
+                            preserve_tmp = False
+                            logger.debug(
+                                "Win32 ReplaceFileW failed (win_err=%d, replace_err=%s); cleaning staging tmp file.",
+                                win_err,
+                                replace_err,
+                            )
+                        raise replace_err
+                else:
+                    raise replace_err
             return True
         except Exception as e:
             logger.debug("Failed atomic registry write: %s", e)
-            try:
-                if tmp_lock.exists():
-                    tmp_lock.unlink(missing_ok=True)
-            except Exception:
-                pass
+            if not preserve_tmp:
+                try:
+                    if tmp_lock.exists():
+                        tmp_lock.unlink(missing_ok=True)
+                except Exception:
+                    pass
             return False
 
     def _register_lease(self, pid: int, model: str) -> bool:
@@ -1028,16 +1278,17 @@ class AntigravityBridge:
 
     DEFAULT_MODEL = "gemini-3.8-flash-medium"
 
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        *,
+        executable_resolver: Callable[[], str | None] | None = None,
+        agy_path: str | None = None,
+    ):
         self.config = config or {}
         llm_cfg = self.config.get("llm", {})
-        self.agy_path = self._find_agy_executable()
-        self.configured_model = llm_cfg.get("antigravity_model", self.DEFAULT_MODEL)
-        self.effort = llm_cfg.get("antigravity_effort", "high")
-        self.last_latency_ms: float = 0.0
-        self.last_conversation_id: str | None = None
-        self.use_daemon: bool = llm_cfg.get("antigravity_use_daemon", True)
 
+        # Concurrency & lifecycle primitives must be initialized before resolver or daemon startup
         self.max_warm_daemons: int = 2
         self._pool_lock = threading.Lock()
         self._cancellation_generation: int = 0
@@ -1048,6 +1299,81 @@ class AntigravityBridge:
         self._claude_exhaustion_reason: str = ""
         self._gemini_flash_exhausted_until: float = 0.0
         self._gemini_flash_exhaustion_reason: str = ""
+        self.last_latency_ms: float = 0.0
+        self.last_conversation_id: str | None = None
+        self.discovery_diagnostics: list[dict[str, Any]] = []
+        self.availability_status: str = "UNKNOWN"
+        self.availability_diagnostic: str = ""
+
+        # Determine executable resolver / explicit path
+        # Priority order:
+        # 1. Constructor agy_path argument
+        # 2. Config llm.antigravity_path or llm.agy_path
+        # 3. Constructor executable_resolver argument
+        # 4. Config llm.antigravity_resolver or llm.antigravity_executable_resolver
+        # 5. Production default: self._find_agy_executable
+        self._executable_resolver: Callable[[], str | None]
+        if agy_path is not None:
+            self._executable_resolver = lambda: agy_path
+        elif llm_cfg.get("antigravity_path") or llm_cfg.get("agy_path"):
+            explicit = llm_cfg.get("antigravity_path") or llm_cfg.get("agy_path")
+            self._executable_resolver = lambda: explicit
+        elif executable_resolver is not None:
+            self._executable_resolver = executable_resolver
+        elif callable(llm_cfg.get("antigravity_resolver")):
+            self._executable_resolver = llm_cfg["antigravity_resolver"]
+        elif callable(llm_cfg.get("antigravity_executable_resolver")):
+            self._executable_resolver = llm_cfg["antigravity_executable_resolver"]
+        else:
+            self._executable_resolver = self._find_agy_executable
+
+        resolved: str | None = None
+        try:
+            resolved = self._executable_resolver()
+        except (OSError, PermissionError) as res_err:
+            logger.warning("Antigravity executable resolver encountered access restriction: %s", res_err)
+            resolved = None
+            self.availability_status = "INACCESSIBLE"
+            self.availability_diagnostic = f"Antigravity executable candidate is inaccessible: {res_err}"
+
+        if resolved is not None:
+            if not self._is_valid_candidate(resolved):
+                self.agy_path = None
+                self.availability_status = "INVALID"
+                self.availability_diagnostic = f"Invalid Antigravity executable candidate: {resolved}"
+                logger.warning("Invalid Antigravity executable candidate: %s", resolved)
+            else:
+                try:
+                    if not os.path.exists(resolved):
+                        self.agy_path = None
+                        self.availability_status = "NOT_FOUND"
+                        self.availability_diagnostic = f"Antigravity executable path does not exist: {resolved}"
+                    elif not os.access(resolved, os.R_OK):
+                        self.agy_path = None
+                        self.availability_status = "INACCESSIBLE"
+                        self.availability_diagnostic = f"Antigravity executable file is not readable: {resolved}"
+                    else:
+                        self.agy_path = resolved
+                        self.availability_status = "AVAILABLE"
+                        self.availability_diagnostic = f"Antigravity CLI available at {resolved}"
+                except (OSError, PermissionError) as perm_err:
+                    self.agy_path = None
+                    self.availability_status = "INACCESSIBLE"
+                    self.availability_diagnostic = f"Cannot access Antigravity executable ({resolved}): {perm_err}"
+        else:
+            self.agy_path = None
+            if self.availability_status == "UNKNOWN":
+                if any(d.get("status") == "INACCESSIBLE" for d in self.discovery_diagnostics):
+                    inacc = [d for d in self.discovery_diagnostics if d.get("status") == "INACCESSIBLE"]
+                    self.availability_status = "INACCESSIBLE"
+                    self.availability_diagnostic = f"Antigravity candidate was inaccessible: {inacc[0].get('detail')}"
+                else:
+                    self.availability_status = "NOT_FOUND"
+                    self.availability_diagnostic = "Antigravity CLI ('agy') executable not found in PATH or standard installation directories."
+
+        self.configured_model = llm_cfg.get("antigravity_model", self.DEFAULT_MODEL)
+        self.effort = llm_cfg.get("antigravity_effort", "high")
+        self.use_daemon: bool = llm_cfg.get("antigravity_use_daemon", True)
 
         if self.agy_path and self.use_daemon:
             initial_daemon = AntigravityDaemon(
@@ -1062,7 +1388,7 @@ class AntigravityBridge:
         if self.agy_path:
             logger.info("Antigravity CLI bridge located at: %s (persistent daemon=%s)", self.agy_path, self.use_daemon)
         else:
-            logger.warning("Antigravity CLI ('agy') executable not found in PATH or standard directories.")
+            logger.warning("Antigravity CLI bridge unavailable (%s): %s", self.availability_status, self.availability_diagnostic)
 
     @property
     def daemon(self) -> AntigravityDaemon | None:
@@ -1181,6 +1507,15 @@ class AntigravityBridge:
         logger.info("Gemini 3.8 Flash quota exhaustion status manually cleared.")
 
     @staticmethod
+    def _is_auth_error(error_msg: str) -> bool:
+        """Checks if an error string indicates permanent authentication failure (401, 403, etc.)."""
+        err = (error_msg or "").lower()
+        return any(k in err for k in (
+            "401", "403", "unauthorized", "unauthenticated",
+            "permission_denied", "forbidden", "authentication required", "api_key_invalid",
+        ))
+
+    @staticmethod
     def _is_token_exhaustion_error(error_msg: str) -> bool:
         """Checks if an error string indicates token exhaustion, rate limit, quota, credit issues, or CLI code 3."""
         err = (error_msg or "").lower()
@@ -1239,7 +1574,10 @@ class AntigravityBridge:
 
     def stop(self):
         """Cleanly terminates all persistent warm daemons in the pool and any child processes."""
-        with self._pool_lock:
+        pool_lock = getattr(self, "_pool_lock", None)
+        if pool_lock is None:
+            return
+        with pool_lock:
             self._cancellation_generation += 1
             sandboxes_to_stop = list(self._active_oneshot_sandboxes)
             self._active_oneshot_sandboxes.clear()
@@ -1269,7 +1607,10 @@ class AntigravityBridge:
 
     def abort_active_turn(self) -> None:
         """Interrupts any in-flight persistent daemon turn or one-shot process across all daemons in the pool."""
-        with self._pool_lock:
+        pool_lock = getattr(self, "_pool_lock", None)
+        if pool_lock is None:
+            return
+        with pool_lock:
             self._cancellation_generation += 1
             sandboxes_to_abort = list(self._active_oneshot_sandboxes)
             self._active_oneshot_sandboxes.clear()
@@ -1298,31 +1639,23 @@ class AntigravityBridge:
     def __del__(self):
         self.stop()
 
+    @staticmethod
+    def _is_valid_candidate(candidate: str | Path | None) -> bool:
+        """Validates that candidate is an acceptable executable format or file."""
+        return validate_agy_executable(candidate)
+
     def _find_agy_executable(self) -> str | None:
         """Locates the agy CLI binary across PATH and standard installation paths."""
-        # 1. System PATH
-        found = shutil.which("agy") or shutil.which("agy.exe")
-        if found:
-            return str(Path(found).resolve())
-
-        # 2. Local AppData / agy / bin
-        local_app_data = os.environ.get("LOCALAPPDATA", "")
-        if local_app_data:
-            candidate = Path(local_app_data) / "agy" / "bin" / "agy.exe"
-            if candidate.exists():
-                return str(candidate.resolve())
-
-        # 3. User home .gemini / antigravity-cli / bin
-        home = Path.home()
-        candidate2 = home / ".gemini" / "antigravity-cli" / "bin" / "agy.exe"
-        if candidate2.exists():
-            return str(candidate2.resolve())
-
-        return None
+        return find_agy_executable(diagnostics=self.discovery_diagnostics)
 
     def is_available(self) -> bool:
         """Returns True if the Antigravity CLI binary exists and can be executed."""
-        return self.agy_path is not None and os.path.exists(self.agy_path)
+        if not self.agy_path:
+            return False
+        try:
+            return os.path.exists(self.agy_path) and os.path.isfile(self.agy_path)
+        except (OSError, PermissionError):
+            return False
 
     def resolve_model(self, model_name: str) -> str:
         """Resolves alias or shorthand into canonical Antigravity model identifier."""
@@ -1546,9 +1879,11 @@ class AntigravityBridge:
         Supports automatic cascading pool failover within the Google AI Pro fleet.
         """
         if not self.is_available():
+            status = getattr(self, "availability_status", "UNAVAILABLE")
+            diag = getattr(self, "availability_diagnostic", "Antigravity CLI ('agy') is not installed or available in PATH, Sir.")
             return {
                 "status": "ERROR",
-                "response": "Antigravity CLI ('agy') is not installed or available in PATH, Sir.",
+                "response": f"Antigravity CLI ('agy') is unavailable ({status}): {diag}",
                 "duration_seconds": 0.0,
                 "usage": {},
             }
@@ -1674,6 +2009,10 @@ class AntigravityBridge:
             err_text = " ".join(
                 str(res.get(field) or "") for field in ("response", "error")
             )
+            if self._is_auth_error(err_text):
+                logger.error("Antigravity authentication failure on model '%s': %s. Aborting candidate cascade.", attempt_model, err_text[:80])
+                break
+
             quota_error_seen = quota_error_seen or self._is_token_exhaustion_error(err_text)
 
             # If Claude failed due to token or quota limits, mark Claude as exhausted and prioritize Flash High/Medium

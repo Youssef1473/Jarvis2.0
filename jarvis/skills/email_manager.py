@@ -1,5 +1,6 @@
 """Bidirectional email integration for Gmail and Outlook via secure IMAP and SMTP."""
 import email
+import hmac
 import imaplib
 import logging
 import os
@@ -222,7 +223,8 @@ def _send_smtp_email(
     to_address: str,
     subject: str,
     body: str,
-    use_ssl: bool = True
+    use_ssl: bool = True,
+    attachment_snapshots: list[tuple[str, bytes]] | None = None,
 ) -> tuple[bool, str]:
     """Transmits an email via authenticated SMTP with SSL or STARTTLS."""
     if not username or not password:
@@ -237,6 +239,13 @@ def _send_smtp_email(
     msg["To"] = to_clean
     msg["Subject"] = subject.strip()
     msg.attach(MIMEText(body.strip(), "plain", "utf-8"))
+
+    if attachment_snapshots:
+        from email.mime.application import MIMEApplication
+        for filename, file_bytes in attachment_snapshots:
+            part = MIMEApplication(file_bytes)
+            part.add_header("Content-Disposition", "attachment", filename=os.path.basename(filename))
+            msg.attach(part)
 
     try:
         if use_ssl:
@@ -427,39 +436,124 @@ def read_email_details(email_id: str, account: str = "gmail") -> str:
 
 @SkillRegistry.register(
     name="send_email",
-    description="Composes and sends an email to a recipient via Gmail or Outlook SMTP. Always previews draft first unless confirm is True."
+    description="Composes and sends an email to a recipient via Gmail or Outlook SMTP. Requires explicit human authorization before dispatch.",
+    risk_level=1,
 )
 def send_email(
     to_address: str,
     subject: str,
     body: str,
-    account: str = "gmail",
-    confirm: bool = False
+    account: str | None = "gmail",
+    attachments: list[str] | None = None,
 ) -> str:
-    """Prepares and dispatches an outbound email with safety review."""
+    """Prepares and dispatches an outbound email guarded by human authorization."""
+    from pathlib import Path
+
+    # 1. Parameter Type & Value Validation
+    if not isinstance(to_address, str):
+        raise TypeError(f"to_address must be a string, got {type(to_address).__name__}.")
+    to_clean = to_address.strip()
+    if not to_clean or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", to_clean):
+        raise ValueError(f"Invalid recipient email address: '{to_address}'.")
+
+    if not isinstance(subject, str):
+        raise TypeError(f"subject must be a string, got {type(subject).__name__}.")
+    subj_clean = subject.strip()
+
+    if not isinstance(body, str):
+        raise TypeError(f"body must be a string, got {type(body).__name__}.")
+    body_clean = body.strip()
+
+    if account is not None and not isinstance(account, str):
+        raise TypeError(f"account must be a string or None, got {type(account).__name__}.")
+    acc_clean = (str(account).lower().strip() if account is not None else "gmail")
+    if acc_clean not in ("gmail", "google", "outlook", "hotmail", "office365", "default", "all"):
+        gmail_addr = os.getenv("GMAIL_ADDRESS", "").lower().strip()
+        outlook_addr = os.getenv("OUTLOOK_ADDRESS", "").lower().strip()
+        if not (gmail_addr and acc_clean == gmail_addr) and not (outlook_addr and acc_clean == outlook_addr):
+            raise ValueError(f"Unsupported email account provider: '{account}'. Supported providers: 'gmail', 'outlook'.")
+
+    if attachments is not None:
+        if not isinstance(attachments, list):
+            raise TypeError(f"attachments must be a list of file path strings or None, got {type(attachments).__name__}.")
+        for att in attachments:
+            if not isinstance(att, (str, Path)) or not str(att).strip():
+                raise ValueError(f"Each attachment must be a non-empty file path string, got {att!r}.")
+
+    from jarvis.core.security_boundaries import (
+        SecurityBoundaryViolation,
+        _active_auth_context,
+        compute_action_hash,
+        compute_attachments_digest,
+    )
+
+    active_token = _active_auth_context.get()
+    if active_token is None or not active_token.is_valid:
+        raise SecurityBoundaryViolation(
+            "Authorization Required: send_email requires explicit human approval."
+        )
+
+    if active_token.tool_name != "send_email":
+        raise SecurityBoundaryViolation(
+            f"Authorization Mismatch: Active authorization is for '{active_token.tool_name}', not 'send_email'."
+        )
+
+    snapshot_tuples: list[tuple[str, bytes]] = []
+    current_digest = ""
+    if attachments:
+        current_digest = compute_attachments_digest(attachments)
+        expected_digest = getattr(active_token, "attachments_digest", "")
+        if expected_digest and current_digest != expected_digest:
+            raise SecurityBoundaryViolation(
+                "Attachment Integrity Violation: Attachment content was modified after user approval."
+            )
+
+        # Prepare immutable snapshot bytes
+        for att in attachments:
+            att_str = str(att)
+            if active_token.attachment_snapshots and att_str in active_token.attachment_snapshots:
+                file_bytes = active_token.attachment_snapshots[att_str]
+            else:
+                with open(att_str, "rb") as f:
+                    file_bytes = f.read()
+            snapshot_tuples.append((os.path.basename(att_str), file_bytes))
+
+    base_cand = {"to_address": to_clean, "subject": subj_clean, "body": body_clean}
+    candidate_args: list[dict[str, Any]] = [
+        dict(base_cand),
+        {**base_cand, "account": account},
+    ]
+
+    if attachments:
+        att_cands: list[dict[str, Any]] = []
+        for c in candidate_args:
+            att_cands.append({**c, "attachments": attachments, "attachments_digest": current_digest})
+            att_cands.append({**c, "attachments": attachments})
+        candidate_args = att_cands
+
+    matched_hash = None
+    for cand in candidate_args:
+        cand_hash = compute_action_hash("send_email", cand)
+        if hmac.compare_digest(active_token.action_hash, cand_hash):
+            matched_hash = cand_hash
+            break
+
+    if matched_hash is None:
+        raise SecurityBoundaryViolation(
+            "Action Hash Mismatch: Email recipient or content does not match approved action hash."
+        )
+
+    if not active_token.consume("send_email", matched_hash):
+        raise SecurityBoundaryViolation(
+            "Single-Use Authorization Violation: send_email authorization grant was already consumed or invalidated."
+        )
+
     norm_acc = _normalize_account_type(account)
     user, pwd, _, smtp_host, smtp_port, use_ssl = _get_credentials(norm_acc)
     display_name = "Gmail" if norm_acc == "gmail" else norm_acc.capitalize()
     if not user or not pwd:
         return f"{display_name} is not configured yet, Sir. Please add credentials to your .env file."
 
-    to_clean = to_address.strip()
-    subj_clean = subject.strip()
-    body_clean = body.strip()
-
-    if not confirm:
-        return (
-            f"Draft Email Prepared for Sir's Review:\n"
-            f"=====================================\n"
-            f"Provider: {display_name} ({user})\n"
-            f"To:       {to_clean}\n"
-            f"Subject:  {subj_clean}\n"
-            f"Body:\n{body_clean}\n"
-            f"=====================================\n"
-            f"Shall I dispatch this email now, Sir? Please confirm to send."
-        )
-
-    # User confirmed dispatch
     success, msg = _send_smtp_email(
         smtp_host=smtp_host,
         smtp_port=smtp_port,
@@ -468,7 +562,8 @@ def send_email(
         to_address=to_clean,
         subject=subj_clean,
         body=body_clean,
-        use_ssl=use_ssl
+        use_ssl=use_ssl,
+        attachment_snapshots=snapshot_tuples if snapshot_tuples else None,
     )
 
     if success:

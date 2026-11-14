@@ -77,10 +77,21 @@ def list_pending_tasks() -> str:
     tasks = mem.get_pending_tasks()
     if not tasks:
         return "You have no pending tasks, Sir."
+
+    # Restore turn taint if any task has untrusted provenance
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    tracker = TurnTaintTracker.get_instance()
+    for t in tasks:
+        prov = t.get("source_provenance", "unknown")
+        if tracker.is_untrusted_provenance(prov):
+            tracker.mark_tainted(
+                source=f"task:{t.get('id', '?')}",
+                metadata={"task_id": t.get("id"), "source_provenance": str(prov)[:32]}
+            )
+            break
+
     formatted = [f"#{t['id']}: {t['description']}" + (f" (Due: {t['due_date']})" if t['due_date'] else "") for t in tasks]
     return "\n".join(formatted)
-
-
 @SkillRegistry.register(
     name="complete_task",
     description="Marks a task as completed by its numerical ID."
@@ -98,7 +109,10 @@ def complete_task(task_id: int) -> str:
 def remember_fact(key: str, value: str, category: str = "general") -> str:
     """Stores a fact in SQLite."""
     mem = _get_memory()
-    return mem.remember_fact(key, value, category)
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    tracker = TurnTaintTracker.get_instance()
+    prov = "external" if tracker.is_tainted else "user_supplied"
+    return mem.remember_fact(key, value, category, source_provenance=prov)
 
 
 @SkillRegistry.register(
@@ -108,21 +122,35 @@ def remember_fact(key: str, value: str, category: str = "general") -> str:
 def recall_fact(key: str) -> str:
     """Recalls a stored fact using exact key match with semantic vector fallback."""
     mem = _get_memory()
-    val = mem.get_fact(key)
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    tracker = TurnTaintTracker.get_instance()
+
+    val, prov = mem.get_fact_with_provenance(key) if hasattr(mem, "get_fact_with_provenance") else (mem.get_fact(key), "unknown")
     if val:
+        if tracker.is_untrusted_provenance(prov):
+            tracker.mark_tainted(
+                source=f"fact:{key}",
+                metadata={"key": key, "source_provenance": str(prov)[:32]}
+            )
         return f"Stored fact for '{key}': {val}"
 
     # Hybrid FTS5 + Vector recall fallback via RRF
     matches = mem.hybrid_search_facts(key, top_k=3)
     if matches:
+        for m in matches:
+            m_prov = m.get("source_provenance", "unknown")
+            if tracker.is_untrusted_provenance(m_prov):
+                tracker.mark_tainted(
+                    source=f"fact:{m.get('key', key)}",
+                    metadata={"key": m.get("key"), "source_provenance": str(m_prov)[:32]}
+                )
+                break
         formatted = []
         for m in matches:
-            formatted.append(f"• [{m['category']}] {m['key']}: {m['value']}")
+            formatted.append(f"? [{m['category']}] {m['key']}: {m['value']}")
         return f"Hybrid memory recall for '{key}':\n" + "\n".join(formatted)
 
     return f"No stored fact or semantic match found for '{key}'."
-
-
 @SkillRegistry.register(
     name="update_user_preference",
     description="Updates or sets a permanent personal preference, habit, or behavioral directive for Sir in Core Memory (e.g. 'preferred_browser: brave', 'voice_speed: 1.15', 'call_me: Boss', 'primary_project: Jarvis')."
@@ -142,15 +170,24 @@ def update_user_preference(key: str, value: str) -> str:
 def get_user_preferences() -> str:
     """Retrieves all core user preferences."""
     mem = _get_memory()
+    from jarvis.core.security_boundaries import TurnTaintTracker
     if hasattr(mem, "get_user_preferences"):
         prefs = mem.get_user_preferences()
         if not prefs:
             return "No core user preferences are currently registered in your profile, Sir."
+        TurnTaintTracker.get_instance().mark_tainted(
+            source="user_preferences",
+            metadata={"count": len(prefs)}
+        )
         lines = [f"• {k}: {v}" for k, v in sorted(prefs.items())]
         return "Sir's Active Core Preferences:\n" + "\n".join(lines)
 
     matches = mem.get_facts_by_category("user_preference") if hasattr(mem, "get_facts_by_category") else {}
     if matches:
+        TurnTaintTracker.get_instance().mark_tainted(
+            source="user_preferences",
+            metadata={"count": len(matches)}
+        )
         return "Sir's Core Preferences:\n" + "\n".join(f"• {k}: {v}" for k, v in matches.items())
     return "No core user preferences are currently registered in your profile, Sir."
 
@@ -199,6 +236,17 @@ def recall_past_conversation(query: str, limit: int = 5) -> str:
     if not results:
         return f"No past conversation logs found matching '{query}', Sir."
 
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    tracker = TurnTaintTracker.get_instance()
+    for r in results:
+        prov = r.get("source_provenance", "unknown")
+        if tracker.is_untrusted_provenance(prov):
+            tracker.mark_tainted(
+                source=f"interaction:{r.get('id', '?')}",
+                metadata={"interaction_id": r.get("id"), "source_provenance": str(prov)[:32]}
+            )
+            break
+
     formatted = []
     for r in results:
         ts = r.get("created_at", "Unknown time")
@@ -208,8 +256,6 @@ def recall_past_conversation(query: str, limit: int = 5) -> str:
         formatted.append(f"[{ts}]{score_str}\nSir: {u_msg}\nJarvis: {j_msg}")
 
     return "Past Dialogue Logs Found:\n\n" + "\n\n---\n\n".join(formatted)
-
-
 @SkillRegistry.register(
     name="semantic_search_memory",
     description="Searches long-term factual memory, conversation archives, and ingested documents using semantic vector similarity."
@@ -217,23 +263,46 @@ def recall_past_conversation(query: str, limit: int = 5) -> str:
 def semantic_search_memory(query: str, search_type: str = "all") -> str:
     """Performs semantic vector search across facts, document vaults, and past conversations."""
     mem = _get_memory()
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    tracker = TurnTaintTracker.get_instance()
     outputs = []
 
     if search_type in ("all", "facts"):
         facts = mem.semantic_search_facts(query, top_k=3)
         if facts:
-            f_lines = [f"• [{f['category']}] {f['key']}: {f['value']} (Score: {f['relevance_score']:.0%})" for f in facts]
+            for f in facts:
+                if tracker.is_untrusted_provenance(f.get("source_provenance", "unknown")):
+                    tracker.mark_tainted(
+                        source=f"fact:{f.get('key', '?')}",
+                        metadata={"key": f.get("key"), "source_provenance": str(f.get("source_provenance", "unknown"))[:32]}
+                    )
+                    break
+            f_lines = [f"? [{f['category']}] {f['key']}: {f['value']} (Score: {f['relevance_score']:.0%})" for f in facts]
             outputs.append("Matching Facts & Knowledge:\n" + "\n".join(f_lines))
 
     if search_type in ("all", "documents", "docs", "papers", "pdf"):
         docs = mem.hybrid_search_documents(query, limit=3)
         if docs:
+            for d in docs:
+                if tracker.is_untrusted_provenance(d.get("source_provenance", "unknown")):
+                    tracker.mark_tainted(
+                        source=f"archived_document:{d.get('id', '?')}",
+                        metadata={"doc_id": d.get("id"), "source_provenance": str(d.get("source_provenance", "unknown"))[:32]}
+                    )
+                    break
             doc_block = mem.format_document_reference_block(docs)
             outputs.append("Matching Document Knowledge:\n" + doc_block)
 
     if search_type in ("all", "conversations", "dialogue"):
         dialogues = mem.semantic_search_interactions(query, top_k=3)
         if dialogues:
+            for d in dialogues:
+                if tracker.is_untrusted_provenance(d.get("source_provenance", "unknown")):
+                    tracker.mark_tainted(
+                        source=f"interaction:{d.get('id', '?')}",
+                        metadata={"interaction_id": d.get("id"), "source_provenance": str(d.get("source_provenance", "unknown"))[:32]}
+                    )
+                    break
             d_lines = []
             for d in dialogues:
                 d_lines.append(f"[{d.get('created_at', 'Past')}] (Relevance: {d['relevance_score']:.0%})\nSir: {d['user_input']}\nJarvis: {d['jarvis_reply']}")
@@ -242,4 +311,3 @@ def semantic_search_memory(query: str, search_type: str = "all") -> str:
     if not outputs:
         return f"No semantic memories, documents, or dialogues found matching '{query}', Sir."
     return "\n\n".join(outputs)
-

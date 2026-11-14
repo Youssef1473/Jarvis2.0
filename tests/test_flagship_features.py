@@ -1,45 +1,68 @@
 """Verification test suite for Jarvis 2.0 Flagship Features Suite."""
-import os
 import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
-from jarvis.skills.base import SkillRegistry
-import jarvis.skills.protocols
-import jarvis.skills.system_maintenance
-import jarvis.skills.media_dj
-import jarvis.skills.briefing
-import jarvis.skills.project_manager
 import yaml
+
 from jarvis.core.brain import JarvisBrain
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
+from jarvis.skills.base import SkillRegistry
 
 
 def test_protocols():
-    print("\n--- 1. Testing Multi-Action Protocols ---")
-    res_work = SkillRegistry.execute("execute_protocol", protocol_name="work")
-    print("Work protocol:", res_work)
-    assert "Work protocol initiated" in res_work
+    from unittest.mock import patch
 
-    res_night = SkillRegistry.execute("execute_protocol", protocol_name="night")
-    print("Night protocol:", res_night)
-    assert "Night protocol engaged" in res_night
+    from jarvis.core.security_boundaries import TurnTaintTracker
+
+    TurnTaintTracker.get_instance().reset_turn()
+    print("\n--- 1. Testing Multi-Action Protocols ---")
+    with patch("jarvis.skills.protocols.launch_application", return_value="Application launched"):
+        res_work = SkillRegistry.execute("execute_protocol", protocol_name="work")
+        print("Work protocol:", res_work)
+        assert "Work protocol initiated" in res_work
+
+        TurnTaintTracker.get_instance().reset_turn()
+        res_night = SkillRegistry.execute("execute_protocol", protocol_name="night")
+        print("Night protocol:", res_night)
+        assert "Night protocol engaged" in res_night
 
 
 def test_system_maintenance():
+    import pytest
+
+    from jarvis.core.security_boundaries import (
+        DualKeyApprovalManager,
+        SecurityBoundaryViolation,
+        TurnTaintTracker,
+    )
+    TurnTaintTracker.get_instance().reset_turn()
     print("\n--- 2. Testing System Maintenance & RAM Hogs ---")
+    # Read-only diagnostics do not require authorization
     hogs = SkillRegistry.execute("inspect_ram_hogs")
     print("RAM Hogs excerpt:\n", hogs[:150])
     assert "Top Memory Consumers" in hogs
 
-    opt = SkillRegistry.execute("optimize_workstation")
-    print("Optimization result:", opt)
-    assert "optimization complete" in opt.lower()
+    TurnTaintTracker.get_instance().reset_turn()
+    # 1. Unapproved optimize_workstation must fail closed
+    with pytest.raises(SecurityBoundaryViolation):
+        SkillRegistry.execute("optimize_workstation")
+
+    # 2. Approved optimize_workstation executes cleanly
+    approval_mgr = DualKeyApprovalManager.get_instance()
+    approval_mgr.set_approval_handler(lambda req: True)
+    try:
+        opt = SkillRegistry.execute("optimize_workstation")
+        print("Optimization result:", opt)
+        assert "optimization complete" in opt.lower()
+    finally:
+        approval_mgr.set_approval_handler(None)
 
 
 def test_media_dj():
@@ -62,9 +85,11 @@ def test_project_manager():
     print("Project open result:", p_res)
     assert "opened in Visual Studio Code" in p_res or "Jarvis_2.0" in p_res
 
-    f_res = SkillRegistry.execute("open_user_folder", folder_name="downloads")
-    print("Folder open result:", f_res)
-    assert "Opened your downloads folder" in f_res
+    from unittest.mock import patch
+    with patch("os.startfile"):
+        f_res = SkillRegistry.execute("open_user_folder", folder_name="downloads")
+        print("Folder open result:", f_res)
+        assert "Opened your downloads folder" in f_res
 
 
 def test_intent_routing_coverage():
@@ -73,7 +98,7 @@ def test_intent_routing_coverage():
         cfg = yaml.safe_load(f)
     cfg["llm"]["provider"] = "hybrid"
 
-    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg))
+    brain = JarvisBrain(cfg, MemoryManager(cfg), SafetyGate(cfg), antigravity_resolver=lambda: None)
 
     queries = {
         "Jarvis, initiate work protocol": "execute_protocol",

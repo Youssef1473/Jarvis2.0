@@ -1,7 +1,8 @@
-"""Central orchestrator coordinating audio, hotkeys, STT, LLM, tools, TTS, and HUD overlay."""
+"""Central orchestrator coordinating sensory inputs, cognitive routing, speech, and holographic HUD."""
+from __future__ import annotations
+
 import asyncio
 import logging
-import queue
 import re
 import sys
 import threading
@@ -13,31 +14,43 @@ import sounddevice as sd
 
 from jarvis.audio.hotkey_listener import HotkeyListener
 from jarvis.audio.sound_effects import SoundEffects
+from jarvis.audio.speech_capture import AdaptiveSpeechCapture
 from jarvis.audio.stt import SpeechToText
 from jarvis.audio.tts import TextToSpeech
 from jarvis.audio.wake_word import WakeWordDetector
 from jarvis.core.brain import JarvisBrain
+from jarvis.core.cognition.intent_acknowledgments import (
+    extract_topic_label,
+    get_immediate_intent_acknowledgment,
+    is_shutdown_command,
+)
 from jarvis.core.heartbeat import JarvisHeartbeat
 from jarvis.core.memory import MemoryManager
+from jarvis.core.orchestrator_lifecycle import (
+    OrchestratorShutdownCoordinator,
+    trim_process_memory,
+)
 from jarvis.core.safety import SafetyGate
 from jarvis.core.services import ManagedServiceManager
 from jarvis.ui.hud import JarvisHUD
 
 logger = logging.getLogger("Jarvis.Orchestrator")
 
-
-def trim_process_memory(aggressive: bool = False):
-    """Run low-cost collection; reserve working-set eviction for explicit opt-in."""
-    import gc
-    gc.collect(0)
-    if not aggressive:
-        return
-    gc.collect()
-    try:
-        import ctypes
-        ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
-    except Exception:
-        pass
+__all__ = [
+    "HotkeyListener",
+    "JarvisBrain",
+    "JarvisHUD",
+    "JarvisHeartbeat",
+    "JarvisOrchestrator",
+    "MemoryManager",
+    "SafetyGate",
+    "SoundEffects",
+    "SpeechToText",
+    "TextToSpeech",
+    "WakeWordDetector",
+    "is_shutdown_command",
+    "trim_process_memory",
+]
 
 
 class JarvisOrchestrator:
@@ -47,60 +60,93 @@ class JarvisOrchestrator:
         self.config = config
         self.sample_rate = config.get("audio", {}).get("sample_rate", 16000)
 
-        # Initialize sub-systems
+        # Resolve and validate active workspace (fails closed on empty or 'unscoped')
+        raw_ws = config.get("workspace_id") or config.get("active_workspace_id") or "ws_default"
+        clean_ws = str(raw_ws).strip()
+        if not clean_ws or clean_ws.lower() == "unscoped":
+            raise ValueError("Invalid active_workspace_id: cannot use empty or unscoped workspace.")
+        self.active_workspace_id = clean_ws
+
+        # Subsystems
         self.sfx = SoundEffects(config)
         self.memory = MemoryManager(config)
+        if hasattr(self.memory, "set_active_context"):
+            try:
+                self.memory.set_active_context(self.active_workspace_id, None)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Active context activation notice: %s", exc)
+
         try:
             import jarvis.skills.productivity as prod_skills
+
             prod_skills.set_memory_manager(self.memory)
-        except Exception:
-            pass
+        except (ImportError, AttributeError) as exc:
+            logger.debug("Productivity skills memory binding notice: %s", exc)
+
         try:
             import jarvis.skills.self_evolution as evo_skills
+
             evo_skills.set_memory_manager(self.memory)
             evo_skills.init_custom_skills()
-        except Exception as e:
-            logger.warning("Failed to initialize custom skills: %s", e)
+        except (ImportError, AttributeError, RuntimeError) as exc:
+            logger.warning("Failed to initialize custom skills: %s", exc)
+
         self.safety = SafetyGate(config)
         self.stt = SpeechToText(config)
         self.tts = TextToSpeech(config)
         try:
             import jarvis.skills.voice_control as voice_skills
+
             voice_skills.set_tts_instance(self.tts)
-        except Exception:
-            pass
+        except (ImportError, AttributeError) as exc:
+            logger.debug("Voice control skills TTS binding notice: %s", exc)
+
         self.service_manager = ManagedServiceManager()
-        self.brain = JarvisBrain(config, self.memory, self.safety, service_manager=self.service_manager)
+        self.brain = JarvisBrain(
+            config,
+            self.memory,
+            self.safety,
+            service_manager=self.service_manager,
+            workspace_id=self.active_workspace_id,
+        )
         self.hud = JarvisHUD()
         self.heartbeat = JarvisHeartbeat(self, config)
+
         from jarvis.core.task_manager import BackgroundTaskManager
+
         self.task_manager = BackgroundTaskManager.get_instance(self)
 
         from jarvis.conversation.bookmarks import ReasoningBookmarkStack
+
         self.bookmarks = ReasoningBookmarkStack.get_instance()
+
         from jarvis.core.pipeline.latency_profiler import PipelineLatencyProfiler
         from jarvis.skills.diagnostics import get_global_latency_profiler
+
         self.latency_profiler: PipelineLatencyProfiler = (
-            getattr(self.brain, "latency_profiler", None)
-            or get_global_latency_profiler()
+            getattr(self.brain, "latency_profiler", None) or get_global_latency_profiler()
         )
         self.tool_orchestrator = getattr(self.brain, "tool_orchestrator", None)
+
         self._active_turn_id: str | None = None
         self._active_query: str = ""
         self._active_topic_label: str = "the architecture"
         self._active_tool_outputs: dict[str, Any] = {}
+        self._active_partial_text: str | None = None
 
         # Web-Powered Holographic HUD Server
         ui_cfg = config.get("ui", {})
         if ui_cfg.get("enabled", True):
             from jarvis.ui.server import JarvisUIService
-            self.ui_service = JarvisUIService(
+
+            self.ui_service: JarvisUIService | None = JarvisUIService(
                 orchestrator=self,
                 host=ui_cfg.get("host", "127.0.0.1"),
                 port=int(ui_cfg.get("port", 20129)),
             )
         else:
             self.ui_service = None
+
             def _cli_approval_handler(details: dict[str, Any]) -> bool:
                 if not sys.stdin or not hasattr(sys.stdin, "isatty") or not sys.stdin.isatty():
                     return False
@@ -111,10 +157,11 @@ class JarvisOrchestrator:
                 try:
                     ans = input(" Authorize execution? [y/N]: ").strip().lower()
                     return ans in ("y", "yes")
-                except Exception:
+                except (EOFError, KeyboardInterrupt):
                     return False
 
             from jarvis.core.security_boundaries import DualKeyApprovalManager
+
             DualKeyApprovalManager.get_instance().set_approval_handler(_cli_approval_handler)
 
         if hasattr(self.brain, "set_tts_instance"):
@@ -122,18 +169,18 @@ class JarvisOrchestrator:
         if getattr(self, "ui_service", None) and hasattr(self.brain, "set_tool_status_callback"):
             self.brain.set_tool_status_callback(self._on_tool_status_event)
 
-        # Mute state
+        # Mute and Push-to-Talk (PTT) states
         self._is_muted = False
-
-        # Recording state for Push-to-Talk (ALT)
         self._is_recording = False
         self._is_ptt_recording = False
         self.last_recording_had_overflow = False
         self._recorded_frames: list[np.ndarray] = []
         self._record_stream: sd.InputStream | None = None
         self._lock = threading.Lock()
+        self._stop_lock = threading.Lock()
+        self._ptt_press_time: float = 0.0
 
-        # Listeners
+        # Background listeners
         self.hotkey_listener = HotkeyListener(
             config=config,
             on_press_callback=self._on_ptt_press,
@@ -148,11 +195,10 @@ class JarvisOrchestrator:
 
         self._running = False
         self._stopped = False
-        self._stop_lock = threading.Lock()
         self._current_state = "idle"
         self._is_processing_command = False
 
-    def set_state(self, new_state: str):
+    def set_state(self, new_state: str) -> None:
         """Unified state switcher notifying both desktop Tkinter HUD and Web Holographic HUD."""
         self._current_state = new_state
         self.hud.set_state(new_state)
@@ -166,6 +212,7 @@ class JarvisOrchestrator:
     def abort_active_command(self) -> bool:
         """Execution kill-switch: immediately halts in-flight cognitive processing, tool execution, and speech."""
         from jarvis.core.cancellation import signal_global_barge_in
+
         epoch = signal_global_barge_in()
         was_busy = False
         spoken_clauses, unspoken_clauses = [], []
@@ -174,8 +221,8 @@ class JarvisOrchestrator:
                 res = self.tts.abort_and_partition_clauses()
                 if isinstance(res, (tuple, list)) and len(res) == 2:
                     spoken_clauses, unspoken_clauses = res
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("TTS clause partitioning notice: %s", exc)
 
         if self.tts.is_speaking:
             self.tts.stop()
@@ -184,25 +231,27 @@ class JarvisOrchestrator:
         if hasattr(self, "wake_detector"):
             try:
                 self.wake_detector.stop_vad_session()
-            except Exception:  # noqa: BLE001, S110
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Wake detector VAD session stop notice: %s", exc)
 
-        if hasattr(self, "brain") and hasattr(self.brain, "cancel_active_turn"):
+        brain = getattr(self, "brain", None)
+        if brain is not None and hasattr(brain, "cancel_active_turn"):
             try:
-                self.brain.cancel_active_turn()
-            except Exception:
-                pass
+                brain.cancel_active_turn()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Brain turn cancellation notice: %s", exc)
 
         # Sync resolved tool outputs from brain if available
         active_tools = dict(getattr(self, "_active_tool_outputs", {}) or {})
-        if hasattr(self, "brain") and hasattr(self.brain, "get_current_turn_tool_outputs"):
+        if brain is not None and hasattr(brain, "get_current_turn_tool_outputs"):
             try:
-                brain_tools = self.brain.get_current_turn_tool_outputs()
+                brain_tools = brain.get_current_turn_tool_outputs()
                 if brain_tools:
                     active_tools.update(brain_tools)
-                    self._active_tool_outputs.update(brain_tools)
-            except Exception:
-                pass
+                    if hasattr(self, "_active_tool_outputs") and isinstance(self._active_tool_outputs, dict):
+                        self._active_tool_outputs.update(brain_tools)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Tool outputs sync notice: %s", exc)
 
         remaining_clauses = list(unspoken_clauses or [])
         if not remaining_clauses:
@@ -216,9 +265,10 @@ class JarvisOrchestrator:
             flow_xml = ""
             try:
                 from jarvis.context.flow_state_mirror import FlowStateMirror
+
                 flow_xml = FlowStateMirror.get_instance().format_quarantined_xml()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Flow state XML formatting notice: %s", exc)
 
             if remaining_clauses:
                 self.bookmarks.push_interrupted_turn(
@@ -231,25 +281,25 @@ class JarvisOrchestrator:
                     flow_state_xml=flow_xml,
                 )
 
-        if getattr(self, "_is_processing_command", False) or getattr(self, "_current_state", "idle") in ("thinking", "speaking"):
+        if getattr(self, "_is_processing_command", False) or getattr(self, "_current_state", "idle") in (
+            "thinking",
+            "speaking",
+        ):
             was_busy = True
             logger.info("Active command execution aborted via kill-switch (epoch -> %d).", epoch)
             self.set_state("idle")
             if getattr(self, "ui_service", None):
                 try:
                     self.ui_service.broadcast_message("jarvis", "[Execution aborted by user interrupt]")
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("UI broadcast message abort notice: %s", exc)
         return was_busy
 
     def on_atomic_barge_in(self) -> None:
-        """
-        Callback invoked immediately when the Win32 Named Event barge-in fires (<1us).
-        Halts playback, cancels speculative futures, and snapshots the interrupted speech clause cursor.
-        """
+        """Callback invoked immediately when the Win32 Named Event barge-in fires (<1us)."""
         self.abort_active_command()
 
-    def broadcast_ambient_telemetry(self, data: dict[str, Any]):
+    def broadcast_ambient_telemetry(self, data: dict[str, Any]) -> None:
         """Dispatches ambient desktop context and presence telemetry to the Holographic HUD."""
         if getattr(self, "ui_service", None):
             try:
@@ -258,10 +308,10 @@ class JarvisOrchestrator:
                     "data": data,
                     "timestamp": time.strftime("%H:%M:%S"),
                 })
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Ambient telemetry broadcast notice: %s", exc)
 
-    def _on_tool_status_event(self, event: dict[str, Any]):
+    def _on_tool_status_event(self, event: dict[str, Any]) -> None:
         """Dispatches live tool execution status events to the Holographic HUD."""
         if getattr(self, "ui_service", None):
             try:
@@ -270,8 +320,8 @@ class JarvisOrchestrator:
                     "data": event,
                     "timestamp": time.strftime("%H:%M:%S"),
                 })
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Tool status broadcast notice: %s", exc)
 
     def is_muted(self) -> bool:
         """Returns True if voice listening is currently muted."""
@@ -295,117 +345,28 @@ class JarvisOrchestrator:
             self.sfx.play_wake()
         return self._is_muted
 
-    def _on_key_activity(self):
+    def _on_key_activity(self) -> None:
         """Barge-in hook: interrupts speech and active commands if user starts typing or presses a key."""
         if self.tts.is_speaking:
             self.abort_active_command()
 
-    def _audio_record_callback(self, indata, frames, time_info, status):
+    def _audio_record_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
         """Accumulates microphone audio during push-to-talk."""
-        try:
-            if self._is_recording:
-                with self._lock:
-                    self._recorded_frames.append(indata.copy())
-        except Exception:
-            pass
+        AdaptiveSpeechCapture.audio_record_callback(self, indata, frames, time_info, status)
 
-    def _on_ptt_press(self):
+    def _on_ptt_press(self) -> None:
         """Called immediately when user presses PTT trigger (MB2 or configured key)."""
-        if self._is_muted:
-            return
+        AdaptiveSpeechCapture.on_ptt_press(self, self._process_audio)
 
-        # Kill-switch: abort any in-flight command execution, tool calls, or speech
-        was_busy = self.abort_active_command()
-        if was_busy:
-            # Settle window (25ms) allows WASAPI driver & worker threads to cleanly release audio endpoints
-            time.sleep(0.025)
-
-        ptt_mode = str(self.config.get("audio", {}).get("ptt_mode", "hold")).lower().strip()
-        if ptt_mode == "toggle" and getattr(self, "_is_ptt_recording", False):
-            # Second press in toggle mode concludes recording session
-            self._finalize_ptt_recording()
-            return
-
-        with self._lock:
-            self._recorded_frames = []
-            self._is_recording = True
-            self._is_ptt_recording = True
-            self._ptt_press_time = time.time()
-            if hasattr(self, "wake_detector"):
-                self.wake_detector.start_ptt_session()
-
-        is_mouse = getattr(self.hotkey_listener, "mouse_target_btn", None) is not None
-        if is_mouse:
-            # Non-blocking delayed cue: chime and show HUD only if held >= 200ms
-            def _delayed_cue():
-                time.sleep(0.20)
-                if self._is_recording:
-                    logger.info("PTT held (mouse): Listening...")
-                    self.set_state("listening")
-                    self.sfx.play_wake()
-
-            threading.Thread(target=_delayed_cue, daemon=True).start()
-        else:
-            # Dedicated keyboard key (e.g. Fin / End): immediate activation
-            logger.info("PTT pressed (Fin / End): Listening...")
-            self.set_state("listening")
-            self.sfx.play_wake()
-
-        # Single persistent stream router captures PTT audio directly
-
-    def _finalize_ptt_recording(self):
-        """Concludes PTT recording session and initiates audio processing."""
-        press_duration = time.time() - getattr(self, "_ptt_press_time", 0.0)
-        self._is_recording = False
-        self._is_ptt_recording = False
-
-        chunks = []
-        if hasattr(self, "wake_detector"):
-            detector_chunks = self.wake_detector.stop_ptt_session()
-            if isinstance(detector_chunks, list):
-                chunks.extend(detector_chunks)
-            if getattr(self.wake_detector, "recording_overflow_detected", False) is True:
-                self.last_recording_had_overflow = True
-                logger.warning(
-                    "PTT recording encountered queue overflow; some audio frames may have been dropped."
-                )
-
-        # Filter out accidental mouse taps (< 220ms) if using mouse button in hold mode
-        is_mouse = getattr(self.hotkey_listener, "mouse_target_btn", None) is not None
-        ptt_mode = str(self.config.get("audio", {}).get("ptt_mode", "hold")).lower().strip()
-        if is_mouse and ptt_mode != "toggle" and press_duration < 0.22:
-            self.set_state("idle")
-            return
-
-        logger.info(f"PTT concluded (duration {press_duration:.2f}s): Processing speech...")
-        self.set_state("thinking")
-
-        with self._lock:
-            if self._recorded_frames:
-                chunks.extend(self._recorded_frames)
-                self._recorded_frames = []
-
-            if not chunks:
-                logger.info("No audio captured.")
-                self.set_state("idle")
-                return
-            audio_array = np.concatenate(chunks, axis=0).flatten()
-
-        threading.Thread(target=self._process_audio, args=(audio_array,), daemon=True).start()
-
-    def _on_ptt_release(self):
+    def _on_ptt_release(self) -> None:
         """Called immediately when user releases PTT trigger."""
-        if not getattr(self, "_is_ptt_recording", False):
-            return
+        AdaptiveSpeechCapture.on_ptt_release(self, self._process_audio)
 
-        ptt_mode = str(self.config.get("audio", {}).get("ptt_mode", "hold")).lower().strip()
-        if ptt_mode == "toggle":
-            # In toggle mode, releasing the key does NOT finish recording; user speaks until next press
-            return
+    def _finalize_ptt_recording(self) -> None:
+        """Concludes PTT recording session and initiates audio processing."""
+        AdaptiveSpeechCapture.finalize_ptt_recording(self, self._process_audio)
 
-        self._finalize_ptt_recording()
-
-    def _on_wake_word(self):
+    def _on_wake_word(self) -> None:
         """Called when openWakeWord detects 'Hey Jarvis'."""
         if self._is_muted or self._is_recording:
             return
@@ -416,122 +377,17 @@ class JarvisOrchestrator:
         logger.info("Wake word detected! Listening with dynamic VAD auto-cutoff...")
         self.set_state("listening")
         self.sfx.play_wake()
+        AdaptiveSpeechCapture.start_vad_capture(self, self._process_audio)
 
-        def record_and_process_vad():
-            try:
-                from jarvis.audio.affinity import pin_and_elevate_current_thread
-                pin_and_elevate_current_thread(tag="OrchestratorVADCapture")
-            except Exception:
-                pass
-            try:
-                vad = self.wake_detector.get_vad()
-                if vad is None:
-                    from openwakeword.vad import VAD
-                    vad = VAD()
-                captured_chunks = []
-                block_size = 1280
-                sample_rate = self.sample_rate
-
-                audio_cfg = self.config.get("audio", {})
-                base_silence_s = float(audio_cfg.get("silence_threshold_seconds", 1.4))
-                thinking_pause_s = float(audio_cfg.get("thinking_pause_seconds", 3.2))
-                max_record_seconds = float(audio_cfg.get("max_record_seconds", 35.0))
-                initial_timeout_seconds = float(audio_cfg.get("initial_timeout_seconds", 3.5))
-                hesitation_damping = bool(audio_cfg.get("hesitation_damping", True))
-
-                chunk_duration = block_size / sample_rate
-                max_chunks = int(max_record_seconds / chunk_duration)
-                initial_timeout_chunks = int(initial_timeout_seconds / chunk_duration)
-
-                speech_started = False
-                active_speech_chunks = 0
-                silence_chunk_count = 0
-
-                self._is_recording = True
-                vad_session = self.wake_detector.start_vad_session()
-                try:
-                    for chunk_idx in range(max_chunks):
-                        if getattr(self, "_is_ptt_recording", False) or getattr(self, "_stopped", False):
-                            break
-
-                        try:
-                            chunk_data = vad_session.get_chunk(timeout=0.35)
-                        except queue.Empty:
-                            if getattr(self, "_stopped", False) or getattr(self, "_is_ptt_recording", False):
-                                break
-                            continue
-
-                        data = chunk_data.reshape(-1, 1)
-                        captured_chunks.append(data.copy())
-
-                        # Compute RMS energy for micro-hesitation and breathing detection
-                        chunk_samples = data[:, 0]
-                        rms_energy = float(np.sqrt(np.mean(chunk_samples ** 2)))
-
-                        # Convert float32 to int16 PCM for VAD scoring
-                        data_int16 = (chunk_samples * 32767).astype(np.int16)
-                        vad_score = float(vad.predict(data_int16))
-
-                        if vad_score >= 0.30:
-                            speech_started = True
-                            active_speech_chunks += 1
-                            silence_chunk_count = 0
-                        elif speech_started:
-                            # Dynamic Adaptive Silence Scaling:
-                            # Scales pause tolerance from base_silence_s up to thinking_pause_s (e.g. 3.2s)
-                            # so Sir has ample breathing room to think during compound multi-clause sentences.
-                            spoken_duration_s = active_speech_chunks * chunk_duration
-                            dynamic_silence_s = min(thinking_pause_s, base_silence_s + (spoken_duration_s * 0.35))
-                            silence_chunks_needed = max(14, int(dynamic_silence_s / chunk_duration))
-
-                            # Hesitation & Murmur Damping:
-                            # Intermediate vocal energy (vad 0.12-0.29 or breathing RMS >= 0.0038) indicates active thinking
-                            if hesitation_damping and (0.12 <= vad_score < 0.30 or rms_energy >= 0.0038):
-                                silence_chunk_count = max(0, silence_chunk_count - 2)
-                            else:
-                                silence_chunk_count += 1
-                                if silence_chunk_count >= silence_chunks_needed:
-                                    logger.info(
-                                        f"VAD speech concluded at {chunk_idx * chunk_duration:.1f}s "
-                                        f"({silence_chunk_count * chunk_duration:.2f}s pause, dynamic limit {dynamic_silence_s:.2f}s)."
-                                    )
-                                    break
-                        else:
-                            if chunk_idx >= initial_timeout_chunks:
-                                logger.info("VAD: no speech detected after wake word.")
-                                break
-                finally:
-                    if vad_session.overflow_detected:
-                        self.last_recording_had_overflow = True
-                        logger.warning(
-                            "VAD recording encountered queue overflow; some audio frames may have been dropped."
-                        )
-                    self.wake_detector.stop_vad_session()
-                    self._is_recording = False
-
-                if getattr(self, "_is_ptt_recording", False):
-                    # PTT preempted VAD recording, do not process partial VAD audio
-                    return
-
-                if captured_chunks and speech_started:
-                    audio_array = np.concatenate(captured_chunks, axis=0).flatten()
-                    self._process_audio(audio_array)
-                else:
-                    self.set_state("idle")
-
-            except Exception as e:
-                logger.error(f"VAD recording error: {e}")
-                self.set_state("idle")
-
-        threading.Thread(target=record_and_process_vad, daemon=True).start()
-
-    def _process_audio(self, audio_array: np.ndarray):
+    def _process_audio(self, audio_array: np.ndarray) -> None:
         """Transcribes audio, sends to brain, and delivers spoken output."""
         try:
             from jarvis.audio.affinity import pin_and_elevate_current_thread
+
             pin_and_elevate_current_thread(tag="OrchestratorAudioWorker")
-        except Exception:
-            pass
+        except (ImportError, AttributeError, OSError) as exc:
+            logger.debug("Audio worker affinity elevation notice: %s", exc)
+
         self.set_state("thinking")
         self.sfx.play_think()
         text = self.stt.transcribe(audio_array, sample_rate=self.sample_rate)
@@ -543,50 +399,20 @@ class JarvisOrchestrator:
         print(f"\n[Sir]: {text}")
         try:
             self.handle_command(text)
-        except Exception as e:
-            logger.error(f"Error handling voice command '{text}': {e}", exc_info=True)
+        except Exception:
+            logger.exception("Error handling voice command '%s'", text)
             self.set_state("idle")
             self.sfx.play_done()
 
     @staticmethod
     def is_shutdown_command(query: str) -> bool:
         """Determines if query is a departure or shutdown request."""
-        clean = "".join(c.lower() for c in query if c.isalnum() or c.isspace())
-        normalized = " ".join(clean.split())
-        if normalized in {
-            "stop", "stop please", "please stop", "can you stop", "could you stop",
-            "exit", "quit", "goodbye", "good bye", "bye",
-        }:
-            return True
+        return is_shutdown_command(query)
 
-        # Questions or explanations asking 'how', 'why', 'what', 'who' must never trigger shutdown
-        if any(normalized.startswith(q) for q in ("how ", "why ", "what ", "who ", "where ", "when ", "can you explain", "explain ")):
-            return False
-
-        # Programming instructions and technical directives must never trigger shutdown
-        code_markers = {"def", "class", "import", "python", "code", "script", "step", "execute", "directive", "permission", "server", "vim"}
-        query_words = set(normalized.split())
-        if query_words & code_markers:
-            return False
-
-        # Guard against long technical sentences accidentally triggering departure
-        if len(normalized.split()) > 7:
-            return False
-
-        import re
-        triggers = [
-            r"\bgoodbye\b", r"\bgood bye\b", r"\bbye\b", r"\bshutdown\b", r"\bshut down\b",
-            r"\bexit\b", r"\bquit\b", r"\bthats it for now\b", r"\bthat is it for now\b",
-            r"\bthats all for now\b", r"\bthat is all for now\b",
-            r"\bpower down\b", r"\bdeactivate\b", r"\bgo to sleep\b", r"\bsleep now\b",
-            r"\bpower off\b", r"\bgo offline\b", r"\bterminate\b", r"\bclose jarvis\b", r"\bstop jarvis\b",
-            r"\bstop listening\b", r"\bstop working\b", r"\bstop all services\b", r"\bstop all the services\b",
-            r"\bstop every service\b", r"\bshut yourself down\b",
-            r"\bshut down every tool\b", r"\bshut down all tools\b", r"\bkill jarvis\b",
-            r"\bkill every tool\b", r"\bkill all tools\b", r"\bkill everything\b",
-            r"\bturn off\b", r"\bclose down\b", r"\bstop all tools\b"
-        ]
-        return any(re.search(t, normalized) for t in triggers)
+    @staticmethod
+    def _extract_topic_label(query: str) -> str:
+        """Derives a concise 2-4 word topic phrase from the query for bookmark bridging."""
+        return extract_topic_label(query)
 
     async def handle_user_utterance(self, turn_id: str, utterance: str) -> str:
         """Main cognitive execution entrypoint with automatic bookmark resumption."""
@@ -598,13 +424,18 @@ class JarvisOrchestrator:
             self.latency_profiler.begin_turn(turn_id)
             self.latency_profiler.mark(turn_id, "stt_final_ns")
 
-        bookmark_xml = self.bookmarks.format_prompt_injection(utterance) if hasattr(self, "bookmarks") and self.bookmarks else ""
+        bookmark_xml = (
+            self.bookmarks.format_prompt_injection(utterance)
+            if hasattr(self, "bookmarks") and self.bookmarks
+            else ""
+        )
         flow_xml = ""
         try:
             from jarvis.context.flow_state_mirror import FlowStateMirror
+
             flow_xml = FlowStateMirror.get_instance().format_quarantined_xml()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Flow state mirror XML format notice: %s", exc)
 
         if hasattr(self.brain, "generate_turn"):
             response_text, topic_label, tool_outputs = await self.brain.generate_turn(
@@ -621,30 +452,9 @@ class JarvisOrchestrator:
             if hasattr(self.tts, "queue_response_clauses"):
                 self.tts.queue_response_clauses(turn_id=turn_id, text=response_text)
             return response_text
-        else:
-            return self.handle_command(utterance)
+        return self.handle_command(utterance)
 
-    @staticmethod
-    def _extract_topic_label(query: str) -> str:
-        """Derives a concise 2-4 word topic phrase from the query for bookmark bridging."""
-        q = (query or "").strip()
-        pattern = re.compile(
-            r"^(?:jarvis,?\s*|hey jarvis,?\s*|can you\s+|could you\s+|please\s+|tell me about\s+|explain\s+|what is\s+|how does\s+|why does\s+|what are\s+|how do\s+)",
-            flags=re.IGNORECASE,
-        )
-        while True:
-            new_q = pattern.sub("", q).strip()
-            if new_q == q:
-                break
-            q = new_q
-        q_clean = re.sub(r"[?!.,;:]+$", "", q).strip()
-        words = q_clean.split()
-        if not words:
-            return "the prior topic"
-        topic = " ".join(words[:4]).strip().lower()
-        return topic or "the prior topic"
-
-    def handle_command(self, query: str):
+    def handle_command(self, query: str) -> None:
         """Processes a text query, executes tools, and speaks the reply."""
         # Broadcast prompt to Holographic HUD
         if getattr(self, "ui_service", None):
@@ -658,15 +468,23 @@ class JarvisOrchestrator:
                 self.ui_service.broadcast_message("jarvis", farewell)
             self.sfx.play_done()
             self.set_state("speaking")
-            asyncio.run(self.tts.speak(farewell))
+            # Speak synchronously so audio finishes completely without requiring an event loop
+            self.tts.speak_sync(farewell)
             self.set_state("idle")
             self.stop()
-            import os
-            time.sleep(0.3)
-            os._exit(0)
+            if threading.current_thread() is threading.main_thread():
+                sys.exit(0)
+            else:
+                import _thread
+
+                try:
+                    _thread.interrupt_main()
+                except Exception:  # noqa: BLE001
+                    sys.exit(0)
             return
 
         from jarvis.core.cancellation import get_global_cancellation_token
+
         cancel_token = get_global_cancellation_token()
         self.brain.set_cancellation_token(cancel_token)
         self._is_processing_command = True
@@ -693,47 +511,39 @@ class JarvisOrchestrator:
                     logger.error("TTS streaming session could not be established; audio output will fail closed or run synchronously.")
 
             # Format active resumption bookmark and flow state XML
-            bookmark_xml = self.bookmarks.format_prompt_injection(query) if hasattr(self, "bookmarks") and self.bookmarks else ""
+            bookmark_xml = (
+                self.bookmarks.format_prompt_injection(query)
+                if hasattr(self, "bookmarks") and self.bookmarks
+                else ""
+            )
             flow_xml = ""
             try:
                 from jarvis.context.flow_state_mirror import FlowStateMirror
+
                 flow_xml = FlowStateMirror.get_instance().format_quarantined_xml()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Flow state XML format notice: %s", exc)
 
             # Check if this query is an instant deterministic reflex (<10ms) or model switch
             norm_query = re.sub(r"^[\s,;:.]+|[\s,!?:.]+$", "", (query or "").strip()).strip()
             is_fast_reflex = self.brain.is_fast_reflex(norm_query)
-            is_model_switch = bool(re.match(r"^(?:switch to|use|activate|set model to|enable)\s+(pro|flash|claude|sonnet|opus|gemini|3\.8|3\.1)", norm_query, re.IGNORECASE))
-
-            queued_ack = None
-            # For non-reflex cognitive tasks, speak an immediate contextual intent update (<150ms) so Sir is never left in silence
-            if not is_fast_reflex and not is_model_switch:
-                lower = norm_query.lower()
-                is_conversational = any(
-                    lower.startswith(k) or k in lower for k in [
-                        "it's okay", "its okay", "forget about", "never mind", "hello", "hi", "hey",
-                        "how are you", "who are you", "thank you", "thanks", "good morning", "good evening"
-                    ]
+            is_model_switch = bool(
+                re.match(
+                    r"^(?:switch to|use|activate|set model to|enable)\s+(pro|flash|claude|sonnet|opus|gemini|3\.8|3\.1)",
+                    norm_query,
+                    re.IGNORECASE,
                 )
-                if not is_conversational:
-                    if any(k in lower for k in ["teach yourself", "add a feature", "create a feature", "create a skill", "build a skill", "learn how", "learn to"]):
-                        queued_ack = "On it, Sir. Conceptualizing the architecture and writing the capability now."
-                    elif any(lower.startswith(k) for k in ["search", "find", "locate", "where is", "where are", "lookup", "look up", "scan"]):
-                        queued_ack = "Scanning through the codebase now, Sir."
-                    elif any(k in lower for k in ["fix this", "patch this", "write code", "implement", "refactor", "run tests"]):
-                        queued_ack = "Analyzing the implementation and preparing the changes, Sir."
-                    elif any(k in lower for k in ["read that", "process that pdf", "ingest", "parse that"]):
-                        queued_ack = "Parsing the document details now, Sir."
-                    elif any(lower.startswith(k) for k in ["why", "explain", "analyze", "compare", "break down"]):
-                        queued_ack = "Analyzing that now, Sir. Here is my assessment."
+            )
 
-                if queued_ack:
-                    if self.get_state() != "speaking":
-                        self.set_state("speaking")
-                    self.tts.queue_sentence(queued_ack)
+            queued_ack = get_immediate_intent_acknowledgment(
+                norm_query, is_fast_reflex=is_fast_reflex, is_model_switch=is_model_switch
+            )
+            if queued_ack:
+                if self.get_state() != "speaking":
+                    self.set_state("speaking")
+                self.tts.queue_sentence(queued_ack)
 
-            def queue_speech(sentence: str):
+            def queue_speech(sentence: str) -> None:
                 nonlocal queued_ack
                 if cancel_token.is_cancelled:
                     return
@@ -744,7 +554,7 @@ class JarvisOrchestrator:
                         r"^(?:right away|on it|certainly|understood|very well)(?:,?\s+[a-z\s]+)?[.,]?\s*",
                         "",
                         s_clean,
-                        flags=re.IGNORECASE
+                        flags=re.IGNORECASE,
                     ).strip()
                 if s_clean:
                     if self.get_state() != "speaking":
@@ -784,8 +594,7 @@ class JarvisOrchestrator:
 
             print(f"[Jarvis]: {reply}\n")
 
-            # Publish the response after playback drain so the HUD state and
-            # transcript reflect the actual end of speech.
+            # Publish response to HUD
             if getattr(self, "ui_service", None):
                 self.ui_service.broadcast_message("jarvis", reply)
 
@@ -795,15 +604,19 @@ class JarvisOrchestrator:
 
             # Check if shutdown tool was invoked during LLM reasoning
             from jarvis.skills.os_control import is_shutdown_requested
+
             if is_shutdown_requested():
                 self.stop()
-                import os
-                time.sleep(0.3)
-                os._exit(0)
+                import _thread
+
+                try:
+                    _thread.interrupt_main()
+                except Exception:  # noqa: BLE001
+                    sys.exit(0)
         finally:
             self._is_processing_command = False
 
-    def start(self):
+    def start(self) -> None:
         """Starts all background listeners, Web HUD, and the desktop overlay."""
         self._running = True
 
@@ -816,10 +629,11 @@ class JarvisOrchestrator:
                     import webbrowser
 
                     from jarvis.ui.server import create_bootstrap_token
+
                     b_token = create_bootstrap_token(ttl_seconds=60.0)
                     webbrowser.open(f"http://{self.ui_service.host}:{self.ui_service.port}/#bootstrap={b_token}")
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("HUD browser auto-open notice: %s", exc)
 
         if self.config.get("hud", {}).get("desktop_overlay", False):
             logger.info("Starting Jarvis HUD Desktop Overlay...")
@@ -853,11 +667,10 @@ class JarvisOrchestrator:
         self.set_state("idle")
         trim_process_memory(self.config.get("performance", {}).get("aggressive_working_set_trim", False))
 
-    def run_interactive_loop(self):
+    def run_interactive_loop(self) -> None:
         """Main execution loop for voice and console interaction."""
         self.start()
         try:
-            import sys
             is_interactive = sys.stdin and hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
             if is_interactive:
                 while self._running:
@@ -867,28 +680,23 @@ class JarvisOrchestrator:
                             continue
                         self.handle_command(user_input)
                     except EOFError:
-                        # Terminal stdin disconnected, piped, or interrupted by child process teardown.
-                        # Do NOT shut down! Jarvis is an ambient assistant with voice, PTT, HUD, and web endpoints.
                         logger.info("Terminal stdin disconnected; continuing in ambient voice & HUD daemon mode.")
                         while self._running:
                             time.sleep(0.5)
                         break
                     except KeyboardInterrupt:
-                        # Deliberate user Ctrl+C termination
                         break
             else:
-                # Running in stealth / background mode without terminal stdin
                 while self._running:
                     time.sleep(0.5)
         except (KeyboardInterrupt, EOFError):
             print("\n[Jarvis]: Terminating session. Have a good day, Sir.")
             self.stop()
-            import os
-            os._exit(0)
+            sys.exit(0)
         finally:
             self.stop()
 
-    def stop(self):
+    def stop(self) -> None:
         """Stops Jarvis's internal workers, all tools, and every managed child service."""
         with self._stop_lock:
             if self._stopped:
@@ -896,74 +704,4 @@ class JarvisOrchestrator:
             self._stopped = True
             self._running = False
 
-        # 1. Stop all global skill sentinels & background threads
-        try:
-            from jarvis.skills.system_watchdog import stop_hardware_watchdog
-            stop_hardware_watchdog()
-        except Exception:
-            pass
-
-        try:
-            from jarvis.skills.timers import cancel_timer
-            cancel_timer("all")
-        except Exception:
-            pass
-
-        try:
-            from jarvis.skills.photo_manager import shutdown_photo_manager
-            shutdown_photo_manager()
-        except Exception:
-            pass
-
-        try:
-            from jarvis.skills.browser_cdp import clear_all_tab_sessions
-            clear_all_tab_sessions()
-        except (OSError, RuntimeError, ImportError, AttributeError) as cdp_err:
-            logger.debug("CDP tab session cleanup notice during shutdown: %s", cdp_err)
-
-        # 2. Stop core subsystem components
-        cleanup_steps = [
-            ("Web HUD", getattr(self, "ui_service", None)),
-            ("heartbeat", self.heartbeat),
-            ("hotkey listener", self.hotkey_listener),
-            ("wake detector", self.wake_detector),
-            ("text-to-speech", self.tts),
-            ("speech-to-text", self.stt),
-            ("desktop HUD", self.hud),
-            ("brain", getattr(self, "brain", None)),
-            ("background tasks", getattr(self, "task_manager", None)),
-        ]
-        for name, component in cleanup_steps:
-            if component is None:
-                continue
-            try:
-                if hasattr(component, "close"):
-                    component.close()
-                elif hasattr(component, "stop"):
-                    component.stop()
-                elif hasattr(component, "stop_all"):
-                    component.stop_all()
-            except Exception:
-                logger.exception("Could not stop Jarvis %s cleanly.", name)
-
-        # 3. Stop managed services and sweep all child processes
-        try:
-            self.service_manager.stop_all()
-        except Exception:
-            logger.exception("Could not stop service manager cleanly.")
-
-        # 4. Flush GPU VRAM and run garbage collection
-        try:
-            import gc
-            gc.collect()
-            if "torch" in sys.modules:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.ipc_collect()
-        except Exception:
-            pass
-
-        # 5. Trim working set to prevent memory pressure
-        trim_process_memory(aggressive=True)
-        logger.info("Jarvis shutdown complete: All tools, child processes, and hardware threads terminated.")
+        OrchestratorShutdownCoordinator.shutdown(self)

@@ -81,6 +81,14 @@ def read_recent_notes(count: int = 5) -> str:
         return "You have no saved notes in your archive, Sir."
 
     recent = blocks[-max(1, count):]
+
+    # Restore turn taint since persistent notes contain user/external content
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().mark_tainted(
+        source="notes_archive",
+        metadata={"action": "read_recent_notes", "count": len(recent)}
+    )
+
     formatted = []
     for idx, block in enumerate(reversed(recent), start=1):
         lines = block.splitlines()
@@ -119,5 +127,12 @@ def search_notes(keyword: str) -> str:
 
     if not matches:
         return f"No notes found matching '{keyword}', Sir."
+
+    # Restore turn taint since persistent notes contain user/external content
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().mark_tainted(
+        source="notes_archive",
+        metadata={"action": "search_notes", "keyword": kw, "matches": len(matches)}
+    )
 
     return f"Found {len(matches)} note(s) matching '{keyword}', Sir:\n" + "\n".join(matches[:5])

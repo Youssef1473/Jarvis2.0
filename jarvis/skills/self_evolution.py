@@ -296,6 +296,11 @@ def verify_learned_habits() -> str:
             f"   • Adaptation Benchmark: Turn 1 ({t1:.0f}ms cloud reasoning) ➔ Turn 2 ({refl_str} local reflex)"
         )
 
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().mark_tainted(
+        source="persistent_memory:learned_habits",
+        metadata={"count": len(habits)},
+    )
     return "\n\n".join(lines)
 
 
@@ -337,6 +342,18 @@ def recall_episodic_lessons(query: str, tool_name: str = "", top_k: int = 3) -> 
     if not lessons:
         return f"No prior episodic failure lessons found for '{query}', Sir."
 
+    # Restore turn taint if any episodic lesson has untrusted provenance
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    tracker = TurnTaintTracker.get_instance()
+    for item in lessons:
+        prov = item.get("source_provenance", "unknown")
+        if tracker.is_untrusted_provenance(prov):
+            tracker.mark_tainted(
+                source=f"episodic_lesson:{item.get('id', '?')}",
+                metadata={"lesson_id": item.get("id"), "source_provenance": str(prov)[:32]}
+            )
+            break
+
     lines = [f"### Past Episodic Lessons & Reflexion Heuristics ({len(lessons)} Found)\n"]
     for i, item in enumerate(lessons, start=1):
         t = item.get("tool_name", "unknown")
@@ -359,14 +376,31 @@ def recall_episodic_lessons(query: str, tool_name: str = "", top_k: int = 3) -> 
         "Guarantees Jarvis remembers what went wrong and avoids repeating the same mistake."
     ),
 )
-def record_episodic_lesson(tool_name: str, failure_signature: str, lesson: str, trigger_context: str = "") -> str:
+def record_episodic_lesson(
+    tool_name: str,
+    failure_signature: str,
+    lesson: str,
+    trigger_context: str = "",
+    source_provenance: str | None = None,
+) -> str:
     """Explicitly records an episodic lesson or correction into SQLite WAL."""
     mem = _get_memory()
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    tracker = TurnTaintTracker.get_instance()
+    norm_prov = tracker.normalize_provenance(source_provenance) if source_provenance else None
+    if tracker.is_tainted:
+        prov = "external"
+    elif norm_prov and norm_prov not in tracker.TRUSTED_PROVENANCES:
+        prov = norm_prov
+    else:
+        prov = "user_supplied"
+
     lesson_id = mem.record_episodic_lesson(
         tool_name=tool_name,
         trigger_context=trigger_context or f"manual_record:{tool_name}",
         failure_signature=failure_signature,
         lesson=lesson,
+        source_provenance=prov,
     )
     if lesson_id:
         return f"Episodic lesson #{lesson_id} successfully cataloged for tool '{tool_name}', Sir. I shall incorporate this heuristic moving forward."

@@ -97,9 +97,17 @@ class TestToolOrchestrator(unittest.TestCase):
         self.tracker.reset_turn()
 
         # Register mock tools for test
-        @SkillRegistry.register(name="_test_echo_tool", description="Test tool", risk_level=0)
+        @SkillRegistry.register(
+            name="_test_echo_tool",
+            description="Test tool",
+            risk_level=0,
+            read_only=True,
+            data_provenance="trusted_system",
+        )
         def _test_echo(text: str = ""):
             return f"Echo: {text}"
+
+        SkillRegistry.certify_test_read_only_tool("_test_echo_tool")
 
         @SkillRegistry.register(name="_test_high_risk_tool", description="High risk tool", risk_level=1)
         def _test_high_risk():

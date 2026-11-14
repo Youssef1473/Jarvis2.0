@@ -49,6 +49,18 @@ def list_calendar_events(include_all: bool = False) -> str:
     if not events:
         return "You have no scheduled meetings or appointments on your calendar, Sir."
 
+    # Restore turn taint if any calendar event has untrusted provenance
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    tracker = TurnTaintTracker.get_instance()
+    for e in events:
+        prov = e.get("source_provenance", "unknown")
+        if tracker.is_untrusted_provenance(prov):
+            tracker.mark_tainted(
+                source=f"calendar_event:{e.get('id', '?')}",
+                metadata={"event_id": e.get("id"), "source_provenance": str(prov)[:32]}
+            )
+            break
+
     from collections import defaultdict
     grouped = defaultdict(list)
     ungrouped = []

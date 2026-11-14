@@ -140,12 +140,13 @@ class TestPlaybackReliabilityAndRingAllocation(unittest.TestCase):
     synchronized is_speaking lifecycle, clickless barge-in ramps, and starvation recovery."""
 
     def setUp(self):
-        from unittest.mock import patch
+        from unittest.mock import MagicMock, patch
         with patch("jarvis.audio.tts.TextToSpeech._init_kokoro"), \
              patch("jarvis.audio.tts.TextToSpeech._init_sapi"), \
              patch("sounddevice.query_devices"):
             from jarvis.audio.tts import TextToSpeech
             self.tts = TextToSpeech({"tts": {"engine": "kokoro"}})
+            self.tts._kokoro = MagicMock()
 
     def test_callback_direct_read_into_avoids_allocating_read_path(self):
         """Verifies _stream_audio_callback invokes read_into directly without calling the allocating read() path,
@@ -304,22 +305,60 @@ class TestPlaybackReliabilityAndRingAllocation(unittest.TestCase):
 
 
     def test_stop_normal_shutdown_path(self):
-        """Verifies that normal stop stops and closes the stream handle promptly and cleanly,
-        passing ignore_errors=False to ensure native errors are observable."""
-        from unittest.mock import MagicMock
+        """Verifies normal stop, shutdown with queued audio, prevention of duplicate workers,
+        repeated shutdown idempotency, uninitialized engine fail-closed, and restart after shutdown."""
+        from unittest.mock import MagicMock, patch
+
+        # 1. Start an active streaming session with mocked OutputStream
         mock_stream = MagicMock()
         mock_stream.active = True
-        self.tts._output_stream = mock_stream
+        with patch("sounddevice.OutputStream", return_value=mock_stream):
+            started = self.tts.start_streaming_session()
+            self.assertTrue(started)
+            self.assertTrue(self.tts._stream_active)
 
-        self.tts.stop(stop_timeout=0.100, ramp_timeout=0.010)
+            # Invariant: Duplicate start while active fails closed (prevents duplicate workers)
+            duplicate_started = self.tts.start_streaming_session()
+            self.assertFalse(duplicate_started)
+
+            # Queue sentences so queue is non-empty
+            self.tts.queue_sentence("First queued clause.")
+            self.tts.queue_sentence("Second queued clause.")
+
+            # 2. Normal stop cleanly interrupts, drains queues, stops and closes stream
+            self.tts.stop(stop_timeout=0.100, ramp_timeout=0.010)
 
         mock_stream.stop.assert_called_once_with(ignore_errors=False)
         mock_stream.abort.assert_not_called()
         mock_stream.close.assert_called_once_with(ignore_errors=False)
         self.assertIsNone(self.tts._output_stream)
+        self.assertFalse(self.tts._stream_active)
         self.assertFalse(self.tts._stream_shutdown_timed_out)
         self.assertEqual(self.tts._last_shutdown_outcome, "CLEAN_STOP")
         self.assertFalse(self.tts._stream_cleanup_uncertain)
+        self.assertTrue(self.tts._sentence_queue.empty())
+
+        # Invariant: Repeated shutdown requests while already stopped are idempotent
+        repeat_stop = self.tts.stop(stop_timeout=0.050, ramp_timeout=0.005)
+        self.assertTrue(repeat_stop)
+        self.assertIsNone(self.tts._shutdown_worker)
+
+        # Invariant: Uninitialized Kokoro fails closed without launching SAPI thread
+        saved_kokoro = self.tts._kokoro
+        try:
+            self.tts._kokoro = None
+            uninit_started = self.tts.start_streaming_session()
+            self.assertFalse(uninit_started)
+            self.assertIsNone(self.tts._sapi_thread)
+        finally:
+            self.tts._kokoro = saved_kokoro
+
+        # Invariant: Restart after clean shutdown succeeds deterministically
+        with patch("sounddevice.OutputStream"):
+            restarted = self.tts.start_streaming_session()
+            self.assertNotEqual(restarted, False)
+            self.assertTrue(self.tts._stream_active)
+            self.tts.stop(stop_timeout=0.050)
 
     def test_stop_exception_falls_back_to_abort(self):
         """Verifies that if stream.stop() raises an exception, the worker catches it

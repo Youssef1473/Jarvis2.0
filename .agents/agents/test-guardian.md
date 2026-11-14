@@ -2,6 +2,8 @@
 name: test-guardian
 description: Specialized test guardian auditing assertion quality, observable behavior verification, negative test cases, and regression coverage.
 subagent: true
+mainAgent: false
+model: flash
 tools:
   - read_file
   - search_web
