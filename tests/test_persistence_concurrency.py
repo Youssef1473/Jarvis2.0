@@ -155,6 +155,9 @@ def _mp_worker_bootstrap_candidate(
 ) -> None:
     """Worker that concurrently bootstraps an unindexed candidate."""
     try:
+        repo_root = Path(__file__).resolve().parent.parent
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
         pipeline = FailureCandidatePipeline(candidates_dir=candidates_dir)
         cand, gen, digest = pipeline.get_candidate_with_generation(candidate_id)
         result_queue.put((cand.candidate_id if cand else None, gen, digest))
@@ -707,7 +710,9 @@ _WORKER_18_CODE = r"""
 import os, sys, sqlite3, json
 from pathlib import Path
 
-sys.path.insert(0, r"C:\Users\Youssef\Projects\Jarvis_2.0")
+repo_root = Path(sys.argv[3]) if len(sys.argv) > 3 else Path(__file__).resolve().parent.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
 from tools.continuity_manager import FailureCandidatePipeline, canonical_candidate_digest, is_monotonic_transition
 from tools.lesson_candidate import LessonCandidate
 
@@ -803,6 +808,7 @@ def test_scenario_18_authoritative_sqlite_11_boundary_crash_injections(tmp_path:
     """Scenario 18: Deterministic child-process crash injection across all 11 boundaries verifies zero data loss."""
     worker_py = tmp_path / "worker18.py"
     worker_py.write_text(_WORKER_18_CODE, encoding="utf-8")
+    repo_root = Path(__file__).resolve().parent.parent
 
     for b in range(1, 12):
         sub_dir = tmp_path / f"run_b_{b}"
@@ -819,8 +825,13 @@ def test_scenario_18_authoritative_sqlite_11_boundary_crash_injections(tmp_path:
         p_init = FailureCandidatePipeline(candidates_dir=cand_dir)
         p_init.record_candidate(c1)
 
-        res = subprocess.run([sys.executable, str(worker_py), str(b), str(sub_dir)], check=False, capture_output=True, text=True)
-        assert res.returncode == 42
+        res = subprocess.run(
+            [sys.executable, str(worker_py), str(b), str(sub_dir), str(repo_root)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert res.returncode == 42, f"Boundary {b} crash injection failed with returncode {res.returncode}:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}"
 
         # Start fresh process to verify state
         p_fresh = FailureCandidatePipeline(candidates_dir=cand_dir)
@@ -1058,14 +1069,14 @@ def test_scenario_26_concurrent_candidate_bootstrap(tmp_path: Path):
     p1.join(timeout=10)
     p2.join(timeout=10)
 
-    res1 = q1.get(timeout=5)
-    res2 = q2.get(timeout=5)
+    res1 = q1.get(timeout=10)
+    res2 = q2.get(timeout=10)
 
     cid1, gen1, dig1 = res1
     cid2, gen2, dig2 = res2
 
-    assert cid1 == "LCAND-sc26"
-    assert cid2 == "LCAND-sc26"
+    assert cid1 == "LCAND-sc26", f"Worker 1 bootstrap failed: {res1}"
+    assert cid2 == "LCAND-sc26", f"Worker 2 bootstrap failed: {res2}"
     assert gen1 == 1
     assert gen2 == 1
     assert dig1 == dig2

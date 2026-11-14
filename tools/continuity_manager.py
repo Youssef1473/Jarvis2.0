@@ -452,7 +452,7 @@ class FailureCandidatePipeline:
                         payload_str = json.dumps(cand.to_dict(), indent=2, ensure_ascii=False)
                         now_iso = datetime.datetime.now(datetime.UTC).isoformat()
                         cur.execute("""
-                            INSERT INTO candidate_records (
+                            INSERT OR IGNORE INTO candidate_records (
                                 candidate_id, generation, content_digest, payload_json, review_status,
                                 has_verified_root_cause, artifact_path, created_at_utc, updated_at_utc, schema_version
                             ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 1);
@@ -466,8 +466,8 @@ class FailureCandidatePipeline:
                             now_iso,
                             now_iso,
                         ))
-                    except (json.JSONDecodeError, OSError, ValueError, KeyError):
-                        # Corrupted or unparseable pre-existing file: leave for quarantine/error handling
+                    except (json.JSONDecodeError, OSError, ValueError, KeyError, sqlite3.IntegrityError):
+                        # Corrupted or unparseable pre-existing file or concurrent seed: continue
                         continue
             conn.commit()
 
@@ -582,8 +582,8 @@ class FailureCandidatePipeline:
                     conn.execute("ROLLBACK;")
                 except sqlite3.Error:
                     pass
-                with self._connect(timeout=5.0) as read_conn:
-                    cur = read_conn.execute("""
+                try:
+                    cur = conn.execute("""
                         SELECT generation, content_digest, payload_json
                         FROM candidate_records
                         WHERE candidate_id = ?;
@@ -595,6 +595,8 @@ class FailureCandidatePipeline:
                             return auth_cand, row[0], row[1]
                         except (json.JSONDecodeError, ValueError, KeyError):
                             pass
+                except sqlite3.Error:
+                    pass
                 return None, 0, ""
             except BaseException:
                 try:
