@@ -14,27 +14,50 @@ import time
 import warnings
 from ctypes import wintypes
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from PIL import Image, ImageDraw, ImageFont, ImageGrab
 
+from jarvis.vision.win32_vision_abi import (
+    enable_per_monitor_v2_dpi as abi_enable_dpi,
+)
+from jarvis.vision.win32_vision_abi import (
+    get_window_rect,
+    get_window_title,
+)
+
 logger = logging.getLogger("Jarvis.Vision.SoM")
+
+__all__ = [
+    "DEVELOPER_IDE_PATTERNS",
+    "INTERACTIVE_CONTROL_TYPES",
+    "SENSITIVE_APP_PATTERNS",
+    "SENSITIVE_FIELD_PATTERNS",
+    "MarkElement",
+    "MarkRegistry",
+    "MarkedUIElement",
+    "SetOfMarkAnnotator",
+    "UIElementCandidate",
+    "enable_per_monitor_v2_dpi",
+    "is_sensitive_element",
+    "is_window_privacy_blocked",
+]
 
 INTERACTIVE_CONTROL_TYPES = {
     "Button",
-    "Edit",
-    "MenuItem",
-    "Hyperlink",
-    "TabItem",
-    "ComboBox",
     "CheckBox",
-    "RadioButton",
-    "ListItem",
-    "TreeItem",
-    "SplitButton",
-    "Slider",
-    "ToolBar",
+    "ComboBox",
     "Document",
+    "Edit",
+    "Hyperlink",
+    "ListItem",
+    "MenuItem",
+    "RadioButton",
+    "Slider",
+    "SplitButton",
+    "TabItem",
+    "ToolBar",
+    "TreeItem",
 }
 
 SENSITIVE_APP_PATTERNS = (
@@ -76,24 +99,7 @@ SENSITIVE_FIELD_PATTERNS = (
 
 def enable_per_monitor_v2_dpi() -> bool:
     """Configures Per-Monitor v2 DPI synchronization for multi-monitor setups."""
-    if sys.platform != "win32":
-        return False
-    try:
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        DPI_V2 = ctypes.c_void_p(-4)
-        if hasattr(user32, "SetProcessDpiAwarenessContext"):
-            user32.SetProcessDpiAwarenessContext.restype = wintypes.BOOL
-            user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
-            if user32.SetProcessDpiAwarenessContext(DPI_V2):
-                return True
-        if hasattr(user32, "SetThreadDpiAwarenessContext"):
-            user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
-            user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
-            if user32.SetThreadDpiAwarenessContext(DPI_V2):
-                return True
-    except Exception as e:
-        logger.debug("DPI awareness context notice: %s", e)
-    return False
+    return abi_enable_dpi()
 
 
 def is_window_privacy_blocked(hwnd: int = 0, title: str = "", proc_name: str = "") -> bool:
@@ -119,6 +125,7 @@ def is_sensitive_element(control: dict[str, Any]) -> bool:
 @dataclass
 class UIElementCandidate:
     """Raw UI element candidate discovered via UIA traversal."""
+
     control_type: str
     name: str
     auto_id: str
@@ -130,6 +137,7 @@ class UIElementCandidate:
 @dataclass(frozen=True, slots=True)
 class MarkElement:
     """Represents an annotated UI element with local and screen coordinates."""
+
     mark_id: int
     control_type: str
     name: str
@@ -149,9 +157,10 @@ MarkedUIElement = MarkElement
 
 class MarkRegistry:
     """Thread-safe registry for the most recently computed Set-of-Mark elements."""
-    _current_marks: dict[int, MarkElement] = {}
-    _timestamp: float = 0.0
-    _lock = threading.Lock()
+
+    _current_marks: ClassVar[dict[int, MarkElement]] = {}
+    _timestamp: ClassVar[float] = 0.0
+    _lock: ClassVar[threading.Lock] = threading.Lock()
     TTL_SECONDS: float = 60.0
 
     @classmethod
@@ -201,7 +210,11 @@ class MarkRegistry:
                 m = cls._current_marks[mid]
                 name_str = f" '{m.name}'" if m.name else ""
                 auto_str = f" [id: {m.auto_id}]" if m.auto_id else ""
-                lines.append(f"  [{mid}] {m.control_type}{name_str}{auto_str} -> local: ({m.local_center[0]}, {m.local_center[1]}), screen: ({m.screen_center[0]}, {m.screen_center[1]})")
+                lines.append(
+                    f"  [{mid}] {m.control_type}{name_str}{auto_str} -> "
+                    f"local: ({m.local_center[0]}, {m.local_center[1]}), "
+                    f"screen: ({m.screen_center[0]}, {m.screen_center[1]})"
+                )
             return "\n".join(lines)
 
 
@@ -223,28 +236,12 @@ class SetOfMarkAnnotator:
 
     @staticmethod
     def _get_window_rect(hwnd: int) -> tuple[int, int, int, int]:
-        if sys.platform != "win32" or not hwnd:
-            return (0, 0, 0, 0)
-        try:
-            rect = wintypes.RECT()
-            ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            return (rect.left, rect.top, rect.right, rect.bottom)
-        except Exception:
-            return (0, 0, 0, 0)
+        rect = get_window_rect(hwnd)
+        return rect if rect is not None else (0, 0, 0, 0)
 
     @staticmethod
     def _get_window_title(hwnd: int) -> str:
-        if sys.platform != "win32" or not hwnd:
-            return ""
-        try:
-            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-            if length > 0:
-                buf = ctypes.create_unicode_buffer(length + 1)
-                ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
-                return buf.value.strip()
-        except Exception:
-            pass
-        return ""
+        return get_window_title(hwnd)
 
     def annotate(
         self,
@@ -260,7 +257,8 @@ class SetOfMarkAnnotator:
 
         try:
             font = ImageFont.load_default()
-        except Exception:
+        except (OSError, RuntimeError) as font_err:
+            logger.debug("Failed to load default ImageFont: %s", font_err)
             font = None
 
         marks: dict[int, MarkElement] = {}
@@ -385,6 +383,7 @@ class SetOfMarkAnnotator:
             raise PermissionError(f"Privacy Guard: Window '{win_title}' is classified as protected/sensitive.")
 
         from jarvis.skills.windows_uia import is_hwnd_responsive
+
         if not is_hwnd_responsive(target_hwnd, timeout_ms=50):
             return (None, {}, f"Target window HWND {target_hwnd} is currently unresponsive (HungAppWindow).")
 
@@ -397,10 +396,11 @@ class SetOfMarkAnnotator:
         screenshot: Image.Image | None = None
         try:
             screenshot = ImageGrab.grab(bbox=win_rect, all_screens=True)
-        except Exception as grab_err:
+        except (OSError, ValueError, RuntimeError) as grab_err:
             logger.debug("ImageGrab bbox failed (%s), attempting full screen capture fallback...", grab_err)
             try:
                 from jarvis.vision.screen_capture import ScreenPerception
+
                 full_screen = ScreenPerception.capture_screen()
                 if full_screen:
                     screenshot = full_screen.crop((
@@ -409,7 +409,7 @@ class SetOfMarkAnnotator:
                         min(full_screen.width, win_rect[2]),
                         min(full_screen.height, win_rect[3]),
                     ))
-            except Exception as full_err:
+            except (OSError, ValueError, RuntimeError) as full_err:
                 logger.debug("Full screen capture fallback also failed: %s", full_err)
 
         if screenshot is None:
@@ -417,22 +417,25 @@ class SetOfMarkAnnotator:
 
         try:
             from jarvis.vision.privacy_guard import ZOrderPrivacyGuard
+
             screenshot = ZOrderPrivacyGuard.get_instance().redact_image_in_place(screenshot)
-        except Exception:
-            pass
+        except (RuntimeError, ValueError, AttributeError, OSError) as redact_err:
+            logger.debug("Privacy guard in-place redaction notice: %s", redact_err)
 
         raw_controls: list[dict[str, Any]] = []
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 from pywinauto import Desktop
+
                 d = Desktop(backend="uia")
 
             matched_win = None
             try:
                 matched_win = d.window(handle=target_hwnd)
                 descendants = matched_win.descendants()
-            except Exception:
+            except (RuntimeError, ValueError, AttributeError, OSError) as win_err:
+                logger.debug("Direct window lookup failed (%s), falling back to desktop search", win_err)
                 for w in d.windows():
                     if getattr(w, "handle", 0) == target_hwnd:
                         matched_win = w
@@ -452,8 +455,8 @@ class SetOfMarkAnnotator:
                     try:
                         if hasattr(child, "is_visible") and not child.is_visible():
                             continue
-                    except Exception:
-                        pass
+                    except (RuntimeError, ValueError, AttributeError, OSError) as vis_err:
+                        logger.debug("Child visibility probe notice: %s", vis_err)
 
                     r = child.rectangle()
                     cw = r.width()
@@ -468,9 +471,9 @@ class SetOfMarkAnnotator:
                     is_pass = False
                     try:
                         if hasattr(child, "is_password"):
-                            is_pass = child.is_password()
-                    except Exception:
-                        pass
+                            is_pass = bool(child.is_password())
+                    except (RuntimeError, ValueError, AttributeError, OSError) as pass_err:
+                        logger.debug("Child password probe notice: %s", pass_err)
 
                     raw_controls.append({
                         "control_type": ctype,
@@ -480,10 +483,11 @@ class SetOfMarkAnnotator:
                         "is_password": is_pass,
                         "uia_ref": child,
                     })
-                except Exception:
+                except (RuntimeError, ValueError, AttributeError, OSError) as child_err:
+                    logger.debug("Child control evaluation skipped: %s", child_err)
                     continue
 
-        except Exception as uia_err:
+        except (RuntimeError, ValueError, AttributeError, OSError) as uia_err:
             logger.debug("UIA control extraction notice: %s", uia_err)
 
         return self.annotate(
@@ -513,13 +517,20 @@ class SetOfMarkAnnotator:
 
         user32 = ctypes.windll.user32
         if not user32.IsWindow(mark.hwnd):
-            return {"status": "window_closed", "error": f"Staleness error: The target window (HWND {mark.hwnd}) has closed since inspect_screen_with_marks was called, Sir."}
+            return {
+                "status": "window_closed",
+                "error": f"Staleness error: The target window (HWND {mark.hwnd}) has closed since inspect_screen_with_marks was called, Sir.",
+            }
 
         current_fg = user32.GetForegroundWindow()
         if current_fg != mark.hwnd:
             return {
                 "status": "foreground_switch",
-                "error": f"Staleness error: Target window is no longer in the foreground (current foreground HWND {current_fg}; expected HWND {mark.hwnd}), Sir. Please bring the window to focus or re-inspect the screen.",
+                "error": (
+                    f"Staleness error: Target window is no longer in the foreground "
+                    f"(current foreground HWND {current_fg}; expected HWND {mark.hwnd}), Sir. "
+                    "Please bring the window to focus or re-inspect the screen."
+                ),
             }
 
         # Anti-TOCTOU Geometry Drift Check
@@ -535,7 +546,11 @@ class SetOfMarkAnnotator:
             if max(dx, dy, dw, dh) > 8:
                 return {
                     "status": "geometry_drift",
-                    "error": f"Staleness error: Target window has moved or resized since mark inspection (original bounds: {orig}, current bounds: {curr}, shifted by > 8px), Sir. Please call inspect_screen_with_marks to refresh element coordinates.",
+                    "error": (
+                        f"Staleness error: Target window has moved or resized since mark inspection "
+                        f"(original bounds: {orig}, current bounds: {curr}, shifted by > 8px), Sir. "
+                        "Please call inspect_screen_with_marks to refresh element coordinates."
+                    ),
                 }
 
         # Native UIA actuation first
@@ -547,16 +562,18 @@ class SetOfMarkAnnotator:
                 elif hasattr(mark.uia_ref, "click_input"):
                     mark.uia_ref.click_input()
                     return {"status": "clicked", "method": "uia_click_input", "mark_id": tag_id}
-            except Exception as e:
+            except (RuntimeError, ValueError, AttributeError, OSError) as e:
                 logger.debug("Native UIA invocation notice: %s", e)
 
         # Fallback to coordinate clicking
         cx, cy = mark.screen_center
         try:
             import pyautogui
+
             pyautogui.click(cx, cy)
             return {"status": "clicked", "method": "pyautogui", "mark_id": tag_id, "coords": (cx, cy)}
-        except Exception:
+        except (RuntimeError, ValueError, AttributeError, OSError, ImportError) as click_err:
+            logger.debug("pyautogui coordinate click failed: %s", click_err)
             return {"status": "clicked", "method": "fallback", "mark_id": tag_id, "coords": (cx, cy)}
 
     # Alias

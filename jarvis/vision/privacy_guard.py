@@ -9,39 +9,23 @@ from __future__ import annotations
 import ctypes
 import logging
 import re
-import sys
 from ctypes import wintypes
 from dataclasses import dataclass
 
 from PIL import Image, ImageDraw
 
+from jarvis.vision.win32_vision_abi import (
+    DWMWA_CLOAKED,
+    DWMWA_EXTENDED_FRAME_BOUNDS,
+    IS_WINDOWS,
+    WNDENUMPROC,
+    Win32VisionABI,
+    get_process_name_for_pid,
+    get_window_title,
+    is_window_dwm_cloaked,
+)
+
 logger = logging.getLogger("Jarvis.Vision.PrivacyGuard")
-
-# DWM Window Attributes
-DWMWA_EXTENDED_FRAME_BOUNDS = 9
-DWMWA_CLOAKED = 14
-IS_WINDOWS = sys.platform == "win32"
-
-
-def is_window_dwm_cloaked(hwnd: int) -> bool:
-    """Returns True if `hwnd` is cloaked by Windows 11 DWM (e.g., on an inactive
-    Virtual Desktop or suspended UWP background frame) and therefore invisible
-    on the physical monitor.
-    """
-    if not IS_WINDOWS or not hwnd:
-        return False
-    try:
-        dwmapi = ctypes.windll.dwmapi
-        cloaked = wintypes.DWORD(0)
-        hr = dwmapi.DwmGetWindowAttribute(
-            wintypes.HWND(hwnd),
-            wintypes.DWORD(DWMWA_CLOAKED),
-            ctypes.byref(cloaked),
-            ctypes.sizeof(cloaked),
-        )
-        return hr == 0 and bool(cloaked.value != 0)
-    except Exception:
-        return False
 
 SENSITIVE_PROCESSES: set[str] = {
     "1password.exe",
@@ -105,6 +89,7 @@ LOGIN_PATTERN = re.compile(r"\b(log\s*in|sign\s*in|sign\s*on|enter\s*password)\b
 @dataclass(slots=True, frozen=True)
 class BoundingRect:
     """Represents a screen bounding rectangle [left, top, right, bottom]."""
+
     left: int
     top: int
     right: int
@@ -150,15 +135,8 @@ class ZOrderPrivacyGuard:
         return cls._instance
 
     def _get_process_name(self, pid: int) -> str:
-        if pid in self._pid_name_cache:
-            return self._pid_name_cache[pid]
-        try:
-            import psutil
-            name = psutil.Process(pid).name().lower()
-            self._pid_name_cache[pid] = name
-            return name
-        except Exception:
-            return ""
+        """Resolves process name from PID with caching."""
+        return get_process_name_for_pid(pid)
 
     def get_redaction_rectangles(self) -> list[tuple[BoundingRect, str, str]]:
         """Enumerates visible, uncloaked HWNDs in <1ms and returns sensitive bounding rects.
@@ -166,22 +144,19 @@ class ZOrderPrivacyGuard:
         Returns:
             List of tuples: (BoundingRect, window_title, process_name)
         """
-        if sys.platform != "win32":
+        if not IS_WINDOWS or Win32VisionABI.user32 is None or WNDENUMPROC is None:
             return []
 
-        try:
-            user32 = ctypes.windll.user32
-            dwmapi = ctypes.windll.dwmapi
-        except Exception as e:
-            logger.debug("Win32 API unavailable for privacy scan: %s", e)
-            return []
+        user32 = Win32VisionABI.user32
+        dwmapi = Win32VisionABI.dwmapi
 
         redacted_items: list[tuple[BoundingRect, str, str]] = []
 
-        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        @WNDENUMPROC
         def enum_windows_callback(hwnd: int, lparam: int) -> bool:
+            hwnd_typed = wintypes.HWND(hwnd)
             # 1. Skip non-visible or minimized windows
-            if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+            if not user32.IsWindowVisible(hwnd_typed) or user32.IsIconic(hwnd_typed):
                 return True
 
             # 2. Skip cloaked windows (e.g. inactive virtual desktops, shell hidden)
@@ -189,37 +164,38 @@ class ZOrderPrivacyGuard:
                 return True
 
             # 3. Retrieve window title
-            length = user32.GetWindowTextLengthW(hwnd)
-            title = ""
-            if length > 0:
-                buf = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(hwnd, buf, length + 1)
-                title = buf.value
+            title = get_window_title(hwnd)
 
             # 4. Retrieve process name
-            pid = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            proc_name = self._get_process_name(pid.value)
+            pid = wintypes.DWORD(0)
+            user32.GetWindowThreadProcessId(hwnd_typed, ctypes.byref(pid))
+            proc_name = self._get_process_name(pid.value) if pid.value > 0 else ""
 
             # 5. Evaluate sensitivity
             title_lower = title.lower()
             proc_lower = proc_name.lower()
 
             is_sensitive = False
-            if proc_lower in SENSITIVE_PROCESSES or any(kw in title_lower for kw in SENSITIVE_TITLE_KEYWORDS) or LOGIN_PATTERN.search(title_lower) and proc_lower not in SAFE_IDE_PROCESSES:
+            if (
+                proc_lower in SENSITIVE_PROCESSES
+                or any(kw in title_lower for kw in SENSITIVE_TITLE_KEYWORDS)
+                or (LOGIN_PATTERN.search(title_lower) and proc_lower not in SAFE_IDE_PROCESSES)
+            ):
                 is_sensitive = True
 
             if is_sensitive:
                 # 6. Resolve high-DPI frame bounding box
                 rect = wintypes.RECT()
-                res = dwmapi.DwmGetWindowAttribute(
-                    hwnd,
-                    DWMWA_EXTENDED_FRAME_BOUNDS,
-                    ctypes.byref(rect),
-                    ctypes.sizeof(rect),
-                )
+                res = -1
+                if dwmapi and hasattr(dwmapi, "DwmGetWindowAttribute"):
+                    res = dwmapi.DwmGetWindowAttribute(
+                        hwnd_typed,
+                        wintypes.DWORD(DWMWA_EXTENDED_FRAME_BOUNDS),
+                        ctypes.byref(rect),
+                        ctypes.sizeof(rect),
+                    )
                 if res != 0:
-                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    user32.GetWindowRect(hwnd_typed, ctypes.byref(rect))
 
                 bounding_rect = BoundingRect(
                     left=rect.left,
@@ -234,7 +210,7 @@ class ZOrderPrivacyGuard:
 
         try:
             user32.EnumWindows(enum_windows_callback, 0)
-        except Exception as err:
+        except (OSError, ValueError, AttributeError) as err:
             logger.debug("EnumWindows failed during privacy inspection: %s", err)
 
         return redacted_items
@@ -272,7 +248,26 @@ class ZOrderPrivacyGuard:
                 draw.rectangle([x1, y1, x2, y2], fill=(0, 0, 0))
                 logger.info(
                     "Visual Privacy Guard redacted sensitive area [%d, %d, %d, %d] for window '%s' (%s).",
-                    x1, y1, x2, y2, title, proc
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    title,
+                    proc,
                 )
 
         return image
+
+
+__all__ = [
+    "DWMWA_CLOAKED",
+    "DWMWA_EXTENDED_FRAME_BOUNDS",
+    "IS_WINDOWS",
+    "LOGIN_PATTERN",
+    "SAFE_IDE_PROCESSES",
+    "SENSITIVE_PROCESSES",
+    "SENSITIVE_TITLE_KEYWORDS",
+    "BoundingRect",
+    "ZOrderPrivacyGuard",
+    "is_window_dwm_cloaked",
+]

@@ -11,7 +11,6 @@ import logging
 import sys
 import threading
 from collections.abc import Callable
-from ctypes import wintypes
 from typing import Any
 
 import numpy as np
@@ -22,35 +21,23 @@ from jarvis.core.win32_affinity import (
     THREAD_PRIORITY_NORMAL,
     pin_current_thread_to_mask,
 )
+from jarvis.vision.win32_vision_abi import (
+    get_idle_seconds,
+    get_window_rect,
+    get_window_title_and_proc,
+)
 
 logger = logging.getLogger("Jarvis.Vision.DHashMonitor")
+
+__all__ = [
+    "BackgroundDHashMonitor",
+    "_get_window_title_and_proc",
+]
 
 
 def _get_window_title_and_proc(hwnd: int) -> tuple[str, str]:
     """Returns (window_title, process_name) for a given HWND in <0.05ms."""
-    if sys.platform != "win32" or not hwnd:
-        return ("", "")
-    try:
-        user32 = ctypes.windll.user32
-        length = user32.GetWindowTextLengthW(hwnd)
-        title = ""
-        if length > 0:
-            buf = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(hwnd, buf, length + 1)
-            title = buf.value.strip()
-
-        proc_name = ""
-        pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value > 0:
-            try:
-                import psutil
-                proc_name = psutil.Process(pid.value).name().lower()
-            except Exception:
-                pass
-        return (title, proc_name)
-    except Exception:
-        return ("", "")
+    return get_window_title_and_proc(hwnd)
 
 
 class BackgroundDHashMonitor:
@@ -124,19 +111,10 @@ class BackgroundDHashMonitor:
         if self.get_idle_seconds_fn:
             try:
                 return float(self.get_idle_seconds_fn())
-            except Exception:
-                pass
+            except (ValueError, TypeError, RuntimeError) as fn_err:
+                logger.debug("Custom get_idle_seconds_fn failed: %s", fn_err)
         if sys.platform == "win32":
-            try:
-                class LASTINPUTINFO(ctypes.Structure):
-                    _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
-                lii = LASTINPUTINFO()
-                lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
-                if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
-                    millis = ctypes.windll.kernel32.GetTickCount() - lii.dwTime
-                    return max(0.0, millis / 1000.0)
-            except Exception:
-                pass
+            return get_idle_seconds()
         return 0.0
 
     def _capture_window_or_screen(self, hwnd: int) -> Image.Image | None:
@@ -144,20 +122,25 @@ class BackgroundDHashMonitor:
         if sys.platform != "win32" or not hwnd:
             return None
         try:
-            rect = wintypes.RECT()
-            ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            w = rect.right - rect.left
-            h = rect.bottom - rect.top
+            rect = get_window_rect(hwnd)
+            if not rect:
+                return None
+            left, top, right, bottom = rect
+            w = right - left
+            h = bottom - top
             if w <= 0 or h <= 0:
                 return None
             try:
-                img = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom), all_screens=True)
+                img = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
                 from jarvis.vision.privacy_guard import ZOrderPrivacyGuard
+
                 return ZOrderPrivacyGuard.get_instance().redact_image_in_place(img)
-            except Exception:
+            except (OSError, ValueError, RuntimeError) as grab_err:
+                logger.debug("BBox window grab failed: %s; falling back to primary screen", grab_err)
                 from jarvis.vision.screen_capture import ScreenPerception
+
                 return ScreenPerception.capture_screen()
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError) as e:
             logger.debug("Failed to capture frame for dHash: %s", e)
             return None
 
@@ -175,14 +158,21 @@ class BackgroundDHashMonitor:
         if not fg_hwnd or not user32.IsWindow(fg_hwnd):
             return None
 
-        title, proc_name = _get_window_title_and_proc(fg_hwnd)
+        mod = sys.modules.get(__name__, sys.modules.get("jarvis.vision.dhash_monitor"))
+        title_proc_fn = getattr(mod, "_get_window_title_and_proc", _get_window_title_and_proc) if mod else _get_window_title_and_proc
+        title, proc_name = title_proc_fn(fg_hwnd)
 
         # Mandatory constraint: Gate captures through PrivacyGuard
         # Never hash or alert for sensitive windows (passwords, banking, crypto)
         from jarvis.skills.screen_vision import check_visual_privacy
+
         privacy_warning = check_visual_privacy(title, proc_name)
         if privacy_warning:
-            logger.debug("DHash monitor: Sensitive window '%s' (%s) detected. Gated by PrivacyGuard.", title, proc_name)
+            logger.debug(
+                "DHash monitor: Sensitive window '%s' (%s) detected. Gated by PrivacyGuard.",
+                title,
+                proc_name,
+            )
             return None
 
         # Mandatory constraint: Reset baseline on foreground window switch
@@ -218,7 +208,10 @@ class BackgroundDHashMonitor:
         if dist > self.hamming_threshold:
             logger.info(
                 "Background screen transition detected in '%s' (HWND %d, dist=%d bits, idle=%.1fs)",
-                title, fg_hwnd, dist, idle_sec
+                title,
+                fg_hwnd,
+                dist,
+                idle_sec,
             )
             # Update baseline to prevent duplicate alarms for the same transition
             self._last_hashes[fg_hwnd] = curr_hash
@@ -233,7 +226,7 @@ class BackgroundDHashMonitor:
                         "diff_bits": dist,
                         "idle_seconds": round(idle_sec, 1),
                     })
-                except Exception as e:
+                except (RuntimeError, ValueError, TypeError, AttributeError, OSError) as e:
                     logger.debug("Telemetry broadcast notice: %s", e)
 
             # Fire registered callbacks
@@ -242,7 +235,7 @@ class BackgroundDHashMonitor:
             for cb in callbacks:
                 try:
                     cb(fg_hwnd, title, dist)
-                except Exception as cb_err:
+                except (RuntimeError, ValueError, TypeError, AttributeError, OSError) as cb_err:
                     logger.debug("Callback error in dHash monitor: %s", cb_err)
 
             return (fg_hwnd, title, dist)
@@ -254,11 +247,15 @@ class BackgroundDHashMonitor:
         if sys.platform == "win32":
             pin_current_thread_to_mask(MASK_ECORE_BACKGROUND, priority=THREAD_PRIORITY_NORMAL, eco_qos=True)
 
-        logger.info("BackgroundDHashMonitor started on E-Cores (interval=%.1fs, threshold=%d bits).", self.check_interval, self.hamming_threshold)
+        logger.info(
+            "BackgroundDHashMonitor started on E-Cores (interval=%.1fs, threshold=%d bits).",
+            self.check_interval,
+            self.hamming_threshold,
+        )
         while not self._stop_event.is_set():
             try:
                 self.poll_once()
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError, AttributeError, OSError) as e:
                 logger.debug("Error in BackgroundDHashMonitor poll cycle: %s", e)
 
             if self._stop_event.wait(timeout=self.check_interval):
