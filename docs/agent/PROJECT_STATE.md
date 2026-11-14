@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-14T08:10:00+01:00 (CET)
+- **Validation Timestamp:** 2026-11-14T09:15:00+01:00 (CET)
 - **Active Git Branch:** `feat/reliability-engineering-governance`
-- **Recorded HEAD Commit SHA:** `d05421be07ae5f11cb75e3ba73e5bf06cae1329a`
-- **HEAD Commit Subject:** `fix(memory): align sleep consolidation schema checks and tenant isolation prompt disclosure in test_18`
-- **Milestone State:** **Memory Consolidation Schema Alignment & 1,492 Tier 1 Pass: COMPLETED & SEALED**
-- **Active Milestone:** **Reliability & Engineering Governance (Untangle-Codebase Pass 1 Diagnosis on server.py)**
+- **Recorded HEAD Commit SHA:** `368572e524564cdbe6e96f0a605acc32a015839c`
+- **HEAD Commit Subject:** `refactor(ui): decompose server.py into security, metrics, telemetry, and domain route modules`
+- **Milestone State:** **UI Server Untangle-Codebase & Decomposition: COMPLETED & SEALED**
+- **Active Milestone:** **Reliability & Engineering Governance (Untangle-Codebase Pass 1 on orchestrator.py / Branch Review)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
@@ -38,6 +38,15 @@
 
 - **Active Milestone:** `Reliability & Engineering Governance` (`feat/reliability-engineering-governance`)
 - **Completed Work:**
+  - **Untangle-Codebase — `jarvis/ui/server.py` Architectural Decomposition (COMPLETED & SEALED):**
+    - **Commit SHA (`368572e`):** `refactor(ui): decompose server.py into security, metrics, telemetry, and domain route modules`
+    - **Line Reduction & Complexity:** Reduced `jarvis/ui/server.py` from 2,431 lines to 699 lines (-1,732 lines, -71.2% footprint).
+    - **Security & Token Isolation:** Extracted token lifecycle, CSP nonces, origin/host validation, and access log redaction to `jarvis/ui/security.py` (570 lines) with dynamic session token resolution (`resolve_active_session_token(request)`).
+    - **Hardware Metrics & WebSocket Fanout:** Extracted NVML/psutil metrics to `jarvis/ui/metrics.py` (`WorkstationMetricsCollector`, 273 lines) and connection management to `jarvis/ui/telemetry.py` (`TelemetryConnectionManager`, 147 lines).
+    - **Domain Route Mixins:** Modularized route handlers under `jarvis/ui/routes/` (`__init__.py`, `approval.py`, `calendar.py`, `memory.py`, `media.py`, `command.py`) and extracted `jarvis/ui/templates/unlock.html` (84 lines).
+    - **Static Hygiene:** 0 Ruff diagnostics and 0 AST structural invariant violations across all 11 UI files (`tools/lint.py` & `tools/diagnostics.py` exited 0).
+    - **Empirical Regression Verification:** Tier 1 Fast Test Suite passed with **1,492 passed, 0 failed, 10 skipped in 216.84s (Exit code 0)**. Tier 2 UI, WebSocket & Loopback IPC suites passed with **85 passed, 0 failed in 16.23s (Exit code 0)**.
+    - **Test Manifest Accounting:** Verified exact 2,472 collected node manifest accounting invariant via `test_17_accurate_total_test_accounting` (0 node drift).
   - **Untangle-Codebase — `jarvis/core/brain.py` Architectural Decomposition (COMPLETED & SEALED):**
     - **Commit SHA (`d648243`):** `refactor(brain): decompose intent routing, turn state, skill loading, and provider lifecycle`
     - **Line Reduction & Complexity:** Reduced `jarvis/core/brain.py` from 1,498 lines to 874 lines (-624 lines, -41.6% footprint).

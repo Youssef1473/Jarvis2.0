@@ -3875,3 +3875,45 @@ Following independent engineering reviews of the Context B ingestion audit, the 
 4. **Git Hygiene & Commit Execution:**
    - Staged and committed only `jarvis/core/memory/sleep_consolidator.py` and `tests/test_memory_authorization_audit.py` under commit `d05421be07ae5f11cb75e3ba73e5bf06cae1329a`.
    - Tracked working tree confirmed 100% clean (0 modified tracked files).
+
+---
+
+## Session Log: 2026-11-14 — Untangle-Codebase (server.py): Security, Metrics, Telemetry & Route Mixins Decomposition
+
+- **Session Timestamp:** 2026-11-14T09:15:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Starting Git HEAD SHA:** `6c7ba091410ce90520dceba05273cb7386d0cf0c` (`docs(governance): record memory consolidation schema fix and 1,492 Tier 1 pass`)
+- **Committed Git HEAD SHA:** `368572e524564cdbe6e96f0a605acc32a015839c`
+- **Commit Subject:** `refactor(ui): decompose server.py into security, metrics, telemetry, and domain route modules`
+- **Active Milestone:** `Reliability & Engineering Governance (server.py untangling sealed)`
+
+### Summary of Actions & Deliverables
+1. **Architectural Decomposition of `jarvis/ui/server.py`:**
+   - Reduced `jarvis/ui/server.py` footprint from 2,431 lines to 699 lines (-1,732 lines, -71.2% footprint).
+   - Extracted security middleware, token lifecycle, CSP nonces, query scrubbing, and access log redaction to `jarvis/ui/security.py` (570 lines) with dynamic session token resolution (`resolve_active_session_token(request)`).
+   - Extracted NVML GPU and psutil hardware metrics sampling to `jarvis/ui/metrics.py` (`WorkstationMetricsCollector`, 273 lines).
+   - Extracted WebSocket backpressure queueing and 8-client connection cap to `jarvis/ui/telemetry.py` (`TelemetryConnectionManager`, 147 lines).
+   - Extracted HTML unlock screen to `jarvis/ui/templates/unlock.html` (84 lines), eliminating raw Python HTML string concatenation.
+   - Modularized domain route handlers under `jarvis/ui/routes/`:
+     - `__init__.py` (58 lines): `resolve_request_workspace()` with fail-closed tenant validation and mock-resilient `active_workspace_id` string checking; `handle_route_errors()` decorator.
+     - `approval.py` (156 lines): `ApprovalRoutesMixin` (DualKey human authorization lifecycle).
+     - `calendar.py` (176 lines): `CalendarRoutesMixin` (Calendar event queries, grouping, CRUD).
+     - `memory.py` (283 lines): `MemoryRoutesMixin` (Workspace-scoped memory CRUD, document intake, notes, timers).
+     - `media.py` (165 lines): `MediaRoutesMixin` & `resolve_safe_photo_path` (Photo/screenshot streaming, task management).
+     - `command.py` (110 lines): `CommandRoutesMixin` (Quick actions, TTS mute toggle, async command dispatch).
+   - Preserved 100% public symbol re-exports and patch targets in `jarvis/ui/server.py` with `__all__` registration.
+2. **Static Analysis & Structural Diagnostics:**
+   - `python tools/lint.py check jarvis/ui/server.py jarvis/ui/security.py jarvis/ui/metrics.py jarvis/ui/telemetry.py jarvis/ui/routes/` passed with 0 errors.
+   - `python tools/diagnostics.py check` confirmed 0 AST-Grep structural invariant violations across all UI modules.
+3. **Empirical Regression Verification:**
+   - Targeted hermetic tests: `tests/test_hud_zero_cls.py` & `tests/test_phase4_workspace_isolation.py` (9 passed in 2.24s).
+   - Full Tier 1 Fast Test Suite: `python tools/run_fast_tests.py --fast` passed across 4 workers:
+     `Passed: 1492, Failed: 0, Errors: 0, Skipped: 10 in 216.84s (Exit code: 0)`.
+   - Test manifest accounting invariant: `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed 100% (2,472 collected nodes accounted for, 0 drift).
+   - Tier 2 UI, WebSocket & Loopback IPC Suites: 85 tests across 9 files (`test_ui_approval_workflow.py`, `test_ui_enhancements.py`, `test_hud_security_dsp.py`, `test_telemetry_connection_manager.py`, `test_live_telemetry_stream.py`, `test_ui_concurrency_lifecycle.py`, `test_hud_calendar_integration.py`, `test_live_rebinding_and_browser_bypass.py`, `test_ui_server.py`) passed 100%:
+     `============================= 85 passed in 16.23s ============================= (Exit code: 0)`.
+4. **Git Hygiene & Commit Execution:**
+   - Staged strictly the 11 UI refactoring files and committed `368572e524564cdbe6e96f0a605acc32a015839c`.
+
