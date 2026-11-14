@@ -3950,3 +3950,67 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - Test manifest accounting invariant: `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed 100% (2,472 collected nodes accounted for, 0 drift).
 4. **Git Hygiene & Commit Execution:**
    - Staged strictly the 4 refactored files and committed `7b09bd2fe0ed61e029935a702896d4832ddb50e7`.
+
+
+---
+
+## Session Log: 2026-11-14 — Main Merge & Untangle-Codebase Skill Installation Closure
+
+- **Session Timestamp:** 2026-11-14T10:05:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `main`
+- **Starting Git HEAD SHA:** `c6cce7fc340476ebd2261f74662556acb839d04f` (prior `main` HEAD)
+- **Merged Branch HEAD SHA:** `669d8c22bbfa45564c74a0019fa71597fca40ca1`
+- **Main Merge Commit SHA:** `674d54d0fb55d759f3d74dda34fd5ec386549e97` (`674d54d`)
+- **Merge Subject:** `Merge branch 'feat/reliability-engineering-governance': Phase 3/4 security, workspace isolation, and core triad decomposition`
+- **Active Milestone:** `Production Baseline Verified on main`
+
+### Summary of Actions & Deliverables
+1. **Installed Jarvis-Guarded Untangle-Codebase Skill:**
+   - Authored `.agents/skills/untangle-codebase/SKILL.md` (156 lines) with frontmatter (`disable-model-invocation: true`, `argument-hint: "[target subsystem or module path]"`).
+   - Encoded 5-step Parnas/Ousterhout refactoring protocol, 2-pass execution discipline (Pass 1 read-only Decision Log gate), 64-bit Win32 ctypes ABI handle rules, defensive partial-mock introspection, and test manifest accounting invariants (`2,472` nodes).
+   - Committed under SHA `999ecc692f8fa42095818967b57fc6a5390e1fc8`.
+2. **Executed Non-Fast-Forward Merge to `main`:**
+   - Switched to `main` and merged `feat/reliability-engineering-governance` preserving the full history of Phase 3, Phase 4, Governance & Skills, and Core Triad decomposition under merge commit `674d54d0fb55d759f3d74dda34fd5ec386549e97`.
+3. **Post-Merge Empirical Verification on `main`:**
+   - Test Manifest Accounting Invariant: `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed 100% (2,472 collected nodes accounted for, 0 drift).
+   - Core Suites: `tests/test_phase4_workspace_isolation.py`, `tests/test_provider_routing_audit.py`, `tests/test_appcontainer_sandbox.py` passed with 56 passed, 31 skipped, 0 failed in 11.47s (exit code 0).
+   - Production Database Contracts: `data/jarvis_memory.db` verified in read-only mode (`PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = `0` violations, 234 quarantined `'unscoped'` rows + 2 `'ws_default'` rows preserved intact).
+
+---
+
+## Session Log: 2026-11-14 — Skills Subsystem: `jarvis/skills/dev_shell.py` Untangling Closure
+
+- **Session Timestamp:** 2026-11-14T11:35:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `refactor/untangle-dev-shell`
+- **Starting Git HEAD SHA:** `ce8bc09` (from `main` merge `674d54d`)
+- **Refactoring Commit SHA:** `bc5e2a547285514f7756f743fa1df0fbc89e3ec0` (`bc5e2a5`)
+- **Hardening Commit SHA:** `4c52948f22144fae9532588137357c2a74c65306` (`4c52948`)
+- **Commit Subject:** `refactor(skills): decompose dev_shell.py into confinement, fs operations, code intelligence, and background tasks`
+- **Active Milestone:** `Production Baseline Verified on main; dev_shell.py Modularized`
+
+### Summary of Actions & Deliverables
+1. **Architectural Decomposition of `jarvis/skills/dev_shell.py`:**
+   - Reduced `jarvis/skills/dev_shell.py` from 1,671 lines to 268 lines (-1,403 lines, -83.9% footprint).
+   - Extracted 64-bit Win32 NTDLL/Kernel32 ABI bindings (`NtCreateFile`, `GetFinalPathNameByHandleW`, `FILE_OPEN`, `SYNCHRONIZE`), directory handle confinement, TOCTOU mitigation, and handle-bound file opening to `jarvis/skills/fs_confinement.py` (579 lines).
+   - Extracted `@SkillRegistry` file tools (`list_directory`, `read_file`, `read_multiple_files`, `write_file`, `patch_file`, `search_codebase`) to `jarvis/skills/fs_operations.py` (438 lines).
+   - Extracted git, ast-grep, ruff, graphify diagnostics, and `run_project_tests` to `jarvis/skills/code_intelligence.py` (449 lines) with dynamic `_get_dev_shell_symbol` resolution and `(RuntimeError, OSError)` fallback exception handling.
+   - Extracted async background job lifecycle management (`run_background_task`, `run_command_in_background`, `list_background_tasks`, `get_background_task_output`, `cancel_background_task`) to `jarvis/skills/background_tasks.py` (110 lines).
+   - Preserved mock transparency in `jarvis/skills/job_object_sandbox.py` by evaluating `is_mocked_run` prior to auth checks.
+   - Preserved all 100% backward-compatible re-exports on `jarvis.skills.dev_shell` via `__all__` (including `subprocess`).
+   - Re-exported query string sizing constants (`MAX_QUERY_STRING_BYTES`, `OVERSIZED_QUERY_PLACEHOLDER_BYTES`, `OVERSIZED_QUERY_PLACEHOLDER_TEXT`) on `jarvis.ui.server`.
+2. **Static Analysis & Structural Diagnostics:**
+   - `python tools/lint.py check` verified 0 errors across all 5 skills files (`dev_shell.py`, `fs_confinement.py`, `fs_operations.py`, `code_intelligence.py`, `background_tasks.py`) and `jarvis/ui/server.py`.
+   - `python tools/diagnostics.py check` confirmed 0 AST-Grep structural invariant violations across all refactored modules (ALL DIAGNOSTICS PASSED).
+3. **Empirical Regression Verification:**
+   - Targeted 10-suite dev_shell tests: 115 tests across 10 files passed 100% in 18.98s (Exit code 0).
+   - Sandbox hardening suite (`tests/test_job_object_sandbox_hardening.py`): 32 passed, 13 skipped, 0 failed in 8.24s (Exit code 0).
+   - Full Tier 1 Fast Test Suite: `python tools/run_fast_tests.py --fast` passed across 4 workers:
+     `Passed: 1492, Failed: 0, Errors: 0, Skipped: 10 in 138.44s (Status: COMPLETED, Exit code: 0)`.
+   - Test Manifest Accounting Invariant: `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed 100% (2,472 collected nodes accounted for, 0 drift).
+4. **Git Hygiene & Commit Execution:**
+   - Staged strictly the 6 refactored files and committed `bc5e2a5`.
+   - Staged hardening test adjustments and committed `4c52948`.

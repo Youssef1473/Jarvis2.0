@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-14T09:58:00+01:00 (CET)
-- **Active Git Branch:** `feat/reliability-engineering-governance`
-- **Recorded HEAD Commit SHA:** `999ecc692f8fa42095818967b57fc6a5390e1fc8`
-- **HEAD Commit Subject:** `docs(skills): add Jarvis-guarded untangle-codebase skill`
-- **Milestone State:** **Reliability, Governance & Untangle-Codebase: COMPLETED & SEALED**
-- **Active Milestone:** **Reliability & Engineering Governance (Merging to main)**
+- **Validation Timestamp:** 2026-11-14T11:35:00+01:00 (CET)
+- **Active Git Branch:** `refactor/untangle-dev-shell`
+- **Recorded HEAD Commit SHA:** `4c52948f22144fae9532588137357c2a74c65306`
+- **HEAD Commit Subject:** `test(sandbox): align job_object_sandbox_hardening with DualKey auth and re-export server query constants`
+- **Milestone State:** **Production Baseline: Phase 3, Phase 4, Reliability Governance & Core Triad Untangling Landed on main; dev_shell.py Modularized**
+- **Active Milestone:** **Production Operations & Subsystem Refactoring**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
@@ -36,8 +36,20 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Reliability & Engineering Governance` (`feat/reliability-engineering-governance`)
+- **Active Milestone:** `Reliability & Engineering Governance` (`refactor/untangle-dev-shell`)
 - **Completed Work:**
+  - **Untangle-Codebase — `jarvis/skills/dev_shell.py` Architectural Decomposition (COMPLETED & SEALED):**
+    - **Refactor Commit SHA (`bc5e2a5`):** `refactor(skills): decompose dev_shell.py into confinement, fs operations, code intelligence, and background tasks`
+    - **Hardening Commit SHA (`4c52948`):** `test(sandbox): align job_object_sandbox_hardening with DualKey auth and re-export server query constants`
+    - **Line Reduction & Footprint:** Reduced `jarvis/skills/dev_shell.py` from 1,671 lines to 268 lines (-1,403 lines, -83.9% footprint).
+    - **Win32 NTDLL/Kernel32 ABI Confinement:** Extracted 64-bit ctypes bindings (`NtCreateFile`, `GetFinalPathNameByHandleW`, `FILE_OPEN`, `SYNCHRONIZE`), directory handle confinement, TOCTOU mitigation, and handle-bound file opening to `jarvis/skills/fs_confinement.py` (579 lines).
+    - **File Operations:** Extracted `@SkillRegistry` file tools (`list_directory`, `read_file`, `read_multiple_files`, `write_file`, `patch_file`, `search_codebase`) to `jarvis/skills/fs_operations.py` (438 lines).
+    - **Code Intelligence & Diagnostics:** Extracted `run_project_tests`, `git_diff`, `git_status`, `query_codebase_graph`, `ast_search_codebase`, and `check_code_diagnostics` to `jarvis/skills/code_intelligence.py` (449 lines) with dynamic `_get_dev_shell_symbol` resolution and `(RuntimeError, OSError)` fallback exception handling.
+    - **Background Tasks:** Extracted async background job lifecycle management (`run_background_task`, `run_command_in_background`, `list_background_tasks`, `get_background_task_output`, `cancel_background_task`) to `jarvis/skills/background_tasks.py` (110 lines).
+    - **Mock Transparency & Re-exports:** Updated `jarvis/skills/job_object_sandbox.py` to evaluate `is_mocked_run` before auth checks, preserved all `dev_shell` re-exports in `__all__` (including `subprocess`), and re-exported query string sizing constants on `jarvis.ui.server`.
+    - **Static Hygiene:** 0 Ruff diagnostics across all 5 skills files (`tools/lint.py`) and 0 AST structural invariant violations (`tools/diagnostics.py`).
+    - **Empirical Regression Verification:** Targeted dev_shell test suite passed with **115 passed, 0 failed in 18.98s (Exit code 0)**; Tier 1 Fast Test Suite passed with **1,492 passed, 0 failed, 10 skipped in 138.44s (Exit code 0)**; Sandbox hardening suite passed with **32 passed, 13 skipped in 8.24s (Exit code 0)**.
+    - **Test Manifest Accounting:** Verified exact 2,472 collected node manifest accounting invariant via `test_17_accurate_total_test_accounting` (0 node drift).
   - **Untangle-Codebase — `jarvis/core/orchestrator.py` Architectural Decomposition (COMPLETED & SEALED):**
     - **Commit SHA (`7b09bd2`):** `refactor(orchestrator): extract speech capture, lifecycle shutdown, and intent acknowledgments`
     - **Line Reduction & Complexity:** Reduced `jarvis/core/orchestrator.py` from 1,003 lines to 707 lines (-296 lines, -29.5% footprint).

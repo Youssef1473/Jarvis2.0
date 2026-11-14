@@ -269,10 +269,18 @@ class TestExecutePowershellRouting(unittest.TestCase):
     """execute_powershell must go through the Job Object, never bare subprocess.run."""
 
     def _call(self, sandbox_result, command="Get-Date"):
-        with mock.patch.object(jsb, "run_job_sandboxed_process", return_value=sandbox_result) as run, \
-             mock.patch.object(dev_shell.subprocess, "run", side_effect=AssertionError("bare subprocess.run used")):
-            out = dev_shell.execute_powershell(command, timeout_seconds=25)
-        return out, run
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
+
+        mgr = DualKeyApprovalManager.get_instance()
+        grant = mgr.grant_approval("execute_powershell", {"command": command})
+        ctx_token = mgr.bind_active_grant(grant)
+        try:
+            with mock.patch.object(jsb, "run_job_sandboxed_process", return_value=sandbox_result) as run, \
+                 mock.patch.object(dev_shell.subprocess, "run", side_effect=AssertionError("bare subprocess.run used")):
+                out = dev_shell.execute_powershell(command, timeout_seconds=25)
+            return out, run
+        finally:
+            mgr.clear_active_authorized(ctx_token)
 
     def test_routes_through_job_object_with_expected_arguments(self):
         out, run = self._call({"status": "ok", "stdout_tail": "hello\n", "stderr_tail": ""})
@@ -397,6 +405,39 @@ def _wait_pid_gone(pid: int, timeout: float = 2.0) -> bool:
 
 @unittest.skipUnless(sys.platform == "win32", "needs the real Windows kernel")
 class TestJobSandboxRealWindows(unittest.TestCase):
+    def setUp(self) -> None:
+        from jarvis.core.security_boundaries import DualKeyApprovalManager, TurnTaintTracker
+        self.tracker = TurnTaintTracker.get_instance()
+        self.tracker.reset_turn()
+        self.approval_mgr = DualKeyApprovalManager.get_instance()
+        self.approval_mgr.reset()
+        self.approval_mgr.set_approval_handler(None)
+        self._orig_run_job_sandboxed_process = jsb.run_job_sandboxed_process
+
+        def _auto_authorized_run(command, *args, **kwargs):
+            if not command or jsb.kernel32 is None:
+                return self._orig_run_job_sandboxed_process(command, *args, **kwargs)
+            grant = self.approval_mgr.grant_approval(
+                tool_name="run_job_sandboxed_process",
+                arguments={"command": command},
+                ttl_seconds=60.0,
+                turn_id=self.tracker.get_current_turn_id(),
+            )
+            ctx_token = self.approval_mgr.bind_active_grant(grant)
+            try:
+                return self._orig_run_job_sandboxed_process(command, *args, **kwargs)
+            finally:
+                self.approval_mgr.clear_active_authorized(ctx_token)
+
+        self._patcher = mock.patch.object(jsb, "run_job_sandboxed_process", side_effect=_auto_authorized_run)
+        self._patcher.start()
+
+    def tearDown(self) -> None:
+        self._patcher.stop()
+        self.tracker.reset_turn()
+        self.approval_mgr.reset()
+        self.approval_mgr.set_approval_handler(None)
+
     def test_timeout_kills_grandchild_and_drains(self):
         res = jsb.run_job_sandboxed_process(
             [sys.executable, "-c", GRANDCHILD_SCRIPT % "time.sleep(60)"], timeout_sec=2.0,
@@ -414,8 +455,17 @@ class TestJobSandboxRealWindows(unittest.TestCase):
         self.assertTrue(_wait_pid_gone(grandchild), f"PID {grandchild} was not reaped within deadline")
 
     def test_execute_powershell_timeout_leaves_no_children(self):
-        out = dev_shell.execute_powershell("Start-Sleep -Seconds 60", timeout_seconds=2)
-        self.assertIn("timed out", out)
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
+
+        mgr = DualKeyApprovalManager.get_instance()
+        cmd = "Start-Sleep -Seconds 60"
+        grant = mgr.grant_approval("execute_powershell", {"command": cmd})
+        ctx_token = mgr.bind_active_grant(grant)
+        try:
+            out = dev_shell.execute_powershell(cmd, timeout_seconds=2)
+            self.assertIn("timed out", out)
+        finally:
+            mgr.clear_active_authorized(ctx_token)
 
     def test_cancellation_kills_child_and_grandchild(self):
         token = DelayedToken(0.5)
