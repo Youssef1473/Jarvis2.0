@@ -14,16 +14,15 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-14T08:00:00+01:00 (CET)
+- **Validation Timestamp:** 2026-11-14T08:10:00+01:00 (CET)
 - **Active Git Branch:** `feat/reliability-engineering-governance`
-- **Recorded HEAD Commit SHA:** `d648243c25dca4b7722fc68d5ef8b577c34f45c3`
-- **HEAD Commit Subject:** `refactor(brain): decompose intent routing, turn state, skill loading, and provider lifecycle`
-- **Milestone State:** **Untangle-Codebase (brain.py): COMPLETED & SEALED**
-- **Active Milestone:** **Untangle-Codebase (brain.py Decomposed & Sealed)**
+- **Recorded HEAD Commit SHA:** `d05421be07ae5f11cb75e3ba73e5bf06cae1329a`
+- **HEAD Commit Subject:** `fix(memory): align sleep consolidation schema checks and tenant isolation prompt disclosure in test_18`
+- **Milestone State:** **Memory Consolidation Schema Alignment & 1,492 Tier 1 Pass: COMPLETED & SEALED**
+- **Active Milestone:** **Reliability & Engineering Governance (Untangle-Codebase Pass 1 Diagnosis on server.py)**
 - **Staged Modifications:** `0 files` (clean staging index)
-- **Unstaged Tracked Modifications (2 files):**
-  1. `jarvis/core/memory/sleep_consolidator.py` (Phase 4 schema checks & bi-temporal knowledge edge access_count alignment)
-  2. `tests/test_memory_authorization_audit.py` (Phase 4 tenant isolation prompt disclosure test fixture alignment)
+- **Unstaged Tracked Modifications (0 files):**
+  - None (clean tracked working tree)
 
 - **Untracked Items (8 items):**
   1. `data/agy_112_nodes.json` (Diagnostic node map)

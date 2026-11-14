@@ -3846,3 +3846,32 @@ Following independent engineering reviews of the Context B ingestion audit, the 
 5. **Git Hygiene & Commit Execution:**
    - Staged strictly the 7 refactored files and committed `d648243c25dca4b7722fc68d5ef8b577c34f45c3`.
    - Tracked working tree preserved with Phase 4 schema alignments in `sleep_consolidator.py` and `test_memory_authorization_audit.py` awaiting user triage.
+
+---
+
+## Session Log: 2026-11-14 — Memory Consolidation Schema Fix & Full Tier 1 Regression Pass
+
+- **Session Timestamp:** 2026-11-14T08:10:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `feat/reliability-engineering-governance`
+- **Starting Git HEAD SHA:** `191cc7e0c451633519b59e51c89be6f38ef434e3` (`docs(governance): record brain.py untangle-codebase closure`)
+- **Committed Git HEAD SHA:** `d05421be07ae5f11cb75e3ba73e5bf06cae1329a`
+- **Commit Subject:** `fix(memory): align sleep consolidation schema checks and tenant isolation prompt disclosure in test_18`
+- **Active Milestone:** `Reliability & Engineering Governance (Untangle-Codebase Pass 1 Diagnosis on server.py)`
+
+### Summary of Actions & Deliverables
+1. **Sleep Consolidation Schema Hardening (`jarvis/core/memory/sleep_consolidator.py`):**
+   - Added dynamic `PRAGMA table_info` column inspection for `facts`, `knowledge_edges`, and `interactions` in Pass A (`run_pass_a_entity_deduplication`) and Pass B (`run_pass_b_workflow_distillation`).
+   - Removed insertion into non-existent `source_provenance` column on `knowledge_edges` table (canonical SQLite schema stores `source_context`).
+   - Added fallback bi-temporal knowledge edge creation with complete canonical columns (`access_count`, `decay_lambda`) when table does not exist.
+   - Handled schema variation gracefully when `access_count` or `workspace_id` is present vs absent in test environments.
+2. **Security Audit Test Scoping (`tests/test_memory_authorization_audit.py`):**
+   - Aligned `_raw_insert` in `test_18_legacy_unscrubbed_interaction_redacted_at_prompt_disclosure` with Phase 4 multi-tenant scoping contract: inserted with `workspace_id='ws_default', session_id='sess_legacy', scope='session'` matching `assemble_system_prompt()` workspace retrieval filter.
+3. **Targeted & Fast Suite Verification:**
+   - `python tools/lint.py check` verified 0 errors/warnings on `tests/test_memory_authorization_audit.py` and syntax/undefined checks on `sleep_consolidator.py`.
+   - Targeted suites `test_memory_authorization_audit.py`, `test_sleep_consolidation_wal.py`, and `test_phase4_workspace_isolation.py` passed 100% (27 passed, 1 expected xfail, 0 failures in 3.66s).
+   - Full Tier 1 fast test suite verified clean: `python tools/run_fast_tests.py --fast` passed with **1,492 passed, 0 failed, 0 errors, 10 skipped in 141.89s (Exit code 0)**.
+4. **Git Hygiene & Commit Execution:**
+   - Staged and committed only `jarvis/core/memory/sleep_consolidator.py` and `tests/test_memory_authorization_audit.py` under commit `d05421be07ae5f11cb75e3ba73e5bf06cae1329a`.
+   - Tracked working tree confirmed 100% clean (0 modified tracked files).
