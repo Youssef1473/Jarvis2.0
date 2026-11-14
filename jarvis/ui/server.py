@@ -183,6 +183,8 @@ class JarvisUIService(
             Route("/api/screenshot/latest", endpoint=self._handle_latest_screenshot, methods=["GET"]),
             Route("/api/tasks", endpoint=self._handle_tasks_list, methods=["GET"]),
             Route("/api/tasks/terminate", endpoint=self._handle_task_terminate, methods=["POST"]),
+            Route("/api/workspaces", endpoint=self._handle_workspaces_list, methods=["GET"]),
+            Route("/api/workspaces/switch", endpoint=self._handle_workspaces_switch, methods=["POST"]),
             Route("/api/memory/nodes", endpoint=self._handle_memory_nodes, methods=["GET"]),
             Route("/api/memory/delete", endpoint=self._handle_memory_delete, methods=["POST"]),
             Route("/api/memory/update", endpoint=self._handle_memory_update, methods=["POST"]),

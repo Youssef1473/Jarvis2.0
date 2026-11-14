@@ -1,8 +1,10 @@
 """Workspace-scoped memory node inspection, document staging, and timer routes for Jarvis 2.0 HUD."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -10,7 +12,8 @@ from typing import Any
 import anyio
 from starlette.responses import JSONResponse
 
-from jarvis.ui.routes import resolve_request_workspace
+from jarvis.ui.routes import handle_route_errors, resolve_request_workspace
+from jarvis.ui.security import resolve_active_session_token
 
 logger = logging.getLogger("Jarvis.UI.Memory")
 
@@ -281,3 +284,222 @@ class MemoryRoutesMixin:
         except (ImportError, AttributeError, RuntimeError) as err:
             logger.warning("Error reading timers for HUD: %s", err)
             return JSONResponse({"timers": []})
+
+    @handle_route_errors
+    async def _handle_workspaces_list(self, request: Any) -> JSONResponse:
+        """Lists active multi-tenant workspaces, partition fact/vector volumes, and virtual table headroom."""
+        # 1. Enforce session authentication if enabled
+        if getattr(getattr(self, "service", self), "enforce_auth", True):
+            token = (
+                request.headers.get("x-jarvis-token")
+                or request.cookies.get("jarvis_session")
+            )
+            active_token = resolve_active_session_token(request)
+            if not (token and secrets.compare_digest(token, active_token)):
+                return JSONResponse(
+                    {"error": "Unauthorized: Invalid or missing session credentials"},
+                    status_code=401,
+                )
+
+        # 2. If a specific workspace query param is provided, validate it fail-closed
+        query_ws = request.query_params.get("workspace_id")
+        if query_ws is not None:
+            resolve_request_workspace({"workspace_id": query_ws})
+
+        mem = None
+        if self.orchestrator and hasattr(self.orchestrator, "memory"):
+            mem = self.orchestrator.memory
+        else:
+            try:
+                from jarvis.skills.productivity import _get_memory
+                mem = _get_memory()
+            except (ImportError, AttributeError):
+                mem = None
+
+        def _fetch_workspace_stats() -> dict[str, Any]:
+            active_ws = getattr(self.orchestrator, "active_workspace_id", None)
+            if not active_ws and mem and hasattr(mem, "get_active_workspace_id"):
+                active_ws = mem.get_active_workspace_id()
+            if not active_ws:
+                active_ws = "ws_default"
+
+            if not mem or not hasattr(mem, "_get_ro_connection"):
+                return {
+                    "status": "ok",
+                    "active_workspace_id": active_ws,
+                    "workspaces": [
+                        {
+                            "workspace_id": "ws_default",
+                            "name": "Default Workspace",
+                            "path": "",
+                            "created_at": 0.0,
+                            "facts_count": 0,
+                            "vectors_count": 0,
+                            "is_active": True,
+                        }
+                    ],
+                    "total_vectors": 0,
+                    "vector_ceiling": 2500,
+                    "headroom_remaining": 2500,
+                }
+
+            with mem._get_ro_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT workspace_id, name, path, is_archived, created_at
+                    FROM workspaces
+                    WHERE workspace_id != 'unscoped' AND is_archived = 0
+                    ORDER BY created_at ASC
+                    """
+                )
+                ws_rows = cursor.fetchall()
+
+                total_vectors = 0
+                try:
+                    cursor.execute("SELECT count(1) FROM facts_vec")
+                    v_tot_row = cursor.fetchone()
+                    if v_tot_row:
+                        total_vectors = int(v_tot_row[0])
+                except Exception:  # noqa: BLE001
+                    total_vectors = 0
+
+                workspaces_data = []
+                for row in ws_rows:
+                    wid = row["workspace_id"]
+                    if not wid or wid.lower() == "unscoped":
+                        continue
+
+                    cursor.execute(
+                        "SELECT count(1) FROM facts WHERE workspace_id = ? AND scope = 'workspace'",
+                        (wid,),
+                    )
+                    f_row = cursor.fetchone()
+                    facts_count = int(f_row[0]) if f_row else 0
+
+                    vectors_count = 0
+                    try:
+                        cursor.execute(
+                            """
+                            SELECT count(1)
+                            FROM facts f
+                            JOIN facts_vec v ON f.id = v.id
+                            WHERE f.workspace_id = ? AND f.scope = 'workspace'
+                            """,
+                            (wid,),
+                        )
+                        v_row = cursor.fetchone()
+                        if v_row:
+                            vectors_count = int(v_row[0])
+                    except Exception:  # noqa: BLE001
+                        vectors_count = 0
+
+                    workspaces_data.append({
+                        "workspace_id": wid,
+                        "name": row["name"],
+                        "path": row["path"],
+                        "created_at": row["created_at"],
+                        "facts_count": facts_count,
+                        "vectors_count": vectors_count,
+                        "is_active": (wid == active_ws),
+                    })
+
+                if not workspaces_data:
+                    workspaces_data.append({
+                        "workspace_id": "ws_default",
+                        "name": "Default Workspace",
+                        "path": "",
+                        "created_at": 0.0,
+                        "facts_count": 0,
+                        "vectors_count": 0,
+                        "is_active": True,
+                    })
+
+                return {
+                    "status": "ok",
+                    "active_workspace_id": active_ws,
+                    "workspaces": workspaces_data,
+                    "total_vectors": total_vectors,
+                    "vector_ceiling": 2500,
+                    "headroom_remaining": max(0, 2500 - total_vectors),
+                }
+
+        data = await asyncio.to_thread(_fetch_workspace_stats)
+        return JSONResponse(data)
+
+    _handle_workspace_list = _handle_workspaces_list
+
+    @handle_route_errors
+    async def _handle_workspaces_switch(self, request: Any) -> JSONResponse:
+        """Transitions active tenant workspace, persisting active_context via SingleWriterActor."""
+        # 1. Enforce session authentication if enabled
+        if getattr(getattr(self, "service", self), "enforce_auth", True):
+            token = (
+                request.headers.get("x-jarvis-token")
+                or request.cookies.get("jarvis_session")
+            )
+            active_token = resolve_active_session_token(request)
+            if not (token and secrets.compare_digest(token, active_token)):
+                return JSONResponse(
+                    {"error": "Unauthorized: Invalid or missing session credentials"},
+                    status_code=401,
+                )
+
+        # 2. Parse request body
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+        target_ws = body.get("target_workspace_id") or body.get("workspace_id")
+        if not target_ws or not str(target_ws).strip():
+            return JSONResponse({"error": "target_workspace_id is required"}, status_code=400)
+
+        # 3. Validate format and fail-closed rejection of 'unscoped'
+        clean_ws = resolve_request_workspace({"workspace_id": target_ws})
+
+        mem = None
+        if self.orchestrator and hasattr(self.orchestrator, "memory"):
+            mem = self.orchestrator.memory
+        else:
+            try:
+                from jarvis.skills.productivity import _get_memory
+                mem = _get_memory()
+            except (ImportError, AttributeError):
+                mem = None
+
+        if not mem:
+            return JSONResponse({"error": "Memory manager not available"}, status_code=503)
+
+        # 4. Verify workspace existence and non-archived status, then write active_context
+        def _verify_and_switch():
+            with mem._get_ro_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT workspace_id, is_archived FROM workspaces WHERE workspace_id = ?",
+                    (clean_ws,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    raise ValueError(f"Workspace '{clean_ws}' does not exist")
+                if row["is_archived"]:
+                    raise PermissionError(f"Cannot switch to archived workspace '{clean_ws}'")
+
+            mem.set_active_context(clean_ws, None, switch_reason="hud_user_switch")
+
+        await asyncio.to_thread(_verify_and_switch)
+
+        # 5. Update orchestrator active workspace state
+        if self.orchestrator:
+            self.orchestrator.active_workspace_id = clean_ws
+
+        # 6. Broadcast telemetry event to connected HUD clients
+        if hasattr(self, "broadcast"):
+            self.broadcast({
+                "type": "workspace_switched",
+                "active_workspace_id": clean_ws,
+            })
+
+        return JSONResponse({"status": "ok", "active_workspace_id": clean_ws})
+
+    _handle_workspace_switch = _handle_workspaces_switch
