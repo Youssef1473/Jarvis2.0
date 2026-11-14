@@ -359,6 +359,12 @@ class FourTierTestRunner:
 
         print(f"[Tier 1] Completed in {result.duration_sec:.2f}s (Status: {status}, Exit code: {exit_code})")
         print(f"Passed: {result.passed_count}, Failed: {result.failed_count}, Errors: {result.error_count}, Skipped: {result.skipped_count}\n")
+        if exit_code != 0:
+            for item in result.details:
+                if item.get("status") in ("FAILED", "ERROR"):
+                    print(f"  [FAILED] {item.get('node_id')}: {item.get('message')}")
+            if result.stderr:
+                print(f"[Tier 1 Stderr]\n{result.stderr[-2000:]}\n")
 
         return TierScorecard(
             tier_name="Tier 1: Hermetic Unit",

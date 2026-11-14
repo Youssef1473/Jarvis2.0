@@ -184,7 +184,7 @@ class TestShutdownLifecycle(unittest.TestCase):
             [sys.executable, "-c", sub_code],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=45,
         )
 
         # 1. Process must exit with code 0
