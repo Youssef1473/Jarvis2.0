@@ -42,10 +42,10 @@ class WinEventFramePython:
 
 class UIADeltaWorker:
     """Background SPSC consumer reading WinEvent frames and updating live UIA state."""
-    _instance: Optional["UIADeltaWorker"] = None
+    _instance: UIADeltaWorker | None = None
 
     @classmethod
-    def get_instance(cls) -> "UIADeltaWorker":
+    def get_instance(cls) -> UIADeltaWorker:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
@@ -74,7 +74,7 @@ class UIADeltaWorker:
                 try:
                     # Try to open existing file mapping
                     self._shm_buf = mmap.mmap(0, TOTAL_SHM_SIZE, tagname=self.shm_name, access=mmap.ACCESS_WRITE)
-                except Exception as e:
+                except (OSError, ValueError) as e:
                     logger.debug("Could not attach to native WinEvent ring: %s; using in-memory buffer", e)
                     self._shm_buf = bytearray(TOTAL_SHM_SIZE)
                     # Initialize header
@@ -100,7 +100,7 @@ class UIADeltaWorker:
             return 0
 
         buf = self._shm_buf
-        write_idx, read_idx, privacy_lock, capacity = struct.unpack_from("<QQII", buf, 0)
+        write_idx, read_idx, privacy_lock, _capacity = struct.unpack_from("<QQII", buf, 0)
 
         # Check atomic privacy lock
         if privacy_lock == 1:
@@ -118,7 +118,7 @@ class UIADeltaWorker:
             slot = read_idx % RING_CAPACITY
             offset = HEADER_SIZE + (slot * FRAME_SIZE)
 
-            qpc, hwnd, pid, event_id, obj_id, privacy_flags = struct.unpack_from("<QQIIII", buf, offset)
+            _qpc, hwnd, _pid, event_id, _obj_id, privacy_flags = struct.unpack_from("<QQIIII", buf, offset)
             raw_title = bytes(buf[offset + 32 : offset + 64])
             title = raw_title.split(b"\x00")[0].decode("utf-8", errors="replace")
 
@@ -135,8 +135,8 @@ class UIADeltaWorker:
                 try:
                     from jarvis.vision.som_grounding import MarkRegistry
                     MarkRegistry.evict_for_hwnd(hwnd)
-                except Exception:
-                    pass
+                except (ImportError, AttributeError, RuntimeError) as e:
+                    logger.debug("MarkRegistry eviction notice for hwnd %s: %s", hwnd, e)
 
             read_idx += 1
             count += 1
@@ -177,6 +177,6 @@ class UIADeltaWorker:
         if self._shm_buf is not None and isinstance(self._shm_buf, mmap.mmap):
             try:
                 self._shm_buf.close()
-            except Exception:
-                pass
+            except (BufferError, OSError) as e:
+                logger.debug("Closing shm_buf notice: %s", e)
             self._shm_buf = None
