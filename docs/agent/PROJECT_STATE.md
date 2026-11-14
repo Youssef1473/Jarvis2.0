@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-14T14:05:00+01:00 (CET)
-- **Active Git Branch:** `main`
-- **Recorded HEAD Commit SHA:** `2d8662573afcb61a354e5dcbc424832db4c8b2a8`
-- **HEAD Commit Subject:** `Merge pull request #17 from Youssef1473/refactor/untangle-vision`
-- **Milestone State:** **Production Baseline Verified on main; PRs #15, #16, and #17 Merged & Closed**
-- **Active Milestone:** **Production Operations & Clean Baseline Alignment**
+- **Validation Timestamp:** 2026-11-14T14:35:00+01:00 (CET)
+- **Active Git Branch:** `docs/install-improve-skill`
+- **Recorded HEAD Commit SHA:** `a8a7c840363ed78a192e53f7e3f7e6325406f669`
+- **HEAD Commit Subject:** `docs(governance): seal tri-branch merge and 2d86625 production baseline (#18)`
+- **Milestone State:** **Production Baseline Verified on main (a8a7c84); Installing shadcn/improve Advisor Skill**
+- **Active Milestone:** **Advisor Skill Installation & Subsystem Audit Readiness**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)

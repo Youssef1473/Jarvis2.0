@@ -91,3 +91,6 @@ Thumbs.db
 graphify-out/
 .graphify/
 
+# Advisor generated implementation plans
+plans/
+
