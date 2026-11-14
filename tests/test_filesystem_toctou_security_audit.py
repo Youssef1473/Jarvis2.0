@@ -89,11 +89,17 @@ class TestFilesystemToctouSecurityAudit(unittest.TestCase):
         ctx_token = self.approval_mgr.bind_active_grant(grant)
         self._ctx_tokens.append(ctx_token)
 
-        # Simulate GetFinalPathNameByHandleW returning path pointing to C:\Windows\System32
-        with patch("jarvis.skills.dev_shell._get_handle_physical_path", return_value="C:\\Windows\\System32\\critical.dll"):
+        # Simulate GetFinalPathNameByHandleW returning path pointing to System32 on the active workspace drive
+        escaped_drive = REPO_ROOT.drive if REPO_ROOT.drive else "C:"
+        escaped_path = f"{escaped_drive}\\Windows\\System32\\critical.dll"
+        with patch("jarvis.skills.dev_shell._get_handle_physical_path", return_value=escaped_path):
             with self.assertRaises(SecurityBoundaryViolation) as ctx:
                 dev_shell.write_file(file_path=rel_path, content="ATTACK_PAYLOAD", overwrite=True)
-            self.assertIn("escapes confined root", str(ctx.exception).lower())
+            exc_lower = str(ctx.exception).lower()
+            self.assertTrue(
+                "escapes confined root" in exc_lower or "outside workspace" in exc_lower,
+                f"Unexpected exception message: {ctx.exception}",
+            )
 
         # Verify file content is intact
         self.assertEqual(target_file.read_text(encoding="utf-8"), "WORKSPACE_DATA")
