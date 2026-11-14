@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>JARVIS 2.0 &mdash; Interface Locked</title>
+  <style nonce="{{ csp_nonce }}">
+    body { background: #070b12; color: #00d2ff; font-family: 'Segoe UI', system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    .card { background: rgba(13, 22, 38, 0.95); border: 1px solid rgba(0, 210, 255, 0.3); border-radius: 8px; padding: 32px; width: 380px; text-align: center; box-shadow: 0 0 30px rgba(0, 210, 255, 0.15); }
+    h2 { margin: 0 0 8px; letter-spacing: 2px; font-weight: 600; text-shadow: 0 0 10px #00d2ff; }
+    p { color: #8ba2b9; font-size: 13px; margin: 0 0 24px; }
+    input { width: 100%; box-sizing: border-box; background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(0, 210, 255, 0.4); color: #fff; padding: 10px 12px; border-radius: 4px; font-size: 14px; margin-bottom: 16px; outline: none; }
+    input:focus { border-color: #00d2ff; box-shadow: 0 0 8px rgba(0, 210, 255, 0.4); }
+    button { width: 100%; background: #00d2ff; color: #070b12; border: none; padding: 10px; border-radius: 4px; font-weight: 700; cursor: pointer; font-size: 14px; letter-spacing: 1px; transition: background 0.2s; }
+    button:hover { background: #5ce1e6; }
+    .error { color: #ff5252; font-size: 12px; margin-top: 12px; display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>J.A.R.V.I.S.</h2>
+    <p>Sovereign Interface Locked. Provide session credentials or unlock token to authenticate.</p>
+    <form id="unlockForm">
+      <input type="password" id="tokenInput" placeholder="Session or Bootstrap Token" autocomplete="off" required autofocus>
+      <button type="submit">AUTHENTICATE</button>
+      <div id="errMsg" class="error">Invalid credentials</div>
+    </form>
+  </div>
+  <script nonce="{{ csp_nonce }}">
+    window.addEventListener('DOMContentLoaded', async () => {
+      const unlockForm = document.getElementById('unlockForm');
+      if (unlockForm) {
+        unlockForm.addEventListener('submit', unlock);
+      }
+
+      let token = '';
+      if (window.location.hash.startsWith('#bootstrap=')) {
+        token = window.location.hash.substring('#bootstrap='.length).trim();
+      } else if (window.location.hash.startsWith('#token=')) {
+        token = window.location.hash.substring('#token='.length).trim();
+      }
+      if (token) {
+        if (window.history.replaceState) {
+          window.history.replaceState(null, '', window.location.pathname);
+        }
+        try {
+          const res = await fetch('/api/auth/unlock', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({token})
+          });
+          if (res.ok) {
+            window.location.replace('/');
+            return;
+          }
+        } catch (ex) {}
+        const errEl = document.getElementById('errMsg');
+        if (errEl) errEl.style.display = 'block';
+      }
+    });
+
+    async function unlock(e) {
+      e.preventDefault();
+      const tokenInput = document.getElementById('tokenInput');
+      const token = tokenInput ? tokenInput.value.trim() : '';
+      const err = document.getElementById('errMsg');
+      if (err) err.style.display = 'none';
+      try {
+        const res = await fetch('/api/auth/unlock', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({token})
+        });
+        if (res.ok) {
+          window.location.reload();
+        } else {
+          if (err) err.style.display = 'block';
+        }
+      } catch (ex) {
+        if (err) err.style.display = 'block';
+      }
+    }
+  </script>
+</body>
+</html>
