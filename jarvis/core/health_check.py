@@ -13,6 +13,42 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:
+    import psutil
+    _PSUTIL_PROBE_ERRORS: tuple[type[Exception], ...] = (
+        psutil.Error,
+        OSError,
+        RuntimeError,
+        ValueError,
+        AttributeError,
+        ImportError,
+    )
+except ImportError:
+    psutil = None  # type: ignore[assignment]
+    _PSUTIL_PROBE_ERRORS = (
+        OSError,
+        RuntimeError,
+        ValueError,
+        AttributeError,
+        ImportError,
+    )
+
+try:
+    import sounddevice as sd
+    _STREAM_ERRORS: tuple[type[Exception], ...] = (
+        sd.PortAudioError,
+        OSError,
+        RuntimeError,
+        AttributeError,
+    )
+except ImportError:
+    sd = None  # type: ignore[assignment]
+    _STREAM_ERRORS = (
+        OSError,
+        RuntimeError,
+        AttributeError,
+    )
+
 logger = logging.getLogger("Jarvis.HealthCheck")
 
 
@@ -23,7 +59,7 @@ def test_socket_port(port: int, host: str = "127.0.0.1", timeout: float = 0.15) 
         try:
             s.connect((host, port))
             return True
-        except Exception:
+        except (OSError, TimeoutError):
             return False
 
 
@@ -51,7 +87,7 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
             "pid": proc.pid,
             "priority": prio,
         }
-    except Exception as e:
+    except _PSUTIL_PROBE_ERRORS as e:
         report["subsystems"]["runtime"] = {"status": "WARN", "error": str(e)}
 
     # 2. Audio Capture & Playback Hardware Endpoints
@@ -68,7 +104,7 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
             try:
                 with sd.InputStream(samplerate=16000, channels=1, blocksize=512):
                     mic_stream_ok = True
-            except Exception as stream_err:
+            except _STREAM_ERRORS as stream_err:
                 mic_stream_ok = False
                 audio_data["mic_stream_error"] = str(stream_err)
 
@@ -91,7 +127,7 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
                 native_sr = int(out_dev.get("default_samplerate", 48000))
                 with sd.OutputStream(samplerate=native_sr, channels=1, blocksize=512):
                     spk_stream_ok = True
-            except Exception as stream_err:
+            except _STREAM_ERRORS as stream_err:
                 spk_stream_ok = False
                 audio_data["spk_stream_error"] = str(stream_err)
 
@@ -111,11 +147,11 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
             from jarvis.skills.voice_control import get_tts_instance
             tts = get_tts_instance()
             audio_data["underrun_count"] = tts.get_underrun_count() if (tts and hasattr(tts, "get_underrun_count")) else 0
-        except Exception:
+        except (AttributeError, RuntimeError, ImportError):
             audio_data["underrun_count"] = 0
 
         report["subsystems"]["audio"] = audio_data
-    except Exception as e:
+    except (OSError, RuntimeError, AttributeError, ImportError, TypeError, ValueError) as e:
         report["subsystems"]["audio"] = {"status": "FAIL", "error": str(e), "underrun_count": 0}
         report["status"] = "DEGRADED"
 
@@ -133,7 +169,7 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
             }
         else:
             report["subsystems"]["gpu"] = {"status": "WARN", "detail": vram_info}
-    except Exception as e:
+    except (OSError, RuntimeError, AttributeError, ImportError, KeyError, TypeError, ValueError) as e:
         report["subsystems"]["gpu"] = {"status": "WARN", "error": str(e)}
 
     # 4. Neural Weights & Local Models
@@ -168,7 +204,7 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
             "synthesis_status": "VERIFIED_PHASE_2",
             "detail": "Kokoro-82M ONNX verified (Bettany blend, RTF < 0.70)",
         }
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError, AttributeError) as e:
         report["subsystems"]["models"] = {"status": "WARN", "error": str(e)}
         report["subsystems"]["tts"] = {"status": "FAIL", "error": str(e)}
 
@@ -195,7 +231,7 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
                 sqlite_vec.load(conn)
                 vec_ver = cur.execute("SELECT vec_version();").fetchone()[0]
                 vec_ok = True
-            except Exception as ve:
+            except (sqlite3.Error, OSError, RuntimeError, AttributeError, ImportError) as ve:
                 vec_ok = False
                 vec_err = str(ve)
 
@@ -225,7 +261,7 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
 
             if subsystem_status != "OK" and report["status"] != "FAIL":
                 report["status"] = "DEGRADED"
-    except Exception as e:
+    except (sqlite3.Error, OSError, RuntimeError, ValueError, AttributeError) as e:
         report["subsystems"]["memory_db"] = {"status": "FAIL", "error": str(e)}
         report["status"] = "DEGRADED"
 
@@ -240,7 +276,7 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
             "cdp_port_9222": "CONNECTED" if cdp_active else "STANDBY_OFFLINE",
             "ollama_port_11434": "ONLINE" if ollama_active else "STANDBY_OFFLINE",
         }
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError, AttributeError) as e:
         report["subsystems"]["network"] = {"status": "WARN", "error": str(e)}
 
     # 7. Cognitive Router, Reasoning Providers & Fallback Status
@@ -324,7 +360,7 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
             "fast_tier_route": fast_t,
             "deep_tier_route": deep_t,
         }
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError, KeyError, AttributeError, TypeError, ImportError) as e:
         report["subsystems"]["cognition"] = {"status": "WARN", "error": str(e)}
 
     # 8. Skill & Tool Registry Smoke Sweep
@@ -337,10 +373,6 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
     }
     try:
         from jarvis.skills.base import SkillRegistry
-        try:
-            pass
-        except Exception:
-            pass
 
         all_tools = SkillRegistry.get_all_tools()
         skills_data["total_registered"] = len(all_tools)
@@ -359,7 +391,7 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
                         skills_data["passed"] += 1
                     else:
                         skills_data["failures"].append(f"{tool_name}: unexpected response")
-                except Exception as ex:
+                except (OSError, RuntimeError, ValueError, KeyError, AttributeError, TypeError) as ex:
                     skills_data["failures"].append(f"{tool_name}: {ex}")
 
         if skills_data["failures"]:
@@ -367,7 +399,7 @@ def run_system_health_check(project_root: Path | None = None) -> dict[str, Any]:
             report["status"] = "DEGRADED"
 
         report["subsystems"]["skills"] = skills_data
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError, KeyError, AttributeError, TypeError, ImportError) as e:
         report["subsystems"]["skills"] = {"status": "WARN", "error": str(e)}
 
     # Overall Assistant Readiness vs Application Startup Status
