@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-15T15:15:00+01:00 (CET)
-- **Active Git Branch:** `main` (synced at `177c6b6`)
-- **Recorded HEAD Commit SHA:** `177c6b6d5f7560df53664d60237746142171ec55` (`177c6b6`)
-- **HEAD Commit Subject:** `Merge pull request #34 from Youssef1473/fix/os-control-typed-error-reporting`
-- **Milestone State:** **Production Baseline Verified on main (177c6b6); Batch 3 Plans 010-014 Formally Closed**
-- **Active Milestone:** **Batch 3 Governance Seal & Batch 4 Scout**
+- **Validation Timestamp:** 2026-11-15T19:15:00+01:00 (CET)
+- **Active Git Branch:** `main` (synced at `eb5f8be`)
+- **Recorded HEAD Commit SHA:** `eb5f8beea1df74174d353b308efad0b1a433b5c4` (`eb5f8be`)
+- **HEAD Commit Subject:** `Merge pull request #38 from Youssef1473/feat/e2e-scorecard-and-sandbox-hardening`
+- **Milestone State:** **Production Baseline Verified on main (eb5f8be); Batch 4 Plans 015-019 Formally Closed**
+- **Active Milestone:** **Batch 4 Governance Seal & Roadmap Closure**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
@@ -36,8 +36,17 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Batch 3 Governance Seal & Batch 4 Scout`
+- **Active Milestone:** `Batch 4 Governance Seal & Roadmap Closure`
 - **Completed Work:**
+  - **`/improve` Modernization & Refactoring Queue — Batch 4 (Plans 015–019 COMPLETED & SEALED):**
+    - **Plan 015 (HUD Audio Latency Telemetry Gauges — PR #36, `051baec`, merged `e170ebd`):** Wires live $L_1$/$L_2$ barge-in interruption latencies (with `var(--holo-crimson)` threshold highlighting above 50.0 ms) and TTS TTFB/RTF metrics into `renderTelemetryFrame()` inside `jarvis/ui/templates/hud.html` while preserving Zero-CLS layout stability.
+    - **Plan 016 (UI Error Transparency & Type Safety — PR #37, `7124d80`, merged `b09ac0f`):** Eliminates all 26 Ruff diagnostics across `jarvis/ui/` (`hud.py`, `tray.py`, `win32_overlay.py`), adding `ClassVar` type safety to `JarvisHUD.STATES` and replacing blind exception catches with typed error logging.
+    - **Plan 017 (Routing ONNX & Prewarm Hardening — PR #37, `9e0cebc`, merged `b09ac0f`):** Eliminates all 3 Ruff `BLE001` diagnostics across `jarvis/routing/` (`cascade.py`, `onnx_intent_router.py`), bringing `jarvis/routing/` to 100% clean Ruff status with typed ONNX Runtime and speculative pre-warm error handling.
+    - **Plan 018 (E2E Harness JSON Scorecard Export — PR #38, `a9c0511`, merged `eb5f8be`):** Implements `--export-json <path>` in `tools/verify_consecutive_turns.py` and wires automated CI artifact upload (`phase3-consecutive-turns-scorecard`) in `.github/workflows/ci.yml`.
+    - **Plan 019 (Win32 Job Object Sandbox Hardening — PR #38, `a33cc37`, merged `eb5f8be`):** Eliminates all 39 Ruff diagnostics in `jarvis/skills/job_object_sandbox.py`, fixing `__exit__` parameter typing (`PYI036`) and hardening Win32 Job Object process containment.
+    - **Full Roadmap Closure:** All 19 implementation plans in `plans/README.md` (`001`–`019`) marked `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+    - **Test Accounting Invariant:** 2,472 collected nodes accounted for (0 drift) via `test_17_accurate_total_test_accounting`.
+    - **Database Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
   - **`/improve` Modernization & Refactoring Queue — Batch 3 (Plans 010–014 COMPLETED & SEALED):**
     - **Plan 010 (CI Phase 3 Consecutive-Turns E2E Smoke Gate — PR #31, `14af094`, merged `042dd35`):** Wires `python tools/verify_consecutive_turns.py --headless` into `.github/workflows/ci.yml` under `Test Governance & Security Regression Gate`, executing the full 4-turn Phase 3 sequence (workspace isolation, single-use tool execution, audio barge-in latency budget, 6-phase teardown) on every pull request in under 2 seconds without test manifest drift (`2,472` nodes intact).
     - **Plan 011 (Memory Pool Teardown Hardening & Connection Logging — PR #32, `8a854ef`, merged `bf75693`):** Hardened connection teardown in `jarvis/memory/ro_pool.py` and `jarvis/core/memory/sqlite_base.py`. Added comprehensive error logging during connection closure, protected against interpreter shutdown module teardown (`ImportError` on `sys.meta_path`), and eliminated silent WAL frame pinning and connection lock leak hazards.

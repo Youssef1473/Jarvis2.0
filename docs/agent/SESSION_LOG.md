@@ -4257,3 +4257,48 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Live E2E Smoke Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing (Exit code: 0).
    - **Tier 1 Fast Test Suite:** 1,491 passed, 0 failed, 11 skipped in 118.56s (Exit code: 0).
    - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
+
+
+---
+
+## Session Log: 2026-11-15 — /improve Modernization Queue — Batch 4 (Plans 015–019) & Baseline Closure
+
+- **Session Timestamp:** 2026-11-15T19:15:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `docs/seal-batch4-plans-015-019-closure` (branched from `main` @ `eb5f8be`)
+- **Starting Git HEAD SHA:** `177c6b6d5f7560df53664d60237746142171ec55` (`177c6b6`)
+- **Ending Git HEAD SHA:** `eb5f8beea1df74174d353b308efad0b1a433b5c4` (`eb5f8be`)
+- **Landed Pull Requests:**
+  - **PR #35:** `docs(governance): seal Batch 3 Plans 010-014 closure and post-PR #34 main baseline (#35)` (Merged, commit `b680dc6`)
+  - **PR #36:** `feat(ui): render live audio barge-in latency and TTFB/RTF telemetry gauges in Zero-CLS HUD (#36)` (Merged, commit `e170ebd`, containing `051baec`)
+  - **PR #37:** `fix(ui,routing): eliminate remaining Ruff diagnostics with typed error handling (#37)` (Merged, commit `b09ac0f`, containing `7124d80` and `9e0cebc`)
+  - **PR #38:** `feat(ci,skills): export Phase 3 E2E scorecard artifact and harden Job Object sandbox (#38)` (Merged, commit `eb5f8be`, containing `a9c0511` and `a33cc37`)
+- **Active Milestone:** `Batch 4 Governance Seal & Roadmap Closure (Plans 001-019 Closed)`
+
+### Summary of Actions & Deliverables
+1. **Plan 015 — HUD Audio Latency Telemetry Gauges (PR #36, `051baec`):**
+   - Wired `WorkstationMetricsCollector`'s `"audio"` WebSocket telemetry (`l1_latency_ms`, `l2_latency_ms`, `ttfb_ms`, `rtf`, `active`) into pre-cached DOM elements (`#audioBargeInVal`, `#audioTtfbVal`) in `jarvis/ui/templates/hud.html`.
+   - Rendered dual $L_1$/$L_2$ interruption latency gauges with `var(--holo-crimson)` threshold highlighting when exceeding the 50.0 ms Phase 3 SLA, executing within `renderTelemetryFrame()`'s `requestAnimationFrame` batch without DOM reflow (`CLS = 0`).
+2. **Plan 016 — UI Error Transparency & Type Safety (PR #37, `7124d80`):**
+   - Eliminated all 26 Ruff diagnostics across `jarvis/ui/` (`hud.py`, `tray.py`, `win32_overlay.py`).
+   - Annotated `JarvisHUD.STATES` as `typing.ClassVar` (`RUF012`) and replaced blind `except Exception: pass` catches (`BLE001`, `S110`) with typed exceptions (`tk.TclError`, `OSError`, `RuntimeError`) and debug logging notices.
+3. **Plan 017 — Routing ONNX & Prewarm Hardening (PR #37, `9e0cebc`):**
+   - Eliminated all 3 Ruff `BLE001` diagnostics across `jarvis/routing/` (`cascade.py`, `onnx_intent_router.py`).
+   - Replaced blind exception catches with typed `(RuntimeError, ValueError, OSError, ImportError)` during ONNX session inference, runtime classification fallback, and background thread pre-warming.
+4. **Plan 018 — E2E Harness JSON Scorecard Export & CI Artifact (PR #38, `a9c0511`):**
+   - Implemented `export_scorecard(self, target_path: str) -> None` and added `--export-json <path>` to `tools/verify_consecutive_turns.py`.
+   - Updated `.github/workflows/ci.yml` under `Test Governance & Security Regression Gate` to emit `data/phase3_consecutive_turns_scorecard.json` and upload artifact `phase3-consecutive-turns-scorecard` via `actions/upload-artifact@v4`.
+5. **Plan 019 — Win32 Job Object Sandbox Hardening (PR #38, `a33cc37`):**
+   - Eliminated all 39 Ruff diagnostics in `jarvis/skills/job_object_sandbox.py` (33 `BLE001`, 3 `PYI036`, 3 `S110`).
+   - Fixed `SandboxedProcess.__exit__` parameter annotations to PEP 484 / Ruff `PYI036` compliance: `exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: types.TracebackType | None`.
+   - Replaced blind exception catches across Job Object creation, assignment, resumption, and teardown with narrow OS/subprocess tuples while strictly preserving fail-closed process containment (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, `CREATE_SUSPENDED` ordering).
+6. **Roadmap Queue Completion & Ledger Alignment:**
+   - Updated local `plans/README.md` marking all 19 implementation plans (`001`–`019`) across Batches 1–4 as `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+7. **Full-Tree Verification Gates & Accounting Invariant:**
+   - **Static Linter (`tools/lint.py`):** 0 Ruff diagnostics across all modernized modules.
+   - **Structural Invariants (`tools/diagnostics.py`):** 0 AST-Grep invariant violations.
+   - **Test Accounting Invariant:** `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed with 100% accounting (2,472 collected nodes accounted for, 0 drift).
+   - **Live E2E Smoke Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing in 1.45s (Exit code: 0).
+   - **Tier 1 Fast Test Suite:** 1,491 passed, 0 failed, 11 skipped in CI run `#43744107274` (Exit code: 0).
+   - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
