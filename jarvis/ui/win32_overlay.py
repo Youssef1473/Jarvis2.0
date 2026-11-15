@@ -4,7 +4,10 @@ Provides native Windows desktop compositing, cloaking the HUD from Jarvis's own
 VLM visual cortex while enabling dynamic click-through hit testing.
 """
 import ctypes
+import logging
 import sys
+
+logger = logging.getLogger(__name__)
 
 # Win32 Constants
 GWL_EXSTYLE: int = -20
@@ -29,7 +32,8 @@ if IS_WINDOWS:
         SetWindowLong = getattr(user32, "SetWindowLongPtrW", getattr(user32, "SetWindowLongW", None))
         SetWindowDisplayAffinity = getattr(user32, "SetWindowDisplayAffinity", None)
         GetCursorPos = getattr(user32, "GetCursorPos", None)
-    except Exception:
+    except (AttributeError, OSError) as err:
+        logger.debug("Win32 ctypes function resolution notice: %s", err)
         GetWindowLong = None
         SetWindowLong = None
         SetWindowDisplayAffinity = None
@@ -73,11 +77,12 @@ def configure_stark_overlay_hwnd(hwnd: int) -> bool:
         if SetWindowDisplayAffinity:
             try:
                 SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
-            except Exception:
-                pass
+            except (AttributeError, OSError) as err:
+                logger.debug("SetWindowDisplayAffinity cloaking notice: %s", err)
 
         return True
-    except Exception:
+    except (AttributeError, OSError, RuntimeError) as err:
+        logger.debug("configure_stark_overlay_hwnd notice: %s", err)
         return False
 
 
@@ -121,5 +126,6 @@ def update_dynamic_click_through(hwnd: int, interactive_screen_rects: list[tuple
                 SetWindowLong(hwnd, GWL_EXSTYLE, new_style)
 
         return is_hovering_interactive
-    except Exception:
+    except (AttributeError, OSError, RuntimeError) as err:
+        logger.debug("update_dynamic_click_through notice: %s", err)
         return False

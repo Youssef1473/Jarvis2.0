@@ -55,7 +55,8 @@ def get_console_hwnd():
     """Returns the HWND of the console window hosting Python, if any."""
     try:
         return ctypes.windll.kernel32.GetConsoleWindow()
-    except Exception:
+    except (AttributeError, OSError) as err:
+        logger.debug("GetConsoleWindow query notice: %s", err)
         return 0
 
 
@@ -66,7 +67,8 @@ def is_console_visible() -> bool:
         return False
     try:
         return bool(ctypes.windll.user32.IsWindowVisible(hwnd))
-    except Exception:
+    except (AttributeError, OSError) as err:
+        logger.debug("IsWindowVisible query notice: %s", err)
         return False
 
 
@@ -76,8 +78,8 @@ def set_console_visible(visible: bool):
     if hwnd != 0:
         try:
             ctypes.windll.user32.ShowWindow(hwnd, 5 if visible else 0)
-        except Exception:
-            pass
+        except (AttributeError, OSError) as err:
+            logger.debug("ShowWindow command notice: %s", err)
 
 
 def get_startup_vbs_path() -> Path:
@@ -111,8 +113,8 @@ def set_startup_enabled(enabled: bool, project_dir: Path) -> bool:
         if vbs_path.exists():
             try:
                 vbs_path.unlink()
-            except Exception:
-                pass
+            except OSError as err:
+                logger.debug("Startup script unlink notice: %s", err)
         return False
 
 
@@ -161,27 +163,28 @@ class SystemTrayApp:
         """Opens the project folder in Windows Explorer."""
         try:
             os.startfile(str(self._project_dir))
-        except Exception:
-            pass
+        except OSError as err:
+            logger.debug("Explorer folder open notice: %s", err)
 
     def _open_web_hud(self, icon, item):
         """Opens the Holographic Web HUD in default browser."""
         try:
             import webbrowser
+
             from jarvis.ui.server import JarvisUIService
             srv = JarvisUIService.get_instance()
             url = srv.get_authenticated_url() if srv else "http://127.0.0.1:20129"
             webbrowser.open(url)
-        except Exception:
-            pass
+        except (ImportError, OSError, RuntimeError) as err:
+            logger.debug("Web HUD browser launch notice: %s", err)
 
     def _open_omniroute_dashboard(self, icon, item):
         """Opens the OmniRoute AI Gateway Web Dashboard."""
         try:
             import webbrowser
             webbrowser.open("http://localhost:20128/dashboard")
-        except Exception:
-            pass
+        except (ImportError, OSError, RuntimeError) as err:
+            logger.debug("OmniRoute dashboard browser launch notice: %s", err)
 
     def _view_memory(self, icon, item):
         """Presents a sleek, dark-themed Tkinter viewer displaying stored facts and preferences."""
@@ -294,7 +297,7 @@ class SystemTrayApp:
             menu = self._build_menu()
             self.icon = pystray.Icon("Jarvis3.0", image, "JARVIS 3.0 Assistant", menu)
             self.icon.run()
-        except Exception as e:
+        except (ImportError, RuntimeError, OSError) as e:
             logger.warning(f"System tray icon initialization skipped: {e}")
 
     def run_in_background(self):
