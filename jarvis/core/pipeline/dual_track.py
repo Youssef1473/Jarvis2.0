@@ -134,7 +134,7 @@ class DualTrackCoordinator:
         self.token_gate.cancel_current()
         try:
             self._wasapi_flush()
-        except Exception as e:
+        except (AttributeError, RuntimeError, OSError) as e:
             logger.debug("WASAPI flush callback notice: %s", e)
 
     def _get_cached_result(self, key: str) -> Any | None:
@@ -166,8 +166,8 @@ class DualTrackCoordinator:
             meta = SkillRegistry.get_metadata(canonical_name)
             if meta is not None:
                 return bool(getattr(meta, "read_only", False))
-        except Exception:
-            pass
+        except (KeyError, AttributeError, ValueError) as err:
+            logger.debug("is_read_only_tool inspection notice: %s", err)
         return False
 
     @staticmethod
@@ -195,7 +195,8 @@ class DualTrackCoordinator:
         # Deterministic cache key serialization
         try:
             args_repr = json.dumps(tool_args or {}, sort_keys=True, default=str)
-        except Exception:
+        except (TypeError, ValueError) as json_err:
+            logger.debug("tool_args JSON serialization notice: %s", json_err)
             args_repr = str(sorted((tool_args or {}).items()))
         cache_key = f"{tool_name}:{args_repr}"
 
@@ -235,8 +236,8 @@ class DualTrackCoordinator:
                     active_tok = get_current_tool_cancellation_token()
                     if active_tok is not None:
                         active_tok.cancel()
-                except Exception:  # noqa: BLE001
-                    pass
+                except (AttributeError, RuntimeError) as tok_err:
+                    logger.debug("Tool cancellation token notice: %s", tok_err)
                 return None
 
             # 3. Tool exceeded threshold -> Fire Track A Milestone Narration
@@ -275,7 +276,7 @@ class DualTrackCoordinator:
                             topic_label=tool_name,
                             resolved_tool_outputs={tool_name: payload},
                         )
-                    except Exception as b_err:
+                    except (AttributeError, RuntimeError, ValueError) as b_err:
                         logger.debug("Bookmark stack push notice: %s", b_err)
                 return None
 
@@ -291,11 +292,11 @@ class DualTrackCoordinator:
                 active_tok = get_current_tool_cancellation_token()
                 if active_tok is not None:
                     active_tok.cancel()
-            except Exception:  # noqa: BLE001
-                pass
+            except (AttributeError, RuntimeError) as tok_err:
+                logger.debug("Tool cancellation token cleanup notice: %s", tok_err)
             raise
-        except Exception as exc:
-            logger.error("Track B tool execution failed (%s): %s", tool_name, exc, exc_info=True)
+        except Exception:
+            logger.exception("Track B tool execution failed (%s)", tool_name)
             raise
 
 
