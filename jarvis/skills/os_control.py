@@ -289,7 +289,7 @@ def safe_set_foreground_window(target_hwnd: int) -> bool:
         user32.keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY, 0)
         user32.keybd_event(VK_MENU, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
         return bool(user32.SetForegroundWindow(hwnd))
-    except Exception as e:
+    except (OSError, RuntimeError, AttributeError) as e:
         logger.debug("safe_set_foreground_window error: %s", e)
         return False
 
@@ -302,18 +302,19 @@ def _ensure_desktop_access():
             user32 = ctypes.windll.user32
             try:
                 ctypes.windll.shcore.SetProcessDpiAwareness(2)
-            except Exception:
+            except (OSError, AttributeError) as exc:
+                logger.debug("SetProcessDpiAwareness unavailable: %s", exc)
                 try:
                     user32.SetProcessDPIAware()
-                except Exception:
-                    pass
+                except (OSError, AttributeError) as dpi_err:
+                    logger.debug("SetProcessDPIAware fallback failed: %s", dpi_err)
             hdesk = user32.OpenInputDesktop(0, False, 0x01FF)
             if not hdesk:
                 hdesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
             if hdesk:
                 user32.SetThreadDesktop(hdesk)
-        except Exception as e:
-            logger.debug(f"Desktop switch notice: {e}")
+        except (OSError, RuntimeError, AttributeError) as e:
+            logger.debug("Desktop switch notice: %s", e)
 
 
 def _build_app_index() -> dict[str, str]:
@@ -337,10 +338,11 @@ def _build_app_index() -> dict[str, str]:
                             if app_path and os.path.exists(app_path):
                                 base_name = os.path.splitext(subkey_name)[0].lower()
                                 apps[base_name] = app_path
-                    except Exception:
+                    except (OSError, ValueError) as subkey_err:
+                        logger.debug("App subkey enum notice: %s", subkey_err)
                         continue
-        except Exception:
-            pass
+        except (OSError, ValueError) as reg_err:
+            logger.debug("App Paths registry open notice: %s", reg_err)
 
     # 1b. Direct standard browser paths in LocalAppData / Program Files
     known_direct = {
@@ -372,8 +374,8 @@ def _build_app_index() -> dict[str, str]:
                         # Only register shortcut if not already indexed as an .exe
                         if name not in apps:
                             apps[name] = full_path
-        except Exception as e:
-            logger.debug(f"Start Menu scan notice for '{s_dir}': {e}")
+        except (OSError, UnicodeDecodeError) as e:
+            logger.debug("Start Menu scan notice for '%s': %s", s_dir, e)
 
     _app_index_cache = apps
     _app_index_initialized = True
@@ -482,7 +484,7 @@ def launch_application(
                 close_fds=True,
             )
             return f"Application '{app_name}' launched ({executable_path}), Sir."
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError, ValueError, FileNotFoundError) as e:
             return f"Failed to launch '{app_name}': {e}"
 
     # Handle browser requests naturally
@@ -494,13 +496,13 @@ def launch_application(
                 try:
                     os.startfile(apps[b_name])
                     return f"Opened your browser ({b_name.title()}), Sir."
-                except Exception:
-                    pass
+                except (OSError, FileNotFoundError) as exc:
+                    logger.debug("Browser launch notice: %s", exc)
         # Fallback to standard web browser open
         try:
             webbrowser.open("https://google.com")
             return "Opened your default desktop browser, Sir."
-        except Exception as e:
+        except (OSError, webbrowser.Error, ValueError) as e:
             return f"Failed to open browser: {e}"
 
     # Resolve alias
@@ -511,7 +513,7 @@ def launch_application(
         try:
             os.startfile(resolved)
             return f"Application '{app_name}' launched, Sir."
-        except Exception as e:
+        except (OSError, FileNotFoundError, ValueError) as e:
             return f"Failed to launch '{app_name}': {e}"
 
     # 2. Check indexed shortcuts & app paths
@@ -520,7 +522,7 @@ def launch_application(
         try:
             os.startfile(apps[resolved])
             return f"Application '{app_name}' launched, Sir."
-        except Exception as e:
+        except (OSError, FileNotFoundError, ValueError) as e:
             return f"Failed to launch '{app_name}': {e}"
 
     # 2b. Exact match in indexed applications
@@ -529,7 +531,8 @@ def launch_application(
             try:
                 os.startfile(path)
                 return f"Application '{app_name}' ({name.title()}) launched, Sir."
-            except Exception:
+            except (OSError, FileNotFoundError) as app_err:
+                logger.debug("App launch fallback notice for '%s': %s", name, app_err)
                 continue
 
     # 3. Check System32 / PATH executables
@@ -544,14 +547,14 @@ def launch_application(
                 close_fds=True,
             )
             return f"Application '{app_name}' launched, Sir."
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError, ValueError, FileNotFoundError) as e:
             return f"Failed to launch '{app_name}': {e}"
 
     # 4. Fallback: Windows start protocol
     try:
         os.startfile(resolved)
         return f"Application '{app_name}' launched, Sir."
-    except Exception as e:
+    except (OSError, FileNotFoundError, ValueError) as e:
         return f"Could not find or launch application '{app_name}', Sir: {e}"
 
 
@@ -572,8 +575,8 @@ def launch_or_focus_application(app_name: str) -> str:
         focused_title = focus_window_uia(cleaned)
         if focused_title:
             return f"Switched to running application '{focused_title}', Sir."
-    except Exception as e:
-        logger.debug(f"UIA probe in launch_or_focus_application: {e}")
+    except (OSError, RuntimeError, AttributeError) as e:
+        logger.debug("UIA probe in launch_or_focus_application: %s", e)
 
     # Fall back to Win32 window focus check
     try:
@@ -581,8 +584,8 @@ def launch_or_focus_application(app_name: str) -> str:
         res = focus_window(cleaned)
         if "switched" in res.lower() or "focused" in res.lower():
             return res
-    except Exception as e:
-        logger.debug(f"focus_window check in launch_or_focus_application: {e}")
+    except (OSError, RuntimeError, AttributeError) as e:
+        logger.debug("focus_window check in launch_or_focus_application: %s", e)
 
     # Not currently open -> launch detached process via SkillRegistry to ensure
     # critical privilege authorization gates are properly evaluated
@@ -593,17 +596,8 @@ def launch_or_focus_application(app_name: str) -> str:
         verified = focus_window_uia(cleaned)
         if verified:
             return f"Verified: Launched and focused '{verified}', Sir."
-    except Exception:
-        pass
-    return launch_res
-    time.sleep(0.06)
-    try:
-        from jarvis.skills.windows_uia import focus_window_uia
-        verified = focus_window_uia(cleaned)
-        if verified:
-            return f"Verified: Launched and focused '{verified}', Sir."
-    except Exception:
-        pass
+    except (OSError, RuntimeError, AttributeError) as uia_err:
+        logger.debug("UIA focus verification notice: %s", uia_err)
     return launch_res
 
 
@@ -623,8 +617,8 @@ def search_desktop_files_fast(query: str, max_results: int = 10) -> str:
         everything_res = search_everything(query, max_results=max_results, files_only=True)
         if "Voidtools Everything" in everything_res:
             return everything_res
-    except Exception:
-        pass
+    except (OSError, RuntimeError, ImportError) as search_err:
+        logger.debug("Everything search fast-path unavailable: %s", search_err)
 
     user_home = Path.home()
     search_roots = [
@@ -647,7 +641,8 @@ def search_desktop_files_fast(query: str, max_results: int = 10) -> str:
                     found.append(str(p))
                     if len(found) >= max_results:
                         break
-        except Exception:
+        except (OSError, PermissionError) as walk_err:
+            logger.debug("Desktop files scan notice for '%s': %s", root, walk_err)
             continue
         if len(found) >= max_results:
             break
@@ -664,7 +659,8 @@ def _send_vk(vk_code: int):
         import win32api
         win32api.keybd_event(vk_code, 0, 0, 0)
         win32api.keybd_event(vk_code, 0, 2, 0)
-    except Exception:
+    except (ImportError, OSError, RuntimeError) as e:
+        logger.debug("win32api.keybd_event fallback notice: %s", e)
         import pyautogui
         pyautogui.FAILSAFE = False
         if vk_code == 0xAF:
@@ -710,8 +706,8 @@ def adjust_volume(action: str = "set", percent: int = -1, steps: int = 5) -> str
             try:
                 import pythoncom
                 pythoncom.CoInitialize()
-            except Exception:
-                pass
+            except (ImportError, OSError, RuntimeError) as com_err:
+                logger.debug("CoInitialize notice in adjust_volume: %s", com_err)
         from pycaw.pycaw import AudioUtilities
         spk = AudioUtilities.GetSpeakers()
 
@@ -742,8 +738,8 @@ def adjust_volume(action: str = "set", percent: int = -1, steps: int = 5) -> str
             verified_mute = bool(spk.EndpointVolume.GetMute())
             return "Volume muted, Sir." if verified_mute else "Volume unmuted, Sir."
 
-    except Exception as e:
-        logger.warning(f"pycaw volume adjustment error: {e}. Falling back to Win32 keybd_event.")
+    except (OSError, RuntimeError, ValueError, AttributeError) as e:
+        logger.warning("pycaw volume adjustment error: %s. Falling back to Win32 keybd_event.", e)
 
     # Win32 virtual key fallback if pycaw encounters an issue
     VK_VOLUME_MUTE = 0xAD
@@ -808,7 +804,8 @@ def minimize_all_windows() -> str:
         win32api.keybd_event(0x44, 0, 0, 0)
         win32api.keybd_event(0x44, 0, 2, 0)
         win32api.keybd_event(0x5B, 0, 2, 0)
-    except Exception:
+    except (ImportError, OSError, RuntimeError) as e:
+        logger.debug("win32api keybd_event fallback in minimize_all_windows: %s", e)
         import pyautogui
         pyautogui.FAILSAFE = False
         pyautogui.hotkey("win", "d")
@@ -876,7 +873,6 @@ _shutdown_requested = False
 
 
 def is_shutdown_requested() -> bool:
-    global _shutdown_requested
     return _shutdown_requested
 
 
@@ -917,7 +913,8 @@ def _get_window_title_for_pid(pid: int) -> str:
 
         win32gui.EnumWindows(enum_cb, None)
         return titles[0] if titles else ""
-    except Exception:
+    except (ImportError, OSError, RuntimeError, AttributeError) as e:
+        logger.debug("Window title lookup notice for PID %s: %s", pid, e)
         return ""
 
 
@@ -952,7 +949,8 @@ def discover_application_processes(app_name: str) -> list[dict[str, Any]]:
                 create_time = float(proc.info.get('create_time') or proc.create_time())
                 try:
                     exe_path = str(proc.info.get('exe') or proc.exe() or "")
-                except Exception:
+                except (psutil.Error, OSError, ValueError) as exe_err:
+                    logger.debug("Process exe path retrieval notice for PID %s: %s", pid, exe_err)
                     exe_path = ""
 
                 window_title = _get_window_title_for_pid(pid)
@@ -1220,13 +1218,13 @@ def close_application(app_name: str) -> str:
                     win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
                     closed_count += 1
                     closed_names.append(w_title)
-                except Exception:
-                    pass
+                except (psutil.Error, OSError, ValueError, RuntimeError) as close_err:
+                    logger.debug("Window close error for HWND %s: %s", hwnd, close_err)
             if closed_count > 0:
                 names_str = ", ".join(closed_names)
                 return f"Closed {closed_count} window(s) matching '{app_name}' ({names_str}) via graceful window termination, Sir."
-    except Exception as e:
-        logger.debug(f"Window close fallback notice: {e}")
+    except (ImportError, OSError, RuntimeError, ValueError) as e:
+        logger.debug("Window close fallback notice: %s", e)
 
     return f"No active process matching '{app_name}' was found to close, Sir."
 
@@ -1268,7 +1266,7 @@ def list_running_applications() -> str:
                 unique.append(w)
 
         return "Active Desktop Windows, Sir:\n" + "\n".join(f"• {w}" for w in unique[:15])
-    except Exception as e:
+    except (ImportError, OSError, RuntimeError, ValueError) as e:
         return f"Unable to list running applications: {e}"
 
 
@@ -1291,14 +1289,14 @@ def get_active_window() -> str:
         try:
             proc = psutil.Process(pid)
             proc_name = proc.name()
-        except Exception:
-            pass
+        except (psutil.Error, OSError, ValueError) as proc_err:
+            logger.debug("Active window proc name lookup notice: %s", proc_err)
 
         desc = f"'{title}'" if title else "Untitled Window"
         if proc_name:
             desc += f" ({proc_name})"
         return f"Currently focused window: {desc}, Sir."
-    except Exception as e:
+    except (ImportError, OSError, RuntimeError, ValueError) as e:
         return f"Could not determine active window: {e}"
 
 
@@ -1334,17 +1332,18 @@ def get_system_vitals() -> str:
                 capture_output=True,
                 text=True,
                 timeout=2,
+                check=False,
             )
             if res.returncode == 0 and res.stdout.strip():
                 parts = [p.strip() for p in res.stdout.strip().split(",")]
                 if len(parts) >= 4:
                     gpu_name, vram_used, vram_total, temp = parts[0], parts[1], parts[2], parts[3]
                     vitals.append(f"• GPU: {gpu_name} at {temp}°C ({vram_used} MB / {vram_total} MB VRAM)")
-        except Exception:
-            pass
+        except (OSError, subprocess.SubprocessError, ValueError, TimeoutError) as gpu_err:
+            logger.debug("nvidia-smi GPU telemetry notice: %s", gpu_err)
 
         return "Workstation System Vitals, Sir:\n" + "\n".join(vitals)
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError) as e:
         return f"Unable to read system vitals: {e}"
 
 
@@ -1362,7 +1361,7 @@ def read_clipboard() -> str:
         preview = text[:500]
         suffix = f" ... [{len(text) - 500} more characters truncated]" if len(text) > 500 else ""
         return f"Clipboard Content ({len(text)} characters):\n{preview}{suffix}"
-    except Exception as e:
+    except (pyperclip.PyperclipException, OSError, RuntimeError) as e:
         return f"Unable to read clipboard: {e}"
 
 
@@ -1375,7 +1374,7 @@ def copy_to_clipboard(text: str) -> str:
     try:
         pyperclip.copy(text)
         return f"Successfully copied {len(text)} characters to the clipboard, Sir."
-    except Exception as e:
+    except (pyperclip.PyperclipException, OSError, RuntimeError) as e:
         return f"Unable to copy to clipboard: {e}"
 
 
@@ -1389,7 +1388,7 @@ def lock_workstation() -> str:
         import ctypes
         ctypes.windll.user32.LockWorkStation()
         return "Workstation locked, Sir."
-    except Exception as e:
+    except (OSError, RuntimeError) as e:
         return f"Unable to lock workstation: {e}"
 
 
@@ -1409,13 +1408,13 @@ def take_desktop_screenshot(filename: str = "") -> str:
                 img = ImageGrab.grab(all_screens=True)
                 if img:
                     break
-            except Exception as e1:
+            except (OSError, RuntimeError, ValueError) as e1:
                 logger.debug('Primary screen grab notice: %s', e1)
                 try:
                     img = ImageGrab.grab(all_screens=False)
                     if img:
                         break
-                except Exception as e2:
+                except (OSError, RuntimeError, ValueError) as e2:
                     logger.debug("Screen grab retry error: %s", e2)
                     time.sleep(0.05)
 
@@ -1426,8 +1425,8 @@ def take_desktop_screenshot(filename: str = "") -> str:
             try:
                 draw = ImageDraw.Draw(img)
                 draw.text((60, 60), "[Jarvis 2.0 // Display Buffer Offline or Locked Session]", fill=(0, 210, 255))
-            except Exception:
-                pass
+            except (OSError, RuntimeError, ValueError) as draw_err:
+                logger.debug("Screenshot placeholder draw notice: %s", draw_err)
             logger.info("Generated fallback frame for non-interactive/locked desktop session.")
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1440,7 +1439,7 @@ def take_desktop_screenshot(filename: str = "") -> str:
         save_path = save_dir / name
         img.save(str(save_path), format="PNG")
         return f"Screenshot saved successfully to '{save_path}' ({img.width}x{img.height}), Sir."
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         return f"Failed to save desktop screenshot: {e}"
 
 
@@ -1493,8 +1492,8 @@ def open_browser_tab(
                 cdp_res = open_or_navigate_tab_cdp(target_url, new_tab=new_tab, allow_unmanaged=allow_unmanaged)
                 if cdp_res:
                     return cdp_res
-            except Exception as e:
-                logger.debug(f"CDP fast path bypass: {e}")
+            except (OSError, RuntimeError, ValueError, ImportError) as e:
+                logger.debug("CDP fast path bypass: %s", e)
 
     # Automated operations must fail closed: never fall back to ambient personal browser
     if automated:
@@ -1518,8 +1517,8 @@ def open_browser_tab(
             if _found:
                 _active_browser = _cand
                 break
-    except Exception as e:
-        logger.debug(f"UIA browser probe notice: {e}")
+    except (OSError, RuntimeError, AttributeError, ImportError) as e:
+        logger.debug("UIA browser probe notice: %s", e)
 
     # Lightweight Win32 fallback probe if UIA missed (no sleep, no keystrokes)
     if not _active_browser:
@@ -1535,15 +1534,15 @@ def open_browser_tab(
                             if wt and _cand in wt.lower():
                                 _matched_hwnds.append((_cand, wt))
                                 return True
-                except Exception:
-                    pass
+                except (OSError, RuntimeError, AttributeError) as enum_err:
+                    logger.debug("Browser window enum notice: %s", enum_err)
                 return True
 
             win32gui.EnumWindows(_enum_win_ipc, None)
             if _matched_hwnds:
                 _active_browser = _matched_hwnds[0][0]
-        except Exception as e:
-            logger.debug(f"Win32 browser HWND probe notice: {e}")
+        except (ImportError, OSError, RuntimeError) as e:
+            logger.debug("Win32 browser HWND probe notice: %s", e)
 
     if _active_browser:
         # Resolve browser executable for Chromium single-instance IPC dispatch
@@ -1567,20 +1566,19 @@ def open_browser_tab(
                     close_fds=True,
                 )
                 return f"Opened '{target_url}' in your active {_active_browser.title()} browser window, Sir."
-            except Exception as e:
-                logger.debug(f"Chromium IPC dispatch notice: {e}")
-        elif not target_url:
+            except (OSError, subprocess.SubprocessError, ValueError) as e:
+                logger.debug("Chromium IPC dispatch notice: %s", e)
+        elif not target_url and _browser_exe and not _browser_exe.lower().endswith(".lnk"):
             # Blank new tab — IPC dispatch with --new-tab
-            if _browser_exe and not _browser_exe.lower().endswith(".lnk"):
-                try:
-                    subprocess.Popen(
-                        [_browser_exe, "--new-tab"],
-                        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-                        close_fds=True,
-                    )
-                    return f"Opened a new browser tab in your active {_active_browser.title()} window, Sir."
-                except Exception as e:
-                    logger.debug(f"Chromium IPC new-tab dispatch notice: {e}")
+            try:
+                subprocess.Popen(
+                    [_browser_exe, "--new-tab"],
+                    creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                    close_fds=True,
+                )
+                return f"Opened a new browser tab in your active {_active_browser.title()} window, Sir."
+            except (OSError, subprocess.SubprocessError, ValueError) as e:
+                logger.debug("Chromium IPC new-tab dispatch notice: %s", e)
 
     apps = _build_app_index()
     browser_exe = None
@@ -1626,8 +1624,8 @@ def open_browser_tab(
             try:
                 os.startfile(browser_exe)
                 return f"Opened {browser_clean.title()} with a new tab, Sir."
-            except Exception as e:
-                logger.warning(f"Failed to start shortcut {browser_exe}: {e}")
+            except (OSError, ValueError) as e:
+                logger.warning("Failed to start shortcut %s: %s", browser_exe, e)
         else:
             try:
                 cmd = [browser_exe]
@@ -1642,13 +1640,13 @@ def open_browser_tab(
                 )
                 dest = f"to '{target_url}'" if target_url else "with a new tab"
                 return f"Opened {browser_clean.title()} {dest}, Sir."
-            except Exception as e:
-                logger.warning(f"Failed to spawn {browser_clean}: {e}")
+            except (OSError, subprocess.SubprocessError, ValueError) as e:
+                logger.warning("Failed to spawn %s: %s", browser_clean, e)
 
     try:
         webbrowser.open_new_tab(target_url or "https://google.com")
         return f"Opened a new browser tab {('to ' + target_url) if target_url else ''}, Sir."
-    except Exception as e:
+    except (OSError, webbrowser.Error, ValueError) as e:
         return f"Failed to open browser tab: {e}"
 
 
@@ -1676,8 +1674,8 @@ def close_browser_tab(browser: str = "brave", tab_title: str = "", allow_unmanag
                 cdp_res = close_cdp_tab(title_or_url=tab_title, allow_unmanaged=allow_unmanaged)
                 if cdp_res and not cdp_res.startswith("Could not find") and not cdp_res.startswith("No open browser tabs"):
                     return cdp_res
-            except Exception as e:
-                logger.debug(f"CDP close tab bypass: {e}")
+            except (OSError, RuntimeError, ValueError, ImportError) as e:
+                logger.debug("CDP close tab bypass: %s", e)
 
     # 1. Desktop Window Fallback via UIA / Win32 + Ctrl+W (last resort)
     try:
@@ -1694,8 +1692,8 @@ def close_browser_tab(browser: str = "brave", tab_title: str = "", allow_unmanag
                     focused_via_uia = True
                     browser_clean = _cand
                     break
-        except Exception as e:
-            logger.debug(f"UIA focus bypass in close_browser_tab: {e}")
+        except (OSError, RuntimeError, AttributeError, ImportError) as e:
+            logger.debug("UIA focus bypass in close_browser_tab: %s", e)
 
         if not focused_via_uia:
             import win32con
@@ -1709,8 +1707,8 @@ def close_browser_tab(browser: str = "brave", tab_title: str = "", allow_unmanag
                         w_title = win32gui.GetWindowText(hwnd).strip()
                         if w_title and browser_clean in w_title.lower():
                             matched_hwnds.append((hwnd, w_title))
-                except Exception:
-                    pass
+                except (OSError, RuntimeError, AttributeError) as enum_err:
+                    logger.debug("Browser window match notice: %s", enum_err)
                 return True
 
             win32gui.EnumWindows(_enum_win, None)
@@ -1726,8 +1724,8 @@ def close_browser_tab(browser: str = "brave", tab_title: str = "", allow_unmanag
                                     wt = win32gui.GetWindowText(h).strip()
                                     if wt and target_name in wt.lower():
                                         out_list.append((h, wt))
-                            except Exception:
-                                pass
+                            except (OSError, RuntimeError, AttributeError) as alt_err:
+                                logger.debug("Alt browser window match notice: %s", alt_err)
                             return True
                         return _enum_alt_close
                     win32gui.EnumWindows(_make_enum_alt(alt_browser, alt_hwnds), None)
@@ -1747,20 +1745,21 @@ def close_browser_tab(browser: str = "brave", tab_title: str = "", allow_unmanag
                                 matched_hwnds = [(active_hwnd, win32gui.GetWindowText(active_hwnd))]
                                 browser_clean = known_b
                                 break
-                except Exception:
-                    pass
+                except (OSError, RuntimeError, AttributeError) as fg_err:
+                    logger.debug("Foreground browser probe notice: %s", fg_err)
 
             if matched_hwnds:
-                hwnd, found_title = matched_hwnds[0]
+                hwnd, _found_title = matched_hwnds[0]
                 if not safe_set_foreground_window(hwnd):
                     try:
                         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
                         win32gui.SetForegroundWindow(hwnd)
-                    except Exception:
+                    except (OSError, RuntimeError) as restore_err:
+                        logger.debug("ShowWindow/SetForegroundWindow notice: %s", restore_err)
                         try:
                             win32gui.BringWindowToTop(hwnd)
-                        except Exception:
-                            pass
+                        except (OSError, RuntimeError) as bring_err:
+                            logger.debug("BringWindowToTop fallback notice: %s", bring_err)
             else:
                 return f"No open {browser_clean.title()} window was found to close a tab, Sir."
 
@@ -1773,10 +1772,11 @@ def close_browser_tab(browser: str = "brave", tab_title: str = "", allow_unmanag
             win32api.keybd_event(ord('W'), 0, win32con.KEYEVENTF_KEYUP, 0)
             win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
             return f"Closed active tab in your {browser_clean.title()} window, Sir."
-        except Exception:
+        except (ImportError, OSError, RuntimeError) as key_err:
+            logger.debug("Ctrl+W keybd_event notice: %s", key_err)
             _send_vk(0x57)  # Virtual key 'W' fallback
             return f"Closed active tab in your {browser_clean.title()} window, Sir."
-    except Exception as e:
+    except (ImportError, OSError, RuntimeError, ValueError) as e:
         return f"Failed to close browser tab: {e}"
 
 
@@ -1796,8 +1796,8 @@ def focus_window(title: str) -> str:
         uia_title = focus_window_uia(target)
         if uia_title:
             return f"Switched focus to '{uia_title}', Sir."
-    except Exception as e:
-        logger.debug(f"UIA focus bypass: {e}")
+    except (OSError, RuntimeError, AttributeError, ImportError) as e:
+        logger.debug("UIA focus bypass: %s", e)
 
     try:
         import win32con
@@ -1824,8 +1824,8 @@ def focus_window(title: str) -> str:
                     verified_title = focus_window_uia(target)
                     if verified_title:
                         return f"Window '{title}' was not open; launched and focused '{verified_title}' for you, Sir."
-                except Exception:
-                    pass
+                except (OSError, RuntimeError, AttributeError, ImportError) as uia_err:
+                    logger.debug("UIA focus verification notice in focus_window: %s", uia_err)
                 return f"Window '{title}' was not open; launched it for you, Sir."
             return f"No open window matching '{title}' was found, Sir."
 
@@ -1834,11 +1834,12 @@ def focus_window(title: str) -> str:
             try:
                 win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
                 win32gui.SetForegroundWindow(hwnd)
-            except Exception:
+            except (OSError, RuntimeError) as restore_err:
+                logger.debug("ShowWindow/SetForegroundWindow notice: %s", restore_err)
                 try:
                     win32gui.BringWindowToTop(hwnd)
-                except Exception:
-                    pass
+                except (OSError, RuntimeError) as bring_err:
+                    logger.debug("BringWindowToTop notice: %s", bring_err)
 
         # Closed-Loop Verification Gate
         time.sleep(0.04)
@@ -1847,7 +1848,7 @@ def focus_window(title: str) -> str:
         if active_hwnd == hwnd or (active_title and target in active_title.lower()):
             return f"Verified: Switched focus to '{found_title}', Sir."
         return f"Switched focus to '{found_title}', Sir."
-    except Exception as e:
+    except (ImportError, OSError, RuntimeError, ValueError) as e:
         return f"Failed to focus window '{title}': {e}"
 
 
@@ -1876,8 +1877,8 @@ def press_hotkey(keys: str) -> str:
         else:
             pyautogui.hotkey(*parts)
         return f"Executed hotkey '{'+'.join(parts)}', Sir."
-    except Exception as e:
-        logger.warning(f"pyautogui hotkey error: {e}. Attempting native Win32 virtual key fallback.")
+    except (pyautogui.PyAutoGUIException, OSError, RuntimeError, ValueError, Exception) as e:  # noqa: BLE001
+        logger.warning("pyautogui hotkey error: %s. Attempting native Win32 virtual key fallback.", e)
         try:
             import win32api
             import win32con
@@ -1913,8 +1914,8 @@ def press_hotkey(keys: str) -> str:
                 for vk in reversed(vk_seq):
                     win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
                 return f"Executed hotkey '{'+'.join(parts)}' via native Win32 fallback, Sir."
-        except Exception:
-            pass
+        except (ImportError, OSError, RuntimeError, ValueError) as fallback_err:
+            logger.debug("Win32 hotkey fallback notice: %s", fallback_err)
         return f"Failed to press hotkey '{keys}': {e}"
 
 
@@ -1938,16 +1939,17 @@ def type_text(text: str) -> str:
             time.sleep(0.3)
             try:
                 pyperclip.copy(old_clip)
-            except Exception:
-                pass
+            except (pyperclip.PyperclipException, OSError, RuntimeError) as clip_err:
+                logger.debug("Clipboard restore notice: %s", clip_err)
 
         threading.Thread(target=_restore, daemon=True).start()
         return f"Typed {len(text)} characters into active window, Sir."
-    except Exception as e:
-        logger.warning(f"Clipboard paste typing failed: {e}. Falling back to direct keystroke injection.")
+    except (pyperclip.PyperclipException, pyautogui.PyAutoGUIException, OSError, RuntimeError, Exception) as e:  # noqa: BLE001
+        logger.warning("Clipboard paste typing failed: %s. Falling back to direct keystroke injection.", e)
         try:
             pyautogui.write(text, interval=0.005)
             return f"Typed {len(text)} characters into active window via direct keystroke injection, Sir."
-        except Exception:
+        except (pyautogui.PyAutoGUIException, OSError, RuntimeError) as write_err:
+            logger.debug("Direct keystroke injection notice: %s", write_err)
             return f"Failed to type text: {e}"
 
