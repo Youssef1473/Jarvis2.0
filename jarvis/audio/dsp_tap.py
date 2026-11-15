@@ -3,10 +3,13 @@
 Provides zero-copy real-time 64-band frequency visualization and phase tracking
 without interfering with the native WASAPI audio playback sink.
 """
+import logging
 import struct
 from typing import Optional
 
 import numpy as np
+
+logger = logging.getLogger("Jarvis.Audio.DSPTap")
 
 MAGIC_HEADER_BYTE: int = 0x4A  # ASCII 'J'
 FFT_WINDOW_SIZE: int = 512
@@ -68,7 +71,7 @@ def compute_68byte_dsp_frame(pcm_slice: np.ndarray) -> bytes:
 
     for i in range(NUM_FFT_BANDS):
         start_idx = int(log_boundaries[i])
-        end_idx = max(start_idx + 1, int(round(log_boundaries[i + 1])))
+        end_idx = max(start_idx + 1, round(log_boundaries[i + 1]))
         end_idx = min(end_idx, len(rfft_mags))
         start_idx = min(start_idx, end_idx - 1)
         bands[i] = float(np.mean(rfft_mags[start_idx:end_idx]))
@@ -120,7 +123,8 @@ class AudioDspTap:
             if service and service.connected_clients:
                 service.broadcast_dsp_frame(frame)
             return frame
-        except Exception:
+        except (BufferError, ValueError, RuntimeError, OSError) as exc:
+            logger.debug("DSP frame broadcast notice: %s", exc)
             return None
 
     def reset(self) -> None:

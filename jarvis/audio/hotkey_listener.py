@@ -2,7 +2,7 @@
 import logging
 import threading
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
 
 from pynput import keyboard, mouse
 
@@ -12,7 +12,7 @@ logger = logging.getLogger("Jarvis.InputListener")
 class HotkeyListener:
     """Listens globally for Mouse Button (MB2, MB3, MB4, MB5) or Keyboard (ALT) for Push-to-Talk."""
 
-    MOUSE_BUTTON_MAP = {
+    MOUSE_BUTTON_MAP: ClassVar[dict[str, Any]] = {
         "mb1": mouse.Button.left,
         "mouse1": mouse.Button.left,
         "left": mouse.Button.left,
@@ -35,7 +35,7 @@ class HotkeyListener:
         "forward": mouse.Button.x2,
     }
 
-    KEYBOARD_KEY_MAP = {
+    KEYBOARD_KEY_MAP: ClassVar[dict[str, tuple[Any, ...]]] = {
         "alt": (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r),
         "alt_r": (keyboard.Key.alt_r, keyboard.Key.alt_gr),
         "alt_l": (keyboard.Key.alt_l,),
@@ -102,8 +102,8 @@ class HotkeyListener:
         if self.on_any_key_callback and pressed:
             try:
                 self.on_any_key_callback()
-            except Exception:
-                pass
+            except (RuntimeError, ValueError, OSError) as exc:
+                logger.debug("Hotkey on_any_key callback notice: %s", exc)
 
         if self.mouse_target_btn and button == self.mouse_target_btn:
             with self._lock:
@@ -113,24 +113,24 @@ class HotkeyListener:
                         if self.on_press_callback:
                             try:
                                 self.on_press_callback()
-                            except Exception as e:
-                                logger.error(f"Error in on_press_callback: {e}")
+                            except (RuntimeError, ValueError, OSError) as e:
+                                logger.error("Error in on_press_callback: %s", e)
                 else:
                     if self._is_pressed:
                         self._is_pressed = False
                         if self.on_release_callback:
                             try:
                                 self.on_release_callback()
-                            except Exception as e:
-                                logger.error(f"Error in on_release_callback: {e}")
+                            except (RuntimeError, ValueError, OSError) as e:
+                                logger.error("Error in on_release_callback: %s", e)
 
     def _on_key_down(self, key):
         """Monitors global keyboard key down for barge-in and keyboard triggers."""
         if self.on_any_key_callback:
             try:
                 self.on_any_key_callback()
-            except Exception:
-                pass
+            except (RuntimeError, ValueError, OSError) as exc:
+                logger.debug("Hotkey on_any_key callback notice: %s", exc)
 
         if self.keyboard_target_keys and key in self.keyboard_target_keys:
             with self._lock:
@@ -139,8 +139,8 @@ class HotkeyListener:
                     if self.on_press_callback:
                         try:
                             self.on_press_callback()
-                        except Exception as e:
-                            logger.error(f"Error in on_press_callback: {e}")
+                        except (RuntimeError, ValueError, OSError) as e:
+                            logger.error("Error in on_press_callback: %s", e)
 
     def _on_key_up(self, key):
         """Monitors global keyboard key up."""
@@ -151,8 +151,8 @@ class HotkeyListener:
                     if self.on_release_callback:
                         try:
                             self.on_release_callback()
-                        except Exception as e:
-                            logger.error(f"Error in on_release_callback: {e}")
+                        except (RuntimeError, ValueError, OSError) as e:
+                            logger.error("Error in on_release_callback: %s", e)
 
     def start(self):
         """Starts both keyboard and mouse global listeners in dedicated background threads."""
@@ -176,13 +176,13 @@ class HotkeyListener:
         if self._keyboard_listener is not None:
             try:
                 self._keyboard_listener.stop()
-            except Exception:
-                pass
+            except (RuntimeError, OSError) as exc:
+                logger.debug("Keyboard listener stop note: %s", exc)
             self._keyboard_listener = None
 
         if self._mouse_listener is not None:
             try:
                 self._mouse_listener.stop()
-            except Exception:
-                pass
+            except (RuntimeError, OSError) as exc:
+                logger.debug("Mouse listener stop note: %s", exc)
             self._mouse_listener = None

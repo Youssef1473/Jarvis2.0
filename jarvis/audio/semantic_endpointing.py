@@ -28,14 +28,16 @@ class SemanticVADCoordinator:
                 name=target_name,
                 create=False,
             )
-        except Exception:
+        except (FileNotFoundError, OSError, ValueError) as e:
+            logger.debug("Shm open existing failed (%s); trying create mode.", e)
             # Fallback to create mode if channel doesn't exist yet (e.g. unit tests or standalone)
             try:
                 self.channel = ShmPartialTokenChannel(
                     name=target_name,
                     create=True,
                 )
-            except Exception:
+            except (FileNotFoundError, OSError, ValueError) as create_err:
+                logger.debug("Shm create fallback failed: %s", create_err)
                 self.channel = None
 
         # Hanging clauses: Prepositions, conjunctions, articles, copulas
@@ -67,9 +69,12 @@ class SemanticVADCoordinator:
 
         # Word count completion heuristic for standalone imperatives/confirmations
         tokens = cleaned.split()
-        if len(tokens) >= 2 and tokens[0].lower() in {"jarvis", "system"}:
-            if tokens[-1].lower() in {"run", "stop", "cancel", "status", "clear", "execute"}:
-                return self.aggressive_cutoff_ms
+        if (
+            len(tokens) >= 2
+            and tokens[0].lower() in {"jarvis", "system"}
+            and tokens[-1].lower() in {"run", "stop", "cancel", "status", "clear", "execute"}
+        ):
+            return self.aggressive_cutoff_ms
 
         # Command imperatives without terminal punctuation (e.g. "Execute tests", "Run diagnostics")
         if len(tokens) >= 2 and tokens[0].lower() in {
