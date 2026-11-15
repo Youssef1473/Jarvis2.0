@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-14T17:45:00+01:00 (CET)
+- **Validation Timestamp:** 2026-11-15T09:20:00+01:00 (CET)
 - **Active Git Branch:** `main`
-- **Recorded HEAD Commit SHA:** `a5669e1d31473d0a3a40bec81b9ac102eb92dbab`
-- **HEAD Commit Subject:** `Merge pull request #22 from Youssef1473/refactor/untangle-browser-cdp`
-- **Milestone State:** **Production Baseline Verified on main (a5669e1); Plans 001-004 Formally Closed**
-- **Active Milestone:** **Modernization & Refactoring Execution (Plans 001-004 Closed)**
+- **Recorded HEAD Commit SHA:** `7edf4345ca27ab16eed2b8b70cb2d9a6fb896efa`
+- **HEAD Commit Subject:** `Merge pull request #27 from Youssef1473/feat/audio-l1-l2-latency-telemetry`
+- **Milestone State:** **Production Baseline Verified on main (7edf434); Plans 001-008 Formally Closed**
+- **Active Milestone:** **Modernization & Refactoring Execution (Batch 2 Plans 005-008 Closed)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
@@ -36,9 +36,18 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Modernization & Refactoring Execution (Plans 001-004 Closed)`
+- **Active Milestone:** `Modernization & Refactoring Execution (Batch 2 Plans 005-008 Closed)`
 - **Completed Work:**
-  - **`/improve` Modernization & Refactoring Queue (Plans 001–004 COMPLETED & SEALED):**
+  - **`/improve` Modernization & Refactoring Queue — Batch 2 (Plans 005–008 COMPLETED & SEALED):**
+    - **Plan 005 (Core F821 & BLE001 Cleanup — PR #24, `4ec563f`):** Resolved 6 live `F821` undefined-name diagnostics (`sqlite3` in `jarvis/core/memory/temporal_graph.py` and `Optional` in `jarvis/desktop/uia_delta_worker.py`), narrowed blind `BLE001` catches, and resolved `RUF059` unused variables across `jarvis/core/` and `jarvis/desktop/`.
+    - **Plan 006 (SleepConsolidator SingleWriterActor & Workspace Gating — PR #25, `ed74210`):** Migrated `SleepConsolidator` direct SQLite writes to `SingleWriterActor`, resolving `PROJECT_STATE.md §5.3` debt; added fail-closed `active_workspace_id` parameter to `Heartbeat` and `SleepConsolidator` preventing consolidation of un-scoped historical facts; resolved 37 Ruff findings in `heartbeat.py`.
+    - **Plan 007 (HUD Multi-Workspace Switcher — PR #26, `eeeafae`):** Added fail-closed authenticated workspace listing, partition switching via `SingleWriterActor`, and per-partition fact/vector count metrics in `jarvis/ui/routes/memory.py` and the Zero-CLS HUD (`hud.html`) with strict protection of quarantined un-scoped rows.
+    - **Plan 008 (Audio L1/L2 Latency Telemetry — PR #27, `ce0de95`):** Exposed lock-free $L_1$/$L_2$ barge-in interruption latency, TTS TTFB, and RTF metrics in `AudioTelemetry` (`jarvis/audio/tts.py`) and `DspProcessTelemetry` (`jarvis/audio/dsp_process.py`), surfaced non-blockingly via `WorkstationMetricsCollector.sample_metrics_sync()` into UI WebSocket telemetry without blocking real-time audio threads.
+    - **Batch 2 Plans Closure:** All 4 implementation plans in Batch 2 (`005`, `006`, `007`, `008`) marked `VERIFIED DONE` in `plans/README.md` with 0 open `TODO` or `BLOCKED` items.
+    - **Static Diagnostics & Hygiene:** 0 Ruff diagnostics on all modernized modules, 0 AST-Grep structural invariant violations across the entire repository.
+    - **Test Accounting Invariant:** 2,472 collected nodes accounted for (0 drift) via `test_17_accurate_total_test_accounting`.
+    - **Database Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
+  - **`/improve` Modernization & Refactoring Queue — Batch 1 (Plans 001–004 COMPLETED & SEALED):**
     - **Plan 001 (Audio DSP 64-bit Win32 ABI — PR #20, `0f35e95`):** Hardened 64-bit Win32 kernel32 event ABI (`SetEvent`, `ResetEvent`, `CloseHandle`) in `jarvis/audio/dsp_process.py`, eliminating 64-bit handle truncation hazard (`0xc0000008`) and logging teardown errors.
     - **Plan 002 (Provider Error Handling — PR #21, `6612990`):** Replaced blind exception catches with typed error handling and diagnostic telemetry across `openrouter.py`, `gemini.py`, and `http2_pool.py`.
     - **Plan 003 (Browser SSRF Error Transparency — PR #21, `ccdf42e`):** Separated `SecurityBoundaryViolation` SSRF policy denials from network timeouts in `jarvis/skills/browser_agent.py`, preserving audit failure transparency.
@@ -342,14 +351,14 @@ All engineering work must comply with canonical subsystem rules and Architecture
    - Impact B: TCP loopback dropped -> `socket.socketpair()` emulates socketpair on Windows using TCP localhost (`_fallback_socketpair`), causing `lsock.accept()` to block indefinitely. Consequently, any test instantiating `asyncio.ProactorEventLoop` (`_make_self_pipe()`), Starlette `TestClient`, or ASGI servers freezes inside the sandbox.
    - Impact C: In `pytest -n 4`, when all 4 worker processes grab async/network test modules, all 4 deadlock in `lsock.accept()`, stalling test execution indefinitely at ~17%.
    - Status: Root causes empirically proven via stack trace and thread probe. Requires either in-process mock socket fixtures for sandbox or host execution for ASGI/network suites.
-2. **Six Tracked F821 Undefined Name Diagnostics:**
-   - 5 occurrences in `jarvis/core/memory/temporal_graph.py` (lines 44, 107, 136, 194, 226): type annotations `conn: sqlite3.Connection` missing `import sqlite3`.
-   - 1 occurrence in `jarvis/desktop/uia_delta_worker.py` (line 45): `Optional["UIADeltaWorker"]` missing `from typing import Optional`.
-   - Status: Documented in Technical Findings; resolution deferred to an authorized codebase hygiene pass.
+2. **Six Tracked F821 Undefined Name Diagnostics (RESOLVED in Plan 005 — PR #24, `4ec563f`):**
+   - 5 occurrences in `jarvis/core/memory/temporal_graph.py`: added `import sqlite3`.
+   - 1 occurrence in `jarvis/desktop/uia_delta_worker.py`: added `from typing import Optional`.
+   - Status: Completely resolved; verified 0 F821 diagnostics repository-wide.
 3. **SQLite Writer Ownership vs. Reader Connection Debt:**
-   - Direct Write Bypass Paths (3 modules): `photo_manager.py` (3 connections), `reflex_macro_compiler.py` (6 connections), and `sleep_consolidator.py` (1 batch write connection with `uri=True`) open uncoordinated direct connections and execute write transactions bypassing `SingleWriterActor`.
+   - Direct Write Bypass Paths (2 remaining modules): `photo_manager.py` (3 connections) and `reflex_macro_compiler.py` (6 connections) open uncoordinated direct connections and execute write transactions bypassing `SingleWriterActor`. (`sleep_consolidator.py` was migrated to `SingleWriterActor` in Plan 006 — PR #25, `ed74210`).
    - Direct Read Connection Ownership (1 module): `habit_graph.py` opens direct connection for reads, while writes serialize properly through `SingleWriterActor`. Under SQLite WAL mode, readers do not block writers; direct reads are technically valid under WAL concurrency, though connection pooling would be architectural best practice.
-   - Status: Migration design fully specified in [`docs/architecture/SQLITE_WRITER_OWNERSHIP_DESIGN.md`](../architecture/SQLITE_WRITER_OWNERSHIP_DESIGN.md); implementation deferred until authorized.
+   - Status: Migration design fully specified in [`docs/architecture/SQLITE_WRITER_OWNERSHIP_DESIGN.md`](../architecture/SQLITE_WRITER_OWNERSHIP_DESIGN.md); remaining paths tracked for future maintenance.
 4. **Master Blueprint Commit Staleness:**
    - Line 5 of `JARVIS_2.0_MASTER_ARCHITECTURAL_BLUEPRINT.txt` references historical commit `0697eb51...`.
    - Status: Clarified as historical baseline.

@@ -4130,3 +4130,51 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Test Accounting Invariant:** `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed with 100% accounting (2,472 collected nodes accounted for, 0 drift).
    - **Targeted Test Suites:** `test_browser_cdp.py` passed 18/18 under supervisor in 4.14s.
    - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 236 rows (234 quarantined unscoped, 2 ws_default), and `facts_vec` = 236 rows.
+
+---
+
+## Session Log: 2026-11-15 — /improve Modernization Queue — Batch 2 (Plans 005–008) & Baseline Closure
+
+- **Session Timestamp:** 2026-11-15T09:20:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `main`
+- **Starting Git HEAD SHA:** `d358c213a778b056157f8ee75a408e0dae2786a4` (`d358c21`)
+- **Ending Git HEAD SHA:** `7edf4345ca27ab16eed2b8b70cb2d9a6fb896efa` (`7edf434`)
+- **Landed Pull Requests:**
+  - **PR #23:** `docs(governance): seal Plans 001-004 closure and post-PR #22 main baseline (#23)` (Merged, commit `70319d8`)
+  - **PR #24:** `fix(core): resolve F821 undefined names and narrow blind BLE001 catches (#24)` (Merged, commit `4ec563f`)
+  - **PR #25:** `feat(memory): route SleepConsolidator writes through SingleWriterActor with workspace gating (#25)` (Merged, commit `ed74210`)
+  - **PR #26:** `feat(ui): add fail-closed HUD multi-workspace switcher and partition vector telemetry (#26)` (Merged, commit `eeeafae`)
+  - **PR #27:** `feat(audio): expose lock-free L1/L2 barge-in latency and TTS metrics to UI telemetry (#27)` (Merged, commit `ce0de95`)
+- **Active Milestone:** `Modernization & Refactoring Execution (Batch 2 Plans 005-008 Closed)`
+
+### Summary of Actions & Deliverables
+1. **Plan 005 — Core F821 & BLE001 Cleanup (PR #24, `4ec563f`):**
+   - Eliminated all 6 tracked `F821` undefined-name hazards across `jarvis/core/memory/temporal_graph.py` (added `import sqlite3`) and `jarvis/desktop/uia_delta_worker.py` (added `from typing import Optional`).
+   - Narrowed blind `BLE001` exception catches and cleaned `RUF059` unused variables.
+   - Verified with 26/26 targeted tests green.
+2. **Plan 006 — SleepConsolidator SingleWriterActor & Workspace Gating (PR #25, `ed74210`):**
+   - Migrated `SleepConsolidator` direct SQLite writes to `SingleWriterActor`, eliminating direct-write bypass debt identified in `PROJECT_STATE.md §5.3`.
+   - Propagated fail-closed `active_workspace_id` parameter through `Heartbeat` and `SleepConsolidator` to prevent background consolidation of un-scoped historical facts.
+   - Cleaned 37 Ruff findings in `jarvis/core/heartbeat.py`.
+   - Verified with 25/25 targeted memory/heartbeat tests green.
+3. **Plan 007 — HUD Multi-Workspace Switcher (PR #26, `eeeafae`):**
+   - Added authenticated workspace listing, partition switching via `SingleWriterActor`, and per-partition fact/vector counts to `jarvis/ui/routes/memory.py` and the Zero-CLS HUD (`hud.html`).
+   - Enforced fail-closed tenant isolation, protecting the 234 quarantined un-scoped rows against unauthorized UI disclosure or modification.
+   - Extended unit tests in-place in `tests/test_phase4_workspace_isolation.py`, preserving the test manifest accounting invariant.
+   - Verified with 14/14 workspace isolation tests green.
+4. **Plan 008 — Audio L1/L2 Latency Telemetry (PR #27, `ce0de95`):**
+   - Implemented lock-free `AudioTelemetry` in `jarvis/audio/tts.py` measuring $L_1$/$L_2$ barge-in interruption latency, TTS TTFB, and synthesis RTF.
+   - Implemented `DspProcessTelemetry` in `jarvis/audio/dsp_process.py` recording kernel event wakeup timestamps and clear durations across `trigger_barge_in`.
+   - Surfaced telemetry non-blockingly via `WorkstationMetricsCollector.sample_metrics_sync()` into the UI WebSocket without blocking real-time audio threads.
+   - Extended test assertions in-place in `tests/test_audio_reliability.py` and `tests/test_telemetry_connection_manager.py`.
+   - Verified with 60/60 targeted audio tests green.
+5. **Batch 2 Full Queue Completion & Ledger Alignment:**
+   - Updated `plans/README.md` marking all 8 plans (`001`–`008`) as `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+6. **Full-Tree Diagnostic & Integrity Verification:**
+   - **Static Linter (`tools/lint.py`):** 0 Ruff diagnostics across all modernized modules.
+   - **Structural Invariants (`tools/diagnostics.py`):** 0 AST-Grep violations across the entire repository.
+   - **Test Accounting Invariant:** `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed with 100% accounting (2,472 collected nodes accounted for, 0 drift).
+   - **Tier 1 Fast Test Suite:** `python tools/run_fast_tests.py --fast` passed across 4 workers (1,491 passed, 0 failed, 11 skipped in 151.14s).
+   - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
