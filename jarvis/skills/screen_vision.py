@@ -10,6 +10,41 @@ import os
 import re
 from pathlib import Path
 
+try:
+    import psutil
+    _PSUTIL_WINDOW_ERRORS: tuple[type[Exception], ...] = (
+        psutil.Error,
+        OSError,
+        RuntimeError,
+        AttributeError,
+    )
+except ImportError:
+    psutil = None  # type: ignore[assignment]
+    _PSUTIL_WINDOW_ERRORS = (
+        OSError,
+        RuntimeError,
+        AttributeError,
+    )
+
+try:
+    from google.genai import errors as genai_errors
+    _GENAI_ERRORS: tuple[type[Exception], ...] = (
+        genai_errors.APIError,
+        OSError,
+        RuntimeError,
+        ValueError,
+        AttributeError,
+        TimeoutError,
+    )
+except ImportError:
+    _GENAI_ERRORS = (
+        OSError,
+        RuntimeError,
+        ValueError,
+        AttributeError,
+        TimeoutError,
+    )
+
 from jarvis.skills.base import SkillRegistry
 from jarvis.vision.screen_capture import ScreenPerception
 
@@ -50,7 +85,6 @@ LOGIN_PATTERN = re.compile(r"\b(log\s*in|sign\s*in|sign\s*on|enter\s*password)\b
 def _get_active_window_details() -> tuple[str, str]:
     """Returns (window_title, process_name) for the currently focused foreground window."""
     try:
-        import psutil
         import win32gui
         import win32process
         hwnd = win32gui.GetForegroundWindow()
@@ -60,11 +94,12 @@ def _get_active_window_details() -> tuple[str, str]:
         _, pid = win32process.GetWindowThreadProcessId(hwnd)
         proc_name = ""
         try:
-            proc_name = psutil.Process(pid).name()
-        except Exception:
-            pass
+            if psutil is not None:
+                proc_name = psutil.Process(pid).name()
+        except _PSUTIL_WINDOW_ERRORS as err:
+            logger.debug("Process name inspection notice: %s", err)
         return (title, proc_name)
-    except Exception as e:
+    except _PSUTIL_WINDOW_ERRORS as e:
         logger.debug("Failed to get active window details: %s", e)
         return ("", "")
 
@@ -104,7 +139,7 @@ def _broadcast_screenshot_event():
                     "url": f"/api/screenshot/latest?t={int(time.time() * 1000)}",
                     "timestamp": time.strftime("%H:%M:%S"),
                 })
-    except Exception as e:
+    except (OSError, RuntimeError, AttributeError, ImportError) as e:
         logger.debug("Failed to broadcast screenshot event: %s", e)
 
 
@@ -121,7 +156,7 @@ def _save_latest_screenshot(image_bytes: bytes) -> Path | None:
         target.write_bytes(image_bytes)
         _broadcast_screenshot_event()
         return target
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         logger.debug("Could not cache latest screenshot: %s", e)
         return None
 
@@ -158,10 +193,10 @@ def _analyze_screen_with_gemini(image_bytes: bytes, query: str) -> str | None:
                 if response and response.text:
                     logger.info("Screen vision successfully analyzed via model '%s'.", model_name)
                     return response.text.strip()
-            except Exception as model_err:
+            except _GENAI_ERRORS as model_err:
                 logger.debug("Vision model '%s' failed (%s). Cascading to next candidate...", model_name, model_err)
 
-    except Exception as err:
+    except (_GENAI_ERRORS + (ImportError,)) as err:
         logger.error("Error connecting to Gemini Vision API: %s", err)
 
     return None
@@ -215,7 +250,7 @@ def inspect_screen(query: str = "Describe what is currently visible on the scree
                 uia_tree = inspect_window_controls(active_title, max_depth=2)
                 if uia_tree and "No interactive child elements found" not in uia_tree:
                     controls_summary = f"\n\n{uia_tree}"
-        except Exception as uia_err:
+        except (OSError, RuntimeError, ValueError, AttributeError, ImportError) as uia_err:
             logger.debug("UIA controls inspection skipped during fallback: %s", uia_err)
 
         return (
@@ -224,7 +259,8 @@ def inspect_screen(query: str = "Describe what is currently visible on the scree
             f"{apps}"
             f"{controls_summary}"
         )
-    except Exception:
+    except (OSError, RuntimeError, ValueError, AttributeError, ImportError) as exc:
+        logger.debug("Desktop telemetry fallback notice: %s", exc)
         return "I captured your screen display, Sir, but encountered a momentary delay in visual processing."
 
 
@@ -277,7 +313,7 @@ def inspect_screen_with_marks(query: str = "Identify interactive elements on the
         safe_som_path = validate_confined_path(os.path.join(som_target_dir, "latest_som_screen.jpg"), som_target_dir)
         os.makedirs(os.path.dirname(safe_som_path), exist_ok=True)
         annotated_img.save(safe_som_path, format="JPEG", quality=85)
-    except Exception as som_err:
+    except (OSError, RuntimeError, ValueError, AttributeError) as som_err:
         logger.debug("Saving latest_som_screen.jpg notice: %s", som_err)
 
     # 3. Analyze via Gemini Multimodal Vision if available

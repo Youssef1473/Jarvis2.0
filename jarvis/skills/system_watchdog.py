@@ -38,8 +38,8 @@ def _speak_watchdog_alert(alert_message: str):
             sound_path = os.path.abspath("data/sounds/done.wav")
         if os.path.exists(sound_path):
             winsound.PlaySound(sound_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
-    except Exception as e:
-        logger.debug(f"Watchdog chime notice: {e}")
+    except (OSError, RuntimeError, ImportError) as e:
+        logger.debug("Watchdog chime notice: %s", e)
 
     co_inited = False
     try:
@@ -50,14 +50,14 @@ def _speak_watchdog_alert(alert_message: str):
         sapi = win32com.client.Dispatch("SAPI.SpVoice")
         sapi.Rate = 1
         sapi.Speak(f"System alert, Sir: {alert_message}", 1)
-    except Exception as e:
-        logger.warning(f"Watchdog speech notice: {e}")
+    except (OSError, RuntimeError, AttributeError, ImportError) as e:
+        logger.warning("Watchdog speech notice: %s", e)
     finally:
         if co_inited:
             try:
                 pythoncom.CoUninitialize()
-            except Exception:
-                pass
+            except (OSError, RuntimeError, AttributeError) as uninit_err:
+                logger.debug("pythoncom CoUninitialize notice: %s", uninit_err)
 
 
 def _query_gpu_telemetry() -> dict[str, Any] | None:
@@ -72,12 +72,13 @@ def _query_gpu_telemetry() -> dict[str, Any] | None:
                 "vram_used": int(vram_info.get("vram_used_mb", 0)),
                 "vram_total": int(vram_info.get("vram_total_mb", 0)),
             }
-    except Exception:
-        pass
+    except (OSError, RuntimeError, ValueError, KeyError, AttributeError, ImportError) as err:
+        logger.debug("GPU telemetry NVML query notice: %s", err)
 
     try:
         res = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,temperature.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
+            check=False,
             capture_output=True,
             text=True,
             timeout=2,
@@ -91,8 +92,8 @@ def _query_gpu_telemetry() -> dict[str, Any] | None:
                     "vram_used": int(parts[2]),
                     "vram_total": int(parts[3]),
                 }
-    except Exception:
-        pass
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError) as err:
+        logger.debug("GPU telemetry nvidia-smi fallback notice: %s", err)
     return None
 
 
@@ -110,10 +111,9 @@ def _evaluate_system_health() -> list[str]:
             if now - _last_alerts["battery"] > _ALERT_COOLDOWN_SECONDS:
                 warnings.append(f"Battery is critically low at {pct}%. Please connect AC power immediately.")
                 _last_alerts["battery"] = now
-        elif pct <= 20:
-            if now - _last_alerts["battery"] > _ALERT_COOLDOWN_SECONDS:
-                warnings.append(f"Battery has dropped to {pct}%. Workstation is running on reserved power.")
-                _last_alerts["battery"] = now
+        elif pct <= 20 and (now - _last_alerts["battery"] > _ALERT_COOLDOWN_SECONDS):
+            warnings.append(f"Battery has dropped to {pct}%. Workstation is running on reserved power.")
+            _last_alerts["battery"] = now
     elif batt.get("charging") or batt.get("percent", 0) > 30:
         # Reset alert latch
         _last_alerts["battery"] = 0.0
@@ -122,10 +122,9 @@ def _evaluate_system_health() -> list[str]:
     cpu_pct = psutil.cpu_percent(interval=None)
     if cpu_pct >= 92.0:
         _consecutive_high_cpu += 1
-        if _consecutive_high_cpu >= 2:
-            if now - _last_alerts["cpu"] > _ALERT_COOLDOWN_SECONDS:
-                warnings.append(f"CPU utilization is sustained at {cpu_pct:.1f}%.")
-                _last_alerts["cpu"] = now
+        if _consecutive_high_cpu >= 2 and (now - _last_alerts["cpu"] > _ALERT_COOLDOWN_SECONDS):
+            warnings.append(f"CPU utilization is sustained at {cpu_pct:.1f}%.")
+            _last_alerts["cpu"] = now
     else:
         _consecutive_high_cpu = 0
         _last_alerts["cpu"] = 0.0
@@ -158,10 +157,10 @@ def _watchdog_loop(interval_sec: int):
         try:
             warnings = _evaluate_system_health()
             for w in warnings:
-                logger.warning(f"Watchdog trigger: {w}")
+                logger.warning("Watchdog trigger: %s", w)
                 _speak_watchdog_alert(w)
-        except Exception as e:
-            logger.debug(f"Watchdog cycle error: {e}")
+        except (psutil.Error, OSError, RuntimeError, ValueError, AttributeError) as e:
+            logger.debug("Watchdog cycle error: %s", e)
 
         # Sleep in small increments for rapid stop response
         for _ in range(max(1, interval_sec)):

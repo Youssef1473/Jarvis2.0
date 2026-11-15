@@ -4,6 +4,28 @@ import subprocess
 import threading
 from typing import Any
 
+try:
+    import psutil
+    _PROCESS_ERRORS: tuple[type[Exception], ...] = (
+        psutil.Error,
+        OSError,
+        RuntimeError,
+        ValueError,
+        AttributeError,
+        ProcessLookupError,
+        ImportError,
+    )
+except ImportError:
+    psutil = None  # type: ignore[assignment]
+    _PROCESS_ERRORS = (
+        OSError,
+        RuntimeError,
+        ValueError,
+        AttributeError,
+        ProcessLookupError,
+        ImportError,
+    )
+
 logger = logging.getLogger("Jarvis.Services")
 
 
@@ -17,7 +39,7 @@ class _PsutilProcessHandle:
     def poll(self):
         try:
             return None if self._process.is_running() else 0
-        except Exception:
+        except _PROCESS_ERRORS:
             return 0
 
     def terminate(self):
@@ -82,16 +104,17 @@ class ManagedServiceManager:
             try:
                 import psutil
                 descendants = psutil.Process(process.pid).children(recursive=True)
-            except Exception:
+            except _PROCESS_ERRORS as exc:
                 # The primary child can still be stopped without the optional psutil package.
+                logger.debug("Could not inspect descendants for process %s: %s", getattr(process, "pid", None), exc)
                 descendants = []
             try:
                 logger.info("Stopping managed service %s (PID %s).", name, process.pid)
                 for child in reversed(descendants):
                     try:
                         child.terminate()
-                    except Exception:
-                        pass
+                    except _PROCESS_ERRORS as err:
+                        logger.debug("Service child process terminate notice: %s", err)
                 process.terminate()
                 try:
                     process.wait(timeout=timeout_seconds)
@@ -113,8 +136,8 @@ class ManagedServiceManager:
                     for child in still_running:
                         try:
                             child.kill()
-                        except Exception:
-                            pass
+                        except _PROCESS_ERRORS as err:
+                            logger.debug("Service child process kill notice: %s", err)
                     if still_running:
                         psutil.wait_procs(still_running, timeout=2.0)
             except Exception:
@@ -137,16 +160,16 @@ class ManagedServiceManager:
                 for child in remaining_children:
                     try:
                         child.terminate()
-                    except Exception:
-                        pass
+                    except _PROCESS_ERRORS as err:
+                        logger.debug("Descendant child terminate notice: %s", err)
                 _, alive = psutil.wait_procs(remaining_children, timeout=timeout_seconds)
                 for child in alive:
                     try:
                         logger.warning("Force-killing lingering child process PID %s (%s)", child.pid, child.name())
                         child.kill()
-                    except Exception:
-                        pass
-        except Exception as err:
+                    except _PROCESS_ERRORS as err:
+                        logger.debug("Descendant child force-kill notice: %s", err)
+        except _PROCESS_ERRORS as err:
             logger.debug("Child process sweep notice: %s", err)
 
 
@@ -174,13 +197,14 @@ def kill_orphaned_jarvis_processes(exclude_pids=None, dry_run: bool = False):
             parent_proc = psutil.Process(parent_pid)
             for child in parent_proc.children(recursive=True):
                 exclude.add(child.pid)
-    except Exception:
-        pass
+    except _PROCESS_ERRORS as parent_err:
+        logger.debug("Parent process tree inspection notice: %s", parent_err)
 
     try:
         current_proc = psutil.Process(current_pid)
         current_create_time = current_proc.create_time()
-    except Exception:
+    except _PROCESS_ERRORS as proc_err:
+        logger.debug("Current process creation time query notice: %s", proc_err)
         current_create_time = None
 
     terminated = []
@@ -224,7 +248,7 @@ def kill_orphaned_jarvis_processes(exclude_pids=None, dry_run: bool = False):
                         terminated.append({"pid": pid, "name": name_str, "cmdline": cmdline_str[:80]})
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-    except Exception as e:
+    except _PROCESS_ERRORS as e:
         logger.error("Error scanning for orphaned Jarvis processes: %s", e)
 
     return terminated
