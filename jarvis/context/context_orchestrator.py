@@ -256,7 +256,7 @@ class ContextOrchestrator:
                 else:
                     import time
                     tracker.set_active_hwnd(int(time.time() * 1000) & 0xFFFFFFFF)
-        except Exception as e:
+        except (AttributeError, RuntimeError, ValueError, TypeError) as e:
             logger.debug("Failed to notify speculative engine of mutation: %s", e)
 
     @staticmethod
@@ -270,7 +270,7 @@ class ContextOrchestrator:
             if prompt_path.is_file():
                 try:
                     return prompt_path.read_text(encoding="utf-8").strip()
-                except Exception as e:
+                except (OSError, UnicodeDecodeError) as e:
                     logger.debug("Notice reading curated prompt '%s': %s", name, e)
         return ""
 
@@ -611,26 +611,26 @@ class ContextOrchestrator:
             if hasattr(memory, "format_core_preferences_xml"):
                 try:
                     tier1_profile_xml = memory.format_core_preferences_xml()
-                except Exception as e:
+                except (AttributeError, RuntimeError, ValueError) as e:
                     logger.debug("Core preferences XML format error: %s", e)
             elif hasattr(memory, "format_core_preferences_block"):
                 try:
                     tier1_profile_xml = memory.format_core_preferences_block()
-                except Exception as e:
+                except (AttributeError, RuntimeError, ValueError) as e:
                     logger.debug("Core preferences block format error: %s", e)
 
         if not flow_state_xml:
             try:
                 from jarvis.context.flow_state_mirror import FlowStateMirror
                 flow_state_xml = FlowStateMirror.get_instance().format_quarantined_xml()
-            except Exception as e:
+            except (AttributeError, RuntimeError, ImportError) as e:
                 logger.debug("Flow state XML format error: %s", e)
 
         if not bookmark_context and user_text:
             try:
                 from jarvis.conversation.bookmarks import ReasoningBookmarkStack
                 bookmark_context = ReasoningBookmarkStack.get_instance().format_prompt_injection(user_text)
-            except Exception as e:
+            except (AttributeError, RuntimeError, ImportError, ValueError) as e:
                 logger.debug("Bookmark prompt injection notice: %s", e)
 
         tier1_xml_str = tier1_profile_xml if isinstance(tier1_profile_xml, str) else ""
@@ -653,7 +653,7 @@ class ContextOrchestrator:
                 core_prefs = memory.format_core_preferences_block()
                 if core_prefs:
                     prompt += f"\n{core_prefs}\n"
-            except Exception as e:
+            except (AttributeError, RuntimeError, ValueError) as e:
                 logger.debug("Core preferences formatting notice: %s", e)
 
         # Zone 3: Contextual Short-Term Conversation History (Append-Only)
@@ -682,7 +682,7 @@ class ContextOrchestrator:
                             + "\n\n".join(history_blocks)
                             + "\n"
                         )
-            except Exception as h_err:
+            except (AttributeError, RuntimeError, ValueError, KeyError, OSError) as h_err:
                 logger.debug("Recent interaction history notice: %s", h_err)
 
             # Zone 4: Ephemeral & Query-Biased Contextual Tail (Dynamic Recall)
