@@ -69,6 +69,17 @@ class TestAudioReliability(unittest.TestCase):
             mock_barge_in.assert_called_once()
             self.assertEqual(len(wake_called), 1, "Wake callback should be invoked on barge-in")
 
+            # Verify lock-free AudioTelemetry L1/L2 calculation
+            from jarvis.audio.tts import AudioTelemetry
+            AudioTelemetry.reset()
+            t_now = time.perf_counter()
+            AudioTelemetry.record_interruption_onset(speech_onset=t_now - 0.035, wake_onset=t_now - 0.015)
+            AudioTelemetry.record_barge_in_stop()
+            self.assertGreater(AudioTelemetry.last_l1_latency_ms, 20.0)
+            self.assertGreater(AudioTelemetry.last_l2_latency_ms, 10.0)
+            self.assertFalse(AudioTelemetry.active_playback)
+            AudioTelemetry.reset()
+
     def test_echo_rejection_below_barge_in_threshold(self):
         """A wake score below barge-in threshold (0.60 < 0.70) during TTS does NOT trigger barge-in."""
         wake_called = []

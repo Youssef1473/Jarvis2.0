@@ -1,8 +1,11 @@
 """Test suite for TelemetryConnectionManager and WorkstationMetricsCollector."""
+from __future__ import annotations
+
 import asyncio
 import json
+import time
 import unittest
-from starlette.websockets import WebSocket
+
 from jarvis.ui.server import TelemetryConnectionManager, WorkstationMetricsCollector
 
 
@@ -89,6 +92,15 @@ class TestTelemetryLayer(unittest.IsolatedAsyncioTestCase):
         await mgr.disconnect(ws)
 
     def test_workstation_metrics_collector_sync(self):
+        from jarvis.audio.tts import AudioTelemetry
+        AudioTelemetry.reset()
+        t0 = time.perf_counter()
+        AudioTelemetry.record_interruption_onset(speech_onset=t0 - 0.025, wake_onset=t0 - 0.012)
+        AudioTelemetry.record_barge_in_stop()
+        AudioTelemetry.last_ttfb_ms = 45.2
+        AudioTelemetry.last_rtf = 0.35
+        AudioTelemetry.active_playback = True
+
         metrics = WorkstationMetricsCollector.sample_metrics_sync(orchestrator=None)
         self.assertIn("c", metrics)
         self.assertIn("rp", metrics)
@@ -97,6 +109,14 @@ class TestTelemetryLayer(unittest.IsolatedAsyncioTestCase):
         self.assertIn("gpu", metrics)
         self.assertIn("vram_used_mb", metrics)
         self.assertIn("vram_total_mb", metrics)
+        self.assertIn("audio", metrics)
+        self.assertIn("aud", metrics)
+        self.assertAlmostEqual(metrics["audio"]["ttfb_ms"], 45.2, places=1)
+        self.assertAlmostEqual(metrics["audio"]["rtf"], 0.35, places=2)
+        self.assertGreater(metrics["audio"]["l1_latency_ms"], 10.0)
+        self.assertGreater(metrics["audio"]["l2_latency_ms"], 5.0)
+        self.assertTrue(metrics["audio"]["active"])
+        AudioTelemetry.reset()
         WorkstationMetricsCollector.shutdown_nvml()
 
 
