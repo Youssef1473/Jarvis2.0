@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-15T11:45:00+01:00 (CET)
-- **Active Git Branch:** `main`
-- **Recorded HEAD Commit SHA:** `4d5e80277df606be4b4cf0a84594c73f32aa767c` (`4d5e802`)
-- **HEAD Commit Subject:** `Merge pull request #29 from Youssef1473/feat/phase3-consecutive-turns-e2e-harness`
-- **Milestone State:** **Production Baseline Verified on main (4d5e802); Plans 001-009 Formally Closed**
-- **Active Milestone:** **Phase 3 Multimodal E2E Verification & Batch 3 Implementation**
+- **Validation Timestamp:** 2026-11-15T15:15:00+01:00 (CET)
+- **Active Git Branch:** `main` (synced at `177c6b6`)
+- **Recorded HEAD Commit SHA:** `177c6b6d5f7560df53664d60237746142171ec55` (`177c6b6`)
+- **HEAD Commit Subject:** `Merge pull request #34 from Youssef1473/fix/os-control-typed-error-reporting`
+- **Milestone State:** **Production Baseline Verified on main (177c6b6); Batch 3 Plans 010-014 Formally Closed**
+- **Active Milestone:** **Batch 3 Governance Seal & Batch 4 Scout**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
@@ -36,8 +36,17 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Phase 3 Multimodal E2E Verification & Batch 3 Implementation`
+- **Active Milestone:** `Batch 3 Governance Seal & Batch 4 Scout`
 - **Completed Work:**
+  - **`/improve` Modernization & Refactoring Queue — Batch 3 (Plans 010–014 COMPLETED & SEALED):**
+    - **Plan 010 (CI Phase 3 Consecutive-Turns E2E Smoke Gate — PR #31, `14af094`, merged `042dd35`):** Wires `python tools/verify_consecutive_turns.py --headless` into `.github/workflows/ci.yml` under `Test Governance & Security Regression Gate`, executing the full 4-turn Phase 3 sequence (workspace isolation, single-use tool execution, audio barge-in latency budget, 6-phase teardown) on every pull request in under 2 seconds without test manifest drift (`2,472` nodes intact).
+    - **Plan 011 (Memory Pool Teardown Hardening & Connection Logging — PR #32, `8a854ef`, merged `bf75693`):** Hardened connection teardown in `jarvis/memory/ro_pool.py` and `jarvis/core/memory/sqlite_base.py`. Added comprehensive error logging during connection closure, protected against interpreter shutdown module teardown (`ImportError` on `sys.meta_path`), and eliminated silent WAL frame pinning and connection lock leak hazards.
+    - **Plan 012 (Audio Error Transparency & ClassVar Type Safety — PR #32, `b9fc6c9`, merged `bf75693`):** Eliminated all 54 Ruff diagnostics across `jarvis/audio/` (`hotkey_listener.py`, `dsp_tap.py`, `audio_bridge.py`, `playback.py`, `stt.py`, `wake_word.py`). Annotated mutable class-level attributes with `typing.ClassVar` (`RUF012`) and replaced blind `except Exception: pass` catches (`BLE001`, `S110`) with typed audio exceptions, surfacing real driver/endpoint errors before live hardware testing.
+    - **Plan 013 (Live Audio Hardware Barge-In Validation — PR #33, `274ccc8`, merged `7446239`):** Implemented host hardware `--live-audio` execution path in `tools/verify_consecutive_turns.py` against `KokoroSynthWorker` and `WASAPIPlaybackWorker`. Empirically verified physical Windows 11 WASAPI barge-in interruption latency at $L_1 = 1.95$ ms and $L_2 = 0.00$ ms with TTFB = $20.6$ ms and RTF = $0.3500$ (>25x faster than the 50.0 ms SLA), utilizing instant PortAudio buffer abort (`st.abort()`).
+    - **Plan 014 (Skills Subsystem Typed Error Reporting — PR #34, `2a86bd0`, `e828dab`, merged `177c6b6`):** Resolved all 96 Ruff diagnostics across `jarvis/skills/os_control.py` (69 `BLE001`, 20 `S110`, 3 `S112`, 1 `PLW0602`, 1 `PLW1510`, 1 `SIM102`, 1 `RUF059`). Replaced blind exception catches with narrow Win32/OS/subprocess/psutil exception handling and structured diagnostic logging. Handled headless runner `_COMError` from `pycaw.pycaw.AudioUtilities.GetSpeakers()` with seamless fallback to Win32 virtual keys, preserving all `@SkillRegistry.register` return type contracts and passing Phase 2 security regression.
+    - **Full Plans Closure:** All 14 implementation plans in `plans/README.md` (`001`–`014`) marked `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+    - **Test Accounting Invariant:** 2,472 collected nodes accounted for (0 drift) via `test_17_accurate_total_test_accounting`.
+    - **Database Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
   - **`/improve` Phase 3 Multimodal Live Verification Harness (Plan 009 COMPLETED & SEALED):**
     - **Plan 009 (Phase 3 Consecutive Turns E2E Harness — PR #29, `4bb6d4c`, merged `4d5e802`):** Modernized `tools/verify_consecutive_turns.py` (511 lines) implementing automated 4-turn Phase 3 multimodal live verification harness:
       - **Turn 1 (Memory Grounding & Workspace Isolation):** Seeds canary fact `ORCHID-47` under `ws_default`, asserts retrieval via `get_all_memory_nodes`, verifies fail-closed `PermissionError` on `'unscoped'` partition, asserts 0 disclosure to `'ws_other'`, and validates `/api/workspaces` route handler with fail-closed HTTP 403 enforcement.

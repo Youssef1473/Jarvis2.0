@@ -4212,3 +4212,48 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Test Accounting Invariant:** `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed with 100% accounting (2,472 collected nodes accounted for, 0 drift).
    - **Live E2E Harness Execution:** `python tools/verify_consecutive_turns.py --headless` executed in 1.40s with all 4 turns passing (Exit code: 0).
    - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
+
+---
+
+## Session Log: 2026-11-15 — /improve Modernization Queue — Batch 3 (Plans 010–014) & Baseline Closure
+
+- **Session Timestamp:** 2026-11-15T15:15:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `docs/seal-batch3-plans-010-014-closure` (branched from `main` @ `177c6b6`)
+- **Starting Git HEAD SHA:** `4d5e80277df606be4b4cf0a84594c73f32aa767c` (`4d5e802`)
+- **Ending Git HEAD SHA:** `177c6b6d5f7560df53664d60237746142171ec55` (`177c6b6`)
+- **Landed Pull Requests:**
+  - **PR #30:** `docs(governance): seal Plan 009 E2E harness baseline and scout Batch 3 (#30)` (Merged, commit `187c63b`)
+  - **PR #31:** `feat(ci): add Phase 3 consecutive turns E2E smoke gate to CI workflow (#31)` (Merged, commit `042dd35`, containing `14af094`)
+  - **PR #32:** `fix(memory, audio): harden SQLite connection teardown and resolve 54 audio Ruff errors (#32)` (Merged, commit `bf75693`, containing `8a854ef` and `b9fc6c9`)
+  - **PR #33:** `feat(tools): implement --live-audio host hardware barge-in validation in Phase 3 E2E harness (#33)` (Merged, commit `7446239`, containing `274ccc8`)
+  - **PR #34:** `fix(skills): replace silent os_control failure catches with typed Win32/OS error reporting (#34)` (Merged, commit `177c6b6`, containing `2a86bd0` and `e828dab`)
+- **Active Milestone:** `Batch 3 Governance Seal & Batch 4 Scout (Plans 001-014 Closed)`
+
+### Summary of Actions & Deliverables
+1. **Plan 010 — CI Phase 3 Consecutive-Turns E2E Smoke Gate (PR #31, `14af094`):**
+   - Integrated `tools/verify_consecutive_turns.py --headless` into `.github/workflows/ci.yml` under `Test Governance & Security Regression Gate`.
+   - Automatically gates all pull requests with the 4-turn Phase 3 sequence (workspace isolation, single-use tool calls, barge-in latency budget, 6-phase teardown) executing in under 2 seconds without test manifest drift (`2,472` nodes intact).
+2. **Plan 011 — Memory Pool Teardown Hardening & Connection Logging (PR #32, `8a854ef`):**
+   - Hardened connection closure in `jarvis/memory/ro_pool.py` and `jarvis/core/memory/sqlite_base.py`.
+   - Added structured error logging during connection teardown and handled interpreter shutdown module de-allocation (`ImportError` on `sys.meta_path` in `__del__`), eliminating silent WAL frame pinning and connection lock leak hazards.
+3. **Plan 012 — Audio Error Transparency & ClassVar Type Safety (PR #32, `b9fc6c9`):**
+   - Cleared all 54 Ruff diagnostics across `jarvis/audio/` (`hotkey_listener.py`, `dsp_tap.py`, `audio_bridge.py`, `playback.py`, `stt.py`, `wake_word.py`).
+   - Annotated mutable class-level collections with `typing.ClassVar` (`RUF012`) and replaced blind `except Exception: pass` catches (`BLE001`, `S110`) with typed audio exceptions, surfacing real driver/endpoint errors before live hardware testing.
+4. **Plan 013 — Live Audio Hardware Barge-In Validation (PR #33, `274ccc8`):**
+   - Implemented host hardware `--live-audio` execution path in `tools/verify_consecutive_turns.py` against `KokoroSynthWorker` and `WASAPIPlaybackWorker`.
+   - Empirically verified physical Windows 11 WASAPI barge-in interruption latency at $L_1 = 1.95$ ms and $L_2 = 0.00$ ms with TTFB = $20.6$ ms and RTF = $0.3500$ (>25x faster than the 50.0 ms SLA), utilizing instant PortAudio buffer abort (`st.abort()`).
+5. **Plan 014 — Skills Subsystem Typed Error Reporting (PR #34, `2a86bd0`, `e828dab`):**
+   - Resolved all 96 Ruff diagnostics across `jarvis/skills/os_control.py` (69 `BLE001`, 20 `S110`, 3 `S112`, 1 `PLW0602`, 1 `PLW1510`, 1 `SIM102`, 1 `RUF059`).
+   - Replaced blind exception catches with narrow Win32/OS/subprocess/psutil exception handling and structured diagnostic logging.
+   - Handled headless runner `_COMError` from `pycaw.pycaw.AudioUtilities.GetSpeakers()` with seamless fallback to Win32 virtual keys, preserving all `@SkillRegistry.register` return type contracts and passing Phase 2 security regression.
+6. **Queue Completion & Ledger Alignment:**
+   - Updated local `plans/README.md` marking all 14 implementation plans (`001`–`014`) as `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+7. **Full-Tree Verification Gates & Accounting Invariant:**
+   - **Static Linter (`tools/lint.py`):** 0 Ruff diagnostics across all modernized modules.
+   - **Structural Invariants (`tools/diagnostics.py`):** 0 AST-Grep invariant violations.
+   - **Test Accounting Invariant:** `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed with 100% accounting (2,472 collected nodes accounted for, 0 drift).
+   - **Live E2E Smoke Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing (Exit code: 0).
+   - **Tier 1 Fast Test Suite:** 1,491 passed, 0 failed, 11 skipped in 118.56s (Exit code: 0).
+   - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
