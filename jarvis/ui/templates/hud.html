@@ -1791,6 +1791,14 @@
           <span class="telemetry-val" style="color: var(--holo-emerald);">KOKORO-82M (LOCAL CUDA)</span>
         </div>
         <div class="telemetry-row">
+          <span class="telemetry-label">BARGE-IN (L1 / L2)</span>
+          <span class="telemetry-val tabular-nums inline-block" id="audioBargeInVal" style="color: var(--holo-cyan);">-- ms / -- ms</span>
+        </div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">TTS TTFB / RTF</span>
+          <span class="telemetry-val tabular-nums inline-block" id="audioTtfbVal" style="color: var(--holo-emerald);">-- ms (RTF: --)</span>
+        </div>
+        <div class="telemetry-row">
           <span class="telemetry-label">DYNAMIC MEMORY</span>
           <span class="telemetry-val" id="memoryCountVal">TIER 2 (ACTIVE)</span>
         </div>
@@ -2170,6 +2178,8 @@
       domRefs.p99TtfaBadge = document.getElementById('p99TtfaBadge');
       domRefs.p99TimeRangeLabel = document.getElementById('p99TimeRangeLabel');
       domRefs.memoryCountVal = document.getElementById('memoryCountVal');
+      domRefs.audioBargeInVal = document.getElementById('audioBargeInVal');
+      domRefs.audioTtfbVal = document.getElementById('audioTtfbVal');
       domRefs.activeTimersVal = document.getElementById('activeTimersVal');
       domRefs.telemetryStagedVal = document.getElementById('telemetryStagedVal');
       domRefs.workspaceSelect = document.getElementById('workspaceSelect');
@@ -3260,6 +3270,31 @@ void main() {
           }
         }
         updateHUDState(currentState);
+      }
+
+      // 11. Audio Barge-In & TTS Latency Telemetry (Plan 008 / Plan 015)
+      const aud = data.audio || data.aud;
+      if (aud) {
+        if (domRefs.audioBargeInVal) {
+          const l1 = aud.l1_latency_ms !== undefined ? `${aud.l1_latency_ms.toFixed(1)}ms` : '--';
+          const l2 = aud.l2_latency_ms !== undefined ? `${aud.l2_latency_ms.toFixed(1)}ms` : '--';
+          domRefs.audioBargeInVal.textContent = `${l1} / ${l2}`;
+          if (aud.l1_latency_ms > 50.0 || aud.l2_latency_ms > 50.0) {
+            domRefs.audioBargeInVal.style.color = 'var(--holo-crimson)';
+          } else {
+            domRefs.audioBargeInVal.style.color = 'var(--holo-cyan)';
+          }
+        }
+        if (domRefs.audioTtfbVal) {
+          const ttfb = aud.ttfb_ms !== undefined ? `${aud.ttfb_ms.toFixed(1)}ms` : '--';
+          const rtf = aud.rtf !== undefined ? aud.rtf.toFixed(2) : '--';
+          domRefs.audioTtfbVal.textContent = `${ttfb} (RTF: ${rtf})`;
+          if (aud.rtf > 0.50) {
+            domRefs.audioTtfbVal.style.color = 'var(--holo-amber)';
+          } else {
+            domRefs.audioTtfbVal.style.color = 'var(--holo-emerald)';
+          }
+        }
       }
     }
 
