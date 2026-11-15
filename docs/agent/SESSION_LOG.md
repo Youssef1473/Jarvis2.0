@@ -4302,3 +4302,47 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Live E2E Smoke Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing in 1.45s (Exit code: 0).
    - **Tier 1 Fast Test Suite:** 1,491 passed, 0 failed, 11 skipped in CI run `#43744107274` (Exit code: 0).
    - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
+
+---
+
+## Session Log: 2026-11-15 — /improve Modernization Queue — Batch 5 (Plans 020–024) & Baseline Closure
+
+- **Session Timestamp:** 2026-11-15T23:55:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `docs/seal-batch5-plans-020-024-closure` (branched from `main` @ `b125988`)
+- **Starting Git HEAD SHA:** `eb5f8beea1df74174d353b308efad0b1a433b5c4` (`eb5f8be`)
+- **Ending Git HEAD SHA:** `b125988804bf4c24055645f9204ecc6381e7278d` (`b125988`)
+- **Landed Pull Requests:**
+  - **PR #39:** `docs(governance): seal Batch 4 Plans 015-019 closure and post-PR #38 main baseline (#39)` (Merged, commit `01b2959`)
+  - **PR #40:** `fix(context): eliminate 39 ruff diagnostics across context subsystem (#40)` (Merged, commit `575b7b4`, containing `dd12589`)
+  - **PR #41:** `fix(core): harden win32 thread affinity and pipeline error transparency (#41)` (Merged, commit `c0560e2`, containing `7657735` and `6df3ecb`)
+  - **PR #42:** `fix(core,skills): harden service health checks and watchdog/vision error reporting (#42)` (Merged, commit `b125988`, containing `131087b` and `bc92899`)
+- **Active Milestone:** `Batch 5 Governance Seal & Roadmap Closure (Plans 001-024 Closed)`
+
+### Summary of Actions & Deliverables
+1. **Plan 020 — Context Pipeline Error Transparency (PR #40, `dd12589`):**
+   - Eliminated all 39 Ruff diagnostics across `jarvis/context/` (`pipe_listener.py`, `flow_state_mirror.py`, `context_orchestrator.py`, `fs_watcher.py`).
+   - Replaced blind catches and silent exception swallows with typed IPC error handling and structured debug logging; collapsed nested conditionals (`SIM102`).
+2. **Plan 021 — Win32 Thread Affinity Typed Exceptions (PR #41, `7657735`):**
+   - Eliminated all 8 `BLE001` diagnostics in `jarvis/core/win32_affinity.py`.
+   - Replaced blind `except Exception:` catches during thread affinity mask setting, MMCSS registration, and COM STA initialization with typed `(OSError, RuntimeError, AttributeError)` tuples.
+3. **Plan 022 — Pipeline Orchestration Error Transparency (PR #41, `6df3ecb`):**
+   - Eliminated all 23 Ruff diagnostics across `jarvis/core/pipeline/tool_orchestrator.py` and `jarvis/core/pipeline/dual_track.py`.
+   - Handled `TRY401` by removing redundant exception arguments in `logger.exception()`; preserved cooperative cancellation via `except asyncio.CancelledError: raise`.
+4. **Plan 023 — Core Services & Health Check Hardening (PR #42, `131087b`):**
+   - Eliminated all 31 Ruff diagnostics across `jarvis/core/services.py` and `jarvis/core/health_check.py`.
+   - Replaced silent exception swallows with typed process, port, and audio exception tuples (`psutil.Error`, `PortAudioError`, `sqlite3.Error`, `OSError`, `RuntimeError`, `ValueError`, `AttributeError`, `ProcessLookupError`, `ImportError`).
+5. **Plan 024 — Watchdog & Vision Skills Error Reporting (PR #42, `bc92899`):**
+   - Eliminated all 22 Ruff diagnostics across `jarvis/skills/system_watchdog.py` and `jarvis/skills/screen_vision.py`.
+   - Collapsed nested `if` statements (`SIM102`), added explicit `check=False` to `subprocess.run` (`PLW1510`), and replaced blind exception catches with typed tuples while strictly preserving graceful user fallback responses.
+6. **Roadmap Queue Completion & Ledger Alignment:**
+   - Updated local `plans/README.md` marking all 24 implementation plans (`001`–`024`) across Batches 1–5 as `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+7. **Full-Tree Verification Gates & Accounting Invariant:**
+   - **Static Linter (`tools/lint.py`):** 0 Ruff diagnostics across all 13 modernized packages and modules.
+   - **Structural Invariants (`tools/diagnostics.py`):** 0 AST-Grep invariant violations.
+   - **Test Accounting Invariant:** `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed with 100% accounting (2,472 collected nodes accounted for, 0 drift).
+   - **Test Classifier Integrity:** `tools/test_classifier.py --check-orphaned` verified 0 orphans, 0 duplicates, 2,472 nodes confirmed.
+   - **Live E2E Smoke Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing in 1.41s–1.45s (Exit code: 0).
+   - **Phase 2 Security Regression Suite:** 223 passed, 0 failed, 1 skipped in 83.30s (Exit code: 0).
+   - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.

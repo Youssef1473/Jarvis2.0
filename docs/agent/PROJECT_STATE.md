@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-15T19:15:00+01:00 (CET)
-- **Active Git Branch:** `main` (synced at `eb5f8be`)
-- **Recorded HEAD Commit SHA:** `eb5f8beea1df74174d353b308efad0b1a433b5c4` (`eb5f8be`)
-- **HEAD Commit Subject:** `Merge pull request #38 from Youssef1473/feat/e2e-scorecard-and-sandbox-hardening`
-- **Milestone State:** **Production Baseline Verified on main (eb5f8be); Batch 4 Plans 015-019 Formally Closed**
-- **Active Milestone:** **Batch 4 Governance Seal & Roadmap Closure**
+- **Validation Timestamp:** 2026-11-15T23:55:00+01:00 (CET)
+- **Active Git Branch:** `main` (synced at `b125988`)
+- **Recorded HEAD Commit SHA:** `b125988804bf4c24055645f9204ecc6381e7278d` (`b125988`)
+- **HEAD Commit Subject:** `Merge pull request #42 from Youssef1473/fix/core-services-and-watchdog-vision-errors`
+- **Milestone State:** **Production Baseline Verified on main (b125988); Batch 5 Plans 020-024 Formally Closed**
+- **Active Milestone:** **Batch 5 Governance Seal & Roadmap Closure**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
@@ -36,8 +36,18 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Batch 4 Governance Seal & Roadmap Closure`
+- **Active Milestone:** `Batch 5 Governance Seal & Roadmap Closure`
 - **Completed Work:**
+  - **`/improve` Modernization & Refactoring Queue — Batch 5 (Plans 020–024 COMPLETED & SEALED):**
+    - **Plan 020 (Context Pipeline Error Transparency — PR #40, `dd12589`, merged `575b7b4`):** Eliminates all 39 Ruff diagnostics across `jarvis/context/` (`pipe_listener.py`, `flow_state_mirror.py`, `context_orchestrator.py`, `fs_watcher.py`), achieving package-wide 0-Ruff clean status with typed IPC exception handling and collapsing redundant nested `if` statements (`SIM102`).
+    - **Plan 021 (Win32 Thread Affinity Typed Exceptions — PR #41, `7657735`, merged `c0560e2`):** Eliminates all 8 `BLE001` diagnostics in `jarvis/core/win32_affinity.py` with typed ctypes exception handling (`(OSError, RuntimeError, AttributeError)`) across thread affinity masks, MMCSS scheduling, and COM STA initialization.
+    - **Plan 022 (Pipeline Orchestration Error Transparency — PR #41, `6df3ecb`, merged `c0560e2`):** Eliminates all 23 Ruff diagnostics in `jarvis/core/pipeline/tool_orchestrator.py` and `jarvis/core/pipeline/dual_track.py` (including `TRY401` logging fixes) while preserving cooperative `asyncio.CancelledError` propagation and single-use tool invariants.
+    - **Plan 023 (Core Services & Health Check Hardening — PR #42, `131087b`, merged `b125988`):** Eliminates all 31 Ruff diagnostics in `jarvis/core/services.py` and `jarvis/core/health_check.py`, providing structured logging and typed exception tuples (`psutil.Error`, `PortAudioError`, `sqlite3.Error`, OS/subprocess/network exceptions) for daemon supervision and health probes.
+    - **Plan 024 (Watchdog & Vision Skills Error Reporting — PR #42, `bc92899`, merged `b125988`):** Eliminates all 22 Ruff diagnostics across `jarvis/skills/system_watchdog.py` and `jarvis/skills/screen_vision.py`, removing silent passes, simplifying nested conditionals (`SIM102`), and typing Gemini/UIA/Win32 exceptions while preserving user fallback responses.
+    - **Full Roadmap Closure:** All 24 implementation plans in `plans/README.md` (`001`–`024`) marked `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+    - **Subsystems at 0 Ruff Diagnostics:** `jarvis/audio/`, `jarvis/memory/`, `jarvis/ui/`, `jarvis/routing/`, `jarvis/context/`, `jarvis/core/pipeline/`, `jarvis/core/win32_affinity.py`, `jarvis/core/services.py`, `jarvis/core/health_check.py`, `jarvis/skills/os_control.py`, `jarvis/skills/job_object_sandbox.py`, `jarvis/skills/system_watchdog.py`, and `jarvis/skills/screen_vision.py`.
+    - **Test Accounting Invariant:** 2,472 collected nodes accounted for (0 drift) via `test_17_accurate_total_test_accounting` and `tools/test_classifier.py --check-orphaned`.
+    - **Database Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
   - **`/improve` Modernization & Refactoring Queue — Batch 4 (Plans 015–019 COMPLETED & SEALED):**
     - **Plan 015 (HUD Audio Latency Telemetry Gauges — PR #36, `051baec`, merged `e170ebd`):** Wires live $L_1$/$L_2$ barge-in interruption latencies (with `var(--holo-crimson)` threshold highlighting above 50.0 ms) and TTS TTFB/RTF metrics into `renderTelemetryFrame()` inside `jarvis/ui/templates/hud.html` while preserving Zero-CLS layout stability.
     - **Plan 016 (UI Error Transparency & Type Safety — PR #37, `7124d80`, merged `b09ac0f`):** Eliminates all 26 Ruff diagnostics across `jarvis/ui/` (`hud.py`, `tray.py`, `win32_overlay.py`), adding `ClassVar` type safety to `JarvisHUD.STATES` and replacing blind exception catches with typed error logging.
