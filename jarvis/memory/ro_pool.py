@@ -15,7 +15,7 @@ import threading
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 logger = logging.getLogger("Jarvis.Memory.ROPool")
 
@@ -62,7 +62,7 @@ class VectorMemoryPool:
                 self._vector_load_error = None
             finally:
                 probe.close()
-        except Exception as e:
+        except (sqlite3.Error, OSError, RuntimeError, ImportError) as e:
             self._vector_extension_loaded = False
             self._vector_load_error = str(e)
 
@@ -108,7 +108,7 @@ class VectorMemoryPool:
             sqlite_vec.load(conn)
             self._vector_extension_loaded = True
             self._vector_load_error = None
-        except Exception as e:
+        except (sqlite3.Error, OSError, RuntimeError, ImportError) as e:
             self._vector_extension_loaded = False
             self._vector_load_error = str(e)
             logger.warning("VectorMemoryPool: sqlite_vec load failed (%s); pool operating in degraded mode.", e)
@@ -144,8 +144,8 @@ class VectorMemoryPool:
         if self._is_torn_down:
             try:
                 conn.close()
-            except Exception:
-                pass
+            except (sqlite3.Error, OSError) as exc:
+                logger.debug("Vector pool conn close notice: %s", exc)
             return
         pool = self._get_queue()
         try:
@@ -153,8 +153,8 @@ class VectorMemoryPool:
         except asyncio.QueueFull:
             try:
                 conn.close()
-            except Exception:
-                pass
+            except (sqlite3.Error, OSError) as exc:
+                logger.debug("Vector pool queue-full close notice: %s", exc)
 
     async def execute_knn_query(
         self,
@@ -278,24 +278,24 @@ class VectorMemoryPool:
             for conn in self._created_conns:
                 try:
                     conn.close()
-                except Exception:
-                    pass
+                except (sqlite3.Error, OSError) as exc:
+                    logger.debug("Vector pool created_conn close notice: %s", exc)
             self._created_conns.clear()
             if self._pool is not None:
                 while not self._pool.empty():
                     try:
                         conn = self._pool.get_nowait()
                         conn.close()
-                    except Exception:
-                        pass
+                    except (sqlite3.Error, OSError) as exc:
+                        logger.debug("Vector pool drained conn close notice: %s", exc)
 
     def __del__(self) -> None:
         try:
             self.teardown()
-        except Exception:
-            pass
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
+            logger.debug("VectorMemoryPool teardown notice in __del__: %s", exc)
 
-    async def __aenter__(self) -> VectorMemoryPool:
+    async def __aenter__(self) -> Self:
         await self.initialize()
         return self
 
@@ -324,7 +324,7 @@ class ReadOnlyConnectionPool:
                 self._vector_load_error = None
             finally:
                 probe.close()
-        except Exception as e:
+        except (sqlite3.Error, OSError, RuntimeError, ImportError) as e:
             self._vector_extension_loaded = False
             self._vector_load_error = str(e)
 
@@ -370,7 +370,7 @@ class ReadOnlyConnectionPool:
             sqlite_vec.load(conn)
             self._vector_extension_loaded = True
             self._vector_load_error = None
-        except Exception as e:
+        except (sqlite3.Error, OSError, RuntimeError, ImportError) as e:
             self._vector_extension_loaded = False
             self._vector_load_error = str(e)
             logger.warning("ReadOnlyConnectionPool: sqlite_vec load failed (%s); pool operating in degraded mode.", e)
@@ -393,12 +393,12 @@ class ReadOnlyConnectionPool:
             finally:
                 try:
                     conn.commit()
-                except Exception:
-                    pass
+                except (sqlite3.Error, OSError) as exc:
+                    logger.debug("RO pool temp commit-release notice: %s", exc)
                 try:
                     conn.close()
-                except Exception:
-                    pass
+                except (sqlite3.Error, OSError) as exc:
+                    logger.debug("RO pool temp conn close notice: %s", exc)
             return
 
         conn = connections.get(key)
@@ -412,8 +412,8 @@ class ReadOnlyConnectionPool:
             try:
                 # Release historical WAL read-mark to avoid pinning frames during checkpoint(TRUNCATE)
                 conn.commit()
-            except Exception:
-                pass
+            except (sqlite3.Error, OSError) as exc:
+                logger.debug("RO pool commit-release notice: %s", exc)
 
     def close_current_thread(self) -> None:
         """Closes all connections owned by calling thread."""
@@ -422,8 +422,8 @@ class ReadOnlyConnectionPool:
             for conn in connections.values():
                 try:
                     conn.close()
-                except Exception:
-                    pass
+                except (sqlite3.Error, OSError) as exc:
+                    logger.debug("RO pool close_current_thread notice: %s", exc)
             connections.clear()
 
     def close_db(self, db_path: Path | str | None = None) -> None:
@@ -436,8 +436,8 @@ class ReadOnlyConnectionPool:
             if conn:
                 try:
                     conn.close()
-                except Exception:
-                    pass
+                except (sqlite3.Error, OSError) as exc:
+                    logger.debug("RO pool close_db notice: %s", exc)
 
     @classmethod
     def reset_pool(cls) -> None:
