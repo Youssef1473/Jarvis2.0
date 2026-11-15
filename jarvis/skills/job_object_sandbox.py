@@ -30,6 +30,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from ctypes import wintypes
 from typing import Any
 
@@ -292,7 +293,8 @@ def _collect_output(proc: subprocess.Popen, timeout: float = _COLLECT_TIMEOUT_SE
         out_s = out if isinstance(out, str) else out.decode(errors="replace")
         err_s = err if isinstance(err, str) else err.decode(errors="replace")
         return out_s, err_s
-    except Exception:
+    except (OSError, UnicodeDecodeError, AttributeError) as err:
+        logger.debug("Sandbox collect output notice: %s", err)
         return "", ""
 
 
@@ -316,7 +318,7 @@ def apply_job_ui_restrictions(h_job: Any, ui_flags: int = JOB_OBJECT_UILIMIT_ALL
             ctypes.sizeof(ui_restrictions),
         )
         return bool(ok)
-    except Exception as e:
+    except (OSError, RuntimeError, AttributeError, ValueError) as e:
         logger.debug("apply_job_ui_restrictions failed: %s", e)
         return False
 
@@ -381,7 +383,7 @@ def assign_process_to_job(h_job: Any, proc: subprocess.Popen) -> bool:
     try:
         raw_handle = _process_handle(proc)
         return bool(kernel32.AssignProcessToJobObject(wintypes.HANDLE(int(h_job)), wintypes.HANDLE(raw_handle)))
-    except Exception as e:
+    except (OSError, RuntimeError, AttributeError, ValueError) as e:
         logger.debug("Failed to assign process to Job Object: %s", e)
         return False
 
@@ -464,7 +466,7 @@ class JobHandleHolder:
 
         try:
             self._close_result = terminate_and_close_job(h, exit_code=exit_code)
-        except Exception as e:
+        except (OSError, RuntimeError, AttributeError) as e:
             logger.debug("JobHandleHolder terminate_and_close_job notice: %s", e)
             self._close_result = False
 
@@ -487,7 +489,7 @@ def terminate_and_close_job(h_job: Any, exit_code: int = 1) -> bool:
     drained = True
     try:
         drained = _terminate_and_drain(raw_h, exit_code=exit_code, drain_timeout=_DRAIN_TIMEOUT_SEC)
-    except Exception as e:
+    except (OSError, RuntimeError, AttributeError) as e:
         logger.debug("terminate_and_close_job drain notice: %s", e)
         drained = False
 
@@ -498,7 +500,8 @@ def terminate_and_close_job(h_job: Any, exit_code: int = 1) -> bool:
     closed = False
     try:
         closed = bool(kernel32.CloseHandle(raw_h))
-    except Exception:
+    except (OSError, RuntimeError, AttributeError) as err:
+        logger.debug("terminate_and_close_job CloseHandle notice: %s", err)
         closed = False
 
     return drained and closed
@@ -508,12 +511,12 @@ def _kill_unstarted(proc: subprocess.Popen) -> None:
     """Kills a child that must never run and releases its pipes."""
     try:
         proc.kill()
-    except Exception:
-        pass
+    except (OSError, subprocess.SubprocessError) as err:
+        logger.debug("kill unstarted proc notice: %s", err)
     try:
         proc.communicate(timeout=1.0)
-    except Exception:
-        pass
+    except (OSError, subprocess.SubprocessError) as err:
+        logger.debug("communicate unstarted proc notice: %s", err)
 
 
 class SandboxedProcess:
@@ -674,7 +677,7 @@ class SandboxedProcess:
                     priority_class=self.priority_class,
                     apply_ui_restrictions=self.apply_ui_restrictions,
                 )
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError, AttributeError) as e:
                 logger.error("SandboxedProcess: AppContainer Job Object creation error: %s", e)
                 h_job = None
 
@@ -694,7 +697,7 @@ class SandboxedProcess:
             assigned = False
             try:
                 assigned = bool(kernel32.AssignProcessToJobObject(wintypes.HANDLE(h_job), wintypes.HANDLE(handle.h_process)))
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError, AttributeError) as e:
                 logger.error("SandboxedProcess: AppContainer Job Object assignment error: %s", e)
                 assigned = False
 
@@ -714,7 +717,7 @@ class SandboxedProcess:
             resumed = False
             try:
                 resumed = handle.resume()
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError, AttributeError) as e:
                 logger.error("SandboxedProcess: AppContainer process resumption error: %s", e)
                 resumed = False
 
@@ -789,7 +792,7 @@ class SandboxedProcess:
                     priority_class=self.priority_class,
                     apply_ui_restrictions=self.apply_ui_restrictions,
                 )
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError, AttributeError) as e:
                 logger.error("SandboxedProcess: Job Object creation error: %s", e)
                 h_job = None
 
@@ -803,7 +806,7 @@ class SandboxedProcess:
             assigned = False
             try:
                 assigned = assign_process_to_job(h_job, proc)
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError, AttributeError) as e:
                 logger.error("SandboxedProcess: Job Object assignment error: %s", e)
                 assigned = False
 
@@ -817,7 +820,7 @@ class SandboxedProcess:
             resumed = False
             try:
                 resumed = resume_process(proc)
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError, AttributeError) as e:
                 logger.error("SandboxedProcess: process resumption error: %s", e)
                 resumed = False
 
@@ -873,7 +876,7 @@ class SandboxedProcess:
                     job_ok = self.job_holder.close(exit_code=exit_code)
                     if not job_ok:
                         success = False
-                except Exception as e:
+                except (OSError, RuntimeError, AttributeError) as e:
                     logger.debug("SandboxedProcess: error terminating Job Object holder: %s", e)
                     success = False
                 finally:
@@ -884,7 +887,7 @@ class SandboxedProcess:
                     job_ok = terminate_and_close_job(self.h_job, exit_code=exit_code)
                     if not job_ok:
                         success = False
-                except Exception as e:
+                except (OSError, RuntimeError, AttributeError) as e:
                     logger.debug("SandboxedProcess: error terminating Job Object: %s", e)
                     success = False
                 finally:
@@ -896,7 +899,7 @@ class SandboxedProcess:
                 os.killpg(os.getpgid(self.proc.pid), sig)
             except (ProcessLookupError, PermissionError):
                 pass
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.debug("SandboxedProcess: error killing process group: %s", e)
                 success = False
 
@@ -906,15 +909,15 @@ class SandboxedProcess:
                     proc_ok = self.proc.terminate_tree(exit_code=exit_code)
                     if not proc_ok:
                         success = False
-                except Exception as e:
+                except (OSError, RuntimeError, AttributeError) as e:
                     logger.debug("SandboxedProcess: error closing custom process wrapper: %s", e)
                     success = False
             elif self.proc.poll() is None:
                 try:
                     self.proc.kill()
                     self.proc.wait(timeout=1.0)
-                except Exception:
-                    pass
+                except (OSError, subprocess.SubprocessError) as err:
+                    logger.debug("SandboxedProcess: proc kill/wait notice: %s", err)
             self._close_pipes()
 
         self._close_result = success
@@ -926,24 +929,29 @@ class SandboxedProcess:
                 if p is not None and not getattr(p, "closed", True):
                     try:
                         p.close()
-                    except Exception:
-                        pass
+                    except (OSError, ValueError) as err:
+                        logger.debug("SandboxedProcess pipe close notice: %s", err)
 
     def _cleanup_unstarted(self, proc: subprocess.Popen) -> None:
         try:
             proc.kill()
-        except Exception:
-            pass
+        except (OSError, subprocess.SubprocessError) as err:
+            logger.debug("SandboxedProcess cleanup unstarted kill notice: %s", err)
         self._close_pipes()
         try:
             proc.wait(timeout=1.0)
-        except Exception:
-            pass
+        except (OSError, subprocess.SubprocessError) as err:
+            logger.debug("SandboxedProcess cleanup unstarted wait notice: %s", err)
 
     def __enter__(self) -> subprocess.Popen:
         return self.start()
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+    ) -> None:
         self.terminate_tree()
 
 
@@ -1282,8 +1290,8 @@ def run_job_sandboxed_process(
                 cancel_token.mark_confirmed_stopped()
             try:
                 proc.wait(timeout=1.0)
-            except Exception:  # noqa: BLE001
-                pass
+            except (subprocess.TimeoutExpired, OSError) as err:
+                logger.debug("SandboxedProcess proc wait timeout/notice: %s", err)
             stdout, stderr = _collect_output(proc)
         else:
             active = _active_process_count(h_job)
@@ -1292,8 +1300,8 @@ def run_job_sandboxed_process(
                 drained = _terminate_and_drain(h_job)
             try:
                 proc.wait(timeout=1.0)
-            except Exception:  # noqa: BLE001
-                pass
+            except (subprocess.TimeoutExpired, OSError) as err:
+                logger.debug("SandboxedProcess proc wait timeout/notice: %s", err)
             if not stdout and not stderr:
                 stdout, stderr = _collect_output(proc)
 
@@ -1347,18 +1355,18 @@ def run_job_sandboxed_process(
         if h_job:
             try:
                 kernel32.TerminateJobObject(h_job, 1)
-            except Exception:
-                pass
+            except (OSError, RuntimeError, AttributeError) as err:
+                logger.debug("TerminateJobObject guard notice: %s", err)
             try:
                 kernel32.CloseHandle(h_job)
-            except Exception:
-                pass
+            except (OSError, RuntimeError, AttributeError) as err:
+                logger.debug("CloseHandle guard notice: %s", err)
         if proc is not None and proc.poll() is None:
             try:
                 proc.kill()
                 proc.wait(timeout=0.5)
-            except Exception:
-                pass
+            except (OSError, subprocess.SubprocessError) as err:
+                logger.debug("Proc kill guard notice: %s", err)
 
 
 @SkillRegistry.register(

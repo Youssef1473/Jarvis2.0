@@ -33,6 +33,7 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -611,12 +612,31 @@ class Phase3E2EHarness:
         print(f"OVERALL STATUS: {status_label} (Exit code: {0 if all_passed else 1})")
         print("=" * 70)
 
+    def export_scorecard(self, target_path: str) -> None:
+        """Exports a structured Phase 3 scorecard JSON document for CI regression tracking."""
+        all_passed = (
+            all(r.get("status") in ("PASS", "SKIPPED") for r in self.turn_results.values())
+            and len(self.turn_results) == 4
+        )
+        data = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "mode": "headless" if self.headless else "live_audio",
+            "overall_status": "ALL 4 TURNS PASSED" if all_passed else "ONE OR MORE TURNS FAILED",
+            "all_passed": all_passed,
+            "turns": self.turn_results,
+        }
+        out_file = Path(target_path)
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        print(f"Scorecard JSON exported: {out_file}")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Jarvis 2.0 Phase 3 Consecutive Turns E2E Verification Harness")
     parser.add_argument("--headless", action="store_true", default=True, help="Run headless deterministic audio simulation (default)")
     parser.add_argument("--live-audio", action="store_true", default=False, help="Connect live audio hardware (microphone/WASAPI)")
     parser.add_argument("--json", action="store_true", default=False, help="Emit results in JSON format")
+    parser.add_argument("--export-json", type=str, default=None, help="File path to write structured Phase 3 scorecard JSON")
     parser.add_argument("--timeout", type=float, default=30.0, help="Per-turn timeout in seconds")
 
     args = parser.parse_args()
@@ -624,6 +644,8 @@ def main() -> None:
     harness = Phase3E2EHarness(headless=args.headless, live_audio=args.live_audio, timeout_sec=args.timeout)
     success = harness.run_all()
     harness.print_summary(as_json=args.json)
+    if args.export_json:
+        harness.export_scorecard(args.export_json)
 
     sys.exit(0 if success else 1)
 
