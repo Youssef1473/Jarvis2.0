@@ -738,7 +738,7 @@ def adjust_volume(action: str = "set", percent: int = -1, steps: int = 5) -> str
             verified_mute = bool(spk.EndpointVolume.GetMute())
             return "Volume muted, Sir." if verified_mute else "Volume unmuted, Sir."
 
-    except (OSError, RuntimeError, ValueError, AttributeError) as e:
+    except (OSError, RuntimeError, ValueError, AttributeError, Exception) as e:  # noqa: BLE001
         logger.warning("pycaw volume adjustment error: %s. Falling back to Win32 keybd_event.", e)
 
     # Win32 virtual key fallback if pycaw encounters an issue
