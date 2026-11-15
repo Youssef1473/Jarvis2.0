@@ -79,7 +79,7 @@ class ONNXIntentRouter:
                 providers = ["CPUExecutionProvider"]
                 self.session = ort.InferenceSession(str(self.model_path), sess_options=opts, providers=providers)
                 logger.info("Loaded ONNX Intent Router model from %s", self.model_path)
-            except Exception as e:
+            except (ImportError, OSError, RuntimeError, ValueError) as e:
                 logger.debug("ONNX Runtime session init failed: %s; using fast vector projection", e)
                 self.session = None
 
@@ -209,7 +209,7 @@ class ONNXIntentRouter:
                     elif onnx_out.ndim == 1 and len(onnx_out) > 0:
                         dim = min(len(logits), len(onnx_out))
                         logits[:dim] += onnx_out[:dim].astype(np.float32)
-            except Exception as ort_err:
+            except (RuntimeError, ValueError, TypeError, AttributeError) as ort_err:
                 logger.debug("ONNX inference session execution failed: %s; using heuristic logits", ort_err)
 
         # Apply temperature-scaled softmax

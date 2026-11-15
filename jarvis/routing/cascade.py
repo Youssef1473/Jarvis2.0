@@ -130,7 +130,7 @@ class RoutingCascade:
                 speculative_keys.append(key)
                 logger.debug("Cascade Tier 2 Pre-Warm launched for '%s' (P=%.2f, key=%s)",
                              skill, prob, key[:8])
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError, AttributeError, OSError) as e:
                 logger.debug("Speculative pre-warm dispatch failed for '%s': %s", skill, e)
 
         return RoutingDecision(

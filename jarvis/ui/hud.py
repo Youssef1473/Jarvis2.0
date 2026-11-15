@@ -1,13 +1,17 @@
 """Futuristic Arc-Reactor Holographic HUD Overlay for Jarvis 2.0."""
+import logging
 import math
 import threading
 import tkinter as tk
+from typing import ClassVar
+
+logger = logging.getLogger(__name__)
 
 
 class JarvisHUD:
     """A floating, transparent, draggable Arc-Reactor visualizer."""
 
-    STATES = ["idle", "listening", "thinking", "speaking"]
+    STATES: ClassVar[list[str]] = ["idle", "listening", "thinking", "speaking"]
 
     def __init__(self, size: int = 140):
         self.size = size
@@ -160,8 +164,8 @@ class JarvisHUD:
             hwnd = self.root.winfo_id()
             if hwnd:
                 configure_stark_overlay_hwnd(hwnd)
-        except Exception:
-            pass
+        except (ImportError, OSError, RuntimeError, AttributeError) as err:
+            logger.debug("Stark overlay HWND configuration notice: %s", err)
 
         self.running = True
         self._draw_hud()
@@ -184,7 +188,8 @@ class JarvisHUD:
             else:
                 self.root.deiconify()
                 return True
-        except Exception:
+        except (tk.TclError, RuntimeError, AttributeError) as err:
+            logger.debug("HUD visibility toggle notice: %s", err)
             return False
 
     def is_visible(self) -> bool:
@@ -193,7 +198,8 @@ class JarvisHUD:
             return False
         try:
             return bool(self.root.winfo_viewable())
-        except Exception:
+        except (tk.TclError, RuntimeError, AttributeError) as err:
+            logger.debug("HUD visibility query notice: %s", err)
             return False
 
     def stop(self):
@@ -202,5 +208,5 @@ class JarvisHUD:
         if self.root:
             try:
                 self.root.quit()
-            except Exception:
-                pass
+            except (tk.TclError, RuntimeError, AttributeError) as err:
+                logger.debug("HUD window quit notice: %s", err)
