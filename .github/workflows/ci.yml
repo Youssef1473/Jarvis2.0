@@ -44,7 +44,15 @@ jobs:
 
       - name: Run Phase 3 Consecutive Turns E2E Smoke Gate
         run: |
-          python tools/verify_consecutive_turns.py --headless
+          python tools/verify_consecutive_turns.py --headless --export-json data/phase3_consecutive_turns_scorecard.json
+
+      - name: Upload Phase 3 E2E Scorecard Artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase3-consecutive-turns-scorecard
+          path: data/phase3_consecutive_turns_scorecard.json
+          retention-days: 14
 
   fast-tests:
     name: Fast Parallel Test Suite
