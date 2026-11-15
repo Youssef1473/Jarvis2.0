@@ -27,6 +27,27 @@ RING_CAPACITY_SAMPLES = SAMPLE_RATE * 10  # 10 seconds buffer: 240,000 float32 (
 HIGH_PRIORITY_CLASS = 0x00000080
 
 
+class DspProcessTelemetry:
+    """Thread-safe lock-free telemetry container for DSP companion ring buffer operations."""
+
+    last_clear_timestamp: float = 0.0
+    last_clear_duration_us: float = 0.0
+
+    @classmethod
+    def snapshot(cls) -> dict[str, float]:
+        """Returns lock-free read-only snapshot dictionary."""
+        return {
+            "last_clear_timestamp": cls.last_clear_timestamp,
+            "last_clear_duration_us": round(cls.last_clear_duration_us, 2),
+        }
+
+    @classmethod
+    def reset(cls) -> None:
+        """Resets telemetry state (used for test isolation)."""
+        cls.last_clear_timestamp = 0.0
+        cls.last_clear_duration_us = 0.0
+
+
 def _get_kernel32():
     """Initializes and returns 64-bit Kernel32 ABI function bindings on Windows."""
     if sys.platform != "win32":
@@ -144,7 +165,11 @@ def dsp_companion_main(shm_name: str, event_name: str, shutdown_event: mp.Event)
                 # Kernel wait up to 50ms with sub-microsecond wakeup on atomic signal
                 res = k32.WaitForSingleObject(barge_in_h, 50)
                 if res == 0:
+                    t_wake = time.perf_counter()
                     transport.trigger_barge_in_clear()
+                    t_cleared = time.perf_counter()
+                    DspProcessTelemetry.last_clear_timestamp = t_cleared
+                    DspProcessTelemetry.last_clear_duration_us = (t_cleared - t_wake) * 1_000_000.0
                     _reset_named_event(barge_in_h)
             else:
                 time.sleep(0.05)
@@ -191,8 +216,12 @@ class AudioDSPProcessClient:
 
     def trigger_barge_in(self) -> bool:
         """Flushes queued audio via the ring's epoch/cut protocol and signals the companion."""
+        t_wake = time.perf_counter()
         if self.transport:
             self.transport.trigger_barge_in_clear()
+        t_cleared = time.perf_counter()
+        DspProcessTelemetry.last_clear_timestamp = t_cleared
+        DspProcessTelemetry.last_clear_duration_us = (t_cleared - t_wake) * 1_000_000.0
         return _set_named_event(self.barge_in_h)
 
     def write_pcm(self, pcm_data: np.ndarray) -> int:

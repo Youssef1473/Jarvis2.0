@@ -29,6 +29,7 @@ logger = logging.getLogger("Jarvis.TTS")
 
 __all__ = [
     "AudioRingBuffer",
+    "AudioTelemetry",
     "StatefulPolyphaseUpsampler",
     "StreamingSentenceChunker",
     "TextToSpeech",
@@ -98,6 +99,63 @@ class _ClosedStreamsTracker:
 
     def __len__(self) -> int:
         return len(self._set)
+
+
+class AudioTelemetry:
+    """Thread-safe lock-free telemetry container for audio synthesis and interruption latencies."""
+
+    last_ttfb_ms: float = 0.0
+    last_rtf: float = 0.0
+    last_l1_latency_ms: float = 0.0
+    last_l2_latency_ms: float = 0.0
+    active_playback: bool = False
+    speech_onset_timestamp: float = 0.0
+    wake_onset_timestamp: float = 0.0
+
+    @classmethod
+    def record_interruption_onset(
+        cls,
+        speech_onset: float | None = None,
+        wake_onset: float | None = None,
+    ) -> None:
+        """Records speech or wake detection onset timestamps without locking."""
+        if speech_onset is not None and speech_onset > 0.0:
+            cls.speech_onset_timestamp = float(speech_onset)
+        if wake_onset is not None and wake_onset > 0.0:
+            cls.wake_onset_timestamp = float(wake_onset)
+
+    @classmethod
+    def record_barge_in_stop(cls, stop_timestamp: float | None = None) -> None:
+        """Computes and updates L1 and L2 latency on speech playback halt."""
+        t_stop = stop_timestamp if stop_timestamp is not None else time.perf_counter()
+        if cls.speech_onset_timestamp > 0.0:
+            cls.last_l1_latency_ms = round(max(0.0, (t_stop - cls.speech_onset_timestamp) * 1000.0), 2)
+            cls.speech_onset_timestamp = 0.0
+        if cls.wake_onset_timestamp > 0.0:
+            cls.last_l2_latency_ms = round(max(0.0, (t_stop - cls.wake_onset_timestamp) * 1000.0), 2)
+            cls.wake_onset_timestamp = 0.0
+
+    @classmethod
+    def reset(cls) -> None:
+        """Resets telemetry state (used for test isolation)."""
+        cls.last_ttfb_ms = 0.0
+        cls.last_rtf = 0.0
+        cls.last_l1_latency_ms = 0.0
+        cls.last_l2_latency_ms = 0.0
+        cls.active_playback = False
+        cls.speech_onset_timestamp = 0.0
+        cls.wake_onset_timestamp = 0.0
+
+    @classmethod
+    def snapshot(cls) -> dict[str, Any]:
+        """Returns lock-free read-only snapshot dictionary."""
+        return {
+            "ttfb_ms": round(cls.last_ttfb_ms, 2),
+            "rtf": round(cls.last_rtf, 4),
+            "l1_latency_ms": round(cls.last_l1_latency_ms, 2),
+            "l2_latency_ms": round(cls.last_l2_latency_ms, 2),
+            "active": cls.active_playback,
+        }
 
 
 def _async_close_worker_loop(tts_ref: weakref.ReferenceType[Any], q: queue.Queue) -> None:
@@ -460,7 +518,7 @@ class TextToSpeech:
             try:
                 self._async_close_queue.put_nowait(None)
                 self._async_close_worker.join(timeout=0.1)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
             raise RuntimeError(f"Barge-in callback registration failed: {e}") from e
 
@@ -494,10 +552,10 @@ class TextToSpeech:
                         try:
                             if getattr(self, "_library", None) and getattr(self._library, "_handle", None):
                                 _orig_del(self)
-                        except Exception:  # noqa: BLE001
+                        except Exception:  # noqa: BLE001, S110
                             pass
                     EspeakAPI._delete_win32 = _safe_del_win32
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
 
             if os.path.exists(self.kokoro_model_path) and os.path.exists(self.kokoro_voices_path):
@@ -1208,7 +1266,13 @@ class TextToSpeech:
                 self._fallback_thread = t
                 t.start()
 
-    def on_barge_in_flush(self, force: bool = False, expected_epoch: int | None = None) -> None:
+    def on_barge_in_flush(
+        self,
+        force: bool = False,
+        expected_epoch: int | None = None,
+        interruption_onset: float | None = None,
+        wake_onset: float | None = None,
+    ) -> None:
         """Immediately interrupts speech playback non-blockingly (<10ms) upon barge-in."""
         if expected_epoch is not None and getattr(self, "_session_activation_epoch", 0) > expected_epoch:
             return
@@ -1234,6 +1298,20 @@ class TextToSpeech:
         self._sapi_purge_event.set()
         self._is_speaking = False
         self._stream_active = False
+
+        AudioTelemetry.active_playback = False
+        t_stop = time.perf_counter()
+        if interruption_onset is not None and interruption_onset > 0.0:
+            AudioTelemetry.last_l1_latency_ms = round(max(0.0, (t_stop - interruption_onset) * 1000.0), 2)
+        elif AudioTelemetry.speech_onset_timestamp > 0.0:
+            AudioTelemetry.last_l1_latency_ms = round(max(0.0, (t_stop - AudioTelemetry.speech_onset_timestamp) * 1000.0), 2)
+            AudioTelemetry.speech_onset_timestamp = 0.0
+
+        if wake_onset is not None and wake_onset > 0.0:
+            AudioTelemetry.last_l2_latency_ms = round(max(0.0, (t_stop - wake_onset) * 1000.0), 2)
+        elif AudioTelemetry.wake_onset_timestamp > 0.0:
+            AudioTelemetry.last_l2_latency_ms = round(max(0.0, (t_stop - AudioTelemetry.wake_onset_timestamp) * 1000.0), 2)
+            AudioTelemetry.wake_onset_timestamp = 0.0
 
         if hasattr(self, "_ring_buffer") and self._ring_buffer:
             try:
@@ -1340,6 +1418,8 @@ class TextToSpeech:
         ramp_timeout: float = 0.030,
         non_blocking: bool = False,
         expected_epoch: int | None = None,
+        interruption_onset: float | None = None,
+        wake_onset: float | None = None,
     ) -> bool:
         """Immediately interrupts and halts speech playback across all engines."""
         if expected_epoch is not None and getattr(self, "_session_activation_epoch", 0) > expected_epoch:
@@ -1348,12 +1428,18 @@ class TextToSpeech:
         if non_blocking:
             self._stream_active = False
             self._is_speaking = False
+            AudioTelemetry.active_playback = False
             try:
                 from jarvis.core.cancellation import signal_global_barge_in
                 signal_global_barge_in(async_callbacks=True, exclude=self.on_barge_in_flush)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
-            self.on_barge_in_flush(force=True, expected_epoch=expected_epoch)
+            self.on_barge_in_flush(
+                force=True,
+                expected_epoch=expected_epoch,
+                interruption_onset=interruption_onset,
+                wake_onset=wake_onset,
+            )
             return True
 
         rem_stop = max(0.001, float(stop_timeout))
@@ -1363,7 +1449,13 @@ class TextToSpeech:
             with self._lifecycle_lock:
                 self._stop_in_progress = True
             try:
-                return self._do_stop(stop_timeout=stop_timeout, ramp_timeout=ramp_timeout, expected_epoch=expected_epoch)
+                return self._do_stop(
+                    stop_timeout=stop_timeout,
+                    ramp_timeout=ramp_timeout,
+                    expected_epoch=expected_epoch,
+                    interruption_onset=interruption_onset,
+                    wake_onset=wake_onset,
+                )
             finally:
                 with self._lifecycle_lock:
                     self._stop_in_progress = False
@@ -1376,6 +1468,8 @@ class TextToSpeech:
         stop_timeout: float = 0.100,
         ramp_timeout: float = 0.030,
         expected_epoch: int | None = None,
+        interruption_onset: float | None = None,
+        wake_onset: float | None = None,
     ) -> bool:
         if expected_epoch is not None and getattr(self, "_session_activation_epoch", 0) > expected_epoch:
             return True
@@ -1384,6 +1478,20 @@ class TextToSpeech:
 
         def _calc_rem(default_t: float) -> float:
             return min(default_t, max(0.0, stop_deadline - time.monotonic()))
+
+        AudioTelemetry.active_playback = False
+        t_stop = time.perf_counter()
+        if interruption_onset is not None and interruption_onset > 0.0:
+            AudioTelemetry.last_l1_latency_ms = round(max(0.0, (t_stop - interruption_onset) * 1000.0), 2)
+        elif AudioTelemetry.speech_onset_timestamp > 0.0:
+            AudioTelemetry.last_l1_latency_ms = round(max(0.0, (t_stop - AudioTelemetry.speech_onset_timestamp) * 1000.0), 2)
+            AudioTelemetry.speech_onset_timestamp = 0.0
+
+        if wake_onset is not None and wake_onset > 0.0:
+            AudioTelemetry.last_l2_latency_ms = round(max(0.0, (t_stop - wake_onset) * 1000.0), 2)
+        elif AudioTelemetry.wake_onset_timestamp > 0.0:
+            AudioTelemetry.last_l2_latency_ms = round(max(0.0, (t_stop - AudioTelemetry.wake_onset_timestamp) * 1000.0), 2)
+            AudioTelemetry.wake_onset_timestamp = 0.0
 
         self._session_generation = next(self._session_counter)
         self._stop_event.set()
@@ -1419,7 +1527,7 @@ class TextToSpeech:
             )
             if not is_barge_in_active():
                 signal_global_barge_in(async_callbacks=True, exclude=self.on_barge_in_flush)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110
             pass
 
         while not self._sentence_queue.empty():
@@ -2005,6 +2113,7 @@ class TextToSpeech:
 
         self._is_speaking = True
         self._stream_active = True
+        AudioTelemetry.active_playback = True
         self._prebuffer_filled = False
         self._synth_has_started = False
         self._session_word_count = 0
@@ -2045,11 +2154,11 @@ class TextToSpeech:
                 stream_startup_done.set()
                 try:
                     self._sentence_queue.put_nowait(None)
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001, S110
                     pass
                 try:
                     self._audio_queue.put_nowait(None)
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001, S110
                     pass
                 if getattr(self, "_synth_thread", None) and self._synth_thread.is_alive():
                     self._synth_thread.join(timeout=0.05)
@@ -2094,6 +2203,8 @@ class TextToSpeech:
                     if not clean_text:
                         continue
 
+                    sentence_t0 = time.perf_counter()
+                    is_first_chunk = True
                     sub_chunks = self._split_into_audio_chunks(clean_text)
                     for chunk in sub_chunks:
                         if (
@@ -2109,12 +2220,21 @@ class TextToSpeech:
                                 if getattr(self, "_shm_transport", None)
                                 else None
                             )
+                            t_synth_start = time.perf_counter()
                             samples, sr = self._kokoro.create(
                                 chunk,
                                 voice=self._resolve_voice(),
                                 speed=self.kokoro_speed,
                                 lang=self.kokoro_lang,
                             )
+                            t_synth_end = time.perf_counter()
+                            synth_dur = t_synth_end - t_synth_start
+                            audio_dur = len(samples) / float(sr) if sr > 0 else 0.0
+                            if audio_dur > 0.0:
+                                AudioTelemetry.last_rtf = round(synth_dur / audio_dur, 4)
+                            if is_first_chunk:
+                                AudioTelemetry.last_ttfb_ms = round((t_synth_end - sentence_t0) * 1000.0, 2)
+                                is_first_chunk = False
                             if (
                                 self._ring_buffer.barge_in_epoch != producer_epoch
                                 or self._stop_event.is_set()
@@ -2169,13 +2289,13 @@ class TextToSpeech:
                                 if getattr(self, "_shm_transport", None):
                                     try:
                                         self._shm_transport.write_pcm(padded_samples, producer_epoch=shm_producer_epoch)
-                                    except Exception:  # noqa: BLE001
+                                    except Exception:  # noqa: BLE001, S110
                                         pass
                                 self._audio_queue.put((padded_samples, sr))
                                 try:
                                     from jarvis.audio.dsp_tap import AudioDspTap
                                     AudioDspTap.get_instance().process_and_broadcast(padded_samples[:512])
-                                except Exception:  # noqa: BLE001
+                                except Exception:  # noqa: BLE001, S110
                                     pass
                         except Exception as e:  # noqa: BLE001
                             logger.error("Kokoro synth error: %s", e)
@@ -2226,7 +2346,7 @@ class TextToSpeech:
                                     if hasattr(sd, "get_stream"):
                                         with self._stream_claim_lock:
                                             self._default_stream = sd.get_stream()
-                                except Exception:  # noqa: BLE001
+                                except Exception:  # noqa: BLE001, S110
                                     pass
                             if started_play:
                                 sd.wait()
@@ -2509,7 +2629,7 @@ class TextToSpeech:
                     sapi_inst = None
                     try:
                         del v
-                    except Exception:  # noqa: BLE001
+                    except Exception:  # noqa: BLE001, S110
                         pass
                     if co_initialized:
                         try:
@@ -2745,6 +2865,7 @@ class TextToSpeech:
 
             self._is_speaking = False
             self._stream_active = False
+            AudioTelemetry.active_playback = False
             return not timed_out and close_ok
 
         else:
@@ -2773,6 +2894,7 @@ class TextToSpeech:
                 sapi_ok = False
             self._is_speaking = False
             self._stream_active = False
+            AudioTelemetry.active_playback = False
             return sapi_ok
 
     def speak_sync(self, text: str) -> None:
@@ -2850,16 +2972,28 @@ class TextToSpeech:
 
             if self.engine == "kokoro" and self._kokoro:
                 try:
+                    t0_sync = time.perf_counter()
+                    is_first_sync_chunk = True
                     sub_chunks = self._split_into_audio_chunks(clean_text)
                     for chunk in sub_chunks:
                         if self._stop_event.is_set():
                             break
+                        t_synth_start = time.perf_counter()
                         samples, sr = self._kokoro.create(
                             chunk,
                             voice=self._resolve_voice(),
                             speed=self.kokoro_speed,
                             lang=self.kokoro_lang,
                         )
+                        t_synth_end = time.perf_counter()
+                        synth_dur = t_synth_end - t_synth_start
+                        audio_dur = len(samples) / float(sr) if sr > 0 else 0.0
+                        if audio_dur > 0.0:
+                            AudioTelemetry.last_rtf = round(synth_dur / audio_dur, 4)
+                        if is_first_sync_chunk:
+                            AudioTelemetry.last_ttfb_ms = round((t_synth_end - t0_sync) * 1000.0, 2)
+                            is_first_sync_chunk = False
+
                         padded_samples = self._smooth_and_pad_audio(
                             samples, sr, chunk, apply_dsp=self.dsp_filter
                         )
@@ -2876,15 +3010,16 @@ class TextToSpeech:
                             try:
                                 from jarvis.audio.dsp_tap import AudioDspTap
                                 AudioDspTap.get_instance().process_and_broadcast(padded_samples[:512])
-                            except Exception:  # noqa: BLE001
+                            except Exception:  # noqa: BLE001, S110
                                 pass
                             sd.play(padded_samples, sr)
                             started_play = True
+                            AudioTelemetry.active_playback = True
                             try:
                                 if hasattr(sd, "get_stream"):
                                     with self._stream_claim_lock:
                                         self._default_stream = sd.get_stream()
-                            except Exception:  # noqa: BLE001
+                            except Exception:  # noqa: BLE001, S110
                                 pass
                         if started_play:
                             try:
@@ -2898,6 +3033,7 @@ class TextToSpeech:
                         self._speak_local_sapi(clean_text)
                 finally:
                     self._is_speaking = False
+                    AudioTelemetry.active_playback = False
             else:
                 if not self._stop_event.is_set():
                     self._speak_local_sapi(clean_text)
@@ -2912,6 +3048,7 @@ class TextToSpeech:
         import win32com.client
         pythoncom.CoInitialize()
         self._is_speaking = True
+        AudioTelemetry.active_playback = True
         sapi = None
         v = None
         try:
@@ -2937,6 +3074,7 @@ class TextToSpeech:
             logger.error("SAPI5 speech error: %s", e)
         finally:
             self._is_speaking = False
+            AudioTelemetry.active_playback = False
             sapi = None
             v = None
             try:

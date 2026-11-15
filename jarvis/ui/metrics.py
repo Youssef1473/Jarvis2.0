@@ -226,6 +226,19 @@ class WorkstationMetricsCollector:
                 logger.debug("P99 history notice: %s", err)
                 p99_history = []
 
+        audio_telemetry = {
+            "ttfb_ms": 0.0,
+            "rtf": 0.0,
+            "l1_latency_ms": 0.0,
+            "l2_latency_ms": 0.0,
+            "active": False,
+        }
+        try:
+            from jarvis.audio.tts import AudioTelemetry
+            audio_telemetry = AudioTelemetry.snapshot()
+        except (ImportError, AttributeError) as err:
+            logger.debug("Audio telemetry snapshot notice: %s", err)
+
         return {
             # Single-character keys required by Council Telemetry Directive
             "c": cpu_val,
@@ -241,6 +254,9 @@ class WorkstationMetricsCollector:
             "md": active_model,
             "m": 1 if is_muted else 0,
             "ts": int(time.time() * 1000),
+            # Lock-free audio barge-in latency and TTS metrics (Plan 008)
+            "audio": audio_telemetry,
+            "aud": audio_telemetry,
             # Backwards-compatible fields for existing test assertions & components
             "cpu": cpu_val,
             "ram_pct": ram_pct,
