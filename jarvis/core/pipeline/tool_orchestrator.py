@@ -180,7 +180,7 @@ class ToolOrchestrator:
                     "status": "running",
                     "step": step_index,
                 })
-            except Exception as e:
+            except (TypeError, ValueError, AttributeError, RuntimeError) as e:
                 logger.debug("Tool status callback notice (start): %s", e)
 
         # 4. Physical Execution via SkillRegistry
@@ -194,15 +194,15 @@ class ToolOrchestrator:
                     exec_kwargs["user_approved"] = True
                 if "automated" in sig.parameters:
                     exec_kwargs["automated"] = True
-            except Exception:
-                pass
+            except (ValueError, TypeError, AttributeError) as err:
+                logger.debug("Tool signature inspection notice: %s", err)
 
         current_turn_id = None
         try:
             from jarvis.core.security_boundaries import TurnTaintTracker
             current_turn_id = TurnTaintTracker.get_instance().get_current_turn_id()
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, ImportError) as err:
+            logger.debug("TurnTaintTracker lookup notice: %s", err)
 
         from jarvis.skills.base import ExecutionCapability
         cap = ExecutionCapability.create(
@@ -222,16 +222,20 @@ class ToolOrchestrator:
         bind_tok = bind_tool_cancellation_token(step_cancel_tok)
         try:
             skill_res = SkillRegistry.execute_with_status(tool_name, **exec_kwargs)
-            if self.dual_track_coordinator is not None and getattr(self.dual_track_coordinator, "is_read_only_tool", lambda t: False)(tool_name):
-                if skill_res.success and skill_res.result is not None:
-                    self.dual_track_coordinator._set_cached_result(cache_key, skill_res.result)
+            if (
+                self.dual_track_coordinator is not None
+                and getattr(self.dual_track_coordinator, "is_read_only_tool", lambda t: False)(tool_name)
+                and skill_res.success
+                and skill_res.result is not None
+            ):
+                self.dual_track_coordinator._set_cached_result(cache_key, skill_res.result)
             return OrchestratorStepResult(
                 result=skill_res.result,
                 success=skill_res.success,
                 failure_category="exception" if not skill_res.success else None,
                 error_message=skill_res.error_message,
             )
-        except Exception as err:
+        except (RuntimeError, ValueError, TypeError, KeyError, OSError, TimeoutError) as err:
             logger.error("Exception during tool execution '%s': %s", tool_name, err)
             return OrchestratorStepResult(
                 result=f"Error executing tool '{tool_name}': {err}",
@@ -255,7 +259,7 @@ class ToolOrchestrator:
                         "status": "completed",
                         "step": step_index,
                     })
-                except Exception as e:
+                except (TypeError, ValueError, AttributeError, RuntimeError) as e:
                     logger.debug("Tool status callback notice (end): %s", e)
 
     def execute_step(
@@ -396,7 +400,7 @@ class ToolOrchestrator:
                         "status": "running",
                         "step": step_index,
                     })
-                except Exception as e:
+                except (TypeError, ValueError, AttributeError, RuntimeError) as e:
                     logger.debug("Tool status callback notice (start): %s", e)
 
             exec_kwargs = dict(sanitized_args)
@@ -413,8 +417,8 @@ class ToolOrchestrator:
                         exec_kwargs["user_approved"] = True
                     if "automated" in sig.parameters:
                         exec_kwargs["automated"] = True
-                except Exception:
-                    pass
+                except (ValueError, TypeError, AttributeError) as err:
+                    logger.debug("Tool signature inspection notice: %s", err)
 
             def _orch_run():
                 b_tok = bind_tool_cancellation_token(step_cancel_tok)
@@ -422,8 +426,8 @@ class ToolOrchestrator:
                 try:
                     from jarvis.core.security_boundaries import TurnTaintTracker
                     current_turn_id = TurnTaintTracker.get_instance().get_current_turn_id()
-                except Exception:
-                    pass
+                except (AttributeError, RuntimeError, ImportError) as err:
+                    logger.debug("TurnTaintTracker lookup notice: %s", err)
                 from jarvis.skills.base import ExecutionCapability
                 cap = ExecutionCapability.create(
                     tool_name=tool_name,
@@ -449,7 +453,7 @@ class ToolOrchestrator:
         except asyncio.CancelledError:
             step_cancel_tok.cancel()
             raise
-        except Exception as err:
+        except (RuntimeError, ValueError, TypeError, KeyError, OSError, TimeoutError) as err:
             logger.error("Exception during async tool execution '%s': %s", tool_name, err)
             return f"Error executing tool '{tool_name}': {err}"
         finally:
@@ -463,5 +467,5 @@ class ToolOrchestrator:
                         "status": "completed",
                         "step": step_index,
                     })
-                except Exception as e:
+                except (TypeError, ValueError, AttributeError, RuntimeError) as e:
                     logger.debug("Tool status callback notice (end): %s", e)

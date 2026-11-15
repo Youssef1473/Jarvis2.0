@@ -126,7 +126,7 @@ def disable_thread_power_throttling(thread_handle: int | None = None) -> bool:
                 return True
 
         return False
-    except Exception as e:
+    except (OSError, AttributeError, RuntimeError) as e:
         logger.debug("Failed to disable thread power throttling: %s", e)
         return False
 
@@ -174,7 +174,7 @@ def pin_current_thread_to_mask(
         elif not eco_qos:
             disable_thread_power_throttling()
         return True
-    except Exception as e:
+    except (OSError, AttributeError, RuntimeError, ValueError) as e:
         logger.debug("pin_current_thread_to_mask error: %s", e)
         return False
 
@@ -207,7 +207,7 @@ def pin_thread_to_pcores(
             logger.debug("Thread affinity pinned to P-Cores: mask 0x%X (previous: 0x%X)", target_mask, prev_mask)
             return True
         return False
-    except Exception as e:
+    except (OSError, AttributeError, RuntimeError) as e:
         logger.debug("Failed to set thread affinity mask: %s", e)
         return False
 
@@ -230,7 +230,7 @@ def elevate_thread_priority(thread_handle: int | None = None, priority: int = TH
             logger.debug("Thread priority elevated to level %d", priority)
             return True
         return False
-    except Exception as e:
+    except (OSError, AttributeError, RuntimeError) as e:
         logger.debug("Failed to set thread priority: %s", e)
         return False
 
@@ -288,7 +288,7 @@ def elevate_to_pro_audio_mmcss(task_name: str = "Pro Audio") -> int | None:
             _THREAD_LOCAL_MMCSS.handle = h_int
             return h_int
         return None
-    except Exception as e:
+    except (OSError, AttributeError, RuntimeError) as e:
         logger.debug("Failed to set MMCSS thread characteristics: %s", e)
         return None
 
@@ -316,7 +316,8 @@ def revert_mmcss(h_task: int) -> bool:
         if getattr(_THREAD_LOCAL_MMCSS, "handle", None) == h_task:
             _THREAD_LOCAL_MMCSS.handle = None
         return success
-    except Exception:
+    except (OSError, AttributeError, RuntimeError) as e:
+        logger.debug("revert_mmcss notice: %s", e)
         return False
 
 
@@ -372,7 +373,7 @@ def demote_to_ecore_background(thread_handle: int | None = None) -> bool:
             logger.debug("Speculative thread pinned to E-cores (mask 0x%X, priority %d)", ecore_mask, THREAD_PRIORITY_BELOW_NORMAL)
 
         return success
-    except Exception as e:
+    except (OSError, AttributeError, RuntimeError) as e:
         logger.debug("demote_to_ecore_background failed: %s", e)
         return False
 
@@ -390,5 +391,5 @@ def configure_ecore_worker_thread(coinit_sta: bool = False, tag: str = "EcoreWor
             import ctypes
             res = ctypes.windll.ole32.CoInitializeEx(None, 0x2)
             logger.debug("[%s] COM Single-Threaded Apartment (STA) initialized: res=0x%X", tag, res & 0xFFFFFFFF)
-        except Exception as e:
+        except (OSError, AttributeError, RuntimeError) as e:
             logger.debug("[%s] CoInitializeEx error: %s", tag, e)
