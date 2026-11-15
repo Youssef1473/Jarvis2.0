@@ -4178,3 +4178,37 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Test Accounting Invariant:** `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed with 100% accounting (2,472 collected nodes accounted for, 0 drift).
    - **Tier 1 Fast Test Suite:** `python tools/run_fast_tests.py --fast` passed across 4 workers (1,491 passed, 0 failed, 11 skipped in 151.14s).
    - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
+
+---
+
+## Session Log: 2026-11-15 — /improve Modernization Queue — Plan 009 (Phase 3 E2E Harness) & Baseline Closure
+
+- **Session Timestamp:** 2026-11-15T11:45:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `docs/seal-plan-009-e2e-harness` (branched from `main` @ `4d5e802`)
+- **Starting Git HEAD SHA:** `7edf4345ca27ab16eed2b8b70cb2d9a6fb896efa` (`7edf434`)
+- **Ending Git HEAD SHA:** `4d5e80277df606be4b4cf0a84594c73f32aa767c` (`4d5e802`)
+- **Landed Pull Requests:**
+  - **PR #28:** `docs(governance): seal Batch 2 Plans 005-008 closure and post-PR #27 main baseline (#28)` (Merged, commit `8388240`)
+  - **PR #29:** `feat(tools): add Phase 3 4-turn consecutive multimodal E2E verification harness (#29)` (Merged, commit `4d5e802`, containing `4bb6d4c`)
+- **Active Milestone:** `Phase 3 Multimodal E2E Verification & Batch 3 Implementation (Plans 001-009 Closed)`
+
+### Summary of Actions & Deliverables
+1. **Plan 009 Implementation — Phase 3 4-Turn Multimodal E2E Harness (PR #29, `4bb6d4c`):**
+   - Replaced obsolete Phase 2C1 context router probe in `tools/verify_consecutive_turns.py` (511 lines) with the full automated 4-turn Phase 3 verification harness.
+   - Built an ephemeral temporary SQLite database sandbox enforcing zero writes to `data/jarvis_memory.db`.
+   - **Turn 1 (Memory Grounding & Workspace Isolation):** Verified synthetic canary fact `ORCHID-47` under `ws_default`, fail-closed `PermissionError` on `'unscoped'` partition, 0 disclosure to `'ws_other'`, and HTTP 403 enforcement on `/api/workspaces`.
+   - **Turn 2 (System Vitals Tool Execution):** Dispatched read-only `system vitals` reflex, verifying structured telemetry, clean `TurnTaintTracker` (`is_tainted=False`), and zero duplicate tool invocations mid-turn.
+   - **Turn 3 (Voice Barge-In & Latency Budget):** Simulated speech synthesis onset and barge-in interruption via `AudioTelemetry` and `DspProcessTelemetry`, sampled non-blockingly via `WorkstationMetricsCollector.sample_metrics_sync()`, asserting lock-free $L_1 < 50.0$ ms and $L_2 < 50.0$ ms. Empirical run: $L_1 = 12.50$ ms, $L_2 = 8.20$ ms, TTFB = $18.5$ ms, RTF = $0.4200$.
+   - **Turn 4 (Clean Departure & 6-Phase Teardown):** Validated departure directive via `is_shutdown_command("Goodbye, Jarvis")`, executed `OrchestratorShutdownCoordinator.shutdown()`, stopped memory `SingleWriterActor`, drained write locks, and cleaned up temporary sandbox with zero lock leaks.
+2. **Windows AppContainer Platform Constraint Diagnosis:**
+   - Diagnosed and resolved Windows AppContainer socket isolation behavior: on Windows, Python's `asyncio.ProactorEventLoop` initializes an internal self-pipe over loopback TCP (`127.0.0.1`), which stalls (`WSAEACCES 10013`) when loopback is blocked in standard terminal sandboxing. Documented that E2E tests running Starlette async route handlers require `BypassSandbox: true`.
+3. **Queue Completion & Ledger Alignment:**
+   - Updated local `plans/README.md` marking all 9 implementation plans (`001`–`009`) as `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+4. **Verification Gates & Accounting Invariant:**
+   - **Static Linter (`tools/lint.py`):** 0 Ruff diagnostics on `tools/verify_consecutive_turns.py`.
+   - **Structural Invariants (`tools/diagnostics.py`):** 0 AST-Grep invariant violations.
+   - **Test Accounting Invariant:** `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed with 100% accounting (2,472 collected nodes accounted for, 0 drift).
+   - **Live E2E Harness Execution:** `python tools/verify_consecutive_turns.py --headless` executed in 1.40s with all 4 turns passing (Exit code: 0).
+   - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.

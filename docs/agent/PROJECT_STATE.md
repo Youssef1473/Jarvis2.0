@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-15T09:20:00+01:00 (CET)
+- **Validation Timestamp:** 2026-11-15T11:45:00+01:00 (CET)
 - **Active Git Branch:** `main`
-- **Recorded HEAD Commit SHA:** `7edf4345ca27ab16eed2b8b70cb2d9a6fb896efa`
-- **HEAD Commit Subject:** `Merge pull request #27 from Youssef1473/feat/audio-l1-l2-latency-telemetry`
-- **Milestone State:** **Production Baseline Verified on main (7edf434); Plans 001-008 Formally Closed**
-- **Active Milestone:** **Modernization & Refactoring Execution (Batch 2 Plans 005-008 Closed)**
+- **Recorded HEAD Commit SHA:** `4d5e80277df606be4b4cf0a84594c73f32aa767c` (`4d5e802`)
+- **HEAD Commit Subject:** `Merge pull request #29 from Youssef1473/feat/phase3-consecutive-turns-e2e-harness`
+- **Milestone State:** **Production Baseline Verified on main (4d5e802); Plans 001-009 Formally Closed**
+- **Active Milestone:** **Phase 3 Multimodal E2E Verification & Batch 3 Implementation**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
@@ -36,8 +36,19 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Modernization & Refactoring Execution (Batch 2 Plans 005-008 Closed)`
+- **Active Milestone:** `Phase 3 Multimodal E2E Verification & Batch 3 Implementation`
 - **Completed Work:**
+  - **`/improve` Phase 3 Multimodal Live Verification Harness (Plan 009 COMPLETED & SEALED):**
+    - **Plan 009 (Phase 3 Consecutive Turns E2E Harness — PR #29, `4bb6d4c`, merged `4d5e802`):** Modernized `tools/verify_consecutive_turns.py` (511 lines) implementing automated 4-turn Phase 3 multimodal live verification harness:
+      - **Turn 1 (Memory Grounding & Workspace Isolation):** Seeds canary fact `ORCHID-47` under `ws_default`, asserts retrieval via `get_all_memory_nodes`, verifies fail-closed `PermissionError` on `'unscoped'` partition, asserts 0 disclosure to `'ws_other'`, and validates `/api/workspaces` route handler with fail-closed HTTP 403 enforcement.
+      - **Turn 2 (System Vitals Tool Execution):** Dispatches read-only `system vitals` via fast deterministic reflex (`_try_fast_reflex` / `get_system_vitals`), asserts clean `TurnTaintTracker` (`is_tainted == False`), and verifies single-use tool execution without duplicates mid-turn.
+      - **Turn 3 (Voice Barge-In & Latency Budget):** Simulates speech synthesis onset and barge-in interruption via `AudioTelemetry` and `DspProcessTelemetry`, sampled non-blockingly via `WorkstationMetricsCollector.sample_metrics_sync()`, asserting lock-free $L_1 < 50.0$ ms and $L_2 < 50.0$ ms. Empirical run: $L_1 = 12.50$ ms, $L_2 = 8.20$ ms, TTFB = $18.5$ ms, RTF = $0.4200$.
+      - **Turn 4 (Clean Departure & 6-Phase Teardown):** Validates departure directive via `is_shutdown_command("Goodbye, Jarvis")`, executes `OrchestratorShutdownCoordinator.shutdown()`, stops memory `SingleWriterActor`, drains write locks, and cleans up temp SQLite sandbox without touching production DB.
+    - **Windows AppContainer Loopback Constraint (`asyncio.ProactorEventLoop`):** Documented platform constraint on Windows: `asyncio.ProactorEventLoop` initializes an internal self-pipe over loopback TCP (`127.0.0.1`), which stalls (`WSAEACCES 10013`) when loopback is blocked inside standard terminal sandboxing. E2E tests executing Starlette route handlers with `asyncio.run()` require loopback access (`BypassSandbox: true`).
+    - **Plans 001–009 Full Queue Closure:** All 9 implementation plans in `plans/README.md` marked `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+    - **Static Diagnostics & Hygiene:** 0 Ruff diagnostics on all modernized modules, 0 AST-Grep structural invariant violations across the entire repository.
+    - **Test Accounting Invariant:** 2,472 collected nodes accounted for (0 drift) via `test_17_accurate_total_test_accounting`.
+    - **Database Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
   - **`/improve` Modernization & Refactoring Queue — Batch 2 (Plans 005–008 COMPLETED & SEALED):**
     - **Plan 005 (Core F821 & BLE001 Cleanup — PR #24, `4ec563f`):** Resolved 6 live `F821` undefined-name diagnostics (`sqlite3` in `jarvis/core/memory/temporal_graph.py` and `Optional` in `jarvis/desktop/uia_delta_worker.py`), narrowed blind `BLE001` catches, and resolved `RUF059` unused variables across `jarvis/core/` and `jarvis/desktop/`.
     - **Plan 006 (SleepConsolidator SingleWriterActor & Workspace Gating — PR #25, `ed74210`):** Migrated `SleepConsolidator` direct SQLite writes to `SingleWriterActor`, resolving `PROJECT_STATE.md §5.3` debt; added fail-closed `active_workspace_id` parameter to `Heartbeat` and `SleepConsolidator` preventing consolidation of un-scoped historical facts; resolved 37 Ruff findings in `heartbeat.py`.
