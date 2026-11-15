@@ -4,12 +4,15 @@ Eliminates Python queue head-of-line blocking and serialization overhead.
 """
 from __future__ import annotations
 
+import logging
 import struct
 import time
 from multiprocessing import shared_memory
 from typing import Any
 
 import numpy as np
+
+logger = logging.getLogger("Jarvis.Audio.PartialStreamer")
 
 # Binary Protocol:
 # uint64 seq_id: Monotonic sequence counter
@@ -36,8 +39,8 @@ class ShmPartialTokenChannel:
                 old = shared_memory.SharedMemory(name=name, create=False)
                 old.close()
                 old.unlink()
-            except Exception:
-                pass
+            except (FileNotFoundError, OSError, ValueError) as exc:
+                logger.debug("Shm stale cleanup notice: %s", exc)
 
         self._shm = shared_memory.SharedMemory(name=name, create=create, size=TOTAL_CHANNEL_SIZE)
         self.buf = self._shm.buf
@@ -83,19 +86,19 @@ class ShmPartialTokenChannel:
         """Releases memory view and closes shared memory descriptor cleanly."""
         try:
             self._shm.close()
-        except Exception:
-            pass
+        except (BufferError, OSError, ValueError) as exc:
+            logger.debug("Shm close notice: %s", exc)
         if self.create:
             try:
                 self._shm.unlink()
-            except Exception:
-                pass
+            except (FileNotFoundError, OSError, ValueError) as exc:
+                logger.debug("Shm unlink notice: %s", exc)
 
     def __del__(self) -> None:
         try:
             self.close()
-        except Exception:
-            pass
+        except (BufferError, OSError, ValueError) as exc:
+            logger.debug("Shm close in __del__ notice: %s", exc)
 
 
 class FastStreamingWhisperWorker:
@@ -135,8 +138,8 @@ class FastStreamingWhisperWorker:
             partial_text = " ".join([s.text for s in segments]).strip()
             if partial_text:
                 self.channel.publish_partial(partial_text, is_final=False)
-        except Exception:
-            pass
+        except (RuntimeError, ValueError, OSError) as exc:
+            logger.debug("Fast streaming whisper slice notice: %s", exc)
 
     def finalize_authoritative(self, final_audio_buffer: np.ndarray) -> str:
         """Executes a single authoritative beam-3 pass upon endpoint tripwire cutoff."""

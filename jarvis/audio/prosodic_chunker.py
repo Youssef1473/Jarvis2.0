@@ -13,6 +13,7 @@ Provides dual-cadence phrase emission and speculative clause chunking for neural
 from __future__ import annotations
 
 import re
+from typing import ClassVar
 
 _MD_STRIP_RE = re.compile(r"[*_`#~>|]+")
 _SNAKE_CASE_RE = re.compile(r"\b([a-z0-9]+)_([a-z0-9_]+)\b")
@@ -132,13 +133,13 @@ class StreamingSentenceChunker:
        exceeds max_chars without punctuation to eliminate speech starvation.
     """
 
-    _ABBREVIATIONS = {
+    _ABBREVIATIONS: ClassVar[set[str]] = {
         "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.",
         "vs.", "etc.", "e.g.", "i.e.", "st.", "approx.", "u.s.", "a.i."
     }
 
-    _CLAUSE_DELIMITERS = {',', ';', ':', '—', '–'}
-    _TERMINAL_DELIMITERS = {'.', '!', '?', '\n'}
+    _CLAUSE_DELIMITERS: ClassVar[set[str]] = {',', ';', ':', '—', '–'}
+    _TERMINAL_DELIMITERS: ClassVar[set[str]] = {'.', '!', '?', '\n'}
 
     def __init__(
         self,
@@ -257,21 +258,19 @@ class StreamingSentenceChunker:
                 return chunk
 
             elif ch in self._CLAUSE_DELIMITERS:
-                if ch == ':':
-                    if i > 0 and buf[i - 1].isdigit():
-                        if i + 1 < n:
-                            if buf[i + 1].isdigit():
-                                continue
-                        else:
-                            return None
+                if ch == ':' and i > 0 and buf[i - 1].isdigit():
+                    if i + 1 < n:
+                        if buf[i + 1].isdigit():
+                            continue
+                    else:
+                        return None
 
-                if ch == ',':
-                    if i > 0 and buf[i - 1].isdigit():
-                        if i + 1 < n:
-                            if buf[i + 1].isdigit():
-                                continue
-                        else:
-                            return None
+                if ch == ',' and i > 0 and buf[i - 1].isdigit():
+                    if i + 1 < n:
+                        if buf[i + 1].isdigit():
+                            continue
+                    else:
+                        return None
 
                 prefix = buf[: i + 1]
                 words = prefix.strip().split()

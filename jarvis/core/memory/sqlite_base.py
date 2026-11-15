@@ -728,7 +728,7 @@ class SqliteBaseMixin:
         if hasattr(self, "_ro_vector_pool") and self._ro_vector_pool is not None:
             try:
                 self._ro_vector_pool.teardown()
-            except Exception as teardown_err:  # noqa: BLE001
+            except (sqlite3.Error, OSError, RuntimeError) as teardown_err:
                 logger.debug("RO vector pool teardown note: %s", teardown_err)
             self._ro_vector_pool = None
         if hasattr(self, "_writer_actor") and self._writer_actor:
@@ -736,11 +736,14 @@ class SqliteBaseMixin:
         try:
             from jarvis.memory.ro_pool import ReadOnlyConnectionPool
             ReadOnlyConnectionPool.get_instance().close_db(self.db_path)
-        except Exception as close_err:  # noqa: BLE001
+        except (sqlite3.Error, OSError, RuntimeError, ImportError) as close_err:
             logger.debug("RO connection pool close note: %s", close_err)
 
     def __del__(self) -> None:
-        self.close()
+        try:
+            self.close()
+        except (sqlite3.Error, OSError, RuntimeError, ImportError) as del_err:
+            logger.debug("SqliteBaseMixin __del__ close note: %s", del_err)
 
     def get_active_workspace_id(self) -> str:
         """Retrieves the active workspace_id from active_context singleton, defaulting to 'ws_default'."""

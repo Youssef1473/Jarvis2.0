@@ -260,7 +260,7 @@ class WakeWordDetector:
             # Download models if not cached
             try:
                 openwakeword.utils.download_models()
-            except Exception as dl_err:
+            except (OSError, RuntimeError) as dl_err:
                 logger.debug("openWakeWord download_models note: %s", dl_err)
 
             # Defensive session options to prevent P-core spinning and thread starvation
@@ -271,8 +271,8 @@ class WakeWordDetector:
                 opts.inter_op_num_threads = 1
                 opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
                 opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
-            except Exception:
-                pass
+            except (RuntimeError, AttributeError, ImportError) as exc:
+                logger.debug("openWakeWord session options note: %s", exc)
 
             self.model = Model(wakeword_models=["hey_jarvis"], inference_framework="onnx")
             logger.info("Loaded openWakeWord 'hey_jarvis' model successfully.")

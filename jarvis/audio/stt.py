@@ -6,7 +6,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -67,8 +67,8 @@ def _setup_nvidia_dll_paths():
                         os.add_dll_directory(str(bin_dir))
                         os.environ["PATH"] = f"{bin_dir};{os.environ.get('PATH', '')}"
                         logger.info(f"Registered NVIDIA DLL path: {bin_dir}")
-                    except Exception:
-                        pass
+                    except (OSError, RuntimeError) as exc:
+                        logger.debug("NVIDIA DLL registration notice: %s", exc)
         # Also check PyTorch's bundled CUDA/cuBLAS runtime libraries
         torch_lib = Path(sys.prefix) / "Lib" / "site-packages" / "torch" / "lib"
         if torch_lib.is_dir():
@@ -76,16 +76,16 @@ def _setup_nvidia_dll_paths():
                 os.add_dll_directory(str(torch_lib))
                 os.environ["PATH"] = f"{torch_lib};{os.environ.get('PATH', '')}"
                 logger.info(f"Registered PyTorch CUDA DLL path: {torch_lib}")
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except (OSError, RuntimeError) as exc:
+                logger.debug("PyTorch CUDA DLL registration notice: %s", exc)
+    except (OSError, RuntimeError) as exc:
+        logger.debug("CUDA library detection notice: %s", exc)
 
 
 class SpeechToText:
     """Wrapper around faster-whisper with automatic GPU/CPU selection and runtime fallback."""
 
-    COMMON_PHONETIC_FIXES = [
+    COMMON_PHONETIC_FIXES: ClassVar[list[tuple[re.Pattern[str], str]]] = [
         (re.compile(r"\bbrave\s+tower\b", re.IGNORECASE), "Brave tab"),
         (re.compile(r"\bbrave\s+top\b", re.IGNORECASE), "Brave tab"),
         (re.compile(r"\bbrave\s+tap\b", re.IGNORECASE), "Brave tab"),
@@ -158,7 +158,7 @@ class SpeechToText:
                             free_mb
                         )
                         compute_type = "int8_float16"
-            except Exception as arb_err:
+            except (RuntimeError, OSError, ValueError) as arb_err:
                 logger.debug("VRAM arbiter check note in STT init: %s", arb_err)
 
         # Try CUDA first if requested
@@ -174,7 +174,7 @@ class SpeechToText:
                 self.compute_type = compute_type
                 logger.info("Successfully validated faster-whisper on CUDA GPU.")
                 return
-            except Exception as e:
+            except (RuntimeError, OSError, ValueError) as e:
                 logger.warning(f"CUDA initialization or DLL load failed ({e}). Falling back to CPU...")
 
         # Fallback to CPU with int8 (capped to 4 threads to prevent CPU spikes)
@@ -184,7 +184,7 @@ class SpeechToText:
             self.device = "cpu"
             self.compute_type = "int8"
             logger.info("Successfully loaded faster-whisper on CPU.")
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError) as e:
             logger.error(f"Failed to load faster-whisper on CPU: {e}")
             self.model = None
 
@@ -198,8 +198,8 @@ class SpeechToText:
                 import torch
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-            except Exception:
-                pass
+            except (RuntimeError, OSError) as exc:
+                logger.debug("CUDA empty_cache notice: %s", exc)
         import gc
         gc.collect()
 
@@ -251,7 +251,7 @@ class SpeechToText:
         audio_to_transcribe = self._trim_audio_silence(audio_data, sample_rate=sample_rate) if self.trim_silence else audio_data
 
         try:
-            segments, info = self.model.transcribe(
+            segments, _info = self.model.transcribe(
                 audio_to_transcribe,
                 beam_size=self.beam_size,
                 language=self.language,
@@ -269,14 +269,14 @@ class SpeechToText:
             cleaned = self.clean_transcription(text)
             self.last_prosody = self._extract_prosody(audio_to_transcribe, segment_list, cleaned)
             return cleaned
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError) as e:
             logger.warning(f"Transcription error encountered: {e}. Switching to CPU...")
             try:
                 from faster_whisper import WhisperModel
                 self.model = WhisperModel(self.model_size, device="cpu", compute_type="int8", cpu_threads=self.cpu_threads)
                 self.device = "cpu"
                 self.compute_type = "int8"
-                segments, info = self.model.transcribe(
+                segments, _info = self.model.transcribe(
                     audio_to_transcribe,
                     beam_size=self.beam_size,
                     language=self.language,
@@ -294,7 +294,7 @@ class SpeechToText:
                 cleaned = self.clean_transcription(text)
                 self.last_prosody = self._extract_prosody(audio_to_transcribe, segment_list, cleaned)
                 return cleaned
-            except Exception as e2:
+            except (RuntimeError, OSError, ValueError) as e2:
                 logger.error(f"CPU transcription fallback also failed: {e2}")
                 return ""
 

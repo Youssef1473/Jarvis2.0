@@ -1,10 +1,13 @@
 """Procedural sound effects generator and audio cue player for Jarvis 2.0."""
+import logging
 import math
 import struct
 import wave
 import winsound
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("Jarvis.Audio.SoundEffects")
 
 
 class SoundEffects:
@@ -82,8 +85,8 @@ class SoundEffects:
 
         try:
             winsound.PlaySound(str(sound_path), flags)
-        except Exception:
-            pass
+        except (RuntimeError, OSError) as exc:
+            logger.debug("winsound PlaySound notice: %s", exc)
 
     def play_wake(self):
         self.play("wake")
