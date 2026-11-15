@@ -107,13 +107,13 @@ class WorkspaceFilesystemWatcher:
                     EnvironmentEpochTracker.bump(ResourceScope.FILESYSTEM)
                     try:
                         SpeculativeEpochTracker.get_instance().bump_fs_epoch()
-                    except Exception:
-                        pass
+                    except (AttributeError, RuntimeError) as bump_err:
+                        logger.debug("bump_fs_epoch notice: %s", bump_err)
                     logger.debug("Filesystem change detected in workspace. Epoch bumped.")
                 time.sleep(0.05)
 
             k32.CloseHandle(h_dir)
-        except Exception as e:
+        except (OSError, AttributeError, RuntimeError) as e:
             logger.debug("Win32 ReadDirectoryChangesW failed: %s; using fallback", e)
             self._watch_fallback()
 
@@ -128,11 +128,11 @@ class WorkspaceFilesystemWatcher:
                         EnvironmentEpochTracker.bump(ResourceScope.FILESYSTEM)
                         try:
                             SpeculativeEpochTracker.get_instance().bump_fs_epoch()
-                        except Exception:
-                            pass
+                        except (AttributeError, RuntimeError) as bump_err:
+                            logger.debug("fallback bump_fs_epoch notice: %s", bump_err)
                     last_mtime = current_mtime
-            except Exception:
-                pass
+            except (OSError, AttributeError) as stat_err:
+                logger.debug("workspace_root stat notice: %s", stat_err)
             time.sleep(0.5)
 
     def stop(self):

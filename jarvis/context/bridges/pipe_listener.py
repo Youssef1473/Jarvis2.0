@@ -12,6 +12,7 @@ import logging
 import os
 import secrets
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -40,8 +41,8 @@ class FlowStateBridgeListener:
                     saved = self.TOKEN_PATH.read_text(encoding="utf-8").strip()
                     if len(saved) >= 32:
                         token = saved
-            except Exception:
-                pass
+            except (OSError, UnicodeDecodeError, ValueError) as err:
+                logger.debug("Named pipe token read notice: %s", err)
         if not token:
             token = secrets.token_hex(32)
         self.auth_token = token
@@ -60,11 +61,10 @@ class FlowStateBridgeListener:
             if sys.platform != "win32":
                 try:
                     os.chmod(token_file, 0o600)
-                except Exception:
-                    pass
+                except OSError as err:
+                    logger.debug("Failed to set token file permissions: %s", err)
             else:
                 try:
-                    import subprocess
                     user_principal = os.environ.get("USERNAME")
                     try:
                         who = subprocess.run(
@@ -78,7 +78,7 @@ class FlowStateBridgeListener:
                             parts = [p.strip(' "\r\n') for p in who.stdout.strip().split(",")]
                             if len(parts) >= 2 and parts[1].startswith("S-1-"):
                                 user_principal = f"*{parts[1]}"
-                    except Exception as sid_err:
+                    except (subprocess.SubprocessError, OSError) as sid_err:
                         logger.debug("SID lookup note: %s", sid_err)
                     if user_principal:
                         subprocess.run(
@@ -87,9 +87,9 @@ class FlowStateBridgeListener:
                             timeout=2.0,
                             check=False,
                         )
-                except Exception as acl_err:
+                except (subprocess.SubprocessError, OSError) as acl_err:
                     logger.debug("Could not restrict token file ACL: %s", acl_err)
-        except Exception as e:
+        except OSError as e:
             logger.debug("Failed to persist flow-state token: %s", e)
 
     def get_auth_token(self) -> str:
@@ -117,7 +117,7 @@ class FlowStateBridgeListener:
             self._thread.start()
             logger.info("FlowStateBridgeListener bound to 127.0.0.1:%d (HMAC-SHA256 authenticated)", self.port)
             return True
-        except Exception as e:
+        except OSError as e:
             logger.debug("Failed to bind FlowStateBridgeListener to port %d: %s", self.port, e)
             self.running = False
             return False
@@ -172,8 +172,8 @@ class FlowStateBridgeListener:
                 elif msg_type == "terminal_state":
                     try:
                         SpeculativeEpochTracker.get_instance().bump_terminal_seq()
-                    except Exception:
-                        pass
+                    except (AttributeError, RuntimeError) as err:
+                        logger.debug("SpeculativeEpochTracker bump_terminal_seq notice: %s", err)
                     mirror.update_snapshot(
                         last_terminal_cmd=payload.get("cmd"),
                         last_exit_code=payload.get("exit_code"),
@@ -181,7 +181,7 @@ class FlowStateBridgeListener:
                     )
             except TimeoutError:
                 continue
-            except Exception as e:
+            except (OSError, ValueError, TypeError, KeyError) as e:
                 logger.debug("Error processing bridge packet: %s", e)
 
     def stop(self):
@@ -189,8 +189,8 @@ class FlowStateBridgeListener:
         if self._sock:
             try:
                 self._sock.close()
-            except Exception:
-                pass
+            except OSError as err:
+                logger.debug("Bridge socket close notice: %s", err)
             self._sock = None
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
