@@ -39,7 +39,7 @@ class TestHudZeroClsInvariants(unittest.TestCase):
 
     def test_telemetry_values_use_tabular_nums(self):
         """Telemetry figures must use tabular-nums and inline-block for layout shift prevention."""
-        for val_id in ["cpuVal", "batteryVal"]:
+        for val_id in ["cpuVal", "batteryVal", "audioBargeInVal", "audioTtfbVal"]:
             pattern = rf'id="{val_id}"[^>]*class="[^"]*tabular-nums[^"]*inline-block[^"]*"|class="[^"]*tabular-nums[^"]*inline-block[^"]*"[^>]*id="{val_id}"'
             self.assertRegex(
                 self.hud_content,
