@@ -4505,3 +4505,32 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **SQLite Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
 5. **Roadmap Closure:**
    - All 40 implementation plans in `plans/README.md` (`001`–`040`) are marked `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+
+---
+
+## Session Log: 2026-11-16 — Track A (Session 2): Multi-Workspace HUD & Fact Promotion (Plan 041 Closed)
+
+- **Session Timestamp:** 2026-11-16T17:10:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent (Ponytail mode)
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Starting Git HEAD SHA:** `a4767594baecfdc318daaf2e8a9b80c2c25d3933` (`a476759`, release tag `v2.1.0-hardened`)
+- **Topic Branch:** `feat/multi-workspace-hud-and-fact-promotion`
+- **Active Milestone:** `Track A: Multi-Workspace HUD & Memory UI (Plan 041 Completed)`
+
+### Summary of Actions & Deliverables
+1. **Plan 041 Implementation:**
+   - **Route Mounting (`jarvis/ui/server.py`):** Mounted `POST /api/workspaces/select` alias, `GET /api/memory/quarantined`, `POST /api/memory/quarantined/promote`, and `POST /api/memory/quarantined/purge`.
+   - **Memory Routes Mixin (`jarvis/ui/routes/memory.py`):** Exposed `quarantined_count` on `GET /api/workspaces`, implemented paginated quarantined fact review with search/category filtering, and built single-writer transactional handlers for fact promotion and purge with `facts_vec` synchronization and telemetry broadcast.
+   - **HUD Template (`jarvis/ui/templates/hud.html`):** Added fixed-width Zero-CLS `#workspaceQuarantinedBadge` and right-flank Quarantined Memory Review drawer with batch promote/purge controls and real-time telemetry updates.
+   - **Hermetic Test Suite (`tests/test_hud_workspace_and_quarantine.py`):** Authored 10 isolated test cases covering listing, switching, `403` unscoped/archived/invalid-slug rejection, pagination/filtering, promotion, purge `facts`/`facts_vec` parity, and Zero-CLS HTML invariants.
+   - **Test Accounting & Classifier:** Expanded test manifest from 2,472 to 2,482 collected nodes with 0 orphans and 100% classification compliance.
+2. **Verification Gates & Quality Invariants:**
+   - **Repository-Wide Static Linter (`tools/lint.py`):** 0 Ruff diagnostics across `jarvis/ tools/ tests/`.
+   - **Structural Invariants (`tools/diagnostics.py`):** 0 AST-Grep invariant violations.
+   - **Targeted Test Suite:** 73/73 tests passed in 8.76s (`tests/test_hud_workspace_and_quarantine.py`, `tests/test_hud.py`, `tests/test_hud_zero_cls.py`, `tests/test_hud_security_dsp.py`, `tests/test_memory.py`).
+   - **Test Accounting Invariant:** `test_17_accurate_total_test_accounting` passed with 100% accounting (2,482 collected nodes accounted for, 0 drift).
+   - **Test Classifier Integrity:** `tools/test_classifier.py --check-orphaned` verified 0 orphans, 0 duplicates, 2,482 nodes confirmed.
+   - **Live E2E Consecutive Turns Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing cleanly (Exit code: 0).
+   - **Phase 2 Security Regression Suite:** 224 passed, 0 failed, 0 errors (Exit code: 0).
+   - **Tier 1 Hermetic Fast Test Suite:** 1,501 passed, 0 failed, 11 skipped across 4 parallel workers (Exit code: 0).
+   - **SQLite Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.

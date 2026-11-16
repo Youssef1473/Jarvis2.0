@@ -1,6 +1,8 @@
 """Empirical audit test verifying Gemini tool dispatch security and authorization boundaries."""
+import contextlib
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from google.genai import types
@@ -25,7 +27,13 @@ class TestGeminiDispatchSecurityAudit(unittest.TestCase):
         self.client_patcher = patch("jarvis.core.brain_gemini.genai.Client", return_value=self.mock_client)
         self.client_patcher.start()
 
-        self.config = {"_base_dir": ".", "gemini_model": "gemini-2.0-flash"}
+        Path("scratch").mkdir(parents=True, exist_ok=True)
+        self.test_db_path = f"scratch/test_gemini_audit_{os.getpid()}_{id(self)}.db"
+        self.config = {
+            "_base_dir": ".",
+            "gemini_model": "gemini-2.0-flash",
+            "memory": {"db_path": self.test_db_path},
+        }
         self.memory = MemoryManager(self.config)
         self.safety = SafetyGate()
         self.brain = JarvisBrain(self.config, self.memory, self.safety, antigravity_resolver=lambda: None)
@@ -46,6 +54,15 @@ class TestGeminiDispatchSecurityAudit(unittest.TestCase):
         self.env_patcher.stop()
         self.approval_mgr.reset()
         self.tracker.reset_turn()
+        if hasattr(self, "memory"):
+            with contextlib.suppress(Exception):
+                self.memory.close()
+        if hasattr(self, "test_db_path"):
+            for suffix in ("", "-wal", "-shm"):
+                p = Path(f"{self.test_db_path}{suffix}")
+                if p.exists():
+                    with contextlib.suppress(OSError):
+                        p.unlink()
 
     def test_01_automatic_function_calling_strictly_disabled_in_configs(self):
         """INVARIANT 1: automatic_function_calling must be explicitly disabled in all Gemini configs."""

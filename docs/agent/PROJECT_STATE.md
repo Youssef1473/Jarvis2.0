@@ -14,15 +14,20 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-16T16:15:00+01:00 (CET)
-- **Active Git Branch:** `main`
-- **Recorded HEAD Commit SHA:** `e64d71c`
-- **HEAD Commit Subject:** `Merge pull request #57 from Youssef1473/fix/productivity-and-context-test-suites-closure`
-- **Milestone State:** **Repository-Wide Zero-Ruff Status (0 Diagnostics across jarvis/, tools/, tests/); Batch 8 Sealed & CI Blocking Gate Enforcing jarvis/ tools/ tests/**
-- **Active Milestone:** **Full Repository-Wide Zero-Ruff Parity & CI Quality Seal (Plans 001–040 Closed)**
+- **Validation Timestamp:** 2026-11-16T17:10:00+01:00 (CET)
+- **Active Git Branch:** `feat/multi-workspace-hud-and-fact-promotion`
+- **Recorded HEAD Commit SHA:** `a476759`
+- **HEAD Commit Subject:** `Release v2.1.0-hardened tag and baseline checkpoint`
+- **Milestone State:** **Track A Completed: Multi-Workspace HUD & Quarantined Fact Promotion (Plan 041 Verified); Repository-Wide 0 Ruff Diagnostics across jarvis/, tools/, tests/**
+- **Active Milestone:** **Track A: Multi-Workspace HUD & Memory UI (Plan 041 Completed)**
 - **Staged Modifications:** `0 files` (clean staging index)
-- **Unstaged Tracked Modifications (0 files):**
-  - None (clean tracked working tree)
+- **Unstaged Tracked Modifications:**
+  - `data/test_classification_manifest.json` (test manifest accounting updated to 2,482 nodes)
+  - `jarvis/ui/routes/memory.py` (quarantined_count telemetry + list/promote/purge handlers)
+  - `jarvis/ui/server.py` (mounted select alias and quarantined memory endpoints)
+  - `jarvis/ui/templates/hud.html` (Zero-CLS quarantined badge + tactical review drawer)
+  - `docs/agent/PROJECT_STATE.md`
+  - `docs/agent/SESSION_LOG.md`
 
 - **Untracked Items (8 items):**
   1. `data/agy_112_nodes.json` (Diagnostic node map)
@@ -38,6 +43,11 @@
 
 - **Active Milestone:** `Full Repository-Wide Zero-Ruff Parity & CI Quality Seal (Plans 001–040 Closed)`
 - **Completed Work:**
+  - **Track A (Plan 041 COMPLETED & VERIFIED): Multi-Workspace HUD & Quarantined Fact Promotion:**
+    - **Backend Routes & Mixin (`jarvis/ui/server.py`, `jarvis/ui/routes/memory.py`):** Added `POST /api/workspaces/select` alias, exposed `quarantined_count` on `GET /api/workspaces`, and implemented authenticated `GET /api/memory/quarantined` (paginated list with category/search filters), `POST /api/memory/quarantined/promote` (single-writer transactional promotion with vector sync), and `POST /api/memory/quarantined/purge` (defense-in-depth quarantined purge).
+    - **Zero-CLS Holographic HUD Integration (`jarvis/ui/templates/hud.html`):** Added fixed-width `#workspaceQuarantinedBadge` to the top-bar pill and a dedicated interactive Quarantined Memory Review drawer with batch promote/purge controls and real-time telemetry updates.
+    - **Hermetic Test Suite (`tests/test_hud_workspace_and_quarantine.py`):** Authored 10 isolated test cases covering listing, switching, `403` unscoped/archived/invalid-slug rejection, pagination/filtering, promotion, purge `facts`/`facts_vec` parity, and Zero-CLS HTML invariants.
+    - **Test Accounting & Classifier:** Expanded test manifest from 2,472 to 2,482 collected nodes with 0 orphans and 100% classification compliance.
   - **CI Hardening & Repository-Wide Static Analysis Regression Lock:**
     - Hardened `.github/workflows/ci.yml` (`security-gate` job) with a blocking `Verify Zero Static Lint & AST-Grep Diagnostics (Repository-Wide)` step.
     - Executes `python tools/lint.py check jarvis/ tools/ tests/` and `python tools/diagnostics.py check jarvis/ tools/` on every push and pull request, permanently locking in the 0-diagnostic baseline across the entire repository (`jarvis/`, `tools/`, and `tests/`).

@@ -1691,6 +1691,7 @@
           <option value="ws_default" style="background: #060b14; color: var(--holo-cyan);">ws_default</option>
         </select>
         <span id="workspaceVectorBadge" class="thermal-badge tabular-nums inline-block" style="font-size: 0.65rem; padding: 1px 5px; color: var(--holo-emerald); border-color: var(--holo-emerald);" title="Vector Index Volume and Headroom against 2,500 ceiling">0/2500 VEC</span>
+        <span id="workspaceQuarantinedBadge" class="thermal-badge tabular-nums inline-block" style="font-size: 0.65rem; padding: 1px 5px; color: var(--holo-amber); border-color: var(--holo-amber); cursor: pointer;" title="Quarantined Unscoped Facts (Click to Inspect &amp; Promote)" data-action="open-quarantine-drawer">0 QUAR</span>
       </div>
       <div class="pill">
         <span id="clockDisplay">00:00:00</span>
@@ -1926,6 +1927,7 @@
       <button class="drawer-tab" id="tabNotesBtn" data-action="switch-drawer-tab" data-tab="notes">NOTES</button>
       <button class="drawer-tab" id="tabStagedBtn" data-action="switch-drawer-tab" data-tab="staged">STAGED (<span id="drawerStagedCount">0</span>)</button>
       <button class="drawer-tab" id="tabAgendaBtn" data-action="switch-drawer-tab" data-tab="agenda">AGENDA (<span id="drawerAgendaCount">0</span>)</button>
+      <button class="drawer-tab" id="tabQuarantineBtn" data-action="switch-drawer-tab" data-tab="quarantine">QUARANTINE (<span id="drawerQuarantineCount">0</span>)</button>
     </div>
     <div class="drawer-body" id="drawerBody">
       <div style="color: var(--text-dim); font-size: 0.85rem; text-align: center; margin-top: 20px;">Loading archive data...</div>
@@ -2184,6 +2186,7 @@
       domRefs.telemetryStagedVal = document.getElementById('telemetryStagedVal');
       domRefs.workspaceSelect = document.getElementById('workspaceSelect');
       domRefs.workspaceVectorBadge = document.getElementById('workspaceVectorBadge');
+      domRefs.workspaceQuarantinedBadge = document.getElementById('workspaceQuarantinedBadge');
       domRefs.telemetryWsVal = document.getElementById('telemetryWsVal');
       domRefs.telemetryVecHeadroomVal = document.getElementById('telemetryVecHeadroomVal');
       domRefs.chatContainer = document.getElementById('chatContainer');
@@ -2368,6 +2371,64 @@
           case 'switch-drawer-tab': {
             const tab = actionEl.dataset.tab;
             if (tab) switchDrawerTab(tab);
+            break;
+          }
+
+          case 'open-quarantine-drawer': {
+            if (!isDrawerOpen) toggleDrawer();
+            switchDrawerTab('quarantine');
+            break;
+          }
+
+          case 'promote-selected-quarantine': {
+            const container = document.getElementById('drawerBody');
+            const targetSel = document.getElementById('quarantineTargetWs');
+            const targetWs = targetSel ? targetSel.value : 'ws_default';
+            const checkedBoxes = container ? container.querySelectorAll('.quarantine-checkbox:checked') : [];
+            const ids = Array.from(checkedBoxes).map(cb => parseInt(cb.dataset.factId, 10)).filter(id => !isNaN(id));
+            executeQuarantinePromote(ids, targetWs);
+            break;
+          }
+
+          case 'purge-selected-quarantine': {
+            const container = document.getElementById('drawerBody');
+            const checkedBoxes = container ? container.querySelectorAll('.quarantine-checkbox:checked') : [];
+            const ids = Array.from(checkedBoxes).map(cb => parseInt(cb.dataset.factId, 10)).filter(id => !isNaN(id));
+            executeQuarantinePurge(ids);
+            break;
+          }
+
+          case 'promote-single-quarantine': {
+            const factId = parseInt(actionEl.dataset.id, 10);
+            const targetSel = document.getElementById('quarantineTargetWs');
+            const targetWs = targetSel ? targetSel.value : 'ws_default';
+            if (!isNaN(factId)) executeQuarantinePromote([factId], targetWs);
+            break;
+          }
+
+          case 'purge-single-quarantine': {
+            const factId = parseInt(actionEl.dataset.id, 10);
+            if (!isNaN(factId)) executeQuarantinePurge([factId]);
+            break;
+          }
+
+          case 'quarantine-prev-page': {
+            quarantineOffset = Math.max(0, quarantineOffset - quarantineLimit);
+            renderQuarantineTab();
+            break;
+          }
+
+          case 'quarantine-next-page': {
+            quarantineOffset += quarantineLimit;
+            renderQuarantineTab();
+            break;
+          }
+
+          case 'quarantine-search-btn': {
+            const input = document.getElementById('quarantineSearchInput');
+            quarantineSearch = input ? input.value.trim() : '';
+            quarantineOffset = 0;
+            renderQuarantineTab();
             break;
           }
 
@@ -3067,6 +3128,9 @@ void main() {
         handleToolExecution(data.data, data.timestamp);
       } else if (data.type === "workspace_switched") {
         if (typeof loadWorkspaces === "function") loadWorkspaces();
+      } else if (data.type === "memory_updated") {
+        if (typeof loadWorkspaces === "function") loadWorkspaces();
+        if (isDrawerOpen && activeDrawerTab === 'quarantine' && typeof renderQuarantineTab === "function") renderQuarantineTab();
       }
     }
 
@@ -3329,6 +3393,8 @@ void main() {
       if (stagedBtn) stagedBtn.classList.toggle('active', tab === 'staged');
       const agendaBtn = document.getElementById('tabAgendaBtn');
       if (agendaBtn) agendaBtn.classList.toggle('active', tab === 'agenda');
+      const quarantineBtn = document.getElementById('tabQuarantineBtn');
+      if (quarantineBtn) quarantineBtn.classList.toggle('active', tab === 'quarantine');
       loadDrawerContent();
     }
 
@@ -4020,8 +4086,185 @@ void main() {
           .catch(err => {
             container.innerHTML = `<div style="color: var(--holo-crimson); font-size: 0.85rem;">Error loading calendar: ${err}</div>`;
           });
+        } else if (activeDrawerTab === 'quarantine') {
+          renderQuarantineTab();
         }
       }
+
+    let quarantineOffset = 0;
+    const quarantineLimit = 20;
+    let quarantineSearch = '';
+
+    async function renderQuarantineTab() {
+      const container = document.getElementById('drawerBody');
+      if (!container) return;
+      container.innerHTML = '<div style="color: var(--holo-cyan); font-size: 0.85rem; text-align: center; margin-top: 20px;">Scanning quarantined memory partition...</div>';
+      try {
+        let url = `/api/memory/quarantined?limit=${quarantineLimit}&offset=${quarantineOffset}`;
+        if (quarantineSearch) {
+          url += `&search=${encodeURIComponent(quarantineSearch)}`;
+        }
+        const res = await fetch(url, { headers: jarvisHeaders() });
+        if (!res.ok) {
+          container.innerHTML = `<div style="color: var(--holo-crimson); font-size: 0.85rem;">Error loading quarantine: HTTP ${res.status}</div>`;
+          return;
+        }
+        const data = await res.json();
+        const facts = data.facts || [];
+        const total = data.total !== undefined ? data.total : (data.quarantined_count || 0);
+
+        const countEl = document.getElementById('drawerQuarantineCount');
+        if (countEl) countEl.textContent = total;
+
+        const qBadge = document.getElementById('workspaceQuarantinedBadge');
+        if (qBadge) {
+          qBadge.textContent = `${total} QUAR`;
+          qBadge.style.color = total > 0 ? 'var(--holo-amber)' : 'var(--holo-emerald)';
+          qBadge.style.borderColor = total > 0 ? 'var(--holo-amber)' : 'var(--holo-emerald)';
+        }
+
+        const wsOptions = (window._cachedWorkspaces || [
+          { workspace_id: 'ws_default', name: 'Default Workspace' }
+        ]).map(ws => `<option value="${escapeHtml(ws.workspace_id)}" style="background:#060b14; color:var(--holo-cyan);">${escapeHtml(ws.workspace_id)}</option>`).join('');
+
+        let headerHtml = `
+          <div style="margin-bottom: 12px; padding: 10px; background: rgba(0, 240, 255, 0.05); border: 1px solid var(--panel-border); border-radius: 4px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;">
+              <span style="font-family:'Orbitron',sans-serif; font-size:0.8rem; font-weight:700; color:var(--holo-amber);">QUARANTINE PARTITION</span>
+              <span style="font-size:0.75rem; color:var(--text-dim); font-family:'JetBrains Mono',monospace;">TOTAL: ${total}</span>
+            </div>
+            <div style="display:flex; gap: 6px; margin-bottom: 8px;">
+              <input type="text" id="quarantineSearchInput" placeholder="Filter quarantined facts..." value="${escapeHtml(quarantineSearch)}" style="flex:1; background:#060b14; border:1px solid var(--panel-border); color:var(--holo-cyan); font-family:'JetBrains Mono',monospace; font-size:0.75rem; padding:4px 8px; border-radius:3px; outline:none;" />
+              <button class="drawer-close-btn" style="padding:4px 8px; font-size:0.75rem; color:var(--holo-cyan);" data-action="quarantine-search-btn">FILTER</button>
+            </div>
+            <div style="display:flex; gap: 6px; align-items:center;">
+              <span style="font-size:0.72rem; color:var(--text-dim);">PROMOTE TO:</span>
+              <select id="quarantineTargetWs" style="flex:1; background:#060b14; border:1px solid var(--panel-border); color:var(--holo-cyan); font-family:'JetBrains Mono',monospace; font-size:0.72rem; padding:3px 6px; border-radius:3px; outline:none;">
+                ${wsOptions}
+              </select>
+              <button class="drawer-close-btn" style="padding:4px 8px; font-size:0.72rem; color:var(--holo-emerald); border-color:var(--holo-emerald);" data-action="promote-selected-quarantine">PROMOTE ↵</button>
+              <button class="drawer-close-btn" style="padding:4px 8px; font-size:0.72rem; color:var(--holo-crimson); border-color:var(--holo-crimson);" data-action="purge-selected-quarantine">PURGE ✕</button>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(0,240,255,0.1); font-size:0.72rem; color:var(--text-dim);">
+              <label style="cursor:pointer; display:flex; align-items:center; gap:4px;">
+                <input type="checkbox" id="quarantineSelectAll" style="cursor:pointer;" /> SELECT ALL ON PAGE
+              </label>
+              <span>Page ${Math.floor(quarantineOffset / quarantineLimit) + 1} of ${Math.max(1, Math.ceil(total / quarantineLimit))}</span>
+            </div>
+          </div>
+        `;
+
+        if (!facts.length) {
+          container.innerHTML = headerHtml + `
+            <div style="color: var(--text-dim); text-align: center; margin-top: 25px; font-size: 0.85rem;">
+              <div style="color: var(--holo-emerald); font-weight:700; margin-bottom: 6px;">✓ 0 QUARANTINED FACTS</div>
+              All historical memory rows have been safely assigned to tenant workspaces.
+            </div>
+          `;
+          return;
+        }
+
+        const cardsHtml = facts.map(f => `
+          <div class="drawer-card" style="border-left-color: var(--holo-amber); margin-bottom: 8px; padding: 8px 10px;">
+            <div class="drawer-card-header" style="margin-bottom: 4px;">
+              <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                <input type="checkbox" class="quarantine-checkbox" data-fact-id="${f.id}" style="cursor:pointer;" />
+                <span style="color: var(--holo-amber); font-weight: 600; font-size: 0.8rem;">#${f.id} [${escapeHtml(f.category || 'general')}]</span>
+              </label>
+              <span style="color: var(--text-dim); font-size: 0.72rem; font-family:'JetBrains Mono',monospace;">${escapeHtml(f.source_provenance || 'unknown')}</span>
+            </div>
+            <div style="font-size: 0.78rem; color: var(--holo-cyan); margin-bottom: 2px; font-family:'JetBrains Mono',monospace;">
+              ${f.key ? escapeHtml(f.key) : '<em style="color:var(--text-dim);">no key</em>'}
+            </div>
+            <div style="font-size: 0.82rem; color: var(--text-main); word-break: break-word; line-height: 1.35; margin-bottom: 6px;">
+              ${escapeHtml(f.value || '')}
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; font-size: 0.7rem; color: var(--text-dim);">
+              <span>Updated: ${escapeHtml(f.updated_at || '')}</span>
+              <div style="display:flex; gap: 4px;">
+                <button class="drawer-close-btn" style="padding:2px 6px; font-size:0.68rem; color:var(--holo-emerald); border-color:rgba(0,225,153,0.3);" data-action="promote-single-quarantine" data-id="${f.id}">PROMOTE</button>
+                <button class="drawer-close-btn" style="padding:2px 6px; font-size:0.68rem; color:var(--holo-crimson); border-color:rgba(255,51,102,0.3);" data-action="purge-single-quarantine" data-id="${f.id}">PURGE</button>
+              </div>
+            </div>
+          </div>
+        `).join('');
+
+        const prevDisabled = quarantineOffset === 0 ? 'disabled style="opacity:0.4; cursor:not-allowed;"' : '';
+        const nextDisabled = (quarantineOffset + quarantineLimit >= total) ? 'disabled style="opacity:0.4; cursor:not-allowed;"' : '';
+        const paginationHtml = `
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top: 10px; padding: 6px 0;">
+            <button class="drawer-close-btn" style="padding:4px 12px; font-size:0.75rem; color:var(--holo-cyan);" data-action="quarantine-prev-page" ${prevDisabled}>◀ PREV</button>
+            <span style="font-size:0.75rem; color:var(--text-dim); font-family:'JetBrains Mono',monospace;">OFFSET: ${quarantineOffset} / ${total}</span>
+            <button class="drawer-close-btn" style="padding:4px 12px; font-size:0.75rem; color:var(--holo-cyan);" data-action="quarantine-next-page" ${nextDisabled}>NEXT ▶</button>
+          </div>
+        `;
+
+        container.innerHTML = headerHtml + cardsHtml + paginationHtml;
+
+        const selectAllCb = document.getElementById('quarantineSelectAll');
+        if (selectAllCb) {
+          selectAllCb.addEventListener('change', (e) => {
+            const cbs = container.querySelectorAll('.quarantine-checkbox');
+            cbs.forEach(cb => { cb.checked = e.target.checked; });
+          });
+        }
+      } catch (err) {
+        container.innerHTML = `<div style="color: var(--holo-crimson); font-size: 0.85rem;">Error loading quarantine: ${err}</div>`;
+      }
+    }
+
+    async function executeQuarantinePromote(factIds, targetWs) {
+      if (!factIds || !factIds.length) {
+        alert("Please select at least one quarantined fact to promote.");
+        return;
+      }
+      if (!targetWs || targetWs.toLowerCase() === 'unscoped') {
+        alert("Cannot promote facts into 'unscoped' partition.");
+        return;
+      }
+      try {
+        const res = await fetch('/api/memory/quarantined/promote', {
+          method: 'POST',
+          headers: jarvisHeaders(),
+          body: JSON.stringify({ fact_ids: factIds, target_workspace_id: targetWs }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          await loadWorkspaces();
+          renderQuarantineTab();
+        } else {
+          alert(`Promotion failed: ${data.error || 'Unknown error'}`);
+        }
+      } catch (err) {
+        console.error("Quarantine promotion error:", err);
+      }
+    }
+
+    async function executeQuarantinePurge(factIds) {
+      if (!factIds || !factIds.length) {
+        alert("Please select at least one quarantined fact to purge.");
+        return;
+      }
+      if (!confirm(`Are you sure you want to permanently purge ${factIds.length} quarantined fact(s)? This action cannot be undone.`)) {
+        return;
+      }
+      try {
+        const res = await fetch('/api/memory/quarantined/purge', {
+          method: 'POST',
+          headers: jarvisHeaders(),
+          body: JSON.stringify({ fact_ids: factIds }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          await loadWorkspaces();
+          renderQuarantineTab();
+        } else {
+          alert(`Purge failed: ${data.error || 'Unknown error'}`);
+        }
+      } catch (err) {
+        console.error("Quarantine purge error:", err);
+      }
+    }
 
     // Holographic Photo Gallery Virtualized Controller (Zero-CLS & Zero-VRAM)
     const ERROR_FALLBACK_SVG = "data:image/svg+xml;utf8," + encodeURIComponent(
@@ -5037,6 +5280,8 @@ void main() {
         const data = await res.json();
         if (!data || !data.workspaces) return;
 
+        window._cachedWorkspaces = data.workspaces || [];
+
         const select = domRefs.workspaceSelect || document.getElementById('workspaceSelect');
         if (select) {
           select.innerHTML = '';
@@ -5061,6 +5306,24 @@ void main() {
           const tot = data.total_vectors !== undefined ? data.total_vectors : 0;
           const ceil = data.vector_ceiling !== undefined ? data.vector_ceiling : 2500;
           badge.textContent = `${tot}/${ceil} VEC`;
+        }
+
+        const qBadge = domRefs.workspaceQuarantinedBadge || document.getElementById('workspaceQuarantinedBadge');
+        if (qBadge) {
+          const qCount = data.quarantined_count !== undefined ? data.quarantined_count : 0;
+          qBadge.textContent = `${qCount} QUAR`;
+          if (qCount > 0) {
+            qBadge.style.color = 'var(--holo-amber)';
+            qBadge.style.borderColor = 'var(--holo-amber)';
+          } else {
+            qBadge.style.color = 'var(--holo-emerald)';
+            qBadge.style.borderColor = 'var(--holo-emerald)';
+          }
+        }
+
+        const drawerQCount = document.getElementById('drawerQuarantineCount');
+        if (drawerQCount && data.quarantined_count !== undefined) {
+          drawerQCount.textContent = data.quarantined_count;
         }
 
         const wsVal = domRefs.telemetryWsVal || document.getElementById('telemetryWsVal');
