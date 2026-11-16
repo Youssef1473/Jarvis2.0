@@ -10,7 +10,6 @@ Addresses BLK-22 requirements:
 """
 
 import ctypes
-from ctypes import wintypes
 import io
 import msvcrt
 import os
@@ -18,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+from ctypes import wintypes
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -164,7 +164,7 @@ def run_tests():
         text=True,
         bufsize=1,
     )
-    out2, err2 = [], []
+    out2 = []
     stop2 = threading.Event()
     t_out2 = threading.Thread(target=drain_pipe_non_blocking, args=(proc2.stdout, out2, stop2))
     t_out2.start()
@@ -174,7 +174,7 @@ def run_tests():
     t_out2.join(timeout=0.5)
 
     joined_out2 = "".join(out2)
-    print(f"Accumulated output: {repr(joined_out2)}")
+    print(f"Accumulated output: {joined_out2!r}")
     print(f"Thread alive: {t_out2.is_alive()}")
     assert not t_out2.is_alive()
     assert "chunk_0;chunk_1;chunk_2;chunk_3;chunk_4;\n" in joined_out2 or "final_line\n" in joined_out2

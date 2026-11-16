@@ -214,7 +214,7 @@ def probe_winsock_and_asyncio() -> dict[str, Any]:
         port = lsock.getsockname()[1]
         elapsed_bind = (time.perf_counter() - t0) * 1000
         res["tcp_bind"] = {"status": "SUCCESS", "port": port, "duration_ms": round(elapsed_bind, 2)}
-    except Exception as e:
+    except (OSError, RuntimeError) as e:
         elapsed_bind = (time.perf_counter() - t0) * 1000
         res["tcp_bind"] = {"status": "FAILED", "error": str(e), "duration_ms": round(elapsed_bind, 2)}
         lsock.close()
@@ -229,7 +229,7 @@ def probe_winsock_and_asyncio() -> dict[str, Any]:
         csock.connect(("127.0.0.1", port))
     except BlockingIOError as e:
         conn_errno = e.errno
-    except Exception as e:
+    except (OSError, RuntimeError) as e:
         conn_errno = getattr(e, "errno", -1)
     elapsed_conn = (time.perf_counter() - t1) * 1000
     res["tcp_nonblocking_connect"] = {
@@ -266,7 +266,7 @@ def probe_winsock_and_asyncio() -> dict[str, Any]:
             pair_result = [p[0].fileno(), p[1].fileno()]
             p[0].close()
             p[1].close()
-        except Exception as exc:
+        except (OSError, RuntimeError) as exc:
             pair_err = str(exc)
 
     t_pair = threading.Thread(target=_pair_worker, daemon=True)
@@ -291,7 +291,7 @@ def probe_winsock_and_asyncio() -> dict[str, Any]:
             loop = asyncio.ProactorEventLoop()
             loop_result = str(loop)
             loop.close()
-        except Exception as exc:
+        except (RuntimeError, OSError) as exc:
             loop_err = str(exc)
 
     t_loop = threading.Thread(target=_loop_worker, daemon=True)
@@ -312,7 +312,7 @@ def probe_winsock_and_asyncio() -> dict[str, Any]:
                 return 42
             val = asyncio.run(_dummy())
             res["asyncio_run_coroutine"] = {"status": "SUCCESS", "return_value": val}
-        except Exception as exc:
+        except (RuntimeError, OSError) as exc:
             res["asyncio_run_coroutine"] = {"status": "FAILED", "error": str(exc)}
     else:
         res["asyncio_run_coroutine"] = {"status": "SKIPPED_LOOP_HUNG", "reason": "ProactorEventLoop constructor hung on self-pipe"}
@@ -327,10 +327,6 @@ def probe_appcontainer_process_creation() -> dict[str, Any]:
         return {"supported": False, "reason": "Non-Windows platform"}
 
     from jarvis.core.evolution.appcontainer import (
-        AppContainerConfig,
-        AppContainerProcessLauncher,
-        AppContainerProfileManager,
-        AppContainerSecurityError,
         CREATE_NO_WINDOW,
         CREATE_SUSPENDED,
         EXTENDED_STARTUPINFO_PRESENT,
@@ -338,7 +334,9 @@ def probe_appcontainer_process_creation() -> dict[str, Any]:
         PROCESS_INFORMATION,
         SECURITY_CAPABILITIES,
         STARTUPINFOEXW,
-        advapi32,
+        AppContainerConfig,
+        AppContainerProcessLauncher,
+        AppContainerProfileManager,
         kernel32,
     )
 
@@ -456,7 +454,7 @@ def probe_appcontainer_process_creation() -> dict[str, Any]:
         )
         prod_ok = True
         handle.cleanup()
-    except Exception as e:
+    except (OSError, RuntimeError) as e:
         prod_err = str(e)
 
     res["production_launcher_spawn"] = {
@@ -608,13 +606,13 @@ def probe_browser_environment() -> dict[str, Any]:
 
     if chrome_pw_exists:
         try:
-            sub = subprocess.run([chrome_pw, "--version"], capture_output=True, text=True, timeout=2.0)
+            sub = subprocess.run([chrome_pw, "--version"], check=False, capture_output=True, text=True, timeout=2.0)
             res["playwright_chromium_launch"] = {
                 "returncode": sub.returncode,
                 "stdout": sub.stdout.strip(),
                 "stderr": sub.stderr.strip()[:300],
             }
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             res["playwright_chromium_launch"] = {"error": str(e)}
 
     # 5. CDP loopback reachability (port 9998)
@@ -624,7 +622,7 @@ def probe_browser_environment() -> dict[str, Any]:
     try:
         s.connect(("127.0.0.1", 9998))
         cdp_ok = True
-    except Exception as exc:
+    except (OSError, RuntimeError) as exc:
         cdp_ok = False
         cdp_err = str(exc)
     finally:
@@ -637,10 +635,10 @@ def probe_browser_environment() -> dict[str, Any]:
 
     # 6. External DNS resolution
     try:
-        dns_res = socket.getaddrinfo("google.com", 80)
+        _ = socket.getaddrinfo("google.com", 80)
         dns_ok = True
         dns_err = None
-    except Exception as exc:
+    except (OSError, RuntimeError) as exc:
         dns_ok = False
         dns_err = str(exc)
     res["external_dns"] = {
