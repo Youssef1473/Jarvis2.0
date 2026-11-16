@@ -127,7 +127,7 @@ class OnnxEmbeddingEngine:
                 )
                 logger.info("OnnxEmbeddingEngine loaded successfully from %s (threads=2, dim=%d)", onnx_path, self.dim)
                 return True
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError, OSError) as e:
                 logger.warning("Failed to initialize ONNX embedding session (%s). Using offline fallback.", e)
                 self._session = None
                 self._tokenizer = None
@@ -205,7 +205,7 @@ class OnnxEmbeddingEngine:
             if norm > 0:
                 return (cls_rep / norm).tolist()
             return cls_rep.tolist()
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, OSError) as e:
             logger.debug("ONNX inference exception (%s), falling back to lexical hash.", e)
             return self.fallback_dense_vectorize(text, dim=target_dim)
 
@@ -270,7 +270,7 @@ class OnnxEmbeddingEngine:
                 norms = np.where(norms == 0, 1.0, norms)
                 normed = (cls_reps / norms).tolist()
                 results.extend(normed)
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError, OSError) as e:
                 logger.debug("Batch ONNX inference failed (%s); using fallback.", e)
                 results.extend([self.fallback_dense_vectorize(t, dim=target_dim) for t in chunk])
 

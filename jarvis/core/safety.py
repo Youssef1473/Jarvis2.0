@@ -1,6 +1,6 @@
 """Safety gatekeeper for dangerous tool executions in Jarvis 2.0."""
 import re
-from typing import Any
+from typing import Any, ClassVar
 
 
 class SafetyGate:
@@ -8,7 +8,7 @@ class SafetyGate:
 
     # This denylist catches common destructive PowerShell commands and aliases.
     # It is not a sandbox: arbitrary shell code can still cause side effects.
-    DANGEROUS_COMMAND_PATTERNS = [
+    DANGEROUS_COMMAND_PATTERNS: ClassVar[list[str]] = [
         r"(?<![\w-])(?:remove-item|ri|del|erase|rd|rmdir|remove-itemproperty)(?![\w-])",
         r"(?<![\w-])(?:clear-content|clc|set-content|sc|out-file)(?![\w-])",
         r"(?<![\w-])(?:format|format-volume|clear-disk)(?![\w-])",
@@ -20,7 +20,7 @@ class SafetyGate:
         r"\bdel\s+/[fsq]",
     ]
 
-    def __init__(self, config: dict[str, Any] = None):
+    def __init__(self, config: dict[str, Any] | None = None):
         cfg = config or {}
         self.confirm_destructive = cfg.get("safety", {}).get("confirm_destructive", True)
 
