@@ -1,5 +1,4 @@
 """Automated tests for Alder Lake hybrid core affinity, MMCSS scheduling, and EcoQoS."""
-import os
 import sys
 import unittest
 from pathlib import Path
@@ -8,16 +7,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jarvis.core.win32_affinity import (
+    MASK_ECORE_BACKGROUND,
     MASK_PCORE_AUDIO_ISOLATED,
     MASK_PCORE_COMPUTE,
-    MASK_ECORE_BACKGROUND,
     THREAD_PRIORITY_NORMAL,
-    THREAD_PRIORITY_ABOVE_NORMAL,
-    THREAD_PRIORITY_HIGHEST,
-    THREAD_PRIORITY_TIME_CRITICAL,
-    pin_current_thread_to_mask,
-    elevate_audio_thread_mmcss,
     configure_ecore_worker_thread,
+    elevate_audio_thread_mmcss,
+    pin_current_thread_to_mask,
 )
 
 
@@ -55,7 +51,7 @@ class TestWin32AffinitySuite(unittest.TestCase):
         try:
             configure_ecore_worker_thread(coinit_sta=True, tag="TestWorker")
             ran_cleanly = True
-        except Exception as e:
+        except (OSError, RuntimeError):
             ran_cleanly = False
         self.assertTrue(ran_cleanly)
 

@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+
 import pytest
 
 from jarvis.audio.partial_streamer import ShmPartialTokenChannel

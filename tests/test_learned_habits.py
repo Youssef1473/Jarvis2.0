@@ -1,12 +1,11 @@
 """Unit and integration tests for Dynamic Habit Learning and Sub-20ms Reflexes in Jarvis 2.0."""
-import json
 import os
 import shutil
 import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import jarvis.skills.self_evolution as self_evo
 from jarvis.core.brain import JarvisBrain

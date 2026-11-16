@@ -2,23 +2,20 @@
 Verifies error post-mortems, deduplication, hybrid RRF recall, auto-reflection on tool failure,
 and in-context heuristic prompt injection.
 """
-import json
-import os
 import shutil
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import jarvis.skills.self_evolution as self_evo
 from jarvis.core.brain import JarvisBrain
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
-import jarvis.skills.self_evolution as self_evo
 
 
 class TestEpisodicReflectionSuite(unittest.TestCase):

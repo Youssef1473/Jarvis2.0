@@ -2,7 +2,11 @@
 import unittest
 from unittest.mock import MagicMock
 
-from jarvis.context.context_orchestrator import ContextOrchestrator, SOVEREIGN_IDENTITY, BASE_SYSTEM_PROMPT
+from jarvis.context.context_orchestrator import (
+    BASE_SYSTEM_PROMPT,
+    SOVEREIGN_IDENTITY,
+    ContextOrchestrator,
+)
 
 
 class TestContextOrchestrator(unittest.TestCase):

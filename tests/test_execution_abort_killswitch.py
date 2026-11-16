@@ -4,9 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from jarvis.core.cancellation import (
     GLOBAL_EPOCH_STATE,
-    BargeInCancellationToken,
     get_global_cancellation_token,
-    signal_global_barge_in,
     signal_execution_abort,
 )
 from jarvis.core.pipeline.tool_orchestrator import ToolOrchestrator
@@ -96,10 +94,12 @@ class TestExecutionAbortKillSwitch(unittest.TestCase):
         orch.hud = MagicMock()
         orch.ui_service = MagicMock()
 
-        with patch.object(orch, "abort_active_command") as mock_abort:
-            with patch("sounddevice.InputStream") as mock_sd:
-                orch._on_ptt_press()
-                mock_abort.assert_called_once()
+        with (
+            patch.object(orch, "abort_active_command") as mock_abort,
+            patch("sounddevice.InputStream"),
+        ):
+            orch._on_ptt_press()
+            mock_abort.assert_called_once()
 
 
 if __name__ == "__main__":

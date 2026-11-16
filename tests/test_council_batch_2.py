@@ -1,21 +1,18 @@
 """Verification test suite for Council Batch 2: Notes, Hardware Watchdog, and Deep Research."""
-import os
 import sys
-import time
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
-from jarvis.skills.base import SkillRegistry
-import jarvis.skills.notes
-import jarvis.skills.system_watchdog
-import jarvis.skills.deep_research
 import yaml
+
 from jarvis.core.brain import JarvisBrain
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
+from jarvis.skills.base import SkillRegistry
 
 
 def test_notes_skill():
@@ -68,7 +65,7 @@ def test_system_watchdog():
 
 def test_deep_research():
     res_research = SkillRegistry.execute("deep_research", topic="Python 3.13 free threaded GIL", max_sources=2)
-    safe_excerpt = res_research[:350].encode('ascii', errors='replace').decode('ascii')
+    _safe_excerpt = res_research[:350].encode('ascii', errors='replace').decode('ascii')
     assert "Deep research completed" in res_research or "Could not locate" in res_research
     assert isinstance(res_research, str) and len(res_research) > 0
 

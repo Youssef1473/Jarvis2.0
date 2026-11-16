@@ -1,5 +1,4 @@
 """Automated unit test suite for Dimension 2.3 Transcript Distiller & Sleep-Phase Trait Inscription."""
-import os
 import sys
 import tempfile
 import time
@@ -9,12 +8,14 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.core.memory import MemoryManager, SleepPhaseConsolidator, TranscriptDistiller
+from jarvis.core.memory import (
+    MemoryManager,
+    SleepPhaseConsolidator,
+    TranscriptDistiller,
+)
 from jarvis.core.memory.transcript_distiller import (
-    CANONICAL_PREFERENCE_KEYS,
-    MAX_CORE_PREFERENCES_CEILING,
-    scrub_sensitive_credentials,
     contains_unredacted_credentials,
+    scrub_sensitive_credentials,
 )
 
 

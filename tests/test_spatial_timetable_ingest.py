@@ -1,14 +1,14 @@
 """Unit tests for 2D spatial timetable PDF extraction and calendar deduplication."""
-import os
 import sys
 import unittest
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import pypdf
 
-from jarvis.skills.document_ingest import _extract_page_content, extract_text_from_pdf
 from jarvis.core.memory import MemoryManager
-from jarvis.skills.calendar_manager import list_calendar_events
+from jarvis.skills.document_ingest import _extract_page_content
+
 
 class TestSpatialTimetableIngest(unittest.TestCase):
     def setUp(self):

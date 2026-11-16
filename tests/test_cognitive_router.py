@@ -2,7 +2,9 @@
 import unittest
 from unittest.mock import MagicMock
 
-from jarvis.core.cognition.cognitive_router import CognitiveRouter, OS_ACTION_TOOLS, SELF_BUILD_TRIGGERS
+from jarvis.core.cognition.cognitive_router import (
+    CognitiveRouter,
+)
 
 
 class TestCognitiveRouter(unittest.TestCase):

@@ -10,25 +10,23 @@ Verifies:
 6. Safe tool isolation: Non-critical tools execute without triggering approval before or after execution.
 """
 import json
-from pathlib import Path
 import sys
 import threading
 import time
 import unittest
-from unittest import mock
-import urllib.request
 import urllib.error
+import urllib.request
+from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from jarvis.core.pipeline.tool_orchestrator import ToolOrchestrator
 from jarvis.core.security_boundaries import (
     DualKeyApprovalManager,
     TurnTaintTracker,
     compute_action_hash,
-    format_action_summary,
 )
-from jarvis.core.pipeline.tool_orchestrator import ToolOrchestrator
-from jarvis.skills.base import SkillRegistry
 from jarvis.skills.self_evolution import CUSTOM_SKILLS_DIR
 from jarvis.ui.server import JarvisUIService, get_hud_session_token
 

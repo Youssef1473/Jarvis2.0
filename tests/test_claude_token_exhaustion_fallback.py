@@ -4,7 +4,6 @@ Verifies that when Claude Sonnet runs out of tokens or hits rate limits:
 - It switches to Gemini 3.8 Flash Medium for moderate/standard tasks.
 - Exhaustion status is tracked cleanly and can be manually or explicitly reset.
 """
-import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -170,12 +169,12 @@ class TestClaudeTokenExhaustionFallback(unittest.TestCase):
 
             # Complex query -> target_model becomes gemini-3.8-flash-high
             self.brain._process_antigravity_query(complex_query)
-            args, kwargs = mock_gen.call_args
+            _args, kwargs = mock_gen.call_args
             self.assertEqual(kwargs.get("model"), "gemini-3.8-flash-high")
 
             # Moderate query -> target_model becomes gemini-3.8-flash-medium
             self.brain._process_antigravity_query(moderate_query)
-            args2, kwargs2 = mock_gen.call_args
+            _args2, kwargs2 = mock_gen.call_args
             self.assertEqual(kwargs2.get("model"), "gemini-3.8-flash-medium")
 
     def test_explicit_user_directive_resets_exhaustion(self):
@@ -186,7 +185,7 @@ class TestClaudeTokenExhaustionFallback(unittest.TestCase):
         with patch.object(self.brain.antigravity_bridge, "generate_response") as mock_gen:
             mock_gen.return_value = {"status": "SUCCESS", "response": "Using Claude Sonnet, Sir.", "duration_seconds": 0.5}
             self.brain._process_antigravity_query("Jarvis, use claude to inspect this function")
-            args, kwargs = mock_gen.call_args
+            _args, kwargs = mock_gen.call_args
             self.assertEqual(kwargs.get("model"), "claude-sonnet-4-6")
             # Exhaustion was reset
             self.assertFalse(self.brain.antigravity_bridge.is_claude_exhausted())
@@ -237,12 +236,12 @@ class TestClaudeTokenExhaustionFallback(unittest.TestCase):
         with patch.object(self.brain.antigravity_bridge, "generate_response") as mock_gen:
             mock_gen.return_value = {"status": "SUCCESS", "response": "Acknowledged, Sir.", "duration_seconds": 0.5}
             self.brain._process_antigravity_query("Jarvis, summarize the morning briefing")
-            args, kwargs = mock_gen.call_args
+            _args, kwargs = mock_gen.call_args
             self.assertEqual(kwargs.get("model"), "claude-sonnet-4-6")
 
             # Explicit user directive resets exhaustion
             self.brain._process_antigravity_query("Jarvis, use flash high to analyze this")
-            args2, kwargs2 = mock_gen.call_args
+            _args2, kwargs2 = mock_gen.call_args
             self.assertEqual(kwargs2.get("model"), "gemini-3.8-flash-high")
             self.assertFalse(self.brain.antigravity_bridge.is_gemini_flash_exhausted())
 

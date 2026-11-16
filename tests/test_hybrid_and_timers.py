@@ -1,21 +1,20 @@
 """Comprehensive verification suite for Tri-Tier Hybrid Router and Spoken Timers Suite."""
-import os
 import sys
-import time
-import yaml
 from pathlib import Path
+
+import yaml
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
-from jarvis.skills.base import SkillRegistry
-import jarvis.skills.timers as timer_skills
 from jarvis.core.brain import JarvisBrain
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
+from jarvis.skills.base import SkillRegistry
 
 
 def test_spoken_timers():

@@ -6,13 +6,14 @@ and transcribe_with_prosody.
 import time
 import unittest
 from unittest.mock import MagicMock, patch
+
 import numpy as np
 
 from jarvis.audio.stt import (
-    SpeechToText,
     ProsodyMetrics,
-    count_syllables,
+    SpeechToText,
     classify_tempo,
+    count_syllables,
 )
 
 

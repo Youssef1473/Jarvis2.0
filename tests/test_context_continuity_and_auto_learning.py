@@ -1,14 +1,10 @@
 """Tests for continuous context retention, dual-tier background crystallization, and credential redaction."""
-import os
 import shutil
 import tempfile
 import time
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 from jarvis.core.memory import MemoryManager
-from jarvis.core.brain import JarvisBrain
 from jarvis.core.safety import SafetyGate
 
 

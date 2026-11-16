@@ -5,9 +5,9 @@ Verifies:
 2. JarvisBrain._dispatch_tool_pipeline enforces SafetyGate, cancellation tokens,
    ToolOrchestrator execution, and narrative callbacks uniformly.
 """
-from pathlib import Path
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))

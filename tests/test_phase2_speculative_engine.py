@@ -8,8 +8,10 @@ from pathlib import Path
 from jarvis.context.flow_state_mirror import EnvironmentEpochTracker, ResourceScope
 from jarvis.skills.base import SkillRegistry, SpeculationForbiddenError
 from jarvis.speculative.engine import (
-    EpochVector,
     EnvironmentEpochTracker as SpeculativeEpochTracker,
+)
+from jarvis.speculative.engine import (
+    EpochVector,
     SpeculativeExecutionEngine,
 )
 

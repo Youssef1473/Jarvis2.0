@@ -12,19 +12,26 @@ from unittest.mock import MagicMock, patch
 
 from jarvis.context.context_orchestrator import (
     ContextOrchestrator,
-    EpochVector as ContextEpochVector,
+)
+from jarvis.context.context_orchestrator import (
     EnvironmentEpochTracker as ContextEpochTracker,
 )
+from jarvis.context.context_orchestrator import (
+    EpochVector as ContextEpochVector,
+)
 from jarvis.conversation.bookmarks import (
-    ReasoningBookmark,
-    ReasoningBookmarkStack,
     DEFAULT_BOOKMARK_TTL_NS,
+    ReasoningBookmarkStack,
 )
 from jarvis.core.pipeline.latency_profiler import PipelineLatencyProfiler
 from jarvis.skills.base import SkillRegistry
 from jarvis.speculative.engine import (
-    EpochVector as SpecEpochVector,
     EnvironmentEpochTracker as SpecEpochTracker,
+)
+from jarvis.speculative.engine import (
+    EpochVector as SpecEpochVector,
+)
+from jarvis.speculative.engine import (
     SpeculativeExecutionEngine,
 )
 
@@ -94,7 +101,7 @@ class TestPost9aeec4cConvergence(unittest.TestCase):
             spoken_clauses=["Clause 1"],
             unspoken_clauses=["Remaining 1"],
         )
-        b2 = stack.push_interrupted_turn(
+        _b2 = stack.push_interrupted_turn(
             turn_id="turn_2",
             original_query="Second topic query",
             topic_label="second topic",
@@ -185,6 +192,7 @@ class TestPost9aeec4cConvergence(unittest.TestCase):
     def test_stateful_polyphase_upsampler(self):
         """Verifies StatefulPolyphaseUpsampler carries 32-sample lookbehind tail to eliminate FIR boundary notch."""
         import numpy as np
+
         from jarvis.audio.tts import StatefulPolyphaseUpsampler
 
         upsampler = StatefulPolyphaseUpsampler(up=2, down=1, pad_samples=32)
@@ -218,6 +226,7 @@ class TestPost9aeec4cConvergence(unittest.TestCase):
         """Verifies is_window_dwm_cloaked detects Windows 11 DWM cloaked windows on inactive virtual desktops."""
         import ctypes
         from ctypes import wintypes
+
         from jarvis.vision.privacy_guard import is_window_dwm_cloaked
 
         # Invalid HWND returns False
@@ -308,6 +317,7 @@ class TestPost9aeec4cConvergence(unittest.TestCase):
         import sqlite3
         import tempfile
         from pathlib import Path
+
         from jarvis.memory.ro_pool import ReadOnlyConnectionPool
 
         with tempfile.TemporaryDirectory() as td:

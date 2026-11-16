@@ -104,7 +104,7 @@ def test_kokoro_phonetic_fluency():
         # 'zˈiəɹoʊ' is 'zero'
         assert "zˈiəɹoʊ" not in ph and "zero" not in ph.lower(), "Kokoro should not say 'zero nine'!"
         print("Kokoro phoneme fluency verified: ZERO robotic digits!")
-    except Exception as e:
+    except (ImportError, RuntimeError, OSError, ValueError) as e:
         print(f"Kokoro test notice: {e}")
 
 

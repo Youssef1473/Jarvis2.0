@@ -12,16 +12,18 @@ import shutil
 import tempfile
 import time
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from jarvis.audio.stt import ProsodyMetrics
 from jarvis.core.brain import JarvisBrain
 from jarvis.core.cognition.cadence_tracker import MotorCadenceTracker
-from jarvis.core.cognition.proactive_evi import CognitiveState, CognitiveTwinEngine, TelemetrySlice
+from jarvis.core.cognition.proactive_evi import (
+    CognitiveState,
+    TelemetrySlice,
+)
 from jarvis.core.heartbeat import JarvisHeartbeat
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
-
 
 
 class TestCognitiveTwinPipelineSuite(unittest.TestCase):

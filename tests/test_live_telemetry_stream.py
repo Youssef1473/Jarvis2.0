@@ -1,20 +1,21 @@
 """Verification of live continuous telemetry broadcast via WebSocket."""
 import asyncio
 import json
-import time
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import websockets
+
 from jarvis.ui.server import JarvisUIService
 
 
 async def verify_live_stream():
     service = JarvisUIService(host="127.0.0.1", port=20139)
     service.start()
-    time.sleep(1.0)
+    await asyncio.sleep(1.0)
 
     received_packets = []
     uri = "ws://127.0.0.1:20139/ws"
@@ -32,7 +33,7 @@ async def verify_live_stream():
                     ram_pct = data.get("ram_pct")
                     ts = data.get("timestamp")
                     print(f"Received live telemetry packet: CPU={cpu}%, RAM={ram_gb}GB ({ram_pct}%) at {ts}")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 break
 
     service.stop()

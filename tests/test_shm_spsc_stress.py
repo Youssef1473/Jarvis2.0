@@ -47,7 +47,7 @@ class TestShmSpscDeterministic(unittest.TestCase):
         for t in reversed(self.open):
             try:
                 t.close()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
 
     def _pair(self, capacity):

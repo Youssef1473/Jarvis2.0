@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from jarvis.context.flow_state_mirror import FlowStateSnapshot
-from jarvis.conversation.bookmarks import ReasoningBookmark, ReasoningBookmarkStack
+from jarvis.conversation.bookmarks import ReasoningBookmarkStack
 from jarvis.core.heartbeat import JarvisHeartbeat
 from jarvis.core.memory import MemoryManager
 from jarvis.core.orchestrator import JarvisOrchestrator

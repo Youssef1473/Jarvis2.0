@@ -1,11 +1,11 @@
 """Unit tests for jarvis/skills/nvml_dxgi_vram_arbiter.py."""
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from jarvis.skills.base import SkillRegistry
 from jarvis.skills.nvml_dxgi_vram_arbiter import (
-    audit_vram_and_thermal_budget,
     _get_nvml_lib,
+    audit_vram_and_thermal_budget,
 )
 
 
