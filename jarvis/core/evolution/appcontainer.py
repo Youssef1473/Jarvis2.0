@@ -704,7 +704,7 @@ class AppContainerProfileManager:
                         if ole32 and hasattr(ole32, "CoTaskMemFree"):
                             ole32.CoTaskMemFree(path_p)
                         return True
-                except Exception as e:
+                except (OSError, RuntimeError, AttributeError) as e:
                     logger.debug("GetAppContainerFolderPath check notice for '%s': %s", profile_name, e)
 
             # 2. Check HKCU AppContainer registry mapping
@@ -717,7 +717,7 @@ class AppContainerProfileManager:
                 pass
 
             return False
-        except Exception as exc:
+        except (OSError, RuntimeError, AttributeError) as exc:
             logger.debug("profile_exists exception for '%s': %s", profile_name, exc)
             return False
 
@@ -1204,7 +1204,7 @@ class AppContainerProcessWrapper:
 
         try:
             self._handle_obj.cleanup()
-        except Exception as err:
+        except (OSError, RuntimeError, AttributeError) as err:
             logger.debug("handle_obj cleanup notice: %s", err)
 
         self._close_result = term_ok and job_ok

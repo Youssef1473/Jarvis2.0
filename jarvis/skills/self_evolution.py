@@ -121,14 +121,14 @@ def delete_custom_skill(skill_name: str, user_approved: bool = False) -> str:
             try:
                 with open(meta_file, encoding="utf-8") as f:
                     meta_data = json.load(f)
-                for t_name in meta_data.get("tools", {}).keys():
+                for t_name in meta_data.get("tools", {}):
                     SkillRegistry.unregister(t_name)
-            except Exception:
-                pass
+            except (OSError, json.JSONDecodeError, KeyError, TypeError) as e:
+                logger.debug("Error unregistering tools for %s: %s", clean_name, e)
             try:
                 meta_file.unlink()
-            except Exception:
-                pass
+            except OSError as e:
+                logger.debug("Failed unlinking metadata file for %s: %s", clean_name, e)
 
         SkillRegistry.unregister(clean_name)
         module_name = f"jarvis.skills.custom.{clean_name}"
@@ -140,7 +140,7 @@ def delete_custom_skill(skill_name: str, user_approved: bool = False) -> str:
             SkillRegistry._openai_tools_cache.clear()
 
         return f"Successfully deleted custom skill '{clean_name}', Sir."
-    except Exception as e:
+    except (OSError, KeyError, ValueError) as e:
         return f"Error deleting custom skill '{clean_name}': {e}"
 
 
@@ -227,7 +227,7 @@ def init_custom_skills(force: bool = False) -> list[str]:
 
             loaded.append(clean_name)
             logger.info("Registered sandboxed proxy for custom skill: %s", clean_name)
-        except Exception as e:
+        except (OSError, json.JSONDecodeError, KeyError, ValueError, RuntimeError) as e:
             logger.warning("Failed to initialize custom skill '%s': %s", clean_name, e)
 
     _CUSTOM_SKILLS_INITIALIZED = True
