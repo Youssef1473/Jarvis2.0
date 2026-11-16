@@ -4611,3 +4611,46 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Phase 2 Security Regression Suite:** 224 passed, 0 failed, 0 errors in 48.88s (Exit code: 0).
    - **Tier 1 Hermetic Fast Test Suite:** 1,511 passed, 0 failed, 11 skipped across 4 parallel workers in 161.67s (Exit code: 0).
    - **SQLite Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
+
+---
+
+## Session Log: 2026-11-16 — Track D (Session 2): Dynamic VRAM-Aware Local Model Routing & Adaptive Scaling (Plan 044 Closed)
+
+- **Session Timestamp:** 2026-11-16T20:30:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Starting Git HEAD SHA:** `f6ea0a6` (tagged `v2.3.0-vram-hardened`)
+- **Topic Branch:** `feat/dynamic-vram-aware-local-model-routing`
+- **Active Milestone:** `Track D: Dynamic VRAM-Aware Local Model Routing (Plan 044 Completed)`
+
+### Summary of Actions & Deliverables
+1. **Plan 044 Implementation:**
+   - **VRAM-Calibrated Inference Profile Governor (`jarvis/routing/vram_profile.py`):**
+     - Defined immutable `VramInferenceProfile` dataclass and 5-tier `VramInferenceTier` enum (`NOMINAL`, `ELEVATED`, `CRITICAL`, `OOM_GUARD`, `UNAVAILABLE`).
+     - Derived pre-dispatch LLM parameter scaling querying `nvml_dxgi_vram_arbiter`: `NOMINAL >= 1200 MiB` (8192 ctx, full GPU -1), `ELEVATED 700-1199 MiB` (4096 ctx, full GPU -1, Stage 1 shed), `CRITICAL 350-699 MiB` (2048 ctx, <=12 GPU layers, Stage 2 shed, cloud failover if available), `OOM_GUARD < 350 MiB` (2048 ctx, 0 GPU layers fail-closed barrier, immediate cloud failover or CPU-only mode), and deterministic CI/non-NVIDIA `UNAVAILABLE` fallback (4096 ctx, 0 GPU layers, no failover).
+     - Implemented `register_ollama_vram_shed_hook` connecting Ollama model unloading to Stage 2 subsystem shedding.
+   - **Routing Package Exports (`jarvis/routing/__init__.py`):**
+     - Exported `VramInferenceProfile`, `VramInferenceTier`, `resolve_vram_inference_profile`, and `register_ollama_vram_shed_hook`.
+   - **Ollama Provider Extension (`jarvis/core/providers/ollama.py`):**
+     - Extended `generate_turn` to accept optional `options: dict[str, Any]` parameter, passing `extra_body={"options": options}` to `client.chat.completions.create`.
+     - Connected `register_ollama_vram_shed_hook` in `__init__` for Stage 2 emergency VRAM reclamation.
+   - **OpenAI Brain & Cognitive Router (`jarvis/core/brain_openai.py`, `jarvis/core/cognition/cognitive_router.py`):**
+     - Integrated `resolve_vram_inference_profile` in `_process_openai_compatible_query`, redirecting to `_process_gemini_query` when cloud failover is indicated and Gemini is configured.
+     - Injected dynamic `extra_body={"options": {"num_ctx": profile.num_ctx, "num_gpu": profile.num_gpu}}` on local Ollama dispatches.
+     - Recorded structured routing telemetry in `self.last_routing_metadata`.
+     - Wired optional `vram_profile` parameter into `determine_hybrid_route` for failover from local Ollama to Gemini.
+   - **Hermetic Test Suite (`tests/test_vram_aware_routing.py`):**
+     - Authored 14 hermetic unit tests covering all 5 pressure tiers, Stage 1/2 shedding execution, `extra_body` option injection, cloud provider failover, CPU fallback, Ollama unload hook, thread safety, and conversation turn stability.
+   - **Test Accounting & Classifier (`tools/test_classifier.py`, `data/test_classification_manifest.json`):**
+     - Expanded test manifest from 2,502 to 2,516 collected nodes (1,536 Tier 1 nodes) with 0 orphans, 0 duplicates, and 100% classification compliance.
+2. **Verification Gates & Quality Invariants:**
+   - **Repository-Wide Static Linter (`tools/lint.py`):** 0 Ruff diagnostics across `jarvis/ tools/ tests/`.
+   - **Structural Invariants (`tools/diagnostics.py`):** 0 AST-Grep invariant violations across `jarvis/ tools/`.
+   - **Targeted VRAM & Routing Suites:** 76/76 tests passed in 3.25s (`tests/test_vram_aware_routing.py`, `tests/test_nvml_vram_arbiter.py`, `tests/test_multi_llm_responsiveness.py`, `tests/test_openrouter_provider.py`, `tests/test_brain_pipeline_and_interim.py`).
+   - **Test Accounting Invariant:** `test_17_accurate_total_test_accounting` passed with 100% accounting (2,516 collected nodes accounted for, 0 drift).
+   - **Test Classifier Integrity:** `tools/test_classifier.py --check-orphaned` verified 0 orphans, 0 duplicates, 2,516 nodes confirmed.
+   - **Live E2E Consecutive Turns Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing cleanly (Exit code: 0).
+   - **Phase 2 Security Regression Suite:** 224 passed, 0 failed, 0 errors in 51.39s (Exit code: 0).
+   - **Tier 1 Hermetic Fast Test Suite:** 1,525 passed, 0 failed, 11 skipped across 4 parallel workers in 243.42s (Exit code: 0).
+   - **SQLite Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 239 rows (234 quarantined unscoped, 5 ws_default), and `facts_vec` = 239 rows.
+

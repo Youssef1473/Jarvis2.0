@@ -23,8 +23,14 @@ logger = logging.getLogger("Jarvis.Brain.OpenAI")
 class OpenAIProviderMixin:
     """Provides local Ollama, Groq LPU, xAI Grok, and OmniRoute streaming LLM execution."""
 
+    def _is_gemini_configured(self) -> bool:
+        """Returns True if a valid GEMINI_API_KEY is configured in the environment or config."""
+        key = os.getenv("GEMINI_API_KEY", "").strip()
+        return bool(key and key != "your_gemini_api_key_here")
+
     def _init_hybrid_providers(self) -> None:
         """Initializes Tri-Tier Hybrid Providers: Local Ollama, Groq LPU, and Gemini Multimodal."""
+        self.last_routing_metadata: dict[str, Any] = {}
         try:
             from openai import OpenAI
         except ImportError:
@@ -253,6 +259,40 @@ class OpenAIProviderMixin:
     def _process_openai_compatible_query(self, user_text: str, sentence_callback: Any = None) -> str:
         """Processes user input using OmniRoute, Groq, or xAI Grok with real-time streaming TTS and dynamic failover."""
         t_start = time.perf_counter()
+
+        is_ollama = (self.provider == "ollama") or (
+            hasattr(self, "ollama_client")
+            and getattr(self, "openai_client", None) == getattr(self, "ollama_client", None)
+        )
+        ollama_vram_profile = None
+        if is_ollama:
+            from jarvis.routing.vram_profile import resolve_vram_inference_profile
+
+            cloud_enabled = bool(self._is_gemini_configured())
+            ollama_vram_profile = resolve_vram_inference_profile(cloud_fallback_enabled=cloud_enabled)
+            tier_val = (
+                ollama_vram_profile.tier.value
+                if hasattr(ollama_vram_profile.tier, "value")
+                else str(ollama_vram_profile.tier)
+            )
+            self.last_routing_metadata = {
+                "vram_tier": tier_val,
+                "applied_num_ctx": ollama_vram_profile.num_ctx,
+                "applied_num_gpu": ollama_vram_profile.num_gpu,
+                "cloud_failover": ollama_vram_profile.cloud_failover,
+            }
+            if (
+                ollama_vram_profile.cloud_failover
+                and ollama_vram_profile.recommended_provider == "gemini"
+                and self._is_gemini_configured()
+            ):
+                logger.warning(
+                    "VRAM Pressure [%s: %.1f MiB headroom]: Failing over local Ollama to Gemini...",
+                    tier_val,
+                    ollama_vram_profile.headroom_mb,
+                )
+                return self._process_gemini_query(user_text, sentence_callback)
+
         # Determine model candidates with Smart Dynamic Tiering
         if (self.provider == "groq" or self.openai_client == getattr(self, "groq_client", None)) and hasattr(self, "groq_candidates"):
             candidate_models = list(self.groq_candidates)
@@ -307,6 +347,13 @@ class OpenAIProviderMixin:
                 self.openai_model = model_candidate
 
                 request_options = {}
+                if is_ollama and ollama_vram_profile is not None:
+                    request_options["extra_body"] = {
+                        "options": {
+                            "num_ctx": ollama_vram_profile.num_ctx,
+                            "num_gpu": ollama_vram_profile.num_gpu,
+                        }
+                    }
                 if self.provider == "ollama" and model_candidate.startswith("qwen3.5"):
                     # Keep everyday voice turns fast; allow extra deliberation for repository work.
                     if self.active_task_mode == "code":
