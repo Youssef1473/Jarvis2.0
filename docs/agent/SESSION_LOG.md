@@ -4392,3 +4392,48 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Tier 1 Fast Test Suite:** 1,491 passed, 0 failed, 11 skipped (Exit code: 0).
    - **Phase 2 Security Regression Suite:** 223 passed, 0 failed, 1 skipped (Exit code: 0).
    - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
+
+---
+
+## Session Log: 2026-11-16 — /improve Modernization Queue — Batch 7 (Plans 030–034) & Full Baseline Closure
+
+- **Session Timestamp:** 2026-11-16T11:45:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `docs/seal-batch7-plans-030-034-closure` (branched from `main` @ `47abe3f`)
+- **Starting Git HEAD SHA:** `a3016ad2771d34750665d7b83ad3fc26638f3f21` (`a3016ad`)
+- **Ending Git HEAD SHA:** `47abe3f4fbadbd88e86fde0f09ce7341da0784bd` (`47abe3f`)
+- **Landed Pull Requests:**
+  - **PR #48:** `chore(governance): seal Batch 6 implementation milestone (Plans 025-029) (#48)` (Merged, commit `8925ae0`, containing `892f5ba`)
+  - **PR #49:** `fix(core): harden cognition, reflex dispatch, memory vault, and embeddings (#49)` (Merged, commit `fd26219`, containing `2c5ccc1` and `45fb022`)
+  - **PR #50:** `fix(core,skills): harden AppContainer, GitHub bridge, AST surgeon, and self-evolution (#50)` (Merged, commit `9f84035`, containing `57b0495`)
+  - **PR #51:** `fix(skills): harden actuation, telemetry, productivity, and ambient skills (#51)` (Merged, commit `47abe3f`, containing `e0b950b` and `443a94d`)
+- **Active Milestone:** `Batch 7 Governance Seal & Full Repository 0-Ruff Baseline Closure (Plans 001-034 Closed)`
+
+### Summary of Actions & Deliverables
+1. **Plan 030 — Cognition and Reflex Pipeline Error Transparency (PR #49, `2c5ccc1`):**
+   - Eliminated all 18 Ruff diagnostics across `jarvis/core/cognition/` (`cadence_tracker.py`, `proactive_evi.py`), `jarvis/core/reflex_dispatcher.py`, and `jarvis/core/streaming_tool_parser.py`.
+   - Typed Win32 low-level keyboard hook unhooking, annotated EVI disruption matrices with `typing.ClassVar`, and typed JSON streaming tool call parse exceptions.
+2. **Plan 031 — Memory Vault and Embedding Hardening (PR #49, `45fb022`):**
+   - Eliminated all 13 Ruff diagnostics across `jarvis/core/memory/` (`document_vault.py`, `onnx_embeddings.py`, `tasks_calendar.py`) and `jarvis/core/safety.py`.
+   - Typed sqlite-vec vectorization and KNN query errors, removed redundant `.keys()` dictionary lookups (`SIM118`), and typed dangerous command regex pattern matrices.
+3. **Plan 032 — Evolution AppContainer and Code Intelligence Tooling (PR #50, `57b0495`):**
+   - Eliminated all 21 Ruff diagnostics across `jarvis/core/evolution/appcontainer.py`, `jarvis/core/github_bridge.py`, `jarvis/skills/ast_code_surgeon.py`, and `jarvis/skills/self_evolution.py`.
+   - Typed Win32 AppContainer profile resolution, logged child process tree termination exceptions, and typed atomic file patching rollback exceptions. Achieved 0 Ruff diagnostics across all of `jarvis/core/`.
+4. **Plan 033 — System Actuation and Hardware Telemetry Skills (PR #51, `e0b950b`):**
+   - Eliminated all 22 Ruff diagnostics across `jarvis/skills/hybrid_actuator.py`, `jarvis/skills/nvml_dxgi_vram_arbiter.py`, `jarvis/skills/reflex_macro_compiler.py`, `jarvis/skills/chrome_devtools.py`, and `jarvis/skills/gemini_intelligence.py`.
+   - Typed Win32 DPI queries and CDP message loops, typed PyTorch/GC VRAM cache reclamation, and merged tuple prefix checks.
+5. **Plan 034 — Desktop Productivity and Ambient Skills Error Reporting (PR #51, `443a94d`):**
+   - Eliminated all 41 Ruff diagnostics across 13 desktop productivity and ambient skills (`calendar_manager.py`, `deep_research.py`, `everything_search.py`, `project_manager.py`, `timers.py`, `voice_control.py`, `web_search.py`, `modern_web.py`, `notes.py`, `protocols.py`, `briefing.py`, `diagnostics.py`, `media_dj.py`).
+   - Removed redundant global declarations, simplified conditions, and installed cross-platform `_COM_ERRORS` tuple with `ImportError` fallback preventing Linux CI failures.
+6. **Total Diagnostics Elimination & 100% Repository-Wide Clean Milestone:**
+   - Eliminated **115 Ruff diagnostics** across Batch 7, driving static lint diagnostics to **0 across the ENTIRE `jarvis/` codebase**. Over 700 diagnostics eliminated across all 34 plans.
+   - Updated local `plans/README.md` marking all 34 implementation plans (`001`–`034`) as `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+7. **Full-Tree Verification Gates & Accounting Invariant:**
+   - **Static Linter (`tools/lint.py`):** 0 Ruff diagnostics across all packages and modules in `jarvis/`.
+   - **Structural Invariants (`tools/diagnostics.py`):** 0 AST-Grep invariant violations.
+   - **Test Accounting Invariant:** `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed with 100% accounting (2,472 collected nodes accounted for, 0 drift).
+   - **Test Classifier Integrity:** `tools/test_classifier.py --check-orphaned` verified 0 orphans, 0 duplicates, 2,472 nodes confirmed.
+   - **Live E2E Smoke Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing (Exit code: 0).
+   - **Tier 1 Fast Test Suite:** 1,491 passed, 0 failed, 11 skipped (Exit code: 0).
+   - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.

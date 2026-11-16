@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-16T09:10:00+01:00 (CET)
-- **Active Git Branch:** `main` (synced at `a3016ad`)
-- **Recorded HEAD Commit SHA:** `a3016ad2771d34750665d7b83ad3fc26638f3f21` (`a3016ad`)
-- **HEAD Commit Subject:** `Merge pull request #47 from Youssef1473/fix/data-and-media-skills-error-reporting`
-- **Milestone State:** **Production Baseline Verified on main (a3016ad); Batch 6 Plans 025-029 Formally Closed & Sealed**
-- **Active Milestone:** **Batch 6 Governance Seal & Roadmap Closure**
+- **Validation Timestamp:** 2026-11-16T11:45:00+01:00 (CET)
+- **Active Git Branch:** `main` (synced at `47abe3f`)
+- **Recorded HEAD Commit SHA:** `47abe3f4fbadbd88e86fde0f09ce7341da0784bd` (`47abe3f`)
+- **HEAD Commit Subject:** `Merge pull request #51 from Youssef1473/fix/skills-telemetry-and-productivity-closure`
+- **Milestone State:** **Production Baseline Verified on main (47abe3f); Batch 7 Plans 030-034 Formally Closed & Sealed (Full 0-Ruff Repository Baseline Achieved)**
+- **Active Milestone:** **Batch 7 Governance Seal & Full Repository 0-Ruff Baseline Closure (Plans 001-034 Closed)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
@@ -36,8 +36,19 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Batch 6 Governance Seal & Roadmap Closure`
+- **Active Milestone:** `Batch 7 Governance Seal & Full Repository 0-Ruff Baseline Closure (Plans 001-034 Closed)`
 - **Completed Work:**
+  - **`/improve` Modernization & Refactoring Queue — Batch 7 (Plans 030–034 COMPLETED & SEALED):**
+    - **Plan 030 (Cognition and Reflex Pipeline Error Transparency — PR #49, `2c5ccc1`, merged `fd26219`):** Eliminates all 18 Ruff diagnostics across `jarvis/core/cognition/` (`cadence_tracker.py`, `proactive_evi.py`), `jarvis/core/reflex_dispatcher.py`, and `jarvis/core/streaming_tool_parser.py`, typing Win32 keyboard hook unhooking, adding `ClassVar` annotations to EVI disruption matrices, and typing JSON streaming tool call exceptions.
+    - **Plan 031 (Memory Vault and Embedding Hardening — PR #49, `45fb022`, merged `fd26219`):** Eliminates all 13 Ruff diagnostics across `jarvis/core/memory/` (`document_vault.py`, `onnx_embeddings.py`, `tasks_calendar.py`) and `jarvis/core/safety.py`, typing sqlite-vec vectorization and KNN query errors, removing redundant `.keys()` dictionary lookups, and typing dangerous command pattern matrices.
+    - **Plan 032 (Evolution AppContainer and Code Intelligence Tooling — PR #50, `57b0495`, merged `9f84035`):** Eliminates all 21 Ruff diagnostics across `jarvis/core/evolution/appcontainer.py`, `jarvis/core/github_bridge.py`, `jarvis/skills/ast_code_surgeon.py`, and `jarvis/skills/self_evolution.py`, typing Win32 AppContainer profile resolution, logging child process tree termination, and typing atomic file patching rollback exceptions. Achieved 0 Ruff diagnostics across entire `jarvis/core/`.
+    - **Plan 033 (System Actuation and Hardware Telemetry Skills — PR #51, `e0b950b`, merged `47abe3f`):** Eliminates all 22 Ruff diagnostics across `jarvis/skills/hybrid_actuator.py`, `jarvis/skills/nvml_dxgi_vram_arbiter.py`, `jarvis/skills/reflex_macro_compiler.py`, `jarvis/skills/chrome_devtools.py`, and `jarvis/skills/gemini_intelligence.py`, typing Win32 DPI queries and CDP message loops, typing PyTorch/GC VRAM cache reclamation, and merging tuple prefix checks.
+    - **Plan 034 (Desktop Productivity and Ambient Skills Error Reporting — PR #51, `443a94d`, merged `47abe3f`):** Eliminates all 41 Ruff diagnostics across 13 desktop productivity and ambient skills (`calendar_manager.py`, `deep_research.py`, `everything_search.py`, `project_manager.py`, `timers.py`, `voice_control.py`, `web_search.py`, `modern_web.py`, `notes.py`, `protocols.py`, `briefing.py`, `diagnostics.py`, `media_dj.py`), removing redundant global declarations, simplifying conditions, and adding cross-platform `_COM_ERRORS` tuple with `ImportError` fallback.
+    - **Full Roadmap Closure:** All 34 implementation plans in `plans/README.md` (`001`–`034`) marked `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+    - **Total Batch 7 Diagnostics Eliminated:** **115** (`115` $\to$ `0` across `jarvis/`). Over 700 diagnostics eliminated across all 7 batches.
+    - **Subsystems at 0 Ruff Diagnostics:** The **ENTIRE** `jarvis/` codebase (`jarvis/audio/`, `jarvis/core/`, `jarvis/context/`, `jarvis/desktop/`, `jarvis/memory/`, `jarvis/routing/`, `jarvis/skills/`, `jarvis/ui/`).
+    - **Test Accounting Invariant:** 2,472 collected nodes accounted for (0 drift) via `test_17_accurate_total_test_accounting` and `tools/test_classifier.py --check-orphaned`.
+    - **Database Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
   - **`/improve` Modernization & Refactoring Queue — Batch 6 (Plans 025–029 COMPLETED & SEALED):**
     - **Plan 025 (Evolution Sandbox Containment Hardening — PR #44, `5bd01ef`, merged `49d9392`):** Eliminates all 33 Ruff diagnostics in `jarvis/core/evolution/sandbox.py`, adding `ClassVar` annotations for blocked AST call sets, fixing re-raise syntax (`TRY201`), and typing AppContainer/Job Object containment and canary validation exceptions.
     - **Plan 026 (MCP Manager Lifecycle Hardening — PR #45, `fbe3a56`, merged `1e9428b`):** Eliminates all 22 Ruff diagnostics in `jarvis/core/mcp_manager.py`, merging string prefix checks (`PIE810`) and typing stdio/SSE process lifecycle and JSON-RPC transport exceptions.
