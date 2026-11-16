@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-16T12:05:00+01:00 (CET)
-- **Active Git Branch:** `ci/enforce-zero-ruff-and-ast-grep-gate` (branched from `main` @ `ff34799`)
-- **Recorded HEAD Commit SHA:** `ff347996592703d45fc25e86573b5023682e5780` (`ff34799`)
-- **HEAD Commit Subject:** `Merge pull request #52 from Youssef1473/docs/seal-batch7-plans-030-034-closure`
-- **Milestone State:** **Production Baseline Verified on main (ff34799); Batch 7 Sealed & CI Zero-Ruff / AST-Grep Static Gate Hardening Active**
-- **Active Milestone:** **CI Hardening & Static Analysis Regression Lock (tools/lint.py + tools/diagnostics.py)**
+- **Validation Timestamp:** 2026-11-16T16:15:00+01:00 (CET)
+- **Active Git Branch:** `main`
+- **Recorded HEAD Commit SHA:** `e64d71c`
+- **HEAD Commit Subject:** `Merge pull request #57 from Youssef1473/fix/productivity-and-context-test-suites-closure`
+- **Milestone State:** **Repository-Wide Zero-Ruff Status (0 Diagnostics across jarvis/, tools/, tests/); Batch 8 Sealed & CI Blocking Gate Enforcing jarvis/ tools/ tests/**
+- **Active Milestone:** **Full Repository-Wide Zero-Ruff Parity & CI Quality Seal (Plans 001–040 Closed)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
@@ -36,22 +36,21 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `CI Hardening & Static Analysis Regression Lock (tools/lint.py + tools/diagnostics.py)`
+- **Active Milestone:** `Full Repository-Wide Zero-Ruff Parity & CI Quality Seal (Plans 001–040 Closed)`
 - **Completed Work:**
-  - **CI Hardening & Static Analysis Regression Lock:**
-    - Hardened `.github/workflows/ci.yml` (`security-gate` job) with a blocking `Verify Zero Static Lint & AST-Grep Diagnostics (jarvis/)` step.
-    - Executes `python tools/lint.py check jarvis/` and `python tools/diagnostics.py check jarvis/` on every push and pull request, permanently locking in the 0-diagnostic baseline across the entire `jarvis/` codebase.
-  - **`/improve` Modernization & Refactoring Queue — Batch 7 (Plans 030–034 COMPLETED & SEALED):**
-    - **Plan 030 (Cognition and Reflex Pipeline Error Transparency — PR #49, `2c5ccc1`, merged `fd26219`):** Eliminates all 18 Ruff diagnostics across `jarvis/core/cognition/` (`cadence_tracker.py`, `proactive_evi.py`), `jarvis/core/reflex_dispatcher.py`, and `jarvis/core/streaming_tool_parser.py`, typing Win32 keyboard hook unhooking, adding `ClassVar` annotations to EVI disruption matrices, and typing JSON streaming tool call exceptions.
-    - **Plan 031 (Memory Vault and Embedding Hardening — PR #49, `45fb022`, merged `fd26219`):** Eliminates all 13 Ruff diagnostics across `jarvis/core/memory/` (`document_vault.py`, `onnx_embeddings.py`, `tasks_calendar.py`) and `jarvis/core/safety.py`, typing sqlite-vec vectorization and KNN query errors, removing redundant `.keys()` dictionary lookups, and typing dangerous command pattern matrices.
-    - **Plan 032 (Evolution AppContainer and Code Intelligence Tooling — PR #50, `57b0495`, merged `9f84035`):** Eliminates all 21 Ruff diagnostics across `jarvis/core/evolution/appcontainer.py`, `jarvis/core/github_bridge.py`, `jarvis/skills/ast_code_surgeon.py`, and `jarvis/skills/self_evolution.py`, typing Win32 AppContainer profile resolution, logging child process tree termination, and typing atomic file patching rollback exceptions. Achieved 0 Ruff diagnostics across entire `jarvis/core/`.
-    - **Plan 033 (System Actuation and Hardware Telemetry Skills — PR #51, `e0b950b`, merged `47abe3f`):** Eliminates all 22 Ruff diagnostics across `jarvis/skills/hybrid_actuator.py`, `jarvis/skills/nvml_dxgi_vram_arbiter.py`, `jarvis/skills/reflex_macro_compiler.py`, `jarvis/skills/chrome_devtools.py`, and `jarvis/skills/gemini_intelligence.py`, typing Win32 DPI queries and CDP message loops, typing PyTorch/GC VRAM cache reclamation, and merging tuple prefix checks.
-    - **Plan 034 (Desktop Productivity and Ambient Skills Error Reporting — PR #51, `443a94d`, merged `47abe3f`):** Eliminates all 41 Ruff diagnostics across 13 desktop productivity and ambient skills (`calendar_manager.py`, `deep_research.py`, `everything_search.py`, `project_manager.py`, `timers.py`, `voice_control.py`, `web_search.py`, `modern_web.py`, `notes.py`, `protocols.py`, `briefing.py`, `diagnostics.py`, `media_dj.py`), removing redundant global declarations, simplifying conditions, and adding cross-platform `_COM_ERRORS` tuple with `ImportError` fallback.
-    - **Full Roadmap Closure:** All 34 implementation plans in `plans/README.md` (`001`–`034`) marked `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
-    - **Total Batch 7 Diagnostics Eliminated:** **115** (`115` $\to$ `0` across `jarvis/`). Over 700 diagnostics eliminated across all 7 batches.
-    - **Subsystems at 0 Ruff Diagnostics:** The **ENTIRE** `jarvis/` codebase (`jarvis/audio/`, `jarvis/core/`, `jarvis/context/`, `jarvis/desktop/`, `jarvis/memory/`, `jarvis/routing/`, `jarvis/skills/`, `jarvis/ui/`).
+  - **CI Hardening & Repository-Wide Static Analysis Regression Lock:**
+    - Hardened `.github/workflows/ci.yml` (`security-gate` job) with a blocking `Verify Zero Static Lint & AST-Grep Diagnostics (Repository-Wide)` step.
+    - Executes `python tools/lint.py check jarvis/ tools/ tests/` and `python tools/diagnostics.py check jarvis/ tools/` on every push and pull request, permanently locking in the 0-diagnostic baseline across the entire repository (`jarvis/`, `tools/`, and `tests/`).
+  - **`/improve` Modernization & Refactoring Queue — Batch 8 (Plans 035–040 COMPLETED & SEALED):**
+    - **Plan 035 (Tools Subsystem Zero-Ruff Closure — PR #54, commit `abd37c5`):** Cleared all 32 Ruff diagnostics across `tools/`, expanding CI gate to `jarvis/ tools/`.
+    - **Plan 036 (Security & Sandbox Test Suites Hardening — PR #55, commit `15c30f9`):** Cleared all 147 Ruff diagnostics across 10 security test suites in `tests/`, replacing `B017` blind exception assertions with concrete security exceptions.
+    - **Plans 037–039 (Memory, Audio, HUD, Brain Provider, Lifecycle Test Suites — PR #56, commit `27b1cab`):** Cleared 150 Ruff diagnostics across 29 test files in `tests/`.
+    - **Plan 040 (Productivity & Context Test Suites Closure — PR #57, commit `e64d71c`):** Cleared all remaining 178 Ruff diagnostics across 51 auxiliary test files in `tests/`, driving the entire repository to 100% 0-Ruff clean status.
+    - **Full Roadmap Closure:** All 40 implementation plans in `plans/README.md` (`001`–`040`) marked `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+    - **Total Diagnostics Eliminated Across All 8 Batches:** Over **1,200 diagnostics** eliminated from `jarvis/`, `tools/`, and `tests/`.
+    - **Subsystems at 0 Ruff Diagnostics:** The **ENTIRE** Jarvis 2.0 repository (`jarvis/`, `tools/`, `tests/`).
     - **Test Accounting Invariant:** 2,472 collected nodes accounted for (0 drift) via `test_17_accurate_total_test_accounting` and `tools/test_classifier.py --check-orphaned`.
-    - **Database Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
+    - **Database Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
   - **`/improve` Modernization & Refactoring Queue — Batch 6 (Plans 025–029 COMPLETED & SEALED):**
     - **Plan 025 (Evolution Sandbox Containment Hardening — PR #44, `5bd01ef`, merged `49d9392`):** Eliminates all 33 Ruff diagnostics in `jarvis/core/evolution/sandbox.py`, adding `ClassVar` annotations for blocked AST call sets, fixing re-raise syntax (`TRY201`), and typing AppContainer/Job Object containment and canary validation exceptions.
     - **Plan 026 (MCP Manager Lifecycle Hardening — PR #45, `fbe3a56`, merged `1e9428b`):** Eliminates all 22 Ruff diagnostics in `jarvis/core/mcp_manager.py`, merging string prefix checks (`PIE810`) and typing stdio/SSE process lifecycle and JSON-RPC transport exceptions.
