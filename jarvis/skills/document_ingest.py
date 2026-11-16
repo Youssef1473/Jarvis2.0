@@ -43,7 +43,8 @@ def _extract_page_content(page) -> str:
 
     try:
         page.extract_text(visitor_text=visitor)
-    except Exception:
+    except (ValueError, TypeError, AttributeError, KeyError, IndexError) as err:
+        logger.debug("PDF visitor extraction notice: %s", err)
         snippets = []
 
     day_map = {
@@ -123,8 +124,8 @@ def _extract_page_content(page) -> str:
         layout_txt = page.extract_text(extraction_mode="layout")
         if layout_txt and len(layout_txt.strip()) > 30:
             return layout_txt.strip()
-    except Exception:
-        pass
+    except (ValueError, TypeError, AttributeError) as err:
+        logger.debug("PDF layout extraction notice: %s", err)
 
     return page.extract_text() or ""
 
@@ -173,7 +174,7 @@ def extract_text_from_pdf(file_path: str, max_pages: int = 50) -> str:
             if t.strip():
                 page_texts.append(f"--- Page {i + 1} ---\n{t.strip()}")
         extracted_text = "\n\n".join(page_texts).strip()
-    except Exception as e:
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, IndexError) as e:
         logger.warning(f"pypdf extraction failed for {file_path}: {e}")
 
     # If extracted text is minimal (e.g. scanned document or image-only PDF), attempt Gemini Multimodal OCR
@@ -197,7 +198,7 @@ def extract_text_from_pdf(file_path: str, max_pages: int = 50) -> str:
                 if response.text and len(response.text.strip()) > len(extracted_text):
                     extracted_text = response.text.strip()
                     logger.info(f"Successfully extracted text via Gemini Multimodal OCR for {p.name}")
-            except Exception as ocr_err:
+            except (ConnectionError, OSError, TimeoutError, RuntimeError, ValueError) as ocr_err:
                 logger.debug(f"Gemini OCR fallback notice: {ocr_err}")
 
     return extracted_text
@@ -255,7 +256,7 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
     # 2. Extract Document Content
     try:
         raw_text = extract_text_from_pdf(file_path)
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError, FileNotFoundError) as e:
         return f"Unable to extract text from '{filename}', Sir: {e!s}"
 
     if not raw_text.strip():
@@ -333,7 +334,7 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
             content = re.sub(r"^```(?:json)?\s*", "", content)
             content = re.sub(r"\s*```$", "", content)
             extracted_data = json.loads(content)
-        except Exception as e:
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, RuntimeError, ConnectionError, TimeoutError, OSError) as e:
             logger.debug(f"Groq document extraction notice: {e}")
 
     # 2. Attempt extraction via Antigravity Bridge (Google AI Pro Fleet / zero cost)
@@ -355,7 +356,7 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
                     m = re.search(r"(\{.*\})", clean_json, re.DOTALL)
                     if m:
                         extracted_data = json.loads(m.group(1))
-        except Exception as e:
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, RuntimeError, ConnectionError, TimeoutError, OSError) as e:
             logger.debug(f"Antigravity document extraction notice: {e}")
 
     # 3. Fallback to direct Gemini API with candidate model cascade
@@ -380,9 +381,9 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
                         extracted_data = json.loads(res.text.strip())
                         if extracted_data:
                             break
-                except Exception as inner_err:
+                except (json.JSONDecodeError, KeyError, ValueError, TypeError, RuntimeError, ConnectionError, TimeoutError, OSError) as inner_err:
                     logger.debug(f"Gemini candidate '{gem_model}' notice: {inner_err}")
-        except Exception as e:
+        except (ConnectionError, TimeoutError, RuntimeError, OSError, ValueError) as e:
             logger.debug(f"Gemini document extraction notice: {e}")
 
     # Fallback to Local Ollama (Tier 1 offline intellect)
@@ -405,7 +406,7 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
             content = re.sub(r"^```(?:json)?\s*", "", content)
             content = re.sub(r"\s*```$", "", content)
             extracted_data = json.loads(content)
-        except Exception as e:
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, RuntimeError, ConnectionError, TimeoutError, OSError) as e:
             logger.debug(f"Ollama document extraction notice: {e}")
 
     # If extraction returned nothing, build fallback knowledge archive

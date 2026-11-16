@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import smtplib
+import ssl
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -42,7 +43,7 @@ def _decode_str(header_val: Any) -> str:
         if isinstance(fragment, bytes):
             try:
                 parts.append(fragment.decode(charset or "utf-8", errors="replace"))
-            except Exception:
+            except (LookupError, UnicodeDecodeError, ValueError):
                 parts.append(fragment.decode("latin-1", errors="replace"))
         else:
             parts.append(str(fragment))
@@ -118,8 +119,8 @@ def _fetch_unread_imap(host: str, username: str, password: str, max_count: int =
     finally:
         try:
             mail.logout()
-        except Exception:
-            pass
+        except (imaplib.IMAP4.error, OSError, EOFError, ConnectionError) as err:
+            logger.debug("IMAP logout notice: %s", err)
 
 
 def _search_imap(host: str, username: str, password: str, query: str, max_count: int = 5) -> list[dict[str, str]]:
@@ -173,8 +174,8 @@ def _search_imap(host: str, username: str, password: str, query: str, max_count:
     finally:
         try:
             mail.logout()
-        except Exception:
-            pass
+        except (imaplib.IMAP4.error, OSError, EOFError, ConnectionError) as err:
+            logger.debug("IMAP logout notice: %s", err)
 
 
 def _fetch_email_details(host: str, username: str, password: str, email_id: str) -> dict[str, str] | None:
@@ -211,8 +212,8 @@ def _fetch_email_details(host: str, username: str, password: str, email_id: str)
     finally:
         try:
             mail.logout()
-        except Exception:
-            pass
+        except (imaplib.IMAP4.error, OSError, EOFError, ConnectionError) as err:
+            logger.debug("IMAP logout notice: %s", err)
 
 
 def _send_smtp_email(
@@ -258,7 +259,7 @@ def _send_smtp_email(
                 server.login(username, password)
                 server.send_message(msg)
         return True, f"Email successfully dispatched to {to_clean}."
-    except Exception as e:
+    except (smtplib.SMTPException, ssl.SSLError, OSError, ConnectionError, TimeoutError, ValueError) as e:
         logger.error(f"SMTP dispatch failure: {e}")
         return False, f"SMTP transmission failed: {e}"
 
@@ -292,8 +293,8 @@ def _get_credentials(account: str) -> tuple[str | None, str | None, str | None, 
     try:
         from dotenv import load_dotenv
         load_dotenv(override=True)
-    except Exception:
-        pass
+    except (OSError, ValueError) as err:
+        logger.debug("dotenv load notice: %s", err)
 
     acc = _normalize_account_type(account)
     if acc in ("gmail", "all"):
@@ -334,7 +335,7 @@ def check_unread_emails(account: str = "all", max_emails: int = 5) -> str:
                     summaries.append(f"Gmail ({len(gmail_msgs)} unread):\n" + "\n".join(items))
                 else:
                     summaries.append("Gmail: Inbox is clear, no unread messages, Sir.")
-            except Exception as e:
+            except (imaplib.IMAP4.error, ssl.SSLError, OSError, ConnectionError, TimeoutError, ValueError) as e:
                 summaries.append(f"Gmail connection error: {e}")
 
     # 2. Outlook
@@ -354,7 +355,7 @@ def check_unread_emails(account: str = "all", max_emails: int = 5) -> str:
                     summaries.append(f"Outlook ({len(outlook_msgs)} unread):\n" + "\n".join(items))
                 else:
                     summaries.append("Outlook: Inbox is clear, no unread messages, Sir.")
-            except Exception as e:
+            except (imaplib.IMAP4.error, ssl.SSLError, OSError, ConnectionError, TimeoutError, ValueError, RuntimeError, AttributeError) as e:
                 summaries.append(f"Outlook connection error: {e}")
 
     if not summaries:
@@ -396,7 +397,7 @@ def search_emails(query: str, account: str = "gmail", max_emails: int = 5) -> st
             )
         formatted.append("\nYou can say 'Jarvis, read email <ID>' to view the full message.")
         return "\n".join(formatted)
-    except Exception as e:
+    except (imaplib.IMAP4.error, ssl.SSLError, OSError, ConnectionError, TimeoutError, ValueError, RuntimeError, AttributeError) as e:
         logger.error(f"Search emails error: {e}")
         return f"Unable to search {display_name} emails: {e}"
 
@@ -429,7 +430,7 @@ def read_email_details(email_id: str, account: str = "gmail") -> str:
             f"{details['body']}\n"
             f"----------------------------------------"
         )
-    except Exception as e:
+    except (imaplib.IMAP4.error, ssl.SSLError, OSError, ConnectionError, TimeoutError, ValueError, RuntimeError, AttributeError) as e:
         logger.error(f"Read email details error: {e}")
         return f"Failed to retrieve email #{email_id}: {e}"
 
@@ -584,6 +585,6 @@ def get_unread_email_count() -> int:
             if status == "OK" and messages and messages[0]:
                 count += len(messages[0].split())
             mail.logout()
-        except Exception:
-            pass
+        except (imaplib.IMAP4.error, OSError, EOFError, ConnectionError) as err:
+            logger.debug("IMAP count notice: %s", err)
     return count
