@@ -15,13 +15,6 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from jarvis.core.evolution.sandbox import SkillSandbox
-from jarvis.skills.job_object_sandbox import (
-    SandboxedProcess,
-    create_process_job_object,
-    assign_process_to_job,
-    resume_process,
-    CREATE_SUSPENDED,
-)
 from jarvis.core.orchestrator import JarvisOrchestrator
 from jarvis.core.providers.base import (
     BaseProvider,
@@ -43,6 +36,9 @@ from jarvis.skills.browser_cdp import (
 from jarvis.skills.dev_shell import run_project_tests
 from jarvis.skills.diagnostics import profile_runtime
 from jarvis.skills.everything_search import search_everything
+from jarvis.skills.job_object_sandbox import (
+    create_process_job_object,
+)
 
 
 class MockProvider(BaseProvider):
@@ -282,13 +278,15 @@ class TestResidualSecurityBoundaries(unittest.TestCase):
 
     def test_canary_preserves_resource_limits(self):
         """create_process_job_object in sandbox preserves 4-process and 1 GiB limits."""
-        with patch("sys.platform", "win32"):
-            with patch("jarvis.skills.job_object_sandbox.kernel32") as mock_k32:
-                mock_k32.CreateJobObjectW.return_value = 1234
-                mock_k32.SetInformationJobObject.return_value = 1
-                mock_k32.CloseHandle.return_value = 1
-                h_job = create_process_job_object(max_processes=4, max_memory_mb=1024)
-                self.assertIsNotNone(h_job)
+        with (
+            patch("sys.platform", "win32"),
+            patch("jarvis.skills.job_object_sandbox.kernel32") as mock_k32,
+        ):
+            mock_k32.CreateJobObjectW.return_value = 1234
+            mock_k32.SetInformationJobObject.return_value = 1
+            mock_k32.CloseHandle.return_value = 1
+            h_job = create_process_job_object(max_processes=4, max_memory_mb=1024)
+            self.assertIsNotNone(h_job)
 
     # =========================================================================
     # 3. SEC-04H-03: POSIX Test-Execution Fallback Fails Closed

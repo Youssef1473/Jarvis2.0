@@ -1,24 +1,24 @@
 import os
-from pathlib import Path
 import threading
+from pathlib import Path
+
 """Unit tests for Closed-Loop Security Boundaries, SSRF Protection, Taint Tracking, and Shell Approval."""
 import socket
-import time
 import tempfile
+import time
 import unittest
 from unittest import mock
 from unittest.mock import patch
 
+from jarvis.core.pipeline.tool_orchestrator import ToolOrchestrator
 from jarvis.core.security_boundaries import (
+    DualKeyApprovalManager,
     SecurityBoundaryViolation,
     TurnTaintTracker,
-    DualKeyApprovalManager,
     validate_confined_path,
     validate_egress_url,
 )
-from jarvis.core.pipeline.tool_orchestrator import ToolOrchestrator
 from jarvis.skills.base import SkillRegistry
-from jarvis.skills import dev_shell  # Ensure skills registered
 
 
 class TestSecurityBoundaries(unittest.TestCase):
@@ -105,9 +105,11 @@ class TestSecurityBoundaries(unittest.TestCase):
         self.assertEqual(res, "http://localhost:3000")
 
     def test_path_confinement_blocks_traversal(self):
-        with tempfile.TemporaryDirectory() as tmp_root:
-            with self.assertRaises(SecurityBoundaryViolation):
-                validate_confined_path(r"..\..\Windows\System32\cmd.exe", tmp_root)
+        with (
+            tempfile.TemporaryDirectory() as tmp_root,
+            self.assertRaises(SecurityBoundaryViolation),
+        ):
+            validate_confined_path(r"..\..\Windows\System32\cmd.exe", tmp_root)
 
     def test_path_confinement_blocks_reserved_devices(self):
         with tempfile.TemporaryDirectory() as tmp_root:
@@ -147,22 +149,24 @@ class TestSecurityBoundaries(unittest.TestCase):
             r"PRN:",
             r"AUX:",
         )
-        with tempfile.TemporaryDirectory() as tmp_root:
-            with patch("os.path.realpath") as mock_realpath, \
-                 patch("os.path.abspath") as mock_abspath, \
-                 patch("os.stat") as mock_stat:
-                for unc in unc_variants:
-                    with self.assertRaises(SecurityBoundaryViolation) as ctx:
-                        validate_confined_path(unc, tmp_root)
-                    err_msg = str(ctx.exception).lower()
-                    self.assertTrue(
-                        "prohibited" in err_msg or "reserved" in err_msg,
-                        f"Expected prohibited/reserved in exception for '{unc}', got '{err_msg}'"
-                    )
-                # Must never invoke os.path.realpath, abspath, or stat on prohibited network/device paths
-                mock_realpath.assert_not_called()
-                mock_abspath.assert_not_called()
-                mock_stat.assert_not_called()
+        with (
+            tempfile.TemporaryDirectory() as tmp_root,
+            patch("os.path.realpath") as mock_realpath,
+            patch("os.path.abspath") as mock_abspath,
+            patch("os.stat") as mock_stat,
+        ):
+            for unc in unc_variants:
+                with self.assertRaises(SecurityBoundaryViolation) as ctx:
+                    validate_confined_path(unc, tmp_root)
+                err_msg = str(ctx.exception).lower()
+                self.assertTrue(
+                    "prohibited" in err_msg or "reserved" in err_msg,
+                    f"Expected prohibited/reserved in exception for '{unc}', got '{err_msg}'"
+                )
+            # Must never invoke os.path.realpath, abspath, or stat on prohibited network/device paths
+            mock_realpath.assert_not_called()
+            mock_abspath.assert_not_called()
+            mock_stat.assert_not_called()
 
     def test_path_confinement_permits_legitimate_workspace_and_relative_paths(self):
         """Verifies legitimate workspace, relative, and nested directory paths are permitted."""
@@ -207,9 +211,9 @@ class TestSecurityBoundaries(unittest.TestCase):
 
     def test_consumers_reject_unc_paths_without_outbound_network(self):
         """Verifies photo_manager, document_ingest, and dev_shell reject UNC paths."""
-        from jarvis.skills.photo_manager import save_photo
-        from jarvis.skills.document_ingest import extract_text_from_pdf
         from jarvis.skills.dev_shell import _resolve_workspace_path
+        from jarvis.skills.document_ingest import extract_text_from_pdf
+        from jarvis.skills.photo_manager import save_photo
 
         # 1. dev_shell._resolve_workspace_path
         with self.assertRaises(ValueError) as ctx:
@@ -425,7 +429,6 @@ class TestSecurityBoundaries(unittest.TestCase):
 
     def test_run_background_task_registered_at_risk_level_2(self):
         """Proof of SEC-01: run_background_task is registered at risk_level=2 in SkillRegistry and critical tools."""
-        from jarvis.skills import dev_shell  # Ensure skill registered
         risk = SkillRegistry.get_risk_level("run_background_task")
         self.assertEqual(risk, 2, "run_background_task must be registered at risk_level=2")
         self.assertIn("run_background_task", TurnTaintTracker.CRITICAL_PRIVILEGE_TOOLS)
@@ -479,7 +482,6 @@ class TestSecurityBoundaries(unittest.TestCase):
 
     def test_application_control_tools_registered_at_risk_level_1(self):
         """Proof of SEC-01: launch_application, close_application, launch_or_focus_application are at risk_level=1."""
-        from jarvis.skills import os_control  # Ensure skills registered
         for tool in ("launch_application", "close_application", "launch_or_focus_application"):
             risk = SkillRegistry.get_risk_level(tool)
             self.assertEqual(risk, 1, f"{tool} must be registered at risk_level=1")
@@ -733,11 +735,11 @@ class TestTurnTaintConcurrencyIsolation(unittest.TestCase):
             async def child():
                 try:
                     self.tracker._tainting_sources.clear()
-                except Exception:
+                except (AttributeError, TypeError):
                     pass
                 try:
                     self.tracker._tainting_sources = []
-                except Exception:
+                except (AttributeError, TypeError):
                     pass
 
             await asyncio.create_task(child())
@@ -782,7 +784,7 @@ class TestTurnTaintConcurrencyIsolation(unittest.TestCase):
                 allowed = self.tracker.check_tool_execution(
                     "list_directory", {"folder_path": "."}, risk_level=0
                 )
-            except Exception as e:
+            except (SecurityBoundaryViolation, RuntimeError, ValueError) as e:
                 err = e
 
         t = threading.Thread(target=worker)
@@ -814,6 +816,7 @@ class TestTurnTaintConcurrencyIsolation(unittest.TestCase):
     def test_concurrent_sibling_ingestion_protects_parallel_sibling(self):
         """SEC-H2-03: Concurrent sibling tasks within the same turn share taint protection."""
         import asyncio
+
         from jarvis.core.security_boundaries import DualKeyApprovalManager
         DualKeyApprovalManager.get_instance().reset()
 
@@ -1157,8 +1160,13 @@ class TestAsyncApprovalPropagation(unittest.IsolatedAsyncioTestCase):
 
     def test_fabricated_grant_object_rejected(self):
         """Proof of SEC-M4-03-REV: Fabricated DualKeyAuthorization objects cannot be bound."""
-        from jarvis.core.security_boundaries import DualKeyAuthorization, compute_action_hash
-        import time, secrets
+        import secrets
+        import time
+
+        from jarvis.core.security_boundaries import (
+            DualKeyAuthorization,
+            compute_action_hash,
+        )
 
         tool_name = "_test_fabricated_tool"
         test_args = {"data": "attack"}
@@ -1727,10 +1735,9 @@ class TestExternalIngestionProvenance(unittest.TestCase):
     @mock.patch("jarvis.skills.web_search.web_search", return_value="Mocked search results")
     def test_skill_registry_direct_execution_records_provenance(self, mock_search):
         """M1 Hardening (Findings 5 & 6): Direct SkillRegistry.execute taints turn and records provenance."""
-        from jarvis.skills import web_search  # Ensure skill registered
         self.assertFalse(self.tracker.is_tainted)
         # Execute tool via SkillRegistry
-        res = SkillRegistry.execute("web_search", query="safe test query")
+        SkillRegistry.execute("web_search", query="safe test query")
         self.assertTrue(self.tracker.is_tainted, "FAIL M1: SkillRegistry.execute did not taint turn!")
         self.assertIn("web_search", self.tracker.tainting_sources)
         records = self.tracker.provenance_records

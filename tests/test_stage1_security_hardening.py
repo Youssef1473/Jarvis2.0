@@ -7,21 +7,24 @@ Verifies:
 4. Win32 Job Object assignment failure causes validate_and_promote to fail closed immediately.
 5. Promotion gate blocks unapproved promotion even after canary verification succeeds.
 """
-from pathlib import Path
 import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from jarvis.core.evolution.sandbox import SkillSandbox
-from jarvis.core.security_boundaries import SecurityBoundaryViolation, TurnTaintTracker, DualKeyApprovalManager
 from jarvis.core.pipeline.tool_orchestrator import ToolOrchestrator
+from jarvis.core.security_boundaries import (
+    DualKeyApprovalManager,
+    SecurityBoundaryViolation,
+    TurnTaintTracker,
+)
 from jarvis.skills.base import SkillRegistry
 from jarvis.skills.self_evolution import (
     CUSTOM_SKILLS_DIR,
     create_or_update_custom_skill,
-    delete_custom_skill,
 )
 
 
@@ -141,12 +144,14 @@ from jarvis.skills.base import SkillRegistry
 def test_fail_closed_skill():
     return "ok"
 """
-        with mock.patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=False):
-            with mock.patch("sys.platform", "win32"):
-                res = SkillSandbox.validate_and_promote(clean_name, valid_code, user_approved=True)
-                self.assertFalse(res.success)
-                self.assertIn("Win32 Job Object assignment failed", res.message)
-                self.assertFalse((CUSTOM_SKILLS_DIR / f"{clean_name}.py").exists())
+        with (
+            mock.patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=False),
+            mock.patch("sys.platform", "win32"),
+        ):
+            res = SkillSandbox.validate_and_promote(clean_name, valid_code, user_approved=True)
+            self.assertFalse(res.success)
+            self.assertIn("Win32 Job Object assignment failed", res.message)
+            self.assertFalse((CUSTOM_SKILLS_DIR / f"{clean_name}.py").exists())
 
     def test_unapproved_promotion_stops_after_canary(self):
         """Proof: When user_approved=False, canary runs but skill is NOT promoted to live registry."""

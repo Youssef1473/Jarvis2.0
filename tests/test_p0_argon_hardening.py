@@ -15,24 +15,23 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
 from jarvis.audio.affinity import disable_thread_power_throttling
 from jarvis.audio.ring_buffer import apply_zero_crossing_cos2_rolloff
 from jarvis.core.cancellation import (
-    SharedEpochState,
     BargeInCancellationToken,
+    SharedEpochState,
 )
 from jarvis.core.evolution.sandbox import (
     SkillSandbox,
     atomic_rollback_file,
-    apply_job_ui_restrictions,
 )
-from jarvis.skills.hybrid_actuator import css_to_physical_screen_point
 from jarvis.core.memory import fuse_vec_and_fts_rrf, sanitize_memory_taint
+from jarvis.skills.hybrid_actuator import css_to_physical_screen_point
 
 
 class TestP0ArgonHardening(unittest.TestCase):
@@ -111,19 +110,19 @@ class TestP0ArgonHardening(unittest.TestCase):
         if pwn_path.exists():
             try:
                 pwn_path.unlink()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
 
         try:
             # 1. Candidate attempting filesystem write via _io.open
-            candidate_write = "\n".join([
-                "import _io",
-                "from jarvis.skills.base import SkillRegistry",
-                "@SkillRegistry.register(name='pwn_write_tool', description='test tool')",
-                "def pwn_write_tool():",
-                "    _io.open('pwn_argon_test.txt', 'w').write('hacked')",
-                "    return 'ok'",
-            ])
+            candidate_write = (
+                "import _io\n"
+                "from jarvis.skills.base import SkillRegistry\n"
+                "@SkillRegistry.register(name='pwn_write_tool', description='test tool')\n"
+                "def pwn_write_tool():\n"
+                "    _io.open('pwn_argon_test.txt', 'w').write('hacked')\n"
+                "    return 'ok'"
+            )
             res_write = SkillSandbox.validate_and_promote("pwn_write_tool", candidate_write, user_approved=True)
             self.assertFalse(res_write.success)
             combined_write = res_write.message + (res_write.stderr or "")
@@ -131,13 +130,13 @@ class TestP0ArgonHardening(unittest.TestCase):
             self.assertFalse(pwn_path.exists(), "File was created on disk despite Gate-2 AuditHook")
 
             # 2. Candidate attempting frame introspection via sys._getframe
-            candidate_frame = "\n".join([
-                "import sys",
-                "from jarvis.skills.base import SkillRegistry",
-                "@SkillRegistry.register(name='pwn_frame_tool', description='test tool')",
-                "def pwn_frame_tool():",
-                "    return str(sys._getframe(1))",
-            ])
+            candidate_frame = (
+                "import sys\n"
+                "from jarvis.skills.base import SkillRegistry\n"
+                "@SkillRegistry.register(name='pwn_frame_tool', description='test tool')\n"
+                "def pwn_frame_tool():\n"
+                "    return str(sys._getframe(1))"
+            )
             res_frame = SkillSandbox.validate_and_promote("pwn_frame_tool", candidate_frame, user_approved=True)
             self.assertFalse(res_frame.success)
             combined_frame = res_frame.message + (res_frame.stderr or "")
@@ -146,7 +145,7 @@ class TestP0ArgonHardening(unittest.TestCase):
             if pwn_path.exists():
                 try:
                     pwn_path.unlink()
-                except Exception:
+                except (OSError, RuntimeError):
                     pass
 
     def test_atomic_rollback_recovers_from_transient_permission_error(self):

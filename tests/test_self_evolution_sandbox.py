@@ -2,25 +2,24 @@
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock
 from pathlib import Path
+from unittest.mock import MagicMock
 
 # Add project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from jarvis.core.evolution.sandbox import (
-    SkillSandbox,
-    CUSTOM_SKILLS_DIR,
-    SNAPSHOTS_DIR,
-    SCRATCH_DIR,
     _SANDBOX_CONCURRENCY_SEMAPHORE,
+    CUSTOM_SKILLS_DIR,
+    SCRATCH_DIR,
+    SNAPSHOTS_DIR,
+    SkillSandbox,
 )
+from jarvis.core.security_boundaries import DualKeyApprovalManager
+from jarvis.skills.base import SkillRegistry
 from jarvis.skills.job_object_sandbox import (
-    SandboxedProcess,
     create_process_job_object,
 )
-from jarvis.skills.base import SkillRegistry
-from jarvis.core.security_boundaries import DualKeyApprovalManager
 
 
 class TestSkillSandboxAdvancedSecurity(unittest.TestCase):
@@ -140,12 +139,12 @@ class TestSkillSandboxCanaryAndRollback(unittest.TestCase):
         if self.target_path.exists():
             try:
                 self.target_path.unlink()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
         if self.meta_path.exists():
             try:
                 self.meta_path.unlink()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
         SkillRegistry.unregister(self.test_skill)
         sys.modules.pop(f"jarvis.skills.custom.{self.test_skill}", None)
@@ -156,12 +155,12 @@ class TestSkillSandboxCanaryAndRollback(unittest.TestCase):
         if self.target_path.exists():
             try:
                 self.target_path.unlink()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
         if self.meta_path.exists():
             try:
                 self.meta_path.unlink()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
         SkillRegistry.unregister(self.test_skill)
         sys.modules.pop(f"jarvis.skills.custom.{self.test_skill}", None)
@@ -169,7 +168,7 @@ class TestSkillSandboxCanaryAndRollback(unittest.TestCase):
         for s in SNAPSHOTS_DIR.glob(f"{self.test_skill}_*.*"):
             try:
                 s.unlink()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
 
     def test_canary_rejects_module_without_skill_registry_registration(self):
@@ -332,19 +331,19 @@ class TestOutOfProcessSandboxSecurity(unittest.TestCase):
         if self.target_path.exists():
             try:
                 self.target_path.unlink()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
         if self.meta_path.exists():
             try:
                 self.meta_path.unlink()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
         SkillRegistry.unregister(self.test_skill)
         sys.modules.pop(f"jarvis.skills.custom.{self.test_skill}", None)
         for s in SNAPSHOTS_DIR.glob(f"{self.test_skill}_*"):
             try:
                 s.unlink()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
 
     @unittest.skipUnless(sys.platform == "win32", "Win32 Job Object containment requires Windows")
@@ -406,7 +405,7 @@ def {self.test_skill}():
         def test_core_builtin_tool():
             return "core"
 
-        collision_code = f"""
+        collision_code = """
 from jarvis.skills.base import SkillRegistry
 
 @SkillRegistry.register(name="test_core_builtin_tool")
@@ -440,8 +439,9 @@ def {self.test_skill}():
 
     def test_planted_skill_rejected_without_hmac(self):
         """A planted file dropped into custom/ without valid DPAPI HMAC signature fails to load."""
-        from jarvis.skills.self_evolution import init_custom_skills
         import json
+
+        from jarvis.skills.self_evolution import init_custom_skills
 
         # Write planted code and fake sidecar
         self.target_path.write_text("def planted(): pass\n")
@@ -496,14 +496,13 @@ def {self.test_skill}():
 
             try:
                 tree = ast.parse(py_path.read_text(encoding="utf-8", errors="replace"), filename=str(py_path))
-            except Exception:
+            except (SyntaxError, OSError):
                 continue
 
             for node in ast.walk(tree):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                    if node.func.attr == "exec_module":
-                        rel = py_path.relative_to(jarvis_dir)
-                        violations.append(f"{rel}:{node.lineno}")
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "exec_module":
+                    rel = py_path.relative_to(jarvis_dir)
+                    violations.append(f"{rel}:{node.lineno}")
 
         self.assertEqual(
             violations,
@@ -543,9 +542,8 @@ def {self.test_skill}():
             try:
                 norm = os.path.realpath(os.path.normcase(os.path.abspath(p)))
                 ext_prefix = "\\\\?\\"
-                if norm.startswith(ext_prefix):
-                    norm = norm[len(ext_prefix):]
-            except Exception:
+                norm = norm.removeprefix(ext_prefix)
+            except (ValueError, OSError, TypeError):
                 return False
             for root in norm_allowlist:
                 if norm == root or norm.startswith(root + os.sep):
@@ -677,7 +675,7 @@ def {self.test_skill}():
 
             try:
                 tree = ast.parse(py_path.read_text(encoding="utf-8", errors="replace"), filename=str(py_path))
-            except Exception:
+            except (SyntaxError, OSError):
                 continue
 
             for node in ast.walk(tree):
@@ -691,10 +689,9 @@ def {self.test_skill}():
 
                     if fn_name in ("import_module", "__import__"):
                         for arg in node.args:
-                            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                                if "custom" in arg.value:
-                                    rel = py_path.relative_to(jarvis_dir)
-                                    violations.append(f"{rel}:{node.lineno}:{arg.value}")
+                            if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and "custom" in arg.value:
+                                rel = py_path.relative_to(jarvis_dir)
+                                violations.append(f"{rel}:{node.lineno}:{arg.value}")
 
         self.assertEqual(
             violations,
