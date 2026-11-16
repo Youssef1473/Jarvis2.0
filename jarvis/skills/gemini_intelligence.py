@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import urllib.error
 import urllib.request
 from typing import Any
 
@@ -50,7 +51,7 @@ def _call_gemini_docs_mcp(method_name: str, arguments: dict[str, Any]) -> dict[s
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SEC) as resp:
         resp_bytes = resp.read()
         raw_text = resp_bytes.decode("utf-8").strip()
-        if raw_text.startswith("{") or raw_text.startswith("["):
+        if raw_text.startswith(("{", "[")):
             return json.loads(raw_text)
         for line in raw_text.splitlines():
             line_str = line.strip()
@@ -107,7 +108,7 @@ def search_gemini_api_documentation(
             raw_json_str = content_list[0].get("text", "{}")
             parsed_data = json.loads(raw_json_str)
             _DOCS_SEARCH_CACHE[cache_key] = parsed_data
-        except Exception as e:
+        except (urllib.error.URLError, json.JSONDecodeError, KeyError, IndexError, OSError, ValueError) as e:
             logger.error("Failed to query Gemini API documentation MCP: %s", e)
             return f"Failed to retrieve Gemini documentation: {e}"
 
@@ -167,7 +168,7 @@ def get_gemini_documentation_chunk(chunk_id: str, max_chars: int = 4000) -> str:
 
             text = content_list[0].get("text", "")
             _DOCS_CHUNK_CACHE[clean_id] = text
-        except Exception as e:
+        except (urllib.error.URLError, json.JSONDecodeError, KeyError, IndexError, OSError, ValueError) as e:
             logger.error("Failed to fetch chunk '%s': %s", clean_id, e)
             return f"Failed to retrieve documentation chunk '{clean_id}': {e}"
 

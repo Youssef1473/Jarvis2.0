@@ -33,8 +33,8 @@ def get_monitor_dpi_scale_for_hwnd(hwnd: int) -> float:
             dpi = u32.GetDpiForWindow(wintypes.HWND(hwnd))
             if dpi > 0:
                 return float(dpi) / 96.0
-    except Exception:
-        pass
+    except (OSError, RuntimeError, AttributeError) as e:
+        logger.debug("GetDpiForWindow notice: %s", e)
     return 1.0
 
 
@@ -70,7 +70,8 @@ def stabilize_layout_double_raf(ws: Any, timeout_sec: float = 0.2) -> bool:
             timeout_sec=timeout_sec,
         )
         return bool(res)
-    except Exception:
+    except (RuntimeError, ValueError, TimeoutError, OSError) as e:
+        logger.debug("await_cdp_raf notice: %s", e)
         return False
 
 
@@ -105,7 +106,8 @@ def send_cdp_command(
             msg = json.loads(raw)
             if msg.get("id") == cmd_id:
                 return msg.get("result", {})
-        except Exception:
+        except (json.JSONDecodeError, KeyError, TypeError, TimeoutError, OSError) as e:
+            logger.debug("CDP message receive notice: %s", e)
             break
     return {}
 
@@ -159,7 +161,7 @@ def locate_semantic_target(
                         center_y=round(cy, 1),
                         is_canvas_opaque=is_opaque,
                     )
-            except Exception as b_err:
+            except (RuntimeError, ValueError, KeyError, OSError) as b_err:
                 logger.debug("DOM.getBoxModel failed for backendId %s: %s", backend_id, b_err)
 
     return None
@@ -323,7 +325,7 @@ def click_web_element_semantic(
                 return f"Successfully clicked accessible element '{target.name}' [{target.role}] at layout centroid {target.center_x, target.center_y} with verified DOM focus shift, Sir."
             return f"Clicked element '{target.name}' at {target.center_x, target.center_y}, Sir (DOM focus shift unverified; may have triggered modal navigation)."
 
-    except Exception as err:
+    except (RuntimeError, ValueError, KeyError, OSError) as err:
         logger.warning("CDP semantic click failed: %s", err)
         return f"CDP semantic actuation encountered an error: {err}"
 
@@ -363,6 +365,6 @@ def type_into_web_element_semantic(
             _record_browser_dom_taint("type_into_web_element_semantic", target.name, tab_name_or_url, role=target.role)
             return f"Successfully typed text into accessible field '{target.name}' [{target.role}] at {target.center_x, target.center_y} with closed-loop verification, Sir."
 
-    except Exception as err:
+    except (RuntimeError, ValueError, KeyError, OSError) as err:
         logger.warning("CDP semantic typing failed: %s", err)
         return f"CDP semantic typing encountered an error: {err}"

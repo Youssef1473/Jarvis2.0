@@ -4,6 +4,7 @@ Compiles verified sequences of tool invocations and physical conditions into
 deterministic DAG macros registered in SQLite for <15ms zero-token local execution.
 """
 import json
+import logging
 import re
 import sqlite3
 import time
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from jarvis.skills.base import SkillRegistry
+
+logger = logging.getLogger("Jarvis.ReflexMacroCompiler")
 
 FORBIDDEN_MACRO_SKILLS: set[str] = {
     "execute_powershell",
@@ -145,7 +148,7 @@ def execute_workflow_reflex(
         if not row:
             return {"status": "not_found", "reason": f"Macro '{macro_name}' does not exist"}
 
-        steps_json, failure_count = row
+        steps_json, _failure_count = row
         steps = json.loads(steps_json)
     finally:
         conn.close()
@@ -227,26 +230,25 @@ def execute_workflow_reflex(
         step_results.append({"step": step["step_index"], "skill": skill_name, "result": res})
 
         # Verify physical post-condition if specified
-        if expected_post:
-            if isinstance(res, dict):
-                for k, expected_v in expected_post.items():
-                    actual_v = res.get(k)
-                    if actual_v != expected_v:
-                        _record_macro_outcome(db_path, macro_name, success=False)
-                        from jarvis.core.security_boundaries import TurnTaintTracker
-                        tracker = TurnTaintTracker.get_instance()
-                        if tracker.is_tainted:
-                            tracker.mark_tainted(
-                                source=f"workflow_reflex:{macro_name}",
-                                metadata={"macro_name": macro_name, "failed_step": step["step_index"]},
-                            )
-                        return {
-                            "status": "post_condition_failed",
-                            "macro_name": macro_name,
-                            "failed_step": step["step_index"],
-                            "reason": f"Expected {k}='{expected_v}', got '{actual_v}'",
-                            "completed_steps": step_results,
-                        }
+        if expected_post and isinstance(res, dict):
+            for k, expected_v in expected_post.items():
+                actual_v = res.get(k)
+                if actual_v != expected_v:
+                    _record_macro_outcome(db_path, macro_name, success=False)
+                    from jarvis.core.security_boundaries import TurnTaintTracker
+                    tracker = TurnTaintTracker.get_instance()
+                    if tracker.is_tainted:
+                        tracker.mark_tainted(
+                            source=f"workflow_reflex:{macro_name}",
+                            metadata={"macro_name": macro_name, "failed_step": step["step_index"]},
+                        )
+                    return {
+                        "status": "post_condition_failed",
+                        "macro_name": macro_name,
+                        "failed_step": step["step_index"],
+                        "reason": f"Expected {k}='{expected_v}', got '{actual_v}'",
+                        "completed_steps": step_results,
+                    }
 
     _record_macro_outcome(db_path, macro_name, success=True)
     dur_ms = round((time.perf_counter() - t0) * 1000, 2)
@@ -285,8 +287,8 @@ def _record_macro_outcome(db_path: str, macro_name: str, success: bool) -> None:
             conn.commit()
         finally:
             conn.close()
-    except Exception:
-        pass
+    except (sqlite3.Error, OSError) as e:
+        logger.debug("Macro outcome record notice: %s", e)
 
 
 @SkillRegistry.register(
