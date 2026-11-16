@@ -4,13 +4,10 @@ Tests true kernel-level asynchronous I/O and CancelIoEx cancellation.
 """
 
 import ctypes
-from ctypes import wintypes
-import os
-import subprocess
-import sys
 import threading
 import time
 import uuid
+from ctypes import wintypes
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -150,7 +147,7 @@ def create_overlapped_pipe_pair() -> tuple[wintypes.HANDLE, wintypes.HANDLE, str
 
 def test_overlapped_cancellation():
     print("Testing Overlapped Named Pipe Cancellation via CancelIoEx...")
-    h_server, h_client, name = create_overlapped_pipe_pair()
+    h_server, h_client, _name = create_overlapped_pipe_pair()
 
     h_stop_event = kernel32.CreateEventW(None, True, False, None)
     chunks = []

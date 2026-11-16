@@ -34,10 +34,10 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
-      - name: Verify Zero Static Lint & AST-Grep Diagnostics (jarvis/)
+      - name: Verify Zero Static Lint & AST-Grep Diagnostics (jarvis/ tools/)
         run: |
-          python tools/lint.py check jarvis/
-          python tools/diagnostics.py check jarvis/
+          python tools/lint.py check jarvis/ tools/
+          python tools/diagnostics.py check jarvis/ tools/
 
       - name: Verify Test Classification Integrity (Zero Orphans)
         run: |

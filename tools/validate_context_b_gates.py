@@ -16,7 +16,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any
 
 EXPECTED_PYTHON_EXE = r"C:\Users\Youssef\AppData\Local\Programs\Python\Python312\python.exe"
 EXPECTED_PYTHON_VER = "3.12.10"
@@ -39,7 +39,7 @@ def is_exact_str(val: Any) -> bool:
     return type(val) is str
 
 
-def evaluate_gate_1(tok: dict[str, Any]) -> Tuple[str, str]:
+def evaluate_gate_1(tok: dict[str, Any]) -> tuple[str, str]:
     """Gate 1: Container Status & Primary Token Identity."""
     if not isinstance(tok, dict):
         return "INCONCLUSIVE", f"Invalid token_security section type: {type(tok).__name__}"
@@ -77,7 +77,7 @@ def evaluate_gate_1(tok: dict[str, Any]) -> Tuple[str, str]:
     return "INCONCLUSIVE", f"Unrecognized combination: AppContainer={is_app}, TokenType={tok_type}"
 
 
-def evaluate_gate_2(tok: dict[str, Any]) -> Tuple[str, str]:
+def evaluate_gate_2(tok: dict[str, Any]) -> tuple[str, str]:
     """Gate 2: Integrity Level (0x2000 Medium)."""
     if not isinstance(tok, dict):
         return "INCONCLUSIVE", f"Invalid token_security section type: {type(tok).__name__}"
@@ -104,7 +104,7 @@ def evaluate_gate_2(tok: dict[str, Any]) -> Tuple[str, str]:
     return "INCONCLUSIVE", f"Unknown integrity RID: {rid} ({name})"
 
 
-def evaluate_gate_3(tok: dict[str, Any]) -> Tuple[str, str]:
+def evaluate_gate_3(tok: dict[str, Any]) -> tuple[str, str]:
     """Gate 3: Direct Elevation State (TokenIsElevated == 0).
 
     Decisive condition: TokenIsElevated == 0.
@@ -164,7 +164,7 @@ def evaluate_gate_3(tok: dict[str, Any]) -> Tuple[str, str]:
     return "INCONCLUSIVE", f"Unexpected TokenIsElevated value: {elev}"
 
 
-def evaluate_gate_4(py: dict[str, Any]) -> Tuple[str, str]:
+def evaluate_gate_4(py: dict[str, Any]) -> tuple[str, str]:
     """Gate 4: Exact Python Interpreter, Version, and Machine Architecture.
 
     Verifies:
@@ -232,7 +232,7 @@ def evaluate_gate_4(py: dict[str, Any]) -> Tuple[str, str]:
     return "FAIL", "; ".join(mismatches)
 
 
-def evaluate_gate_5(tok: dict[str, Any]) -> Tuple[str, str]:
+def evaluate_gate_5(tok: dict[str, Any]) -> tuple[str, str]:
     """Gate 5: Session, Window Station & Thread Desktop."""
     if not isinstance(tok, dict):
         return "INCONCLUSIVE", f"Invalid token_security section type: {type(tok).__name__}"
@@ -271,7 +271,7 @@ def evaluate_gate_5(tok: dict[str, Any]) -> Tuple[str, str]:
     return "FAIL", "; ".join(mismatches)
 
 
-def audit_telemetry_file(json_path: Path | str) -> Tuple[str, list[Tuple[str, str, str]]]:
+def audit_telemetry_file(json_path: Path | str) -> tuple[str, list[tuple[str, str, str]]]:
     """Audits telemetry JSON against all 5 gates.
 
     Returns (overall_verdict_string, results_list).
@@ -284,7 +284,7 @@ def audit_telemetry_file(json_path: Path | str) -> Tuple[str, list[Tuple[str, st
 
     try:
         data = json.loads(target.read_text(encoding="utf-8"))
-    except Exception as e:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
         return "INCONCLUSIVE — Telemetry file is malformed JSON.", [
             ("JSON Parsing", "INCONCLUSIVE", f"Failed parsing JSON: {e}")
         ]
@@ -306,7 +306,6 @@ def audit_telemetry_file(json_path: Path | str) -> Tuple[str, list[Tuple[str, st
     ]
 
     any_fail = any(status == "FAIL" for _, status, _ in gates)
-    any_inconclusive = any(status == "INCONCLUSIVE" for _, status, _ in gates)
     all_pass = all(status == "PASS" for _, status, _ in gates)
 
     if all_pass:
