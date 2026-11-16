@@ -1,12 +1,15 @@
 """Test for energy-gated wake word detection and zero-idle CPU optimization."""
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import time
+
 import numpy as np
-from jarvis.core.config_loader import load_config
+
 from jarvis.audio.wake_word import WakeWordDetector
+from jarvis.core.config_loader import load_config
 
 
 def test_wake_word_energy_gate():

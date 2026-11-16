@@ -1,14 +1,12 @@
 """Unit tests for OpenRouterProvider adapter."""
 import unittest
-from typing import Any, Callable, Dict, List, Optional
 from unittest.mock import MagicMock, patch
 
 from jarvis.core.providers.openrouter import (
-    OpenRouterProvider,
-    OPENROUTER_FREE_MODELS,
     BACKUP_FREE_MODELS,
+    OPENROUTER_FREE_MODELS,
+    OpenRouterProvider,
 )
-from jarvis.core.providers.base import LLMResponse, ToolCall
 
 
 class TestOpenRouterProviderInit(unittest.TestCase):
@@ -58,7 +56,7 @@ class TestOpenRouterProviderInit(unittest.TestCase):
 class TestOpenRouterProviderGenerate(unittest.TestCase):
     """Tests generate_turn output, tool call accumulation, and 429 failover."""
 
-    def _make_stream_chunk(self, content: Optional[str] = None, tool_calls=None):
+    def _make_stream_chunk(self, content: str | None = None, tool_calls=None):
         """Helper to create a mock stream chunk."""
         chunk = MagicMock()
         delta = MagicMock()
@@ -130,8 +128,6 @@ class TestOpenRouterProviderGenerate(unittest.TestCase):
 
     def test_generate_turn_429_failover(self):
         """generate_turn must cascade to the next candidate on 429 rate-limit error."""
-        from openai import APIStatusError
-        import httpx
 
         mock_client = MagicMock()
         # First call raises a 429-like error; second call returns a valid stream
@@ -180,7 +176,7 @@ class TestOpenRouterProviderGenerate(unittest.TestCase):
             p = OpenRouterProvider(api_key="sk-or-v1-test")
             p.client = mock_client
 
-        received: List[str] = []
+        received: list[str] = []
         p.generate_turn(
             messages=[{"role": "user", "content": "Hello"}],
             sentence_callback=received.append,

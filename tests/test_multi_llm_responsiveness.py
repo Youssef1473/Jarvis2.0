@@ -1,13 +1,11 @@
 """Verification test suite for Sub-400ms Multi-LLM Inference Fabric, Hot-Standby Pool,
 4-Zone KV Cache Pinning, and Nonce Tool Streaming in Jarvis 2.0.
 """
-from collections import OrderedDict
-import io
-from pathlib import Path
-import subprocess
 import sys
 import time
 import unittest
+from collections import OrderedDict
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 # Ensure project root is on sys.path
@@ -16,18 +14,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jarvis.audio.prosodic_chunker import TwoGearProsodicChunker
 from jarvis.core.antigravity_bridge import AntigravityBridge, AntigravityDaemon
 from jarvis.core.github_bridge import GitHubCopilotBridge
-from jarvis.core.providers.http2_pool import get_warm_http2_client, close_warm_http2_client
-from jarvis.core.providers.openrouter import OpenRouterProvider
 from jarvis.core.prompt_layout import (
-    format_compact_typescript_tools,
     build_canonical_4zone_prompt,
+    format_compact_typescript_tools,
     verify_prefix_stability,
 )
+from jarvis.core.providers.openrouter import OpenRouterProvider
 from jarvis.core.stream_tool_parser import (
     NonceGuardedStreamParser,
-    ParsedToolCall,
-    STATE_SPEAKING,
-    STATE_ACCUMULATING_TOOL_CALL,
 )
 
 

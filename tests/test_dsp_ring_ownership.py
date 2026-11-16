@@ -21,7 +21,7 @@ class TestRingOwnership(unittest.TestCase):
         for t in reversed(self.open):
             try:
                 t.close()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
 
     def test_single_ring_name_shared_by_dsp_and_tts(self):

@@ -9,9 +9,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from starlette.requests import Request
-from jarvis.ui.server import JarvisUIService
-from jarvis.core.memory import MemoryManager
+
 from jarvis.core.config_loader import load_config
+from jarvis.core.memory import MemoryManager
+from jarvis.ui.server import JarvisUIService
 
 
 class TestHUDCalendarIntegration(unittest.TestCase):
@@ -73,8 +74,8 @@ class TestHUDCalendarIntegration(unittest.TestCase):
 
     def test_memory_calendar_deletion_methods(self):
         """Verifies MemoryManager calendar and event deletion methods."""
-        import tempfile
         import gc
+        import tempfile
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             tmp_config = {
                 "memory": {"db_path": os.path.join(tmpdir, "test_mem.db")},
@@ -126,8 +127,8 @@ class TestHUDCalendarIntegration(unittest.TestCase):
 
     def test_api_calendar_delete_endpoints(self):
         """Verifies Starlette API routes for calendar and event deletion."""
-        import tempfile
         import gc
+        import tempfile
         from unittest.mock import MagicMock
 
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
@@ -196,9 +197,10 @@ class TestHUDCalendarIntegration(unittest.TestCase):
 
     def test_calendar_manager_skill_deletion(self):
         """Verifies jarvis.skills.calendar_manager delete_calendar function."""
-        import tempfile
         import gc
+        import tempfile
         from unittest.mock import patch
+
         from jarvis.skills.calendar_manager import delete_calendar
 
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:

@@ -1,10 +1,13 @@
 """Test suite for StreamingSentenceChunker and AudioRingBuffer."""
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import unittest
+
 import numpy as np
+
 from jarvis.audio.chunker import StreamingSentenceChunker
 from jarvis.audio.ring_buffer import AudioRingBuffer
 
