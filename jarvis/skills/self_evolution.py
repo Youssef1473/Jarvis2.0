@@ -6,7 +6,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -405,5 +407,66 @@ def record_episodic_lesson(
     if lesson_id:
         return f"Episodic lesson #{lesson_id} successfully cataloged for tool '{tool_name}', Sir. I shall incorporate this heuristic moving forward."
     return "Failed to record episodic lesson."
+
+
+@SkillRegistry.register(
+    name="propose_and_verify_code_patch",
+    description=(
+        "Autonomous Self-Healing: Formulates a surgical AST code patch and verifies it "
+        "inside an isolated Win32 AppContainer shadow environment against tools/lint.py, "
+        "tools/diagnostics.py, and targeted pytest without modifying live code."
+    ),
+    risk_level=1,
+    read_only=False,
+)
+def propose_and_verify_code_patch(
+    file_path: str,
+    node_start_line: int,
+    node_end_line: int,
+    replacement_code: str,
+    target_test_module: str,
+    workspace_root: str = ".",
+    timeout_sec: float = 15.0,
+) -> dict[str, Any]:
+    """Formulates candidate AST patch, stages in shadow worktree, and verifies in AppContainer."""
+    from jarvis.core.security_boundaries import SecurityBoundaryViolation
+    from jarvis.skills.ast_code_surgeon import (
+        create_shadow_patch,
+        verify_patch_in_appcontainer,
+    )
+
+    shadow_dir = Path(tempfile.mkdtemp(prefix="jarvis_evo_"))
+    try:
+        shadow_target, unified_diff, _ = create_shadow_patch(
+            file_path=file_path,
+            node_start_line=node_start_line,
+            node_end_line=node_end_line,
+            replacement_code=replacement_code,
+            shadow_root=shadow_dir,
+            workspace_root=workspace_root,
+        )
+        report = verify_patch_in_appcontainer(
+            shadow_target=shadow_target,
+            target_test_module=target_test_module,
+            shadow_root=shadow_dir,
+            workspace_root=Path(workspace_root),
+            timeout_sec=timeout_sec,
+            unified_diff=unified_diff,
+            file_path=file_path,
+        )
+        return {
+            "status": "verified" if report.passed else "verification_failed",
+            "report": report.to_dict(),
+        }
+    except (OSError, RuntimeError, ValueError, SyntaxError, SecurityBoundaryViolation) as exc:
+        return {
+            "status": "error",
+            "error": str(exc),
+            "report": None,
+        }
+    finally:
+        if shadow_dir.exists():
+            shutil.rmtree(shadow_dir, ignore_errors=True)
+
 
 

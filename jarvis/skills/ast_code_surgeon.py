@@ -7,14 +7,23 @@ Job Object sandbox with automatic byte-for-byte rollback on regression.
 from __future__ import annotations
 
 import ast
+import contextlib
+import difflib
 import logging
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from jarvis.core.security_boundaries import (
+    DualKeyApprovalManager,
+    SecurityBoundaryViolation,
+)
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Skills.ASTSurgeon")
@@ -204,6 +213,389 @@ def diagnose_test_failure_ast(traceback_output: str, workspace_root: str = ".") 
     }
 
 
+FORBIDDEN_PATCH_MODULES: frozenset[str] = frozenset({
+    "jarvis/core/safety.py",
+    "jarvis/core/security_boundaries.py",
+    "jarvis/core/evolution/appcontainer.py",
+    "jarvis/core/evolution/sandbox.py",
+    "jarvis/skills/job_object_sandbox.py",
+})
+
+FORBIDDEN_PATCH_PREFIXES: tuple[str, ...] = (
+    ".github/",
+    "tools/",
+    "tests/",
+    "config/",
+    ".venv/",
+    ".git/",
+)
+
+
+def validate_target_patch_path(file_path: str | Path, workspace_root: str | Path = ".") -> Path:
+    """Validates that candidate patch target path is safe and strictly bounded.
+
+    Enforces:
+    1. Must resolve inside workspace root.
+    2. Must not contain traversal sequences ('..') or symlink escapes.
+    3. Must not target forbidden security modules or governance/test/config directories.
+    4. When in Jarvis workspace, must target files inside jarvis/.
+    Raises SecurityBoundaryViolation on any violation.
+    """
+    ws = Path(workspace_root).resolve()
+    target = Path(file_path)
+
+    if not target.is_absolute():
+        target = ws / target
+    target = target.resolve()
+
+    try:
+        rel_path = target.relative_to(ws).as_posix()
+    except ValueError as exc:
+        raise SecurityBoundaryViolation(
+            f"Path traversal detected: '{file_path}' resolves outside workspace '{ws}'."
+        ) from exc
+
+    if ".." in rel_path.split("/"):
+        raise SecurityBoundaryViolation(
+            f"Path traversal sequence detected in '{file_path}'."
+        )
+
+    # Check forbidden prefix directories
+    if any(rel_path.startswith(prefix) for prefix in FORBIDDEN_PATCH_PREFIXES):
+        raise SecurityBoundaryViolation(
+            f"Target path '{rel_path}' is protected and cannot be modified by autonomous patching."
+        )
+
+    # Check forbidden security modules
+    if rel_path in FORBIDDEN_PATCH_MODULES:
+        raise SecurityBoundaryViolation(
+            f"Security-critical module '{rel_path}' is strictly immutable and cannot be patched."
+        )
+
+    # In production Jarvis workspace (where jarvis/ exists), require target inside jarvis/
+    if (ws / "jarvis").is_dir() and not rel_path.startswith("jarvis/"):
+        raise SecurityBoundaryViolation(
+            f"Target path '{rel_path}' must be inside 'jarvis/' subpackage."
+        )
+
+    return target
+
+
+@dataclass
+class EvolutionVerificationReport:
+    """Structured report returned by sandboxed patch verification."""
+
+    passed: bool
+    file_path: str
+    unified_diff: str
+    lint_exit_code: int = 0
+    diagnostics_exit_code: int = 0
+    test_exit_code: int = 0
+    stdout: str = ""
+    stderr: str = ""
+    elapsed_ms: float = 0.0
+    error_reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "passed": self.passed,
+            "file_path": self.file_path,
+            "unified_diff": self.unified_diff,
+            "lint_exit_code": self.lint_exit_code,
+            "diagnostics_exit_code": self.diagnostics_exit_code,
+            "test_exit_code": self.test_exit_code,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "elapsed_ms": self.elapsed_ms,
+            "error_reason": self.error_reason,
+        }
+
+
+def create_shadow_patch(
+    file_path: str | Path,
+    node_start_line: int,
+    node_end_line: int,
+    replacement_code: str,
+    shadow_root: str | Path,
+    workspace_root: str | Path = ".",
+) -> tuple[Path, str, str]:
+    """Stages candidate AST patch in an isolated shadow directory and computes unified diff.
+
+    Returns:
+        (shadow_target_path, unified_diff, new_content)
+    Raises:
+        SyntaxError on candidate code syntax errors.
+        SecurityBoundaryViolation on forbidden AST nodes or paths.
+    """
+    abs_target = validate_target_patch_path(file_path, workspace_root=workspace_root)
+    ws = Path(workspace_root).resolve()
+    rel_path = abs_target.relative_to(ws).as_posix()
+
+    # Pre-validate syntax in memory (<0.1ms)
+    ast.parse(replacement_code)
+
+    # Deep AST security gate
+    from jarvis.core.evolution.sandbox import SkillSandbox
+
+    is_safe, sec_msg = SkillSandbox.check_ast_security(replacement_code)
+    if not is_safe:
+        raise SecurityBoundaryViolation(f"Candidate code failed AST security audit: {sec_msg}")
+
+    with open(abs_target, encoding="utf-8") as f:
+        orig_content = f.read()
+
+    orig_lines = orig_content.splitlines(keepends=True)
+    prefix = orig_lines[: max(0, node_start_line - 1)]
+    suffix = orig_lines[node_end_line:]
+    rep_formatted = replacement_code if replacement_code.endswith("\n") else replacement_code + "\n"
+    new_content = "".join(prefix) + rep_formatted + "".join(suffix)
+
+    # Compute deterministic unified diff
+    new_lines = new_content.splitlines(keepends=True)
+    diff_lines = list(
+        difflib.unified_diff(
+            orig_lines,
+            new_lines,
+            fromfile=f"a/{rel_path}",
+            tofile=f"b/{rel_path}",
+            lineterm="",
+        )
+    )
+    unified_diff = "".join(diff_lines)
+
+    # Stage in shadow directory
+    shadow_target = Path(shadow_root) / rel_path
+    shadow_target.parent.mkdir(parents=True, exist_ok=True)
+    with open(shadow_target, "w", encoding="utf-8") as f:
+        f.write(new_content)
+
+    return shadow_target, unified_diff, new_content
+
+
+def _run_sandboxed_command(
+    command: list[str],
+    cwd: str | Path,
+    env: dict[str, str],
+    timeout_sec: float = 15.0,
+    grant_paths: list[str | Path] | None = None,
+) -> tuple[int, str, str]:
+    """Runs command inside SandboxedProcess with AppContainer if available, else Job Object / fallback."""
+    from jarvis.skills.job_object_sandbox import SandboxedProcess
+
+    use_appcontainer = False
+    cfg = None
+    if sys.platform == "win32":
+        try:
+            from jarvis.core.evolution.appcontainer import (
+                AppContainerConfig,
+                AppContainerProfileManager,
+            )
+
+            if AppContainerProfileManager.is_supported():
+                use_appcontainer = True
+                cfg = AppContainerConfig(
+                    profile_name=f"J_Patch_{os.getpid()}_{time.time_ns()}",
+                    auto_cleanup_profile=True,
+                    grant_paths=list(grant_paths or []),
+                )
+        except (OSError, RuntimeError, ValueError, AttributeError) as e:
+            logger.debug("AppContainer support check notice: %s", e)
+            use_appcontainer = False
+
+    try:
+        proc_mgr = SandboxedProcess(
+            command,
+            cwd=str(cwd),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            use_appcontainer=use_appcontainer,
+            appcontainer_config=cfg,
+            max_memory_mb=1536,
+            timeout=timeout_sec,
+        )
+        proc_mgr.start()
+        stdout, stderr = proc_mgr.proc.communicate(timeout=timeout_sec)
+        ret_code = proc_mgr.proc.returncode if proc_mgr.proc.returncode is not None else 0
+        return ret_code, stdout or "", stderr or ""
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        logger.debug("SandboxedProcess execution exception: %s", exc)
+        return 1, "", str(exc)
+
+
+def verify_patch_in_appcontainer(
+    shadow_target: Path,
+    target_test_module: str,
+    shadow_root: Path,
+    workspace_root: Path | str = ".",
+    timeout_sec: float = 15.0,
+    unified_diff: str = "",
+    file_path: str = "",
+) -> EvolutionVerificationReport:
+    """Executes 3-stage verification (linter, diagnostics, targeted test) in AppContainer sandbox."""
+    start_t = time.perf_counter()
+    ws = Path(workspace_root).resolve()
+
+    # Build clean environment with stripped secrets
+    env = os.environ.copy()
+    for s_key in (
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GITHUB_TOKEN",
+        "SLACK_BOT_TOKEN",
+        "AWS_SECRET_ACCESS_KEY",
+    ):
+        env.pop(s_key, None)
+
+    # Prepend shadow root to PYTHONPATH so modified files load first
+    orig_py_path = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{shadow_root}{os.pathsep}{ws}{os.pathsep}{orig_py_path}".strip(os.pathsep)
+
+    py_bin = sys.executable
+    grant_paths = [shadow_root, ws]
+
+    # Stage 1: Ruff Linter
+    lint_cmd = [py_bin, "tools/lint.py", "check", str(shadow_target)]
+    rc_lint, out_lint, err_lint = _run_sandboxed_command(
+        lint_cmd, cwd=ws, env=env, timeout_sec=timeout_sec, grant_paths=grant_paths
+    )
+    if rc_lint != 0:
+        elapsed = (time.perf_counter() - start_t) * 1000.0
+        return EvolutionVerificationReport(
+            passed=False,
+            file_path=file_path or str(shadow_target),
+            unified_diff=unified_diff,
+            lint_exit_code=rc_lint,
+            stdout=out_lint,
+            stderr=err_lint,
+            elapsed_ms=elapsed,
+            error_reason=f"Stage 1 Ruff linter violation: {out_lint.strip() or err_lint.strip()}",
+        )
+
+    # Stage 2: Structural Diagnostics (AST-Grep)
+    diag_cmd = [py_bin, "tools/diagnostics.py", "check", str(shadow_target)]
+    rc_diag, out_diag, err_diag = _run_sandboxed_command(
+        diag_cmd, cwd=ws, env=env, timeout_sec=timeout_sec, grant_paths=grant_paths
+    )
+    if rc_diag != 0:
+        elapsed = (time.perf_counter() - start_t) * 1000.0
+        return EvolutionVerificationReport(
+            passed=False,
+            file_path=file_path or str(shadow_target),
+            unified_diff=unified_diff,
+            lint_exit_code=0,
+            diagnostics_exit_code=rc_diag,
+            stdout=out_diag,
+            stderr=err_diag,
+            elapsed_ms=elapsed,
+            error_reason=f"Stage 2 Structural diagnostics violation: {out_diag.strip() or err_diag.strip()}",
+        )
+
+    # Stage 3: Targeted Test Execution
+    if (
+        target_test_module.endswith(".py")
+        or Path(target_test_module).exists()
+        or (ws / target_test_module).exists()
+    ):
+        test_cmd = [py_bin, "-m", "pytest", target_test_module, "-q"]
+    else:
+        test_cmd = [py_bin, "-m", "unittest", target_test_module]
+
+    rc_test, out_test, err_test = _run_sandboxed_command(
+        test_cmd, cwd=ws, env=env, timeout_sec=timeout_sec, grant_paths=grant_paths
+    )
+    elapsed = (time.perf_counter() - start_t) * 1000.0
+    if rc_test != 0:
+        return EvolutionVerificationReport(
+            passed=False,
+            file_path=file_path or str(shadow_target),
+            unified_diff=unified_diff,
+            lint_exit_code=0,
+            diagnostics_exit_code=0,
+            test_exit_code=rc_test,
+            stdout=out_test,
+            stderr=err_test,
+            elapsed_ms=elapsed,
+            error_reason=f"Stage 3 Targeted test failure: {out_test.strip() or err_test.strip()}",
+        )
+
+    return EvolutionVerificationReport(
+        passed=True,
+        file_path=file_path or str(shadow_target),
+        unified_diff=unified_diff,
+        lint_exit_code=0,
+        diagnostics_exit_code=0,
+        test_exit_code=0,
+        stdout=out_test,
+        stderr=err_test,
+        elapsed_ms=elapsed,
+        error_reason=None,
+    )
+
+
+def promote_verified_patch(
+    file_path: str | Path,
+    replacement_code: str,
+    node_start_line: int,
+    node_end_line: int,
+    user_approved: bool = False,
+    workspace_root: str | Path = ".",
+) -> dict[str, Any]:
+    """Promotes a verified patch to the live repository guarded by DualKeyApprovalManager."""
+    abs_target = validate_target_patch_path(file_path, workspace_root=workspace_root)
+
+    approval_mgr = DualKeyApprovalManager.get_instance()
+    is_human_authorized = approval_mgr.verify_and_consume_active_context(
+        "promote_verified_patch",
+        {
+            "file_path": str(file_path),
+            "node_start_line": node_start_line,
+            "node_end_line": node_end_line,
+        },
+    ) or user_approved
+
+    if not is_human_authorized:
+        return {
+            "status": "rejected_unauthorized",
+            "error": "Security Boundary Violation: Live code promotion requires explicit human authorization.",
+            "promoted": False,
+        }
+
+    with open(abs_target, encoding="utf-8") as f:
+        orig_content = f.read()
+
+    orig_lines = orig_content.splitlines(keepends=True)
+    prefix = orig_lines[: max(0, node_start_line - 1)]
+    suffix = orig_lines[node_end_line:]
+    rep_formatted = replacement_code if replacement_code.endswith("\n") else replacement_code + "\n"
+    new_content = "".join(prefix) + rep_formatted + "".join(suffix)
+
+    file_dir = os.path.dirname(abs_target)
+    fd, tmp_path = tempfile.mkstemp(dir=file_dir, prefix="patch_tmp_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+            tmp_file.write(new_content)
+        os.replace(tmp_path, abs_target)
+        logger.info("Promoted verified patch to live file '%s'", file_path)
+        return {
+            "status": "promoted",
+            "file_path": str(file_path),
+            "promoted": True,
+        }
+    except (OSError, UnicodeEncodeError) as exc:
+        if os.path.exists(tmp_path):
+            with contextlib.suppress(OSError):
+                os.remove(tmp_path)
+        return {
+            "status": "error",
+            "error": f"Failed to promote verified patch: {exc}",
+            "promoted": False,
+        }
+
+
 @SkillRegistry.register(
     name="apply_and_verify_surgical_patch",
     description="Applies a surgical AST node patch and verifies it inside an isolated sandbox, automatically rolling back on test failure.",
@@ -234,6 +626,15 @@ def apply_and_verify_surgical_patch(
     abs_path = os.path.abspath(file_path)
     if not os.path.isfile(abs_path):
         return {"status": "error", "error": f"Target file '{file_path}' does not exist.", "rolled_back": False}
+
+    try:
+        validate_target_patch_path(file_path, workspace_root=workspace_root)
+    except SecurityBoundaryViolation as sec_err:
+        return {
+            "status": "rejected_security_violation",
+            "error": str(sec_err),
+            "rolled_back": False,
+        }
 
     # 2. Snapshot original file content in memory
     try:
