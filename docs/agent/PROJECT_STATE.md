@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-16T11:45:00+01:00 (CET)
-- **Active Git Branch:** `main` (synced at `47abe3f`)
-- **Recorded HEAD Commit SHA:** `47abe3f4fbadbd88e86fde0f09ce7341da0784bd` (`47abe3f`)
-- **HEAD Commit Subject:** `Merge pull request #51 from Youssef1473/fix/skills-telemetry-and-productivity-closure`
-- **Milestone State:** **Production Baseline Verified on main (47abe3f); Batch 7 Plans 030-034 Formally Closed & Sealed (Full 0-Ruff Repository Baseline Achieved)**
-- **Active Milestone:** **Batch 7 Governance Seal & Full Repository 0-Ruff Baseline Closure (Plans 001-034 Closed)**
+- **Validation Timestamp:** 2026-11-16T12:05:00+01:00 (CET)
+- **Active Git Branch:** `ci/enforce-zero-ruff-and-ast-grep-gate` (branched from `main` @ `ff34799`)
+- **Recorded HEAD Commit SHA:** `ff347996592703d45fc25e86573b5023682e5780` (`ff34799`)
+- **HEAD Commit Subject:** `Merge pull request #52 from Youssef1473/docs/seal-batch7-plans-030-034-closure`
+- **Milestone State:** **Production Baseline Verified on main (ff34799); Batch 7 Sealed & CI Zero-Ruff / AST-Grep Static Gate Hardening Active**
+- **Active Milestone:** **CI Hardening & Static Analysis Regression Lock (tools/lint.py + tools/diagnostics.py)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
@@ -36,8 +36,11 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Batch 7 Governance Seal & Full Repository 0-Ruff Baseline Closure (Plans 001-034 Closed)`
+- **Active Milestone:** `CI Hardening & Static Analysis Regression Lock (tools/lint.py + tools/diagnostics.py)`
 - **Completed Work:**
+  - **CI Hardening & Static Analysis Regression Lock:**
+    - Hardened `.github/workflows/ci.yml` (`security-gate` job) with a blocking `Verify Zero Static Lint & AST-Grep Diagnostics (jarvis/)` step.
+    - Executes `python tools/lint.py check jarvis/` and `python tools/diagnostics.py check jarvis/` on every push and pull request, permanently locking in the 0-diagnostic baseline across the entire `jarvis/` codebase.
   - **`/improve` Modernization & Refactoring Queue — Batch 7 (Plans 030–034 COMPLETED & SEALED):**
     - **Plan 030 (Cognition and Reflex Pipeline Error Transparency — PR #49, `2c5ccc1`, merged `fd26219`):** Eliminates all 18 Ruff diagnostics across `jarvis/core/cognition/` (`cadence_tracker.py`, `proactive_evi.py`), `jarvis/core/reflex_dispatcher.py`, and `jarvis/core/streaming_tool_parser.py`, typing Win32 keyboard hook unhooking, adding `ClassVar` annotations to EVI disruption matrices, and typing JSON streaming tool call exceptions.
     - **Plan 031 (Memory Vault and Embedding Hardening — PR #49, `45fb022`, merged `fd26219`):** Eliminates all 13 Ruff diagnostics across `jarvis/core/memory/` (`document_vault.py`, `onnx_embeddings.py`, `tasks_calendar.py`) and `jarvis/core/safety.py`, typing sqlite-vec vectorization and KNN query errors, removing redundant `.keys()` dictionary lookups, and typing dangerous command pattern matrices.
