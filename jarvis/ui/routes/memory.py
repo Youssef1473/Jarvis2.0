@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import logging
 import secrets
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -338,6 +339,7 @@ class MemoryRoutesMixin:
                             "is_active": True,
                         }
                     ],
+                    "quarantined_count": 0,
                     "total_vectors": 0,
                     "vector_ceiling": 2500,
                     "headroom_remaining": 2500,
@@ -363,6 +365,17 @@ class MemoryRoutesMixin:
                         total_vectors = int(v_tot_row[0])
                 except Exception:  # noqa: BLE001
                     total_vectors = 0
+
+                quarantined_count = 0
+                try:
+                    cursor.execute(
+                        "SELECT count(1) FROM facts WHERE workspace_id IS NULL OR scope = 'unscoped'"
+                    )
+                    q_row = cursor.fetchone()
+                    if q_row:
+                        quarantined_count = int(q_row[0])
+                except Exception:  # noqa: BLE001
+                    quarantined_count = 0
 
                 workspaces_data = []
                 for row in ws_rows:
@@ -419,6 +432,7 @@ class MemoryRoutesMixin:
                     "status": "ok",
                     "active_workspace_id": active_ws,
                     "workspaces": workspaces_data,
+                    "quarantined_count": quarantined_count,
                     "total_vectors": total_vectors,
                     "vector_ceiling": 2500,
                     "headroom_remaining": max(0, 2500 - total_vectors),
@@ -503,3 +517,294 @@ class MemoryRoutesMixin:
         return JSONResponse({"status": "ok", "active_workspace_id": clean_ws})
 
     _handle_workspace_switch = _handle_workspaces_switch
+
+    @handle_route_errors
+    async def _handle_memory_quarantined_list(self, request: Any) -> JSONResponse:
+        """Retrieves paginated quarantined facts segregated from multi-tenant workspaces."""
+        if getattr(getattr(self, "service", self), "enforce_auth", True):
+            token = (
+                request.headers.get("x-jarvis-token")
+                or request.cookies.get("jarvis_session")
+            )
+            active_token = resolve_active_session_token(request)
+            if not (token and secrets.compare_digest(token, active_token)):
+                return JSONResponse(
+                    {"error": "Unauthorized: Invalid or missing session credentials"},
+                    status_code=401,
+                )
+
+        try:
+            limit = int(request.query_params.get("limit") or 50)
+        except (ValueError, TypeError):
+            limit = 50
+        limit = max(1, min(200, limit))
+
+        try:
+            offset = int(request.query_params.get("offset") or 0)
+        except (ValueError, TypeError):
+            offset = 0
+        offset = max(0, offset)
+
+        category = request.query_params.get("category") or None
+        search = request.query_params.get("search") or request.query_params.get("q") or None
+
+        mem = None
+        if self.orchestrator and hasattr(self.orchestrator, "memory"):
+            mem = self.orchestrator.memory
+        else:
+            try:
+                from jarvis.skills.productivity import _get_memory
+                mem = _get_memory()
+            except (ImportError, AttributeError):
+                mem = None
+
+        if not mem or not hasattr(mem, "_get_ro_connection"):
+            return JSONResponse({
+                "status": "ok",
+                "total": 0,
+                "quarantined_count": 0,
+                "limit": limit,
+                "offset": offset,
+                "facts": [],
+            })
+
+        def _fetch_quarantined() -> dict[str, Any]:
+            with mem._get_ro_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT count(1) FROM facts WHERE workspace_id IS NULL OR scope = 'unscoped'"
+                )
+                tot_row = cursor.fetchone()
+                total_quarantined = int(tot_row[0]) if tot_row else 0
+
+                query = """
+                    SELECT id, category, key, value, source_provenance, updated_at
+                    FROM facts
+                    WHERE (workspace_id IS NULL OR scope = 'unscoped')
+                """
+                params: list[Any] = []
+                if category:
+                    query += " AND category = ?"
+                    params.append(category)
+                if search:
+                    query += " AND (key LIKE ? OR value LIKE ?)"
+                    pattern = f"%{search.strip()}%"
+                    params.extend([pattern, pattern])
+
+                query += " ORDER BY id ASC LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+
+                cursor.execute(query, tuple(params))
+                rows = cursor.fetchall()
+                facts = []
+                for r in rows:
+                    facts.append({
+                        "id": r["id"],
+                        "category": r["category"],
+                        "key": r["key"],
+                        "value": r["value"],
+                        "source_provenance": r["source_provenance"],
+                        "updated_at": str(r["updated_at"]),
+                    })
+                return {
+                    "status": "ok",
+                    "total": total_quarantined,
+                    "quarantined_count": total_quarantined,
+                    "limit": limit,
+                    "offset": offset,
+                    "facts": facts,
+                }
+
+        data = await asyncio.to_thread(_fetch_quarantined)
+        return JSONResponse(data)
+
+    @handle_route_errors
+    async def _handle_memory_quarantined_promote(self, request: Any) -> JSONResponse:
+        """Promotes quarantined facts to an authorized workspace using SingleWriterActor."""
+        if getattr(getattr(self, "service", self), "enforce_auth", True):
+            token = (
+                request.headers.get("x-jarvis-token")
+                or request.cookies.get("jarvis_session")
+            )
+            active_token = resolve_active_session_token(request)
+            if not (token and secrets.compare_digest(token, active_token)):
+                return JSONResponse(
+                    {"error": "Unauthorized: Invalid or missing session credentials"},
+                    status_code=401,
+                )
+
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+        target_ws = body.get("target_workspace_id") or body.get("workspace_id")
+        if not target_ws or not str(target_ws).strip():
+            return JSONResponse({"error": "target_workspace_id is required"}, status_code=400)
+
+        try:
+            clean_ws = resolve_request_workspace({"workspace_id": target_ws})
+        except (ValueError, PermissionError) as err:
+            status_code = 403 if isinstance(err, PermissionError) else 400
+            return JSONResponse({"error": str(err)}, status_code=status_code)
+
+        if clean_ws.lower() == "unscoped":
+            return JSONResponse({"error": "Cannot promote facts into 'unscoped' partition"}, status_code=403)
+
+        fact_ids = body.get("fact_ids")
+        if not fact_ids or not isinstance(fact_ids, list):
+            return JSONResponse({"error": "fact_ids must be a non-empty list of integers"}, status_code=400)
+
+        if len(fact_ids) > 100:
+            return JSONResponse({"error": "Batch size exceeds maximum limit of 100 facts"}, status_code=400)
+
+        try:
+            clean_fact_ids = [int(fid) for fid in fact_ids]
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "All fact_ids must be integers"}, status_code=400)
+
+        mem = None
+        if self.orchestrator and hasattr(self.orchestrator, "memory"):
+            mem = self.orchestrator.memory
+        else:
+            try:
+                from jarvis.skills.productivity import _get_memory
+                mem = _get_memory()
+            except (ImportError, AttributeError):
+                mem = None
+
+        if not mem:
+            return JSONResponse({"error": "Memory manager not available"}, status_code=503)
+
+        def _promote(conn: sqlite3.Connection) -> dict[str, Any]:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT workspace_id, is_archived FROM workspaces WHERE workspace_id = ?",
+                (clean_ws,),
+            )
+            ws_row = cursor.fetchone()
+            if not ws_row:
+                raise ValueError(f"Workspace '{clean_ws}' does not exist")
+            if ws_row["is_archived"]:
+                raise PermissionError(f"Cannot promote facts to archived workspace '{clean_ws}'")
+
+            promoted: list[int] = []
+            for fid in clean_fact_ids:
+                cursor.execute(
+                    "SELECT id FROM facts WHERE id = ? AND (workspace_id IS NULL OR scope = 'unscoped')",
+                    (fid,),
+                )
+                if not cursor.fetchone():
+                    continue
+                cursor.execute(
+                    """
+                    UPDATE facts
+                    SET workspace_id = ?, scope = 'workspace', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND (workspace_id IS NULL OR scope = 'unscoped')
+                    """,
+                    (clean_ws, fid),
+                )
+                if cursor.rowcount > 0:
+                    try:
+                        cursor.execute(
+                            "UPDATE facts_vec SET workspace_id = ? WHERE fact_id = ?",
+                            (clean_ws, fid),
+                        )
+                    except Exception as vec_err:  # noqa: BLE001
+                        logger.debug("Vector index sync notice for promoted fact %s: %s", fid, vec_err)
+                    promoted.append(fid)
+            return {"promoted_count": len(promoted), "fact_ids": promoted}
+
+        result = await asyncio.to_thread(mem.execute_write, _promote)
+
+        if hasattr(self, "broadcast"):
+            self.broadcast({
+                "type": "memory_updated",
+                "action": "quarantine_promoted",
+                "target_workspace_id": clean_ws,
+                "count": result["promoted_count"],
+            })
+
+        return JSONResponse({
+            "status": "ok",
+            "target_workspace_id": clean_ws,
+            "promoted_count": result["promoted_count"],
+            "promoted_ids": result["fact_ids"],
+        })
+
+    @handle_route_errors
+    async def _handle_memory_quarantined_purge(self, request: Any) -> JSONResponse:
+        """Purges quarantined facts safely from SQLite storage using SingleWriterActor."""
+        if getattr(getattr(self, "service", self), "enforce_auth", True):
+            token = (
+                request.headers.get("x-jarvis-token")
+                or request.cookies.get("jarvis_session")
+            )
+            active_token = resolve_active_session_token(request)
+            if not (token and secrets.compare_digest(token, active_token)):
+                return JSONResponse(
+                    {"error": "Unauthorized: Invalid or missing session credentials"},
+                    status_code=401,
+                )
+
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+        fact_ids = body.get("fact_ids")
+        if not fact_ids or not isinstance(fact_ids, list):
+            return JSONResponse({"error": "fact_ids must be a non-empty list of integers"}, status_code=400)
+
+        if len(fact_ids) > 100:
+            return JSONResponse({"error": "Batch size exceeds maximum limit of 100 facts"}, status_code=400)
+
+        try:
+            clean_fact_ids = [int(fid) for fid in fact_ids]
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "All fact_ids must be integers"}, status_code=400)
+
+        mem = None
+        if self.orchestrator and hasattr(self.orchestrator, "memory"):
+            mem = self.orchestrator.memory
+        else:
+            try:
+                from jarvis.skills.productivity import _get_memory
+                mem = _get_memory()
+            except (ImportError, AttributeError):
+                mem = None
+
+        if not mem:
+            return JSONResponse({"error": "Memory manager not available"}, status_code=503)
+
+        def _purge(conn: sqlite3.Connection) -> dict[str, Any]:
+            cursor = conn.cursor()
+            purged: list[int] = []
+            for fid in clean_fact_ids:
+                # DEFENSE-IN-DEPTH: strictly delete only quarantined rows
+                cursor.execute(
+                    "DELETE FROM facts WHERE id = ? AND (workspace_id IS NULL OR scope = 'unscoped')",
+                    (fid,),
+                )
+                if cursor.rowcount > 0:
+                    try:
+                        cursor.execute("DELETE FROM facts_vec WHERE fact_id = ?", (fid,))
+                    except Exception as vec_err:  # noqa: BLE001
+                        logger.debug("Vector index purge notice for fact %s: %s", fid, vec_err)
+                    purged.append(fid)
+            return {"purged_count": len(purged), "fact_ids": purged}
+
+        result = await asyncio.to_thread(mem.execute_write, _purge)
+
+        if hasattr(self, "broadcast"):
+            self.broadcast({
+                "type": "memory_updated",
+                "action": "quarantine_purged",
+                "count": result["purged_count"],
+            })
+
+        return JSONResponse({
+            "status": "ok",
+            "purged_count": result["purged_count"],
+            "purged_ids": result["fact_ids"],
+        })
