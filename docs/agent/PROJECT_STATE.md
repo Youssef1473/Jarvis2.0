@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-15T23:55:00+01:00 (CET)
-- **Active Git Branch:** `main` (synced at `b125988`)
-- **Recorded HEAD Commit SHA:** `b125988804bf4c24055645f9204ecc6381e7278d` (`b125988`)
-- **HEAD Commit Subject:** `Merge pull request #42 from Youssef1473/fix/core-services-and-watchdog-vision-errors`
-- **Milestone State:** **Production Baseline Verified on main (b125988); Batch 5 Plans 020-024 Formally Closed**
-- **Active Milestone:** **Batch 5 Governance Seal & Roadmap Closure**
+- **Validation Timestamp:** 2026-11-16T09:10:00+01:00 (CET)
+- **Active Git Branch:** `main` (synced at `a3016ad`)
+- **Recorded HEAD Commit SHA:** `a3016ad2771d34750665d7b83ad3fc26638f3f21` (`a3016ad`)
+- **HEAD Commit Subject:** `Merge pull request #47 from Youssef1473/fix/data-and-media-skills-error-reporting`
+- **Milestone State:** **Production Baseline Verified on main (a3016ad); Batch 6 Plans 025-029 Formally Closed & Sealed**
+- **Active Milestone:** **Batch 6 Governance Seal & Roadmap Closure**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications (0 files):**
   - None (clean tracked working tree)
@@ -36,8 +36,19 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Batch 5 Governance Seal & Roadmap Closure`
+- **Active Milestone:** `Batch 6 Governance Seal & Roadmap Closure`
 - **Completed Work:**
+  - **`/improve` Modernization & Refactoring Queue — Batch 6 (Plans 025–029 COMPLETED & SEALED):**
+    - **Plan 025 (Evolution Sandbox Containment Hardening — PR #44, `5bd01ef`, merged `49d9392`):** Eliminates all 33 Ruff diagnostics in `jarvis/core/evolution/sandbox.py`, adding `ClassVar` annotations for blocked AST call sets, fixing re-raise syntax (`TRY201`), and typing AppContainer/Job Object containment and canary validation exceptions.
+    - **Plan 026 (MCP Manager Lifecycle Hardening — PR #45, `fbe3a56`, merged `1e9428b`):** Eliminates all 22 Ruff diagnostics in `jarvis/core/mcp_manager.py`, merging string prefix checks (`PIE810`) and typing stdio/SSE process lifecycle and JSON-RPC transport exceptions.
+    - **Plan 027 (Task Manager & OpenAI Brain Error Transparency — PR #45, `e9ceb27`, merged `1e9428b`):** Eliminates all 38 Ruff diagnostics across `jarvis/core/task_manager.py` (19) and `jarvis/core/brain_openai.py` (19), typing background worker Job Object termination and multi-provider LLM initializations.
+    - **Plan 028 (Antigravity Bridge IPC Hardening — PR #46, `f8f8218`, merged `5f53b2f`):** Eliminates all 89 Ruff diagnostics in `jarvis/core/antigravity_bridge.py`, optimizing dict iteration (`PERF102`), simplifying integer casts (`RUF046`), and typing Win32 named mutex and streaming JSON IPC errors.
+    - **Plan 029 (Data and Media Skills Typed Error Reporting — PR #47, `b41c2c1` + `3ca5dbe`, merged `a3016ad`):** Eliminates all 37 Ruff diagnostics across `jarvis/skills/email_manager.py` (16), `jarvis/skills/document_ingest.py` (11), and `jarvis/skills/photo_manager.py` (10), replacing silent swallows with typed error handling and protecting against unhandled external API exceptions.
+    - **Full Roadmap Closure:** All 29 implementation plans in `plans/README.md` (`001`–`029`) marked `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+    - **Total Batch 6 Diagnostics Eliminated:** **219** (`334` $\to$ `~115` remaining across `jarvis/`).
+    - **Subsystems at 0 Ruff Diagnostics:** `jarvis/audio/`, `jarvis/memory/`, `jarvis/ui/`, `jarvis/routing/`, `jarvis/context/`, `jarvis/core/pipeline/`, `jarvis/core/evolution/`, `jarvis/core/mcp_manager.py`, `jarvis/core/task_manager.py`, `jarvis/core/brain_openai.py`, `jarvis/core/antigravity_bridge.py`, `jarvis/core/win32_affinity.py`, `jarvis/core/services.py`, `jarvis/core/health_check.py`, `jarvis/skills/os_control.py`, `jarvis/skills/job_object_sandbox.py`, `jarvis/skills/system_watchdog.py`, `jarvis/skills/screen_vision.py`, `jarvis/skills/email_manager.py`, `jarvis/skills/document_ingest.py`, and `jarvis/skills/photo_manager.py`.
+    - **Test Accounting Invariant:** 2,472 collected nodes accounted for (0 drift) via `test_17_accurate_total_test_accounting` and `tools/test_classifier.py --check-orphaned`.
+    - **Database Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
   - **`/improve` Modernization & Refactoring Queue — Batch 5 (Plans 020–024 COMPLETED & SEALED):**
     - **Plan 020 (Context Pipeline Error Transparency — PR #40, `dd12589`, merged `575b7b4`):** Eliminates all 39 Ruff diagnostics across `jarvis/context/` (`pipe_listener.py`, `flow_state_mirror.py`, `context_orchestrator.py`, `fs_watcher.py`), achieving package-wide 0-Ruff clean status with typed IPC exception handling and collapsing redundant nested `if` statements (`SIM102`).
     - **Plan 021 (Win32 Thread Affinity Typed Exceptions — PR #41, `7657735`, merged `c0560e2`):** Eliminates all 8 `BLE001` diagnostics in `jarvis/core/win32_affinity.py` with typed ctypes exception handling (`(OSError, RuntimeError, AttributeError)`) across thread affinity masks, MMCSS scheduling, and COM STA initialization.
