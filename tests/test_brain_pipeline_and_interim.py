@@ -1,11 +1,10 @@
 """Tests for Brain Pipeline, Tool Orchestrator, and Acoustic Interim Bridge in Jarvis 2.0."""
 import time
 import unittest
-from unittest.mock import MagicMock, patch
 
-from jarvis.core.pipeline.interim_bridge import InterimSpeechBridge, _INTERIM_PHRASE_MAP
+from jarvis.core.pipeline.interim_bridge import _INTERIM_PHRASE_MAP, InterimSpeechBridge
 from jarvis.core.pipeline.tool_orchestrator import ToolOrchestrator
-from jarvis.core.security_boundaries import TurnTaintTracker, SecurityBoundaryViolation
+from jarvis.core.security_boundaries import TurnTaintTracker
 from jarvis.skills.base import SkillRegistry
 
 
@@ -251,8 +250,9 @@ class TestToolOrchestrator(unittest.TestCase):
         """
         import asyncio
         import threading
-        from jarvis.core.security_boundaries import DualKeyApprovalManager
+
         from jarvis.core.pipeline.dual_track import DualTrackCoordinator
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
 
         approval_mgr = DualKeyApprovalManager.get_instance()
         approval_mgr.reset()
@@ -326,8 +326,9 @@ class TestToolOrchestrator(unittest.TestCase):
         and returns an authorization error without executing the tool.
         """
         import asyncio
-        from jarvis.core.security_boundaries import DualKeyApprovalManager
+
         from jarvis.core.pipeline.dual_track import DualTrackCoordinator
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
 
         approval_mgr = DualKeyApprovalManager.get_instance()
         approval_mgr.reset()
@@ -371,8 +372,9 @@ class TestToolOrchestrator(unittest.TestCase):
         """
         import asyncio
         import threading
-        from jarvis.core.security_boundaries import DualKeyApprovalManager
+
         from jarvis.core.pipeline.dual_track import DualTrackCoordinator
+        from jarvis.core.security_boundaries import DualKeyApprovalManager
 
         approval_mgr = DualKeyApprovalManager.get_instance()
         approval_mgr.reset()
@@ -391,7 +393,7 @@ class TestToolOrchestrator(unittest.TestCase):
         def mock_timeout_handler(req):
             # Wait with a short timeout and return False on timeout
             timed_out = not timeout_event.wait(timeout=0.05)
-            return False if timed_out else True
+            return not timed_out
 
         approval_mgr.set_approval_handler(mock_timeout_handler)
         self.addCleanup(lambda: approval_mgr.set_approval_handler(None))
@@ -424,8 +426,12 @@ class TestToolOrchestrator(unittest.TestCase):
         """
         import asyncio
         import threading
-        from jarvis.core.security_boundaries import DualKeyApprovalManager, _active_auth_context
+
         from jarvis.core.pipeline.dual_track import DualTrackCoordinator
+        from jarvis.core.security_boundaries import (
+            DualKeyApprovalManager,
+            _active_auth_context,
+        )
 
         approval_mgr = DualKeyApprovalManager.get_instance()
         approval_mgr.reset()
@@ -609,8 +615,12 @@ class TestToolOrchestrator(unittest.TestCase):
         """
         import asyncio
         import threading
-        from jarvis.core.security_boundaries import DualKeyApprovalManager, _active_auth_context
+
         from jarvis.core.pipeline.dual_track import DualTrackCoordinator
+        from jarvis.core.security_boundaries import (
+            DualKeyApprovalManager,
+            _active_auth_context,
+        )
 
         approval_mgr = DualKeyApprovalManager.get_instance()
         approval_mgr.reset()
@@ -735,8 +745,12 @@ class TestToolOrchestrator(unittest.TestCase):
         """
         import asyncio
         import threading
-        from jarvis.core.security_boundaries import DualKeyApprovalManager, _active_auth_context
+
         from jarvis.core.pipeline.dual_track import DualTrackCoordinator
+        from jarvis.core.security_boundaries import (
+            DualKeyApprovalManager,
+            _active_auth_context,
+        )
 
         approval_mgr = DualKeyApprovalManager.get_instance()
         approval_mgr.reset()
@@ -847,8 +861,12 @@ class TestToolOrchestrator(unittest.TestCase):
         """
         import asyncio
         import threading
-        from jarvis.core.security_boundaries import DualKeyApprovalManager, _active_auth_context
+
         from jarvis.core.pipeline.dual_track import DualTrackCoordinator
+        from jarvis.core.security_boundaries import (
+            DualKeyApprovalManager,
+            _active_auth_context,
+        )
 
         approval_mgr = DualKeyApprovalManager.get_instance()
         approval_mgr.reset()

@@ -1,5 +1,4 @@
 """Automated tests for Bi-Temporal Knowledge Graph, habit prediction, and action journal."""
-import os
 import sys
 import tempfile
 import time
@@ -53,7 +52,7 @@ class TestBiTemporalKGSuite(unittest.TestCase):
             is_functional=True,
         )
         time.sleep(0.05)
-        edge2 = self.memory.remember_edge(
+        self.memory.remember_edge(
             subject="Sir",
             predicate="active_focus_project",
             object_val="Jarvis 3.0",
@@ -116,12 +115,12 @@ class TestBiTemporalKGSuite(unittest.TestCase):
         )
 
         # Revert action
-        success, msg = self.memory.revert_action("act_001")
+        success, _msg = self.memory.revert_action("act_001")
         self.assertTrue(success)
         self.assertEqual(test_state["theme"], "dark", "Action reversal must execute inverse skill")
 
         # Re-reverting should fail because already reverted
-        success2, msg2 = self.memory.revert_action("act_001")
+        success2, _msg2 = self.memory.revert_action("act_001")
         self.assertFalse(success2)
 
 

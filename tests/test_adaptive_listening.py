@@ -4,10 +4,10 @@ Verifies dynamic silence scaling, hesitation/murmur damping, PTT toggle mode, an
 import shutil
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
 import numpy as np
 
 # Add project root to path
@@ -77,7 +77,7 @@ class TestAdaptiveListeningSuite(unittest.TestCase):
              patch("jarvis.core.orchestrator.JarvisHeartbeat"), \
              patch("jarvis.core.orchestrator.HotkeyListener"), \
              patch("jarvis.core.orchestrator.WakeWordDetector"), \
-             patch("sounddevice.InputStream") as mock_stream:
+             patch("sounddevice.InputStream"):
 
             mock_mem_instance = mock_mem_cls.return_value
             mock_mem_instance.db_path = Path(self.temp_dir) / "test_mem.db"

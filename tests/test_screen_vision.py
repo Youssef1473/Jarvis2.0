@@ -1,10 +1,10 @@
 """Unit tests for multimodal screen vision and perception skill."""
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
+from jarvis.skills import screen_vision
 from jarvis.skills.base import SkillRegistry
-import jarvis.skills.screen_vision as screen_vision
 
 
 class TestScreenVisionSkill(unittest.TestCase):

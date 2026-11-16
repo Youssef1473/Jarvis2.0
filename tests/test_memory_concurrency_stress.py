@@ -1,8 +1,8 @@
 """Concurrent multi-threaded stress and transaction consistency tests for modularized MemoryManager."""
 import os
 import shutil
+import sqlite3
 import tempfile
-import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -74,7 +74,7 @@ class TestMemoryConcurrencyStress(unittest.TestCase):
                         summary=f"Summary for doc {worker_id}_{i}",
                         raw_content=f"Content chunk 1 for doc {worker_id}_{i} and chunk 2",
                     )
-            except Exception as e:
+            except (sqlite3.Error, OSError, RuntimeError) as e:
                 errors.append((f"Writer-{worker_id}", e))
 
         def reader_task(worker_id: int):
@@ -95,7 +95,7 @@ class TestMemoryConcurrencyStress(unittest.TestCase):
 
                     # Search documents
                     self.memory.search_documents("Content", limit=3)
-            except Exception as e:
+            except (sqlite3.Error, OSError, RuntimeError) as e:
                 errors.append((f"Reader-{worker_id}", e))
 
         with ThreadPoolExecutor(max_workers=num_writers + num_readers) as executor:

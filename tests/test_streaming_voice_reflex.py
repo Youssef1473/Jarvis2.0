@@ -10,14 +10,15 @@ Verifies:
 import sys
 import time
 from pathlib import Path
+
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.core.config_loader import load_config
 from jarvis.audio.chunker import StreamingSentenceChunker
 from jarvis.audio.ring_buffer import AudioRingBuffer
 from jarvis.audio.tts import TextToSpeech, _set_thread_realtime_priority
+from jarvis.core.config_loader import load_config
 
 
 def test_chunker_speculative_boundaries():
@@ -87,7 +88,6 @@ def test_audio_ring_buffer():
     assert rb.available_samples == 0
 
     # Test high-throughput writes
-    t0 = time.perf_counter()
     data = np.random.randn(4800).astype(np.float32)
     written = rb.write(data)
     assert written == 4800

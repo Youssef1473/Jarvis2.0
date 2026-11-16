@@ -11,21 +11,17 @@ Verifies:
 8. Sleep-phase consolidation integration.
 """
 import os
-from pathlib import Path
 import shutil
 import tempfile
 import time
 import unittest
-from unittest.mock import MagicMock
 
 from jarvis.core.cognition.habit_graph import (
-    TemporalHabitGraph,
-    HabitPrediction,
-    CAUSAL_HORIZON_SECONDS,
     HABIT_HALF_LIFE_SECONDS,
+    TemporalHabitGraph,
 )
 from jarvis.core.heartbeat import JarvisHeartbeat
-from jarvis.core.memory import MemoryManager, SleepPhaseConsolidator
+from jarvis.core.memory import SleepPhaseConsolidator
 
 
 class TestTemporalHabitGraphSuite(unittest.TestCase):
@@ -77,7 +73,7 @@ class TestTemporalHabitGraphSuite(unittest.TestCase):
         self.graph.observe_action("focus:ide:py", cognitive_state="DEEP_FLOW", domain="ide", timestamp=now)
 
         # Action 2 at t=150 (outside 120s causal horizon)
-        pred = self.graph.observe_action("focus:terminal", cognitive_state="DEEP_FLOW", domain="terminal", timestamp=now + 150.0)
+        self.graph.observe_action("focus:terminal", cognitive_state="DEEP_FLOW", domain="terminal", timestamp=now + 150.0)
 
         # No transition should have been written to SQLite
         conn = self.graph._get_connection()
@@ -95,7 +91,7 @@ class TestTemporalHabitGraphSuite(unittest.TestCase):
         self.graph.observe_action("focus:ide:py", cognitive_state="DEEP_FLOW", domain="ide", timestamp=now)
 
         # Action 2 under Afternoon Terminal context
-        pred = self.graph.observe_action("focus:terminal", cognitive_state="ACTIVE_DEBUGGING", domain="terminal", timestamp=now + 10.0)
+        self.graph.observe_action("focus:terminal", cognitive_state="ACTIVE_DEBUGGING", domain="terminal", timestamp=now + 10.0)
 
         conn = self.graph._get_connection()
         try:

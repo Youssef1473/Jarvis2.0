@@ -1,20 +1,19 @@
 """Automated tests for VectorMemoryPool read-only mmap and offloaded KNN traversal."""
 import asyncio
-import os
-from pathlib import Path
 import sqlite3
 import struct
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.memory.ro_pool import VectorMemoryPool
-from jarvis.core.ro_pool import VectorMemoryPool as CoreVectorMemoryPool
-from jarvis.core.memory import MemoryManager
 import sqlite_vec
+
+from jarvis.core.memory import MemoryManager
+from jarvis.memory.ro_pool import VectorMemoryPool
 
 
 class TestVectorMemoryPoolSuite(unittest.IsolatedAsyncioTestCase):

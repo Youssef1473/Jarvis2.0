@@ -1,9 +1,11 @@
 """Test for Jarvis HUD lifecycle and state transitions."""
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import time
+
 from jarvis.ui.hud import JarvisHUD
 
 

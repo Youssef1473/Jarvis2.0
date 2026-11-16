@@ -6,15 +6,14 @@ Verifies:
 3. BM25 relevance ranking across facts, archived documents, interactions, and Obsidian chunks.
 4. Resilient LIKE query fallback behavior on empty token sets or syntax boundaries.
 """
-import os
-from pathlib import Path
 import sqlite3
 import tempfile
 import time
 import unittest
+from pathlib import Path
 
 from jarvis.core.memory import MemoryManager, sanitize_fts5_query
-from jarvis.core.memory.obsidian_sync import ObsidianContextSyncEngine, ObsidianChunk
+from jarvis.core.memory.obsidian_sync import ObsidianContextSyncEngine
 
 
 class TestFTS5QuerySanitizer(unittest.TestCase):
@@ -82,7 +81,7 @@ class TestMemoryFTS5Indexing(unittest.TestCase):
         gc.collect()
         try:
             self.temp_dir.cleanup()
-        except Exception:
+        except (OSError, RuntimeError):
             pass
 
     def test_facts_fts_triggers_and_bm25_ranking(self):
@@ -195,13 +194,13 @@ class TestObsidianFTS5Indexing(unittest.TestCase):
         import gc
         try:
             self.engine.stop(timeout=1.0)
-        except Exception:
+        except (OSError, RuntimeError):
             pass
         del self.engine
         gc.collect()
         try:
             self.temp_dir.cleanup()
-        except Exception:
+        except (OSError, RuntimeError):
             pass
 
     def test_obsidian_fts5_search_and_tag_filter(self):

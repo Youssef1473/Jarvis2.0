@@ -1,10 +1,11 @@
 """Test for Kokoro-ONNX audio synthesis and CPU threading."""
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.core.config_loader import load_config
 from jarvis.audio.tts import TextToSpeech
+from jarvis.core.config_loader import load_config
 
 
 def test_tts():

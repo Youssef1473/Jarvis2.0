@@ -1,15 +1,15 @@
 """Unit tests for Windows Win32 Thread Affinity and Real-Time Priority Scheduler."""
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from jarvis.audio.affinity import (
-    get_pcore_affinity_mask,
-    pin_thread_to_pcores,
-    elevate_thread_priority,
-    pin_and_elevate_current_thread,
     THREAD_PRIORITY_HIGHEST,
     THREAD_PRIORITY_TIME_CRITICAL,
+    elevate_thread_priority,
+    get_pcore_affinity_mask,
+    pin_and_elevate_current_thread,
+    pin_thread_to_pcores,
 )
 
 

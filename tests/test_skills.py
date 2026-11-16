@@ -2,13 +2,10 @@
 import sys
 import unittest.mock
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jarvis.skills.base import SkillRegistry
-import jarvis.skills.os_control
-import jarvis.skills.web_search
-import jarvis.skills.dev_shell
-import jarvis.skills.productivity
 
 
 def test_skills_execution():

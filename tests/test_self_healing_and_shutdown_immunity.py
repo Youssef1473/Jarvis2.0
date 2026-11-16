@@ -1,15 +1,15 @@
 """Unit tests for self-healing desktop/browser cascades and autonomous shutdown crash immunity."""
-import unittest
-from unittest.mock import patch, MagicMock
 import subprocess
 import sys
+import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jarvis.core.antigravity_bridge import AntigravityBridge, AntigravityDaemon
 from jarvis.core.orchestrator import JarvisOrchestrator
-from jarvis.skills.os_control import focus_window, close_browser_tab, open_browser_tab
+from jarvis.skills.os_control import close_browser_tab, focus_window
 
 
 class TestSelfHealingAndShutdownImmunity(unittest.TestCase):
@@ -102,7 +102,7 @@ class TestSelfHealingAndShutdownImmunity(unittest.TestCase):
     def test_focus_window_self_healing_launch_cascade(self):
         """Verifies focus_window automatically cascades to launch_application if window is closed."""
         with patch("jarvis.skills.windows_uia.focus_window_uia", side_effect=[None, "Spotify Premium"]), \
-             patch("win32gui.EnumWindows") as mock_enum, \
+             patch("win32gui.EnumWindows"), \
              patch("jarvis.skills.os_control.launch_application", return_value="Application 'spotify' launched, Sir.") as mock_launch:
             res = focus_window("spotify")
             mock_launch.assert_called_once_with("spotify")
