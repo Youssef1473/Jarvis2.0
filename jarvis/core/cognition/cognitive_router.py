@@ -479,6 +479,7 @@ class CognitiveRouter:
         has_groq: bool,
         has_gemini: bool,
         has_copilot: bool,
+        vram_profile: Any = None,
     ) -> str:
         """Determines the optimal execution route under Hybrid / Auto mode.
 
@@ -492,6 +493,12 @@ class CognitiveRouter:
 
         # 2. Local OS & workstation device actions -> Route to local Ollama (0ms network latency, 0 tokens)
         if any(t in active_tool_names for t in OS_ACTION_TOOLS) and has_ollama:
+            if vram_profile is not None and getattr(vram_profile, "cloud_failover", False) and has_gemini:
+                logger.info(
+                    "VRAM pressure failover in hybrid route: redirecting OS action from Ollama to Gemini (%s)",
+                    getattr(vram_profile, "tier", "PRESSURE"),
+                )
+                return "gemini_default"
             return "ollama_os"
 
         # 3. Classify query complexity: Deep/Code tasks vs Fast Conversational Reflex
@@ -511,6 +518,12 @@ class CognitiveRouter:
         if has_copilot:
             return "copilot_default"
         if has_ollama:
+            if vram_profile is not None and getattr(vram_profile, "cloud_failover", False) and has_gemini:
+                logger.info(
+                    "VRAM pressure failover in fallback cascade: redirecting Ollama to Gemini (%s)",
+                    getattr(vram_profile, "tier", "PRESSURE"),
+                )
+                return "gemini_default"
             return "ollama_default"
         if has_gemini:
             return "gemini_default"

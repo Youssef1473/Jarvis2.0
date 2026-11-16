@@ -14,20 +14,21 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-16T19:25:00+01:00 (CET)
-- **Active Git Branch:** `feat/rtx3050-4gb-vram-arbiter-and-pressure-shedding`
-- **Recorded HEAD Commit SHA:** `95a4817`
-- **HEAD Commit Subject:** `Merge pull request #60 from Youssef1473/feat/autonomous-appcontainer-patch-verify-loop`
-- **Milestone State:** **Track C Completed: RTX 3050 4GB VRAM Arbiter, DXGI WDDM Budget Tracking & Pressure Shedding (Plan 043 Verified); 2,502 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
-- **Active Milestone:** **Track C: RTX 3050 4GB VRAM Arbiter & Pressure Shedding (Plan 043 Completed)**
+- **Validation Timestamp:** 2026-11-16T20:30:00+01:00 (CET)
+- **Active Git Branch:** `feat/dynamic-vram-aware-local-model-routing`
+- **Recorded HEAD Commit SHA:** `f6ea0a6`
+- **HEAD Commit Subject:** `feat(hardware,gpu): add real-time rtx3050 vram arbiter, dxgi budget tracking, and pressure shedding (Plan 043)`
+- **Milestone State:** **Track D Completed: Dynamic VRAM-Aware Local Model Routing & Adaptive Context/Offload Scaling (Plan 044 Verified); 2,516 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
+- **Active Milestone:** **Track D: Dynamic VRAM-Aware Local Model Routing (Plan 044 Completed)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications:**
-  - `data/test_classification_manifest.json` (test manifest accounting updated to 2,502 nodes)
-  - `jarvis/skills/nvml_dxgi_vram_arbiter.py` (DXGI 1.4 WDDM budget tracking, 4-tier watermarks, pre-flight admission, staged shedding)
-  - `jarvis/audio/stt.py` (wired request_vram_budget and dynamic compute_type adaptation)
-  - `jarvis/audio/tts.py` (wired kokoro_tts session shedding hook and pre-flight admission)
-  - `jarvis/ui/metrics.py` (additive VRAM headroom, budget, and pressure tier vitals for Zero-CLS HUD)
-  - `tests/test_nvml_vram_arbiter.py` (15 hermetic unit, mathematical headroom, and fallback tests)
+  - `data/test_classification_manifest.json` (test manifest accounting updated to 2,516 nodes)
+  - `jarvis/routing/vram_profile.py` (VramInferenceProfile, 5-tier dynamic context/layer scaling, staged shedding integration)
+  - `jarvis/routing/__init__.py` (exported VramInferenceProfile, VramInferenceTier, resolve_vram_inference_profile, register_ollama_vram_shed_hook)
+  - `jarvis/core/providers/ollama.py` (wired options extra_body and unload_model shedding hook)
+  - `jarvis/core/brain_openai.py` (wired pre-dispatch VRAM profile selection, extra_body options injection, Gemini failover, and routing telemetry)
+  - `jarvis/core/cognition/cognitive_router.py` (wired VramInferenceProfile into determine_hybrid_route)
+  - `tests/test_vram_aware_routing.py` (14 hermetic unit, cloud failover, extra_body options, and thread-safety tests)
   - `docs/agent/PROJECT_STATE.md`
   - `docs/agent/SESSION_LOG.md`
 
@@ -43,8 +44,14 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Track C: RTX 3050 4GB VRAM Arbiter & Pressure Shedding (Plan 043 Completed)`
+- **Active Milestone:** `Track D: Dynamic VRAM-Aware Local Model Routing (Plan 044 Completed)`
 - **Completed Work:**
+  - **Track D (Plan 044 COMPLETED & VERIFIED): Dynamic VRAM-Aware Local Model Routing & Adaptive Context/Offload Scaling:**
+    - **VRAM-Calibrated Inference Profile Governor (`jarvis/routing/vram_profile.py`):** Pre-dispatch governor querying `nvml_dxgi_vram_arbiter` to dynamically scale local LLM runtime parameters across 5 pressure tiers (`NOMINAL`: 8k ctx, -1 GPU; `ELEVATED`: 4k ctx, -1 GPU + Stage 1 shed; `CRITICAL`: 2k ctx, <=12 layers + Stage 2 shed or cloud failover; `OOM_GUARD`: 2k ctx, 0 GPU fail-closed barrier + cloud failover or CPU-only; `UNAVAILABLE`: safe CI/non-NVIDIA CPU defaults).
+    - **Ollama Provider Integration (`jarvis/core/providers/ollama.py`):** Extended `generate_turn` to accept and pass dynamic `options` via `extra_body={"options": options}` and connected `register_ollama_vram_shed_hook` during initialization so idle Ollama models are safely unloaded during Stage 2 memory shedding.
+    - **OpenAI Brain & Cognitive Router (`jarvis/core/brain_openai.py`, `jarvis/core/cognition/cognitive_router.py`):** Wired `resolve_vram_inference_profile` into `_process_openai_compatible_query`, redirecting to `_process_gemini_query` under cloud failover when Gemini is configured, injecting extra_body options, recording `last_routing_metadata`, and adding VRAM pressure awareness to `determine_hybrid_route`.
+    - **Hermetic Test Suite (`tests/test_vram_aware_routing.py`):** Authored 14 comprehensive unit tests covering all 5 pressure tiers, Stage 1/2 shedding execution, `extra_body` option injection, cloud provider failover, CPU fallback, Ollama unload hook, thread safety, and conversation turn stability.
+    - **Test Accounting & Classifier:** Expanded test manifest from 2,502 to 2,516 collected nodes (1,536 Tier 1 nodes) with 0 orphans, 0 duplicates, and 100% classification compliance.
   - **Track C (Plan 043 COMPLETED & VERIFIED): RTX 3050 4GB VRAM Arbiter, DXGI WDDM Budget Tracking & Pressure Shedding:**
     - **NVML & DXGI 1.4 VRAM Arbiter (`jarvis/skills/nvml_dxgi_vram_arbiter.py`):** Implemented COM-based DXGI 1.4 `IDXGIAdapter3::QueryVideoMemoryInfo` with adapter enumeration (`VendorId == 0x10de`), calibrated 4-tier pressure watermarks (`NOMINAL >= 1200 MiB`, `ELEVATED 700-1199 MiB`, `CRITICAL 350-699 MiB`, `OOM_GUARD < 350 MiB`), effective headroom calculation `min(DXGI_Budget - DXGI_Usage, NVML_Free)`, pre-flight admission `request_vram_budget`, and staged pressure shedding with thread-safe hook registry.
     - **Audio Subsystem Consumers (`jarvis/audio/stt.py`, `jarvis/audio/tts.py`):** Wired Faster-Whisper dynamic compute type adaptation (`float16` $\to$ `int8_float16` $\to$ `cpu`) via `request_vram_budget`, registered Kokoro session cache shedding hook (`_flush_kokoro_gpu_cache`), and gated Kokoro GPU provider admission.

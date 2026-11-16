@@ -35,6 +35,11 @@ class OllamaProvider(BaseProvider):
         self.base_url = base_url
         self.temperature = temperature
         self.client = OpenAI(base_url=self.base_url, api_key="ollama")
+        try:
+            from jarvis.routing.vram_profile import register_ollama_vram_shed_hook
+            register_ollama_vram_shed_hook(base_url=self.base_url, model=self.model)
+        except (ImportError, RuntimeError, OSError, AttributeError) as exc:
+            logger.debug("Could not register Ollama VRAM shedding hook: %s", exc)
 
     def generate_turn(
         self,
@@ -43,6 +48,7 @@ class OllamaProvider(BaseProvider):
         system_instruction: str | None = None,
         sentence_callback: Callable[[str], None] | None = None,
         timeout: float = 35.0,
+        options: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Executes a single generation turn against the local Ollama instance."""
         t_start = time.perf_counter()
@@ -64,14 +70,19 @@ class OllamaProvider(BaseProvider):
         chunker = StreamingSentenceChunker() if sentence_callback else None
 
         try:
-            stream = self.client.chat.completions.create(
-                model=self.model,
-                messages=formatted_messages,
-                tools=tools if tools else None,
-                temperature=self.temperature,
-                stream=True,
-                timeout=timeout,
-            )
+            extra_options = options or (self.config.get("options") if self.config else None)
+            create_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "messages": formatted_messages,
+                "tools": tools if tools else None,
+                "temperature": self.temperature,
+                "stream": True,
+                "timeout": timeout,
+            }
+            if extra_options:
+                create_kwargs["extra_body"] = {"options": extra_options}
+
+            stream = self.client.chat.completions.create(**create_kwargs)
 
             for chunk in stream:
                 if not chunk.choices:
