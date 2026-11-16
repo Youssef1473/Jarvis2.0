@@ -22,7 +22,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from jarvis.skills.base import SkillRegistry
 from jarvis.skills.job_object_sandbox import (
@@ -105,20 +105,20 @@ def atomic_rollback_file(snapshot_path: Path, target_path: Path, max_attempts: i
             try:
                 os.replace(stage_path, target_path)
                 return True
-            except PermissionError as pe:
+            except PermissionError:
                 if attempt == max_attempts - 1:
-                    raise pe
+                    raise
                 time.sleep(0.015 * (2 ** attempt))
         return False
-    except Exception as e:
+    except (OSError, RuntimeError) as e:
         logger.warning("atomic_rollback_file failed: %s", e)
         return False
     finally:
         if stage_path.exists():
             try:
                 stage_path.unlink()
-            except Exception:
-                pass
+            except (OSError, RuntimeError) as e:
+                logger.debug("Failed to unlink stage_path '%s': %s", stage_path, e)
 
 
 def _get_scrubbed_env(scratch_dir: Path | None = None) -> dict[str, str]:
@@ -168,7 +168,7 @@ def get_or_create_evolution_hmac_key() -> bytes:
                 _, key = win32crypt.CryptUnprotectData(raw_blob, None, None, None, 0)
                 return bytes(key)
             return raw_blob
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.warning("Failed to decrypt evolution HMAC key: %s; regenerating", e)
 
     new_key = secrets.token_bytes(32)
@@ -239,7 +239,7 @@ def verify_custom_skill_signature(
     try:
         expected = sign_custom_skill(skill_name, code_hash, tools_meta, risk_level, external_ingestion)
         return hmac.compare_digest(expected.lower(), signature.lower())
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError) as e:
         logger.warning("Custom skill HMAC verification failed: %s", e)
         return False
 
@@ -305,7 +305,7 @@ class SkillSandbox:
     install_canary_c_audit_hook = staticmethod(install_canary_c_audit_hook)
     atomic_rollback_file = staticmethod(atomic_rollback_file)
 
-    BLOCKED_CALLS: set[str] = {
+    BLOCKED_CALLS: ClassVar[set[str]] = {
         "os.system",
         "os.popen",
         "os.spawn",
@@ -341,7 +341,7 @@ class SkillSandbox:
         "pathlib.Path.mkdir",
     }
 
-    BLOCKED_DESTRUCTIVE_METHODS: set[str] = {
+    BLOCKED_DESTRUCTIVE_METHODS: ClassVar[set[str]] = {
         "unlink",
         "rmdir",
         "remove",
@@ -354,7 +354,7 @@ class SkillSandbox:
         "truncate",
     }
 
-    BLOCKED_REFLECTION_CALLS: set[str] = {
+    BLOCKED_REFLECTION_CALLS: ClassVar[set[str]] = {
         "getattr",
         "setattr",
         "delattr",
@@ -363,7 +363,7 @@ class SkillSandbox:
         "vars",
     }
 
-    BLOCKED_ATTRIBUTES: set[str] = {
+    BLOCKED_ATTRIBUTES: ClassVar[set[str]] = {
         "__subclasses__",
         "__globals__",
         "__mro__",
@@ -393,7 +393,7 @@ class SkillSandbox:
         "tb_next",
     }
 
-    BLOCKED_MODULES: set[str] = {
+    BLOCKED_MODULES: ClassVar[set[str]] = {
         "builtins",
         "ctypes",
         "importlib",
@@ -474,13 +474,20 @@ class SkillSandbox:
 
                 if call_name == "open":
                     for arg in node.args[1:]:
-                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                            if any(m in arg.value for m in ("w", "a", "+", "x")):
-                                return False, f"Security Violation: File write operations are prohibited (attempted mode '{arg.value}' in open())."
+                        if (
+                            isinstance(arg, ast.Constant)
+                            and isinstance(arg.value, str)
+                            and any(m in arg.value for m in ("w", "a", "+", "x"))
+                        ):
+                            return False, f"Security Violation: File write operations are prohibited (attempted mode '{arg.value}' in open())."
                     for kw in node.keywords:
-                        if kw.arg == "mode" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
-                            if any(m in kw.value.value for m in ("w", "a", "+", "x")):
-                                return False, f"Security Violation: File write operations are prohibited (attempted mode '{kw.value.value}' in open())."
+                        if (
+                            kw.arg == "mode"
+                            and isinstance(kw.value, ast.Constant)
+                            and isinstance(kw.value.value, str)
+                            and any(m in kw.value.value for m in ("w", "a", "+", "x"))
+                        ):
+                            return False, f"Security Violation: File write operations are prohibited (attempted mode '{kw.value.value}' in open())."
 
             # 4. Operational Invariant: Infinite While Loop Detection
             elif isinstance(node, ast.While):
@@ -494,9 +501,12 @@ class SkillSandbox:
             # 5. Operational Invariant: Massive Literal Memory Allocation
             elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
                 for operand in (node.left, node.right):
-                    if isinstance(operand, ast.Constant) and isinstance(operand.value, (int, float)):
-                        if operand.value > 50_000_000:
-                            return False, f"Operational Guardrail Violation: Massive allocation multiplier ({int(operand.value):,}) detected."
+                    if (
+                        isinstance(operand, ast.Constant)
+                        and isinstance(operand.value, (int, float))
+                        and operand.value > 50_000_000
+                    ):
+                        return False, f"Operational Guardrail Violation: Massive allocation multiplier ({int(operand.value):,}) detected."
 
             # 6. Reflection & Dangerous Function Aliasing Inspection
             elif isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -532,7 +542,7 @@ class SkillSandbox:
                 shutil.copy2(meta_file, SNAPSHOTS_DIR / f"{clean_name}_{timestamp}.meta.json")
             logger.info("Created snapshot for '%s' at '%s'", clean_name, snapshot_file.name)
             return snapshot_file
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.warning("Failed to create snapshot for '%s': %s", clean_name, e)
             return None
 
@@ -565,25 +575,25 @@ class SkillSandbox:
                                 default_timeout_ms=15000,
                                 origin="custom",
                             )(proxy_fn)
-                    except Exception as meta_err:
+                    except (OSError, json.JSONDecodeError, KeyError, ValueError, RuntimeError) as meta_err:
                         logger.warning("Failed to restore proxies on snapshot rollback: %s", meta_err)
 
                 logger.info("Rolled back '%s' to snapshot '%s'", clean_name, snapshot_path.name)
                 return True
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.error("Failed to restore snapshot for '%s': %s", clean_name, e)
                 return False
         else:
             if target_file.exists():
                 try:
                     target_file.unlink()
-                except Exception:
-                    pass
+                except (OSError, RuntimeError) as e:
+                    logger.debug("Failed to unlink target_file on rollback: %s", e)
             if target_meta.exists():
                 try:
                     target_meta.unlink()
-                except Exception:
-                    pass
+                except (OSError, RuntimeError) as e:
+                    logger.debug("Failed to unlink target_meta on rollback: %s", e)
             return True
 
     @classmethod
@@ -911,7 +921,7 @@ except Exception as e:
         try:
             with open(scratch_file, "w", encoding="utf-8") as f:
                 f.write(code)
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             return SandboxResult(success=False, skill_name=clean_name, message=f"Failed to write scratchpad: {e}")
 
         runner_script = cls.generate_canary_script(clean_name, scratch_file)
@@ -970,11 +980,11 @@ except Exception as e:
                     try:
                         raw_meta = stdout.split("CANARY_METADATA_START")[1].split("CANARY_METADATA_END")[0].strip()
                         meta_dict = json.loads(raw_meta)
-                    except Exception as e:
+                    except (json.JSONDecodeError, IndexError, ValueError) as e:
                         logger.warning("Failed to parse canary metadata: %s", e)
 
                 # Enforce symmetrical name collision guard on every tool in meta_dict
-                for t_name in meta_dict.keys():
+                for t_name in meta_dict:
                     existing_meta = SkillRegistry.get_metadata(t_name)
                     if existing_meta and getattr(existing_meta, "origin", "builtin") == "builtin":
                         cls._cleanup_scratch(scratch_file)
@@ -983,7 +993,7 @@ except Exception as e:
                         cls._record_failure_lesson(clean_name, code, msg, memory_manager)
                         return SandboxResult(success=False, skill_name=clean_name, message=msg)
 
-        except Exception as e:
+        except (subprocess.SubprocessError, OSError, RuntimeError, ValueError, AttributeError) as e:
             cls._cleanup_scratch(scratch_file)
             cls.rollback_snapshot(clean_name, snapshot_path)
             err_msg = str(e)
@@ -1034,7 +1044,7 @@ except Exception as e:
             with open(sidecar_path, "w", encoding="utf-8") as f:
                 json.dump(sidecar_payload, f, indent=2)
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError, TypeError) as e:
             cls._cleanup_scratch(scratch_file)
             cls.rollback_snapshot(clean_name, snapshot_path)
             msg = f"Promotion failed: {e}"
@@ -1065,7 +1075,7 @@ except Exception as e:
                 message=f"Successfully engineered and hot-reloaded capability '{clean_name}', Sir! Validated via isolated subprocess sandbox and active in your current session.",
                 target_path=target_file,
             )
-        except Exception as host_err:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError) as host_err:
             cls.rollback_snapshot(clean_name, snapshot_path)
             msg = f"Host proxy registration error: {host_err}"
             cls._record_failure_lesson(clean_name, code, msg, memory_manager)
@@ -1097,7 +1107,7 @@ except Exception as e:
             try:
                 with open(meta_file, encoding="utf-8") as f:
                     meta_data = json.load(f)
-            except Exception as e:
+            except (OSError, json.JSONDecodeError, ValueError) as e:
                 return f"Error reading skill sidecar: {e}"
 
             code_bytes = target_file.read_bytes()
@@ -1223,7 +1233,7 @@ except Exception as e:
                     else:
                         return f"Error executing tool '{tool_name}': {res_data.get('error', 'Unknown error')}"
 
-                except Exception as run_exc:
+                except (subprocess.SubprocessError, OSError, RuntimeError, ValueError, AttributeError) as run_exc:
                     return f"Error: Sandboxed execution failed: {run_exc}"
 
             finally:
@@ -1252,7 +1262,8 @@ except Exception as e:
                     from jarvis.core.memory import MemoryManager
                     cfg = load_config()
                     mem = MemoryManager(cfg)
-                except Exception:
+                except (ImportError, OSError, RuntimeError, ValueError, AttributeError) as mem_err:
+                    logger.debug("Failed to load MemoryManager for lesson: %s", mem_err)
                     mem = None
 
             if mem is None or not hasattr(mem, "record_episodic_lesson"):
@@ -1280,7 +1291,7 @@ except Exception as e:
             )
             logger.info("Recorded episodic failure lesson #%s for skill '%s'", lesson_id, skill_name)
             return lesson_id
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError, AttributeError) as e:
             logger.debug("Failed to record episodic lesson: %s", e)
             return None
 
@@ -1290,5 +1301,5 @@ except Exception as e:
         try:
             if path.exists():
                 path.unlink()
-        except Exception:
-            pass
+        except (OSError, RuntimeError) as e:
+            logger.debug("Failed to cleanup scratch path '%s': %s", path, e)
