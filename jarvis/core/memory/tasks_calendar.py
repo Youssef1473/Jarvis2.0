@@ -107,16 +107,15 @@ class TasksCalendarMixin:
     def cancel_calendar_event(self, event_id: Any = None, title: str | None = None) -> str:
         """Marks a calendar event as cancelled by numerical ID or by matching title."""
         # Normalize arguments if event_id is passed as title string or digits
-        if event_id is not None:
-            if isinstance(event_id, str):
-                s_id = event_id.strip()
-                if s_id.isdigit():
-                    event_id = int(s_id)
-                elif not title:
-                    title = s_id
-                    event_id = None
-                else:
-                    event_id = None
+        if event_id is not None and isinstance(event_id, str):
+            s_id = event_id.strip()
+            if s_id.isdigit():
+                event_id = int(s_id)
+            elif not title:
+                title = s_id
+                event_id = None
+            else:
+                event_id = None
 
         def _write(conn: sqlite3.Connection) -> str:
             cursor = conn.cursor()

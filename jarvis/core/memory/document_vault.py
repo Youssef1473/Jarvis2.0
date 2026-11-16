@@ -155,7 +155,7 @@ class DocumentVaultMixin:
             embed_text = f"{clean_title} {clean_cat} {clean_summary} {raw_snippet}"
             vec = self.vector_engine.dense_vectorize(embed_text)
             blob = sqlite_vec.serialize_float32(vec)
-        except Exception as e:
+        except (ImportError, RuntimeError, ValueError, TypeError) as e:
             logger.warning("sqlite-vec document vectorization failed (%s); continuing without vector index.", e)
 
         # Step 2: Route SQLite write strictly through SingleWriterActor
@@ -195,7 +195,7 @@ class DocumentVaultMixin:
                 try:
                     cursor.execute("DELETE FROM documents_vec WHERE doc_id = ?", (doc_id,))
                     cursor.execute("INSERT INTO documents_vec(doc_id, embedding) VALUES (?, ?)", (doc_id, blob))
-                except Exception as e:
+                except (sqlite3.Error, RuntimeError, ValueError) as e:
                     logger.warning("sqlite-vec document indexing failed (%s); continuing without vector index.", e)
 
             return doc_id
@@ -325,24 +325,25 @@ class DocumentVaultMixin:
                 if knn_rows:
                     results = []
                     for row in knn_rows:
-                        dist = float(row["distance"])
+                        r_dict = dict(row)
+                        dist = float(r_dict["distance"])
                         sim = max(0.0, 1.0 - (dist / 2.0))
                         if sim >= min_score:
                             results.append({
-                                "id": row["id"],
-                                "title": row["title"],
-                                "category": row["category"],
-                                "summary": row["summary"],
-                                "file_path": row["file_path"],
-                                "source_provenance": row["source_provenance"] if "source_provenance" in row.keys() else "unknown",
-                                "created_at": row["created_at"],
+                                "id": r_dict["id"],
+                                "title": r_dict["title"],
+                                "category": r_dict["category"],
+                                "summary": r_dict["summary"],
+                                "file_path": r_dict["file_path"],
+                                "source_provenance": r_dict.get("source_provenance", "unknown"),
+                                "created_at": r_dict["created_at"],
                                 "relevance_score": round(sim, 3),
                                 "distance": round(dist, 4),
                             })
                     if results:
                         results.sort(key=lambda x: x["relevance_score"], reverse=True)
                         return results[:top_k]
-        except Exception as e:
+        except (sqlite3.Error, RuntimeError, ValueError) as e:
             logger.warning("sqlite-vec documents KNN search failed (%s); falling back to lexical TF-IDF/BM25.", e)
 
         # In-Memory TF-IDF Fallback
@@ -426,7 +427,7 @@ class DocumentVaultMixin:
                 rows = await pool.execute_read_async(_fts_query)
                 if rows:
                     return rows
-            except Exception as e:
+            except (sqlite3.Error, RuntimeError, ValueError) as e:
                 logger.debug("Async FTS5 documents search fallback: %s", e)
 
         q = f"%{query.lower().strip()}%"
@@ -476,7 +477,7 @@ class DocumentVaultMixin:
                             "category": row["category"],
                             "summary": row["summary"],
                             "file_path": row["file_path"],
-                            "source_provenance": row["source_provenance"] if "source_provenance" in row.keys() else "unknown",
+                            "source_provenance": row.get("source_provenance", "unknown"),
                             "created_at": row["created_at"],
                             "relevance_score": round(sim, 3),
                             "distance": round(dist, 4),
@@ -484,7 +485,7 @@ class DocumentVaultMixin:
                 if results:
                     results.sort(key=lambda x: x["relevance_score"], reverse=True)
                     return results[:top_k]
-        except Exception as e:
+        except (sqlite3.Error, RuntimeError, ValueError) as e:
             logger.warning("Async sqlite-vec documents KNN search failed (%s); falling back to lexical TF-IDF/BM25.", e)
 
         return await asyncio.to_thread(self.semantic_search_documents, query, top_k, min_score)

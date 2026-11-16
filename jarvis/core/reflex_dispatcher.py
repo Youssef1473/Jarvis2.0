@@ -57,7 +57,7 @@ class ReflexDispatcher:
         if re.search(r"^(?:run\s+)?(?:jarvis doctor|doctor|troubleshoot yourself|troubleshoot system|run system health check|system health check|health check|check your systems|diagnose system|troubleshoot jarvis|system health)$", clean):
             return False
 
-        if (
+        return bool(
             any(clean.startswith(w) for w in (
                 "how ", "why ", "what is ", "what are ", "who is ", "can you explain", "explain ",
                 "when ", "if ", "whenever ", "while ", "after ", "before ", "as soon as ",
@@ -72,9 +72,7 @@ class ReflexDispatcher:
                 "create command", "create a command", "add command", "add a command",
                 "teach yourself", "create tool", "create a tool", "add tool", "add a tool",
             ))
-        ):
-            return True
-        return False
+        )
 
     def is_fast_reflex(self, norm_text: str) -> bool:
         """Determines if a query matches a fast reflex command without executing any tools."""
@@ -94,11 +92,6 @@ class ReflexDispatcher:
         def _exec(skill_name: str, **kwargs):
             if dry_run:
                 return True
-            if skill_name in ("jarvis_doctor", "run_system_troubleshooting", "profile_runtime", "audit_memory_heap"):
-                try:
-                    pass
-                except Exception:
-                    pass
             if execute_fn:
                 return execute_fn(skill_name, **kwargs)
             return SkillRegistry.execute(skill_name, **kwargs)
@@ -133,7 +126,7 @@ class ReflexDispatcher:
                         self.reflex_engine.record_hit(habit["id"], refl_ms)
                         logger.info(f"Learned compound habit ({len(fn_args)} steps) executed in {refl_ms:.2f}ms")
                         return results[-1] if results else "Done, Sir."
-                    except Exception as e:
+                    except (RuntimeError, ValueError, TypeError, KeyError, OSError) as e:
                         logger.warning(f"Error executing compound habit: {e}")
                 else:
                     try:
@@ -144,7 +137,7 @@ class ReflexDispatcher:
                         if isinstance(res, dict) and "summary" in res:
                             return res["summary"]
                         return str(res)
-                    except Exception as e:
+                    except (RuntimeError, ValueError, TypeError, KeyError, OSError) as e:
                         logger.warning(f"Error executing habit: {e}")
 
         # Habit Learning Audit & Verification

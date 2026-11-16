@@ -119,14 +119,14 @@ class MotorCadenceTracker:
             if self._hook:
                 try:
                     ctypes.windll.user32.UnhookWindowsHookEx(self._hook)
-                except Exception as e:
+                except (OSError, RuntimeError, AttributeError) as e:
                     logger.debug("UnhookWindowsHookEx error: %s", e)
                 self._hook = None
 
             if self._thread_id:
                 try:
                     ctypes.windll.user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
-                except Exception as e:
+                except (OSError, RuntimeError, AttributeError) as e:
                     logger.debug("PostThreadMessageW WM_QUIT error: %s", e)
                 self._thread_id = None
 
@@ -207,8 +207,8 @@ class MotorCadenceTracker:
                             if vk not in self._held_keys:
                                 self._held_keys.add(vk)
                                 self._events.append((now, False))
-            except Exception:
-                pass
+            except (KeyError, ValueError, TypeError, AttributeError) as e:
+                logger.debug("Hook key processing notice: %s", e)
 
         return user32.CallNextHookEx(None, n_code, w_param, l_param)
 
