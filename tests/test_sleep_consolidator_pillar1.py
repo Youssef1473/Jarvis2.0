@@ -2,20 +2,14 @@
 import json
 import os
 import sqlite3
-import sys
 import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from jarvis.core.memory.sleep_consolidator import (
     SleepPhaseConsolidator,
     check_hardware_and_idle_gates,
-    check_power_gate,
-    get_win32_idle_seconds,
-    pin_worker_to_ecores,
-    FORBIDDEN_REFLEX_TOOLS,
 )
 
 
@@ -62,7 +56,7 @@ class TestSleepConsolidatorPillar1(unittest.TestCase):
     def tearDown(self):
         try:
             self.conn.close()
-        except Exception:
+        except (sqlite3.Error, OSError):
             pass
         self.temp_dir.cleanup()
 
@@ -183,11 +177,13 @@ class TestSleepConsolidatorPillar1(unittest.TestCase):
 
     def test_hardware_and_idle_gates(self):
         """Hardware gates must evaluate idle state and power levels."""
-        with patch("jarvis.core.memory.sleep_consolidator.get_win32_idle_seconds", return_value=350.0):
-            with patch("jarvis.core.memory.sleep_consolidator.check_power_gate", return_value=(True, "AC ok")):
-                with patch("jarvis.core.memory.sleep_consolidator.check_vram_gate", return_value=(True, "VRAM ok")):
-                    ok, msg = check_hardware_and_idle_gates(idle_threshold_sec=300.0)
-                    self.assertTrue(ok)
+        with (
+            patch("jarvis.core.memory.sleep_consolidator.get_win32_idle_seconds", return_value=350.0),
+            patch("jarvis.core.memory.sleep_consolidator.check_power_gate", return_value=(True, "AC ok")),
+            patch("jarvis.core.memory.sleep_consolidator.check_vram_gate", return_value=(True, "VRAM ok")),
+        ):
+            ok, msg = check_hardware_and_idle_gates(idle_threshold_sec=300.0)
+            self.assertTrue(ok)
 
         # Gate failure when workstation is not idle
         with patch("jarvis.core.memory.sleep_consolidator.get_win32_idle_seconds", return_value=50.0):

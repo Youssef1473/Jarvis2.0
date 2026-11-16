@@ -1,5 +1,4 @@
 """Automated tests for sqlite-vec native C SIMD vector indexing in MemoryManager."""
-import os
 import sys
 import tempfile
 import time
@@ -9,8 +8,8 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+
 from jarvis.core.memory import MemoryManager, VectorMemoryEngine
-import sqlite_vec
 
 
 class TestSqliteVecMemorySuite(unittest.TestCase):

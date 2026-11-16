@@ -1,5 +1,5 @@
 """Unit tests for Zero-Contention SQLite WAL Sleep-Phase Memory Consolidation."""
-import os
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.core.memory import MemoryManager, VectorMemoryEngine, SleepPhaseConsolidator
 from jarvis.core.heartbeat import JarvisHeartbeat
+from jarvis.core.memory import MemoryManager, SleepPhaseConsolidator
 
 
 class TestSleepConsolidationWALSuite(unittest.TestCase):
@@ -30,7 +30,7 @@ class TestSleepConsolidationWALSuite(unittest.TestCase):
     def tearDown(self):
         try:
             self.memory.close()
-        except Exception:
+        except (sqlite3.Error, OSError):
             pass
         import gc
         gc.collect()
@@ -49,7 +49,7 @@ class TestSleepConsolidationWALSuite(unittest.TestCase):
         redundant_pairs = consolidator.discover_redundant_facts_readonly()
 
         self.assertGreater(len(redundant_pairs), 0, "Should detect near-duplicate espresso fact")
-        keep, stale, dist = redundant_pairs[0]
+        keep, stale, _dist = redundant_pairs[0]
         self.assertEqual(keep["category"], "preference")
         self.assertIn("espresso", stale["value"].lower())
 
@@ -101,7 +101,7 @@ class TestSleepConsolidationWALSuite(unittest.TestCase):
                 for j in range(10):
                     self.memory.remember_fact(f"fast_fact_{j}", f"fast value {j}", "fast")
                     time.sleep(0.002)
-            except Exception as e:
+            except (sqlite3.Error, OSError, RuntimeError) as e:
                 errors.append(e)
 
         writer_thread = threading.Thread(target=background_fast_path_writer)

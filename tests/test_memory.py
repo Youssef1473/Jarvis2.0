@@ -1,9 +1,11 @@
 """Tests for SQLite memory manager."""
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import os
+
 from jarvis.core.config_loader import load_config
 from jarvis.core.memory import MemoryManager
 
@@ -38,7 +40,7 @@ def test_memory_operations():
     if test_db.exists():
         try:
             os.remove(test_db)
-        except Exception:
+        except OSError:
             pass
 
 

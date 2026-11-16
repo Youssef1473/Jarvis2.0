@@ -1,10 +1,9 @@
 """Unit tests for Phase 4: WinHook SPSC Ring, Habit Distillation & Resumption Bookmarks."""
-import time
 import unittest
 
 from jarvis.context.flow_state_mirror import VisualPrivacyGuard
 from jarvis.conversation.bookmarks import ReasoningBookmarkStack
-from jarvis.desktop.uia_delta_worker import UIADeltaWorker, TOTAL_SHM_SIZE, RING_CAPACITY
+from jarvis.desktop.uia_delta_worker import TOTAL_SHM_SIZE, UIADeltaWorker
 from jarvis.memory.habit_distiller import AutonomousHabitDistiller
 
 
@@ -68,8 +67,8 @@ class TestPhase4WinHookAndHabits(unittest.TestCase):
         triplet = ("git_pull", "pip_install", "run_pytest")
 
         # Repetition 1
-        p1 = self.distiller.record_action(triplet[0])
-        p2 = self.distiller.record_action(triplet[1])
+        self.distiller.record_action(triplet[0])
+        self.distiller.record_action(triplet[1])
         p3 = self.distiller.record_action(triplet[2])
         self.assertIsNone(p3)
 
