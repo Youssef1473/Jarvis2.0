@@ -4346,3 +4346,49 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Live E2E Smoke Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing in 1.41s–1.45s (Exit code: 0).
    - **Phase 2 Security Regression Suite:** 223 passed, 0 failed, 1 skipped in 83.30s (Exit code: 0).
    - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
+
+---
+
+## Session Log: 2026-11-16 — /improve Modernization Queue — Batch 6 (Plans 025–029) & Baseline Closure
+
+- **Session Timestamp:** 2026-11-16T09:10:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `seal/batch-6-governance-closure` (branched from `main` @ `a3016ad`)
+- **Starting Git HEAD SHA:** `b125988804bf4c24055645f9204ecc6381e7278d` (`b125988`)
+- **Ending Git HEAD SHA:** `a3016ad2771d34750665d7b83ad3fc26638f3f21` (`a3016ad`)
+- **Landed Pull Requests:**
+  - **PR #43:** `docs(governance): seal Batch 5 Plans 020-024 closure and post-PR #42 main baseline (#43)` (Merged, commit `d5a9300`)
+  - **PR #44:** `fix(core): harden evolution sandbox containment and AST call analysis (#44)` (Merged, commit `49d9392`, containing `5bd01ef`)
+  - **PR #45:** `fix(core): harden MCP manager, task manager, and OpenAI brain error transparency (#45)` (Merged, commit `1e9428b`, containing `fbe3a56` and `e9ceb27`)
+  - **PR #46:** `fix(core): harden Antigravity bridge IPC, mutex, and process lease error handling (#46)` (Merged, commit `5f53b2f`, containing `f8f8218`)
+  - **PR #47:** `fix(skills): harden error reporting across email, document, and photo manager skills (#47)` (Merged, commit `a3016ad`, containing `b41c2c1` and `3ca5dbe`)
+- **Active Milestone:** `Batch 6 Governance Seal & Roadmap Closure (Plans 001-029 Closed)`
+
+### Summary of Actions & Deliverables
+1. **Plan 025 — Evolution Sandbox Containment Hardening (PR #44, `5bd01ef`):**
+   - Eliminated all 33 Ruff diagnostics in `jarvis/core/evolution/sandbox.py`.
+   - Added `typing.ClassVar` annotations for blocked AST call sets (`RUF012`), resolved `TRY201` bare re-raise syntax, and typed AppContainer/Job Object containment and canary validation exception tuples.
+2. **Plan 026 — MCP Manager Lifecycle Hardening (PR #45, `fbe3a56`):**
+   - Eliminated all 22 Ruff diagnostics in `jarvis/core/mcp_manager.py`.
+   - Merged tuple-based string prefix checks (`PIE810`) and replaced blind exception catches with typed stdio/SSE process lifecycle, Win32 Job Object, and JSON-RPC transport exceptions.
+3. **Plan 027 — Task Manager & OpenAI Brain Error Transparency (PR #45, `e9ceb27`):**
+   - Eliminated all 38 Ruff diagnostics across `jarvis/core/task_manager.py` (19) and `jarvis/core/brain_openai.py` (19).
+   - Replaced silent exception swallows with typed background worker Job Object termination, multi-provider LLM initializations, and streaming JSON delta parsing error handling.
+4. **Plan 028 — Antigravity Bridge IPC Hardening (PR #46, `f8f8218`):**
+   - Eliminated all 89 Ruff diagnostics in `jarvis/core/antigravity_bridge.py`.
+   - Optimized dict keys iteration (`PERF102`), simplified integer casts (`RUF046`), and replaced blind exception catches with typed Win32 named mutex, process lease registry, and streaming JSON IPC exception handling.
+5. **Plan 029 — Data and Media Skills Typed Error Reporting (PR #47, `b41c2c1`, `3ca5dbe`):**
+   - Eliminated all 37 Ruff diagnostics across `jarvis/skills/email_manager.py` (16), `jarvis/skills/document_ingest.py` (11), and `jarvis/skills/photo_manager.py` (10).
+   - Replaced silent swallows with typed exception handling across IMAP, SMTP, PDF visitor extraction, and SQLite photo storage; protected document extraction and visual analysis against escaping external API client exceptions (`openai.APIConnectionError`, `google.genai.errors.APIError`).
+6. **Total Diagnostics Elimination & Roadmap Alignment:**
+   - Eliminated **219 Ruff diagnostics** across Batch 6, reducing repository-wide findings from `334` down to `~115`.
+   - Updated local `plans/README.md` marking all 29 implementation plans (`001`–`029`) across Batches 1–6 as `VERIFIED DONE` with 0 open `TODO` or `BLOCKED` items.
+7. **Full-Tree Verification Gates & Accounting Invariant:**
+   - **Static Linter (`tools/lint.py`):** 0 Ruff diagnostics across all modernized modules.
+   - **Structural Invariants (`tools/diagnostics.py`):** 0 AST-Grep invariant violations.
+   - **Test Accounting Invariant:** `tests/test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed with 100% accounting (2,472 collected nodes accounted for, 0 drift).
+   - **Live E2E Smoke Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing (Exit code: 0).
+   - **Tier 1 Fast Test Suite:** 1,491 passed, 0 failed, 11 skipped (Exit code: 0).
+   - **Phase 2 Security Regression Suite:** 223 passed, 0 failed, 1 skipped (Exit code: 0).
+   - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
