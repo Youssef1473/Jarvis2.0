@@ -2,30 +2,35 @@
 import json
 import os
 import sys
+import time
 import unittest
+from pathlib import Path
 from unittest import mock
 from unittest.mock import MagicMock
-import time
-from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
-from jarvis.audio.dsp_tap import compute_68byte_dsp_frame, AudioDspTap, MAGIC_HEADER_BYTE
+from jarvis.audio.dsp_tap import (
+    MAGIC_HEADER_BYTE,
+    compute_68byte_dsp_frame,
+)
 from jarvis.ui.server import (
     JarvisUIService,
-    get_hud_session_token,
-    set_hud_session_token,
     create_bootstrap_token,
-    consume_bootstrap_token,
-    resolve_safe_photo_path,
     generate_csp_nonce,
+    get_hud_session_token,
     render_template_with_nonce,
+    resolve_safe_photo_path,
 )
-from jarvis.ui.win32_overlay import configure_stark_overlay_hwnd, update_dynamic_click_through
+from jarvis.ui.win32_overlay import (
+    configure_stark_overlay_hwnd,
+    update_dynamic_click_through,
+)
 
 
 class TestHudSecurityAndDsp(unittest.TestCase):
@@ -670,9 +675,11 @@ class TestHudSecurityAndDsp(unittest.TestCase):
         service = JarvisUIService(enforce_auth=True)
         client = TestClient(service._create_app())
 
-        with self.assertRaises(Exception):
-            with client.websocket_connect("/ws") as ws:
-                pass
+        with (
+            self.assertRaises(WebSocketDisconnect),
+            client.websocket_connect("/ws"),
+        ):
+            pass
 
         # Connecting with valid cookie succeeds
         valid_token = get_hud_session_token()
@@ -708,9 +715,11 @@ class TestHudSecurityAndDsp(unittest.TestCase):
         valid_token = get_hud_session_token()
         client.cookies.set("jarvis_session", valid_token)
 
-        with self.assertRaises(Exception):
-            with client.websocket_connect("/ws", headers={"Host": "attacker.com"}) as ws:
-                pass
+        with (
+            self.assertRaises(WebSocketDisconnect),
+            client.websocket_connect("/ws", headers={"Host": "attacker.com"}),
+        ):
+            pass
 
     def test_websocket_rejects_bootstrap_query_token(self):
         """Verifies WebSocket rejects bootstrap tokens in query parameters (only session credentials allowed)."""
@@ -718,9 +727,11 @@ class TestHudSecurityAndDsp(unittest.TestCase):
         client = TestClient(service._create_app())
         b_token = create_bootstrap_token(ttl_seconds=60.0)
 
-        with self.assertRaises(Exception):
-            with client.websocket_connect(f"/ws?bootstrap={b_token}") as ws:
-                pass
+        with (
+            self.assertRaises(WebSocketDisconnect),
+            client.websocket_connect(f"/ws?bootstrap={b_token}"),
+        ):
+            pass
 
     def test_unlock_html_contains_client_side_fragment_scrubber(self):
         """Verifies _get_unlock_html contains client-side fragment extractor and history scrubber."""
@@ -849,24 +860,32 @@ class TestHudSecurityAndDsp(unittest.TestCase):
         client.cookies.set("jarvis_session", valid_token)
 
         # Forged origin -> fails
-        with self.assertRaises(Exception):
-            with client.websocket_connect("/ws", headers={"Origin": "http://attacker.com:20129"}) as ws:
-                pass
+        with (
+            self.assertRaises(WebSocketDisconnect),
+            client.websocket_connect("/ws", headers={"Origin": "http://attacker.com:20129"}),
+        ):
+            pass
 
         # Wrong port origin -> fails
-        with self.assertRaises(Exception):
-            with client.websocket_connect("/ws", headers={"Origin": "http://127.0.0.1:9999"}) as ws:
-                pass
+        with (
+            self.assertRaises(WebSocketDisconnect),
+            client.websocket_connect("/ws", headers={"Origin": "http://127.0.0.1:9999"}),
+        ):
+            pass
 
         # Wrong scheme origin -> fails
-        with self.assertRaises(Exception):
-            with client.websocket_connect("/ws", headers={"Origin": "https://127.0.0.1:20129"}) as ws:
-                pass
+        with (
+            self.assertRaises(WebSocketDisconnect),
+            client.websocket_connect("/ws", headers={"Origin": "https://127.0.0.1:20129"}),
+        ):
+            pass
 
         # Malformed origin -> fails
-        with self.assertRaises(Exception):
-            with client.websocket_connect("/ws", headers={"Origin": "null"}) as ws:
-                pass
+        with (
+            self.assertRaises(WebSocketDisconnect),
+            client.websocket_connect("/ws", headers={"Origin": "null"}),
+        ):
+            pass
 
         # Valid origin -> connects successfully and receives telemetry
         with client.websocket_connect("/ws", headers={"Origin": "http://127.0.0.1:20129"}) as ws:
@@ -947,8 +966,8 @@ class TestHudSecurityAndDsp(unittest.TestCase):
         """Verifies synthetic tokens in rejected requests are absent from captured Uvicorn access logs."""
         import io
         import logging
-        import urllib.request
         import secrets
+        import urllib.request
 
         test_port = 20177
         service = JarvisUIService(host="127.0.0.1", port=test_port, enforce_auth=True, access_log=True)
@@ -1115,8 +1134,8 @@ class TestHudSecurityAndDsp(unittest.TestCase):
 
     def test_hud_template_contains_zero_inline_event_handlers(self):
         """Verifies Phase 3 CSP requirement: zero inline DOM event handlers in HUD template."""
-        from pathlib import Path
         import re
+        from pathlib import Path
 
         template_path = Path(__file__).resolve().parent.parent / "jarvis" / "ui" / "templates" / "hud.html"
         self.assertTrue(template_path.exists(), f"HUD template missing at {template_path}")
@@ -1138,8 +1157,8 @@ class TestHudSecurityAndDsp(unittest.TestCase):
 
     def test_hud_event_architecture_and_attribute_escaping(self):
         """Verifies idempotence, nested propagation isolation, and HTML attribute context escaping."""
-        from pathlib import Path
         import subprocess
+        from pathlib import Path
 
         template_path = Path(__file__).resolve().parent.parent / "jarvis" / "ui" / "templates" / "hud.html"
         template_text = template_path.read_text(encoding="utf-8")
@@ -1185,6 +1204,7 @@ class TestHudSecurityAndDsp(unittest.TestCase):
         if node_bin:
             node_proc = subprocess.run(
                 [node_bin, "--check"],
+                check=False,
                 input=js_code,
                 text=True,
                 encoding="utf-8",
@@ -1396,7 +1416,7 @@ class TestHudSecurityAndDsp(unittest.TestCase):
             self.assertIn("style-src-attr 'unsafe-inline'", policy)
             # Level 2 fallback: style-src must include 'unsafe-inline' and NOT include 'nonce-'
             # to prevent Level 2 browsers from blocking HUD inline style="..." attributes
-            style_src_part = [part.strip() for part in policy.split(";") if part.strip().startswith("style-src ")][0]
+            style_src_part = next(part.strip() for part in policy.split(";") if part.strip().startswith("style-src "))
             self.assertIn("'unsafe-inline'", style_src_part)
             self.assertNotIn("'nonce-", style_src_part, "style-src fallback must not have nonce to protect style attributes")
 

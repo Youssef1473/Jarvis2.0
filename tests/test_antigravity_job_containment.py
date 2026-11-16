@@ -398,7 +398,7 @@ class TestAntigravityLifecycleAndLockCorrections(unittest.TestCase):
     def tearDown(self):
         try:
             self.daemon.stop()
-        except Exception:
+        except (OSError, RuntimeError, ProcessLookupError):
             pass
         self.tmp_dir.cleanup()
 
@@ -576,13 +576,13 @@ class TestAntigravityLifecycleAndLockCorrections(unittest.TestCase):
             def run_start():
                 try:
                     self.daemon.start("gemini-3.8-flash-low")
-                except Exception as e:
+                except (RuntimeError, OSError, ValueError) as e:
                     errors.append(f"start_error: {e}")
 
             def run_stop():
                 try:
                     self.daemon.stop()
-                except Exception as e:
+                except (RuntimeError, OSError, ValueError) as e:
                     errors.append(f"stop_error: {e}")
 
             threads = [
@@ -824,7 +824,7 @@ class TestAntigravityMultiLeaseRegistry(unittest.TestCase):
                         break
                     try:
                         self.daemon_a._register_lease(pid, model)
-                    except Exception as e:
+                    except (OSError, RuntimeError, ValueError) as e:
                         errors.append(f"register_error: {e}")
                     time.sleep(0.005)
 
@@ -834,7 +834,7 @@ class TestAntigravityMultiLeaseRegistry(unittest.TestCase):
                         break
                     try:
                         self.daemon_a._deregister_lease(pid)
-                    except Exception as e:
+                    except (OSError, RuntimeError, ValueError) as e:
                         errors.append(f"deregister_error: {e}")
                     time.sleep(0.005)
 
@@ -844,7 +844,7 @@ class TestAntigravityMultiLeaseRegistry(unittest.TestCase):
                         break
                     try:
                         self.daemon_a._recover_stale_lock()
-                    except Exception as e:
+                    except (OSError, RuntimeError, ValueError) as e:
                         errors.append(f"recovery_error: {e}")
                     time.sleep(0.005)
 
@@ -868,7 +868,7 @@ class TestAntigravityMultiLeaseRegistry(unittest.TestCase):
                 try:
                     data = json.loads(raw)
                     self.assertEqual(data.get("version"), 1)
-                except Exception as e:
+                except (json.JSONDecodeError, ValueError, KeyError) as e:
                     self.fail(f"Corrupted JSON in .agy_lock after concurrency stress: {e}")
 
     def test_registry_lock_not_held_across_blocking_handshake(self):
@@ -956,11 +956,11 @@ class TestAntigravityMultiLeaseRegistry(unittest.TestCase):
             p2.terminate()
             try:
                 p1.wait(timeout=2.0)
-            except Exception:
+            except (subprocess.TimeoutExpired, OSError):
                 p1.kill()
             try:
                 p2.wait(timeout=2.0)
-            except Exception:
+            except (subprocess.TimeoutExpired, OSError):
                 p2.kill()
 
     def test_cross_process_abandoned_mutex_recovery(self):

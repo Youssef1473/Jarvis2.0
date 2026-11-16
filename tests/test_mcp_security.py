@@ -7,18 +7,18 @@ import json
 import os
 import socket
 import unittest
-from unittest.mock import MagicMock, patch
 import urllib.parse
 import urllib.request
+from unittest.mock import MagicMock, patch
 
-from jarvis.core.security_boundaries import (
-    resolve_and_validate_destination,
-    SecurityBoundaryViolation,
-    validate_egress_url,
-    SafeRedirectHandler,
-    build_safe_url_opener,
-)
 from jarvis.core.mcp_manager import MCPClientSession
+from jarvis.core.security_boundaries import (
+    SafeRedirectHandler,
+    SecurityBoundaryViolation,
+    build_safe_url_opener,
+    resolve_and_validate_destination,
+    validate_egress_url,
+)
 
 
 class FakeSocket:
@@ -72,9 +72,8 @@ class TestInitialDestinationValidation(unittest.TestCase):
             "http://192.168.254.254:8000/api",
         ]
         for url in forbidden:
-            with self.subTest(url=url):
-                with self.assertRaises(SecurityBoundaryViolation):
-                    validate_egress_url(url)
+            with self.subTest(url=url), self.assertRaises(SecurityBoundaryViolation):
+                validate_egress_url(url)
 
     def test_blocks_ipv6_loopback_unique_local_and_link_local(self):
         forbidden = [
@@ -84,9 +83,8 @@ class TestInitialDestinationValidation(unittest.TestCase):
             "http://[fe80::1]:8000/api",
         ]
         for url in forbidden:
-            with self.subTest(url=url):
-                with self.assertRaises(SecurityBoundaryViolation):
-                    validate_egress_url(url)
+            with self.subTest(url=url), self.assertRaises(SecurityBoundaryViolation):
+                validate_egress_url(url)
 
     def test_blocks_ipv4_link_local_and_cloud_metadata(self):
         forbidden = [
@@ -94,9 +92,8 @@ class TestInitialDestinationValidation(unittest.TestCase):
             "http://169.254.1.1:8080/test",
         ]
         for url in forbidden:
-            with self.subTest(url=url):
-                with self.assertRaises(SecurityBoundaryViolation):
-                    validate_egress_url(url)
+            with self.subTest(url=url), self.assertRaises(SecurityBoundaryViolation):
+                validate_egress_url(url)
 
     def test_blocks_unspecified_multicast_reserved_and_cgnat(self):
         forbidden = [
@@ -109,9 +106,8 @@ class TestInitialDestinationValidation(unittest.TestCase):
             "http://100.64.0.1:8000/api",
         ]
         for url in forbidden:
-            with self.subTest(url=url):
-                with self.assertRaises(SecurityBoundaryViolation):
-                    validate_egress_url(url)
+            with self.subTest(url=url), self.assertRaises(SecurityBoundaryViolation):
+                validate_egress_url(url)
 
     def test_blocks_ipv4_mapped_ipv6_representations(self):
         forbidden = [
@@ -121,9 +117,8 @@ class TestInitialDestinationValidation(unittest.TestCase):
             "http://[::ffff:192.168.1.1]:8000/api",
         ]
         for url in forbidden:
-            with self.subTest(url=url):
-                with self.assertRaises(SecurityBoundaryViolation):
-                    validate_egress_url(url)
+            with self.subTest(url=url), self.assertRaises(SecurityBoundaryViolation):
+                validate_egress_url(url)
 
     def test_blocks_mixed_public_and_forbidden_dns_answers(self):
         # When a hostname resolves to both a public IP and a loopback/private IP,
@@ -132,9 +127,11 @@ class TestInitialDestinationValidation(unittest.TestCase):
             (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 80)),
             (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", 80)),
         ]
-        with patch("socket.getaddrinfo", return_value=mixed_addr_info):
-            with self.assertRaises(SecurityBoundaryViolation):
-                validate_egress_url("http://mixed.example.com/api")
+        with (
+            patch("socket.getaddrinfo", return_value=mixed_addr_info),
+            self.assertRaises(SecurityBoundaryViolation),
+        ):
+            validate_egress_url("http://mixed.example.com/api")
 
     def test_rejects_malformed_authorities_and_crlf_null_bytes(self):
         malformed = [
@@ -148,9 +145,8 @@ class TestInitialDestinationValidation(unittest.TestCase):
             "http://:8080/api",
         ]
         for url in malformed:
-            with self.subTest(url=url):
-                with self.assertRaises(SecurityBoundaryViolation):
-                    validate_egress_url(url)
+            with self.subTest(url=url), self.assertRaises(SecurityBoundaryViolation):
+                validate_egress_url(url)
 
     def test_local_mcp_exception_strictly_permits_loopback_only(self):
         # Explicit local-MCP exception permits loopback
@@ -172,9 +168,8 @@ class TestInitialDestinationValidation(unittest.TestCase):
             "http://169.254.169.254/latest/meta-data/",
         ]
         for url in forbidden_with_local:
-            with self.subTest(url=url):
-                with self.assertRaises(SecurityBoundaryViolation):
-                    validate_egress_url(url, allow_local_mcp=True)
+            with self.subTest(url=url), self.assertRaises(SecurityBoundaryViolation):
+                validate_egress_url(url, allow_local_mcp=True)
 
 
 class TestRedirectValidation(unittest.TestCase):
@@ -281,7 +276,7 @@ class TestPerRequestHopAccountingAndConcurrency(unittest.TestCase):
         fake_addr = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 443))]
 
         with patch("socket.getaddrinfo", return_value=fake_addr):
-            handler = [h for h in opener.handlers if isinstance(h, SafeRedirectHandler)][0]
+            handler = next(h for h in opener.handlers if isinstance(h, SafeRedirectHandler))
 
             # Request A: 2 hops (under max_hops=2)
             req_a = urllib.request.Request("https://public.example.com/a0")
@@ -299,7 +294,7 @@ class TestPerRequestHopAccountingAndConcurrency(unittest.TestCase):
     def test_concurrent_redirect_chains_isolate_hop_counters(self):
         opener = build_safe_url_opener(max_hops=3)
         fake_addr = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 443))]
-        handler = [h for h in opener.handlers if isinstance(h, SafeRedirectHandler)][0]
+        handler = next(h for h in opener.handlers if isinstance(h, SafeRedirectHandler))
 
         def run_chain(chain_id: int):
             req = urllib.request.Request(f"https://public.example.com/chain{chain_id}/0")
@@ -338,12 +333,14 @@ class TestDNSRebindingAndConnectionPinning(unittest.TestCase):
             recorded_connections.append(address)
             return FakeSocket(raw_response)
 
-        with patch("socket.getaddrinfo", return_value=fake_addr_info):
-            with patch("socket.create_connection", side_effect=fake_create_connection):
-                req = urllib.request.Request("http://rebind.example.com/api")
-                with opener.open(req) as resp:
-                    data = resp.read()
-                    self.assertIn(b"ok", data)
+        with (
+            patch("socket.getaddrinfo", return_value=fake_addr_info),
+            patch("socket.create_connection", side_effect=fake_create_connection),
+        ):
+            req = urllib.request.Request("http://rebind.example.com/api")
+            with opener.open(req) as resp:
+                data = resp.read()
+                self.assertIn(b"ok", data)
 
         self.assertTrue(len(recorded_connections) >= 1)
         dest_host, dest_port = recorded_connections[0]
@@ -377,16 +374,18 @@ class TestDNSRebindingAndConnectionPinning(unittest.TestCase):
 
         mock_ctx.wrap_socket.side_effect = fake_wrap_socket
 
-        with patch("socket.getaddrinfo", return_value=fake_addr_info):
-            with patch("socket.create_connection", side_effect=fake_create_connection):
-                with patch("ssl.create_default_context", return_value=mock_ctx), patch(
-                    "ssl._create_default_https_context", return_value=mock_ctx
-                ), patch("http.client._create_https_context", return_value=mock_ctx):
-                    opener = build_safe_url_opener()
-                    req = urllib.request.Request("https://secure.example.com/api")
-                    with opener.open(req) as resp:
-                        data = resp.read()
-                        self.assertIn(b"ok", data)
+        with (
+            patch("socket.getaddrinfo", return_value=fake_addr_info),
+            patch("socket.create_connection", side_effect=fake_create_connection),
+            patch("ssl.create_default_context", return_value=mock_ctx),
+            patch("ssl._create_default_https_context", return_value=mock_ctx),
+            patch("http.client._create_https_context", return_value=mock_ctx),
+        ):
+            opener = build_safe_url_opener()
+            req = urllib.request.Request("https://secure.example.com/api")
+            with opener.open(req) as resp:
+                data = resp.read()
+                self.assertIn(b"ok", data)
 
         self.assertTrue(len(recorded_connections) >= 1)
         dest_host, dest_port = recorded_connections[0]
@@ -424,17 +423,19 @@ class TestDNSRebindingAndConnectionPinning(unittest.TestCase):
             raw = responses.pop(0) if responses else resp_hop2
             return FakeSocket(raw)
 
-        with patch("socket.getaddrinfo", side_effect=fake_getaddrinfo):
-            with patch("socket.create_connection", side_effect=fake_create_connection):
-                mock_ctx = MagicMock()
-                mock_ctx.wrap_socket.side_effect = lambda s, **kw: s
-                with patch("ssl.create_default_context", return_value=mock_ctx), patch(
-                    "ssl._create_default_https_context", return_value=mock_ctx
-                ), patch("http.client._create_https_context", return_value=mock_ctx):
-                    opener = build_safe_url_opener(max_hops=2)
-                    req = urllib.request.Request("https://first.example.com/start")
-                    with opener.open(req) as resp:
-                        self.assertEqual(resp.status, 200)
+        mock_ctx = MagicMock()
+        mock_ctx.wrap_socket.side_effect = lambda s, **kw: s
+        with (
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+            patch("socket.create_connection", side_effect=fake_create_connection),
+            patch("ssl.create_default_context", return_value=mock_ctx),
+            patch("ssl._create_default_https_context", return_value=mock_ctx),
+            patch("http.client._create_https_context", return_value=mock_ctx),
+        ):
+            opener = build_safe_url_opener(max_hops=2)
+            req = urllib.request.Request("https://first.example.com/start")
+            with opener.open(req) as resp:
+                self.assertEqual(resp.status, 200)
 
         # Both connections must be made to pinned IP literals
         self.assertEqual(len(recorded_connections), 2)
@@ -461,12 +462,14 @@ class TestMCPTransportIntegration(unittest.TestCase):
         mock_resp.__enter__.return_value = mock_resp
         mock_opener.open.return_value = mock_resp
 
-        with patch("jarvis.core.mcp_manager.build_safe_url_opener", return_value=mock_opener):
-            with patch("urllib.request.urlopen") as mock_raw_urlopen:
-                res = session._send_http_request({"jsonrpc": "2.0", "id": 1, "method": "test"}, timeout=5.0)
-                self.assertIn("result", res)
-                self.assertTrue(mock_opener.open.called)
-                self.assertFalse(mock_raw_urlopen.called, "urllib.request.urlopen was called as a bypass!")
+        with (
+            patch("jarvis.core.mcp_manager.build_safe_url_opener", return_value=mock_opener),
+            patch("urllib.request.urlopen") as mock_raw_urlopen,
+        ):
+            res = session._send_http_request({"jsonrpc": "2.0", "id": 1, "method": "test"}, timeout=5.0)
+            self.assertIn("result", res)
+            self.assertTrue(mock_opener.open.called)
+            self.assertFalse(mock_raw_urlopen.called, "urllib.request.urlopen was called as a bypass!")
 
     def test_mcp_client_rejects_redirect_to_loopback(self):
         """If an external MCP server responds with a redirect to loopback, the MCP client
@@ -495,25 +498,27 @@ class TestMCPTransportIntegration(unittest.TestCase):
             raw = responses.pop(0) if responses else b""
             return FakeSocket(raw)
 
-        with patch("socket.getaddrinfo", return_value=fake_addr):
-            with patch("socket.create_connection", side_effect=fake_conn):
-                mock_ctx = MagicMock()
-                mock_ctx.wrap_socket.side_effect = lambda s, **kw: s
-                with patch("ssl.create_default_context", return_value=mock_ctx), patch(
-                    "ssl._create_default_https_context", return_value=mock_ctx
-                ), patch("http.client._create_https_context", return_value=mock_ctx):
-                    with self.assertRaises(Exception) as ctx:
-                        session._send_http_request({"jsonrpc": "2.0", "id": 1, "method": "test"}, timeout=5.0)
+        mock_ctx = MagicMock()
+        mock_ctx.wrap_socket.side_effect = lambda s, **kw: s
+        with (
+            patch("socket.getaddrinfo", return_value=fake_addr),
+            patch("socket.create_connection", side_effect=fake_conn),
+            patch("ssl.create_default_context", return_value=mock_ctx),
+            patch("ssl._create_default_https_context", return_value=mock_ctx),
+            patch("http.client._create_https_context", return_value=mock_ctx),
+            self.assertRaises(Exception) as ctx,
+        ):
+            session._send_http_request({"jsonrpc": "2.0", "id": 1, "method": "test"}, timeout=5.0)
 
-                    # Error message must indicate security violation / SSRF blockage
-                    err_msg = str(ctx.exception)
-                    self.assertTrue(
-                        "security" in err_msg.lower()
-                        or "ssrf" in err_msg.lower()
-                        or "blocked" in err_msg.lower()
-                        or "non-global" in err_msg.lower(),
-                        f"Unexpected error: {err_msg}",
-                    )
+        # Error message must indicate security violation / SSRF blockage
+        err_msg = str(ctx.exception)
+        self.assertTrue(
+            "security" in err_msg.lower()
+            or "ssrf" in err_msg.lower()
+            or "blocked" in err_msg.lower()
+            or "non-global" in err_msg.lower(),
+            f"Unexpected error: {err_msg}",
+        )
 
     def test_implicit_environment_proxies_cannot_bypass_pinning(self):
         """Implicit environment proxies (HTTP_PROXY / HTTPS_PROXY) must not silently intercept
@@ -555,9 +560,11 @@ class TestMCPTransportIntegration(unittest.TestCase):
             connected_addrs.append(addr)
             return FakeSocket(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}")
 
-        with patch("socket.getaddrinfo", side_effect=fake_getaddrinfo):
-            with patch("socket.create_connection", side_effect=fake_create_conn):
-                res = session._send_http_request({"jsonrpc": "2.0", "id": 1}, timeout=5.0)
+        with (
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+            patch("socket.create_connection", side_effect=fake_create_conn),
+        ):
+            res = session._send_http_request({"jsonrpc": "2.0", "id": 1}, timeout=5.0)
 
         self.assertEqual(res.get("status"), "ok")
         # DNS must only be resolved once during destination validation
@@ -574,8 +581,8 @@ class TestSafeOpenerSchemes(unittest.TestCase):
 
     def test_safe_opener_blocks_file_scheme_directly(self):
         import tempfile
-        from pathlib import Path
         import urllib.error
+        from pathlib import Path
 
         with tempfile.NamedTemporaryFile("w", delete=False) as tf:
             tf.write("SECRET_PASSWD_DATA")
@@ -688,11 +695,13 @@ class TestLocalMCPDestinationScope(unittest.TestCase):
         )
         fake_dns = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 8000))]
         mock_create_conn = MagicMock(side_effect=AssertionError("Socket connection attempted for forbidden destination!"))
-        with patch("socket.getaddrinfo", return_value=fake_dns):
-            with patch("socket.create_connection", mock_create_conn):
-                with self.assertRaises(SecurityBoundaryViolation) as ctx:
-                    session._send_http_request({"jsonrpc": "2.0", "id": 1, "method": "test"}, timeout=5.0)
-                self.assertIn("non-loopback", str(ctx.exception).lower())
+        with (
+            patch("socket.getaddrinfo", return_value=fake_dns),
+            patch("socket.create_connection", mock_create_conn),
+            self.assertRaises(SecurityBoundaryViolation) as ctx,
+        ):
+            session._send_http_request({"jsonrpc": "2.0", "id": 1, "method": "test"}, timeout=5.0)
+        self.assertIn("non-loopback", str(ctx.exception).lower())
         mock_create_conn.assert_not_called()
 
     def test_remote_hostname_resolving_to_ipv4_loopback_rejected(self):
@@ -736,11 +745,13 @@ class TestLocalMCPDestinationScope(unittest.TestCase):
         )
         fake_dns = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", 8000))]
         mock_create_conn = MagicMock(side_effect=AssertionError("Socket connection attempted for forbidden destination!"))
-        with patch("socket.getaddrinfo", return_value=fake_dns):
-            with patch("socket.create_connection", mock_create_conn):
-                with self.assertRaises(SecurityBoundaryViolation) as ctx:
-                    session._send_http_request({"jsonrpc": "2.0", "id": 1, "method": "test"}, timeout=5.0)
-                self.assertIn("non-global address '127.0.0.1'", str(ctx.exception))
+        with (
+            patch("socket.getaddrinfo", return_value=fake_dns),
+            patch("socket.create_connection", mock_create_conn),
+            self.assertRaises(SecurityBoundaryViolation) as ctx,
+        ):
+            session._send_http_request({"jsonrpc": "2.0", "id": 1, "method": "test"}, timeout=5.0)
+        self.assertIn("non-global address '127.0.0.1'", str(ctx.exception))
         # Ensure that no socket connection was ever attempted
         mock_create_conn.assert_not_called()
 
@@ -762,9 +773,11 @@ class TestLocalMCPDestinationScope(unittest.TestCase):
             connected_addrs.append(addr)
             return FakeSocket(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}")
 
-        with patch("socket.getaddrinfo", side_effect=fake_getaddrinfo):
-            with patch("socket.create_connection", side_effect=fake_create_conn):
-                res = session._send_http_request({"jsonrpc": "2.0", "id": 1}, timeout=5.0)
+        with (
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+            patch("socket.create_connection", side_effect=fake_create_conn),
+        ):
+            res = session._send_http_request({"jsonrpc": "2.0", "id": 1}, timeout=5.0)
 
         self.assertEqual(res.get("status"), "ok")
         self.assertEqual(dns_calls, [("api.example.com", 8000)], "Only 1 DNS resolution should occur!")

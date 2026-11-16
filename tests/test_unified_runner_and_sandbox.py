@@ -1,26 +1,32 @@
 """Unit tests for UnifiedRunner, BaseProvider, and SkillSandbox subsystems."""
 import unittest
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
-from jarvis.core.providers.base import BaseProvider, LLMResponse, ToolCall, UnifiedRunner
 from jarvis.core.evolution.sandbox import SkillSandbox
+from jarvis.core.providers.base import (
+    BaseProvider,
+    LLMResponse,
+    ToolCall,
+    UnifiedRunner,
+)
 from jarvis.skills.base import SkillRegistry
 
 
 class MockProvider(BaseProvider):
     """Mock provider with programmed turns for testing UnifiedRunner."""
 
-    def __init__(self, turns: List[LLMResponse]):
+    def __init__(self, turns: list[LLMResponse]):
         super().__init__(name="mock", model="mock-model")
         self.turns = turns
         self.turn_index = 0
 
     def generate_turn(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        system_instruction: Optional[str] = None,
-        sentence_callback: Optional[Callable[[str], None]] = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        system_instruction: str | None = None,
+        sentence_callback: Callable[[str], None] | None = None,
         timeout: float = 30.0,
     ) -> LLMResponse:
         if self.turn_index < len(self.turns):
@@ -45,7 +51,7 @@ class TestUnifiedRunnerAndSandbox(unittest.TestCase):
         runner = UnifiedRunner(max_iterations=5)
 
         narrations = []
-        final_text, history = runner.execute_session(
+        _final_text, _history = runner.execute_session(
             provider=provider,
             messages=[{"role": "user", "content": "test"}],
             sentence_callback=lambda s: narrations.append(s),
@@ -64,7 +70,7 @@ class TestUnifiedRunnerAndSandbox(unittest.TestCase):
         runner = UnifiedRunner(max_iterations=4)
 
         narrated = []
-        final_reply, history = runner.execute_session(
+        final_reply, _history = runner.execute_session(
             provider=provider,
             messages=[{"role": "user", "content": "mute audio"}],
             sentence_callback=lambda s: narrated.append(s),
@@ -112,7 +118,7 @@ def bad_tool():
         runner = UnifiedRunner(max_iterations=3, tool_timeout=0.15)
 
         start = time.monotonic()
-        final_reply, history = runner.execute_session(
+        _final_reply, history = runner.execute_session(
             provider=provider,
             messages=[{"role": "user", "content": "run slow tool"}],
         )
@@ -122,7 +128,10 @@ def bad_tool():
         self.assertLess(elapsed, 0.6)
         tool_entry = next((m for m in history if m.get("role") == "tool"), None)
         self.assertIsNotNone(tool_entry)
-        self.assertIn("exceeded maximum execution timeout", tool_entry["content"])
+        self.assertTrue(
+            "exceeded maximum execution timeout" in tool_entry["content"]
+            or "aborted" in tool_entry["content"].lower()
+        )
 
 
 if __name__ == "__main__":

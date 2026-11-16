@@ -406,7 +406,10 @@ def _wait_pid_gone(pid: int, timeout: float = 2.0) -> bool:
 @unittest.skipUnless(sys.platform == "win32", "needs the real Windows kernel")
 class TestJobSandboxRealWindows(unittest.TestCase):
     def setUp(self) -> None:
-        from jarvis.core.security_boundaries import DualKeyApprovalManager, TurnTaintTracker
+        from jarvis.core.security_boundaries import (
+            DualKeyApprovalManager,
+            TurnTaintTracker,
+        )
         self.tracker = TurnTaintTracker.get_instance()
         self.tracker.reset_turn()
         self.approval_mgr = DualKeyApprovalManager.get_instance()
@@ -559,7 +562,7 @@ class TestJobSandboxRealWindows(unittest.TestCase):
             f"$p = Start-Process -FilePath '{sys.executable}' -ArgumentList '-c \"import time; time.sleep(60)\"' -PassThru; "
             "$p.Id; Start-Sleep 60"
         )
-        ok, msg, task_id = mgr.run_task(ps_cmd, task_name="Grandchild Leak Test", notify_voice=False)
+        ok, _msg, task_id = mgr.run_task(ps_cmd, task_name="Grandchild Leak Test", notify_voice=False)
         self.assertTrue(ok)
         self.assertIsNotNone(task_id)
 
@@ -635,6 +638,7 @@ class TestJobSandboxRealWindows(unittest.TestCase):
 
     def test_access_log_redaction_preserves_legitimate_query_params(self):
         import asyncio
+
         from jarvis.ui.server import AccessLogRedactionMiddleware
 
         received_scope = {}
@@ -662,7 +666,11 @@ class TestJobSandboxRealWindows(unittest.TestCase):
     def test_access_log_redaction_timing_at_response_start(self):
         import asyncio
         import logging
-        from jarvis.ui.server import AccessLogRedactionMiddleware, SensitiveQueryRedactionFilter
+
+        from jarvis.ui.server import (
+            AccessLogRedactionMiddleware,
+            SensitiveQueryRedactionFilter,
+        )
 
         qs_at_endpoint = None
         qs_seen_by_uvicorn_send = None
@@ -719,6 +727,7 @@ class TestJobSandboxRealWindows(unittest.TestCase):
 
     def test_access_log_redaction_percent_encoded_parameters(self):
         import asyncio
+
         from jarvis.ui.server import (
             AccessLogRedactionMiddleware,
             redact_query_string_bytes,
@@ -777,6 +786,7 @@ class TestJobSandboxRealWindows(unittest.TestCase):
 
     def test_actual_uvicorn_access_log_output_captures_and_redacts(self):
         import logging
+
         from jarvis.ui.server import attach_access_log_redaction_filters
 
         class CaptureHandler(logging.Handler):
@@ -844,6 +854,7 @@ class TestJobSandboxRealWindows(unittest.TestCase):
 
     def test_access_log_redaction_oversized_query_beginning_and_end(self):
         import asyncio
+
         from jarvis.ui.server import (
             AccessLogRedactionMiddleware,
             redact_query_string_bytes,
@@ -911,11 +922,16 @@ class TestJobSandboxRealWindows(unittest.TestCase):
         import socket
         import threading
         import urllib.request
+
         import uvicorn
         from starlette.applications import Starlette
         from starlette.responses import PlainTextResponse
         from starlette.routing import Route
-        from jarvis.ui.server import AccessLogRedactionMiddleware, attach_access_log_redaction_filters
+
+        from jarvis.ui.server import (
+            AccessLogRedactionMiddleware,
+            attach_access_log_redaction_filters,
+        )
 
         async def endpoint(request):
             return PlainTextResponse("LIVE_OK")
@@ -1007,13 +1023,14 @@ class TestJobSandboxRealWindows(unittest.TestCase):
 
     def test_access_log_redaction_queries_exceeding_10mb_failsafe(self):
         import asyncio
+
         from jarvis.ui.server import (
+            MAX_QUERY_STRING_BYTES,
+            OVERSIZED_QUERY_PLACEHOLDER_BYTES,
+            OVERSIZED_QUERY_PLACEHOLDER_TEXT,
             AccessLogRedactionMiddleware,
             redact_query_string_bytes,
             redact_query_string_text,
-            OVERSIZED_QUERY_PLACEHOLDER_BYTES,
-            OVERSIZED_QUERY_PLACEHOLDER_TEXT,
-            MAX_QUERY_STRING_BYTES,
         )
 
         # 1. Over-limit query string (>10 MB) with credentials near beginning and end
