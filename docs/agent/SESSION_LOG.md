@@ -4571,3 +4571,43 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Phase 2 Security Regression Suite:** 224 passed, 0 failed, 0 errors (Exit code: 0).
    - **Tier 1 Hermetic Fast Test Suite:** 1,511 passed, 0 failed, 11 skipped in 209.30s (Exit code: 0).
    - **SQLite Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
+
+---
+
+## Session Log: 2026-11-16 — Track C (Session 2): RTX 3050 4GB VRAM Arbiter & Pressure Shedding (Plan 043 Closed)
+
+- **Session Timestamp:** 2026-11-16T19:25:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent (Ponytail mode)
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Starting Git HEAD SHA:** `95a4817` (tagged `v2.2.0-autonomous-patching`)
+- **Topic Branch:** `feat/rtx3050-4gb-vram-arbiter-and-pressure-shedding`
+- **Active Milestone:** `Track C: RTX 3050 4GB VRAM Arbiter & Pressure Shedding (Plan 043 Completed)`
+
+### Summary of Actions & Deliverables
+1. **Plan 043 Implementation:**
+   - **NVML & DXGI 1.4 VRAM Arbiter (`jarvis/skills/nvml_dxgi_vram_arbiter.py`):**
+     - Implemented direct Win32 COM `IDXGIAdapter3::QueryVideoMemoryInfo` via `ctypes` (`IID_IDXGIFactory1`, `IID_IDXGIAdapter3 = {645967a4-1392-4310-a798-8053ce3e93fd}`) with discrete NVIDIA adapter filtering (`VendorId == 0x10de`) and safe COM reference release.
+     - Calibrated 4-tier pressure watermarks against host HP Victus 15 baseline (`3,367.7 MiB` DXGI budget ceiling): `NOMINAL >= 1200 MiB`, `ELEVATED 700-1199 MiB`, `CRITICAL 350-699 MiB`, `OOM_GUARD < 350 MiB`.
+     - Derived effective headroom: `EffectiveHeadroom = min(DXGI_Budget - DXGI_Usage, NVML_Free)` when DXGI is available, with resilient fallback to NVML.
+     - Implemented `request_vram_budget(component, estimated_mb, auto_shed=True)` pre-flight admission check with staged memory shedding.
+     - Added thread-safe hook registry `register_vram_shed_hook` / `unregister_vram_shed_hook` and `execute_staged_shedding` executing Stage 1 (`torch.cuda.empty_cache()` + `gc.collect()`) and Stage 2 (registered subsystem hooks).
+     - Maintained 100% backward compatibility on `@SkillRegistry.register(name="audit_vram_and_thermal_budget")`.
+   - **Audio Subsystem Consumers (`jarvis/audio/stt.py`, `jarvis/audio/tts.py`):**
+     - Wired Faster-Whisper initialization to check `request_vram_budget("whisper_stt", estimated_mb=350.0)` for dynamic compute type adaptation (`float16` $\to$ `int8_float16` $\to$ `cpu`).
+     - Registered Kokoro neural session shedding hook `_flush_kokoro_gpu_cache` and gated CUDA provider initialization via `request_vram_budget("kokoro_tts", estimated_mb=250.0)`.
+   - **Zero-CLS Workstation Telemetry (`jarvis/ui/metrics.py`):**
+     - Extended `WorkstationMetricsCollector` to expose `vram_headroom_mb`, `vram_pressure_tier`, `vram_budget_mb`, `shed_events_count`, `vh`, and `vpt` in HUD WebSocket payload without breaking existing schema keys or Zero-CLS invariants.
+   - **Hermetic Test Suite (`tests/test_nvml_vram_arbiter.py`):**
+     - Expanded test suite from 5 to 15 unit tests covering effective headroom math, deterministic tier transitions, Stage 1/2 shedding execution, fail-closed `OOM_GUARD` rejection, cross-platform Linux/non-NVIDIA graceful fallback, COM failure resiliency, and additive HUD metrics.
+   - **Test Accounting & Classifier (`tools/test_classifier.py`, `data/test_classification_manifest.json`):**
+     - Expanded test manifest from 2,492 to 2,502 collected nodes (1,522 Tier 1 nodes) with 0 orphans, 0 duplicates, and 100% classification compliance.
+2. **Verification Gates & Quality Invariants:**
+   - **Repository-Wide Static Linter (`tools/lint.py`):** 0 Ruff diagnostics across `jarvis/ tools/ tests/`.
+   - **Structural Invariants (`tools/diagnostics.py`):** 0 AST-Grep invariant violations.
+   - **Targeted VRAM & HUD Suites:** 24/24 tests passed in 2.42s (`tests/test_nvml_vram_arbiter.py`, `tests/test_onnx_embeddings.py`, `tests/test_hud_zero_cls.py`).
+   - **Test Accounting Invariant:** `test_17_accurate_total_test_accounting` passed with 100% accounting (2,502 collected nodes accounted for, 0 drift).
+   - **Test Classifier Integrity:** `tools/test_classifier.py --check-orphaned` verified 0 orphans, 0 duplicates, 2,502 nodes confirmed.
+   - **Live E2E Consecutive Turns Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing cleanly (Exit code: 0).
+   - **Phase 2 Security Regression Suite:** 224 passed, 0 failed, 0 errors in 48.88s (Exit code: 0).
+   - **Tier 1 Hermetic Fast Test Suite:** 1,511 passed, 0 failed, 11 skipped across 4 parallel workers in 161.67s (Exit code: 0).
+   - **SQLite Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
