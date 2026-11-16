@@ -356,7 +356,7 @@ def describe_photo(photo_id: str) -> str:
             gc.collect(0)
 
             return f"[Visual Analysis for {clean_id}]: {caption}"
-        except (ConnectionError, TimeoutError, OSError, ValueError, RuntimeError) as err:
+        except (ConnectionError, TimeoutError, OSError, ValueError, RuntimeError, Exception) as err:  # noqa: BLE001 - Cloud vision API client can raise arbitrary API errors
             logger.warning("Cloud vision API error (%s). Checking alternative bridge...", err)
 
     del image_bytes

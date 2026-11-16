@@ -198,7 +198,7 @@ def extract_text_from_pdf(file_path: str, max_pages: int = 50) -> str:
                 if response.text and len(response.text.strip()) > len(extracted_text):
                     extracted_text = response.text.strip()
                     logger.info(f"Successfully extracted text via Gemini Multimodal OCR for {p.name}")
-            except (ConnectionError, OSError, TimeoutError, RuntimeError, ValueError) as ocr_err:
+            except (ConnectionError, OSError, TimeoutError, RuntimeError, ValueError, Exception) as ocr_err:  # noqa: BLE001 - Gemini multimodal OCR client can raise arbitrary API errors
                 logger.debug(f"Gemini OCR fallback notice: {ocr_err}")
 
     return extracted_text
@@ -334,7 +334,7 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
             content = re.sub(r"^```(?:json)?\s*", "", content)
             content = re.sub(r"\s*```$", "", content)
             extracted_data = json.loads(content)
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError, RuntimeError, ConnectionError, TimeoutError, OSError) as e:
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, RuntimeError, ConnectionError, TimeoutError, OSError, Exception) as e:  # noqa: BLE001 - Groq API can raise arbitrary client/transport errors
             logger.debug(f"Groq document extraction notice: {e}")
 
     # 2. Attempt extraction via Antigravity Bridge (Google AI Pro Fleet / zero cost)
@@ -356,7 +356,7 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
                     m = re.search(r"(\{.*\})", clean_json, re.DOTALL)
                     if m:
                         extracted_data = json.loads(m.group(1))
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError, RuntimeError, ConnectionError, TimeoutError, OSError) as e:
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, RuntimeError, ConnectionError, TimeoutError, OSError, Exception) as e:  # noqa: BLE001 - Antigravity bridge can raise execution errors
             logger.debug(f"Antigravity document extraction notice: {e}")
 
     # 3. Fallback to direct Gemini API with candidate model cascade
@@ -381,9 +381,9 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
                         extracted_data = json.loads(res.text.strip())
                         if extracted_data:
                             break
-                except (json.JSONDecodeError, KeyError, ValueError, TypeError, RuntimeError, ConnectionError, TimeoutError, OSError) as inner_err:
+                except (json.JSONDecodeError, KeyError, ValueError, TypeError, RuntimeError, ConnectionError, TimeoutError, OSError, Exception) as inner_err:  # noqa: BLE001 - Gemini candidate model can raise arbitrary API errors
                     logger.debug(f"Gemini candidate '{gem_model}' notice: {inner_err}")
-        except (ConnectionError, TimeoutError, RuntimeError, OSError, ValueError) as e:
+        except (ConnectionError, TimeoutError, RuntimeError, OSError, ValueError, Exception) as e:  # noqa: BLE001 - Gemini cascade fallback
             logger.debug(f"Gemini document extraction notice: {e}")
 
     # Fallback to Local Ollama (Tier 1 offline intellect)
@@ -406,7 +406,7 @@ def process_staged_document(identifier: str = "", user_context: str = "") -> str
             content = re.sub(r"^```(?:json)?\s*", "", content)
             content = re.sub(r"\s*```$", "", content)
             extracted_data = json.loads(content)
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError, RuntimeError, ConnectionError, TimeoutError, OSError) as e:
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, RuntimeError, ConnectionError, TimeoutError, OSError, Exception) as e:  # noqa: BLE001 - Ollama client can raise arbitrary transport/API errors
             logger.debug(f"Ollama document extraction notice: {e}")
 
     # If extraction returned nothing, build fallback knowledge archive
