@@ -14,18 +14,20 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-16T18:25:00+01:00 (CET)
-- **Active Git Branch:** `feat/autonomous-appcontainer-patch-verify-loop`
-- **Recorded HEAD Commit SHA:** `170400b`
-- **HEAD Commit Subject:** `Merge pull request #59 from Youssef1473/feat/multi-workspace-hud-and-fact-promotion`
-- **Milestone State:** **Track B Completed: Autonomous AppContainer Code-Patch & Verify Loop (Plan 042 Verified); 2,492 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
-- **Active Milestone:** **Track B: Autonomous AppContainer Code-Patch & Verify Loop (Plan 042 Completed)**
+- **Validation Timestamp:** 2026-11-16T19:25:00+01:00 (CET)
+- **Active Git Branch:** `feat/rtx3050-4gb-vram-arbiter-and-pressure-shedding`
+- **Recorded HEAD Commit SHA:** `95a4817`
+- **HEAD Commit Subject:** `Merge pull request #60 from Youssef1473/feat/autonomous-appcontainer-patch-verify-loop`
+- **Milestone State:** **Track C Completed: RTX 3050 4GB VRAM Arbiter, DXGI WDDM Budget Tracking & Pressure Shedding (Plan 043 Verified); 2,502 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
+- **Active Milestone:** **Track C: RTX 3050 4GB VRAM Arbiter & Pressure Shedding (Plan 043 Completed)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications:**
-  - `data/test_classification_manifest.json` (test manifest accounting updated to 2,492 nodes)
-  - `jarvis/skills/ast_code_surgeon.py` (shadow staging, AppContainer verification, report dataclass, and DualKey approval gate)
-  - `jarvis/skills/self_evolution.py` (registered propose_and_verify_code_patch skill)
-  - `tests/test_autonomous_patch_verify.py` (10 hermetic unit and security-boundary tests)
+  - `data/test_classification_manifest.json` (test manifest accounting updated to 2,502 nodes)
+  - `jarvis/skills/nvml_dxgi_vram_arbiter.py` (DXGI 1.4 WDDM budget tracking, 4-tier watermarks, pre-flight admission, staged shedding)
+  - `jarvis/audio/stt.py` (wired request_vram_budget and dynamic compute_type adaptation)
+  - `jarvis/audio/tts.py` (wired kokoro_tts session shedding hook and pre-flight admission)
+  - `jarvis/ui/metrics.py` (additive VRAM headroom, budget, and pressure tier vitals for Zero-CLS HUD)
+  - `tests/test_nvml_vram_arbiter.py` (15 hermetic unit, mathematical headroom, and fallback tests)
   - `docs/agent/PROJECT_STATE.md`
   - `docs/agent/SESSION_LOG.md`
 
@@ -41,8 +43,14 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Track B: Autonomous AppContainer Code-Patch & Verify Loop (Plan 042 Completed)`
+- **Active Milestone:** `Track C: RTX 3050 4GB VRAM Arbiter & Pressure Shedding (Plan 043 Completed)`
 - **Completed Work:**
+  - **Track C (Plan 043 COMPLETED & VERIFIED): RTX 3050 4GB VRAM Arbiter, DXGI WDDM Budget Tracking & Pressure Shedding:**
+    - **NVML & DXGI 1.4 VRAM Arbiter (`jarvis/skills/nvml_dxgi_vram_arbiter.py`):** Implemented COM-based DXGI 1.4 `IDXGIAdapter3::QueryVideoMemoryInfo` with adapter enumeration (`VendorId == 0x10de`), calibrated 4-tier pressure watermarks (`NOMINAL >= 1200 MiB`, `ELEVATED 700-1199 MiB`, `CRITICAL 350-699 MiB`, `OOM_GUARD < 350 MiB`), effective headroom calculation `min(DXGI_Budget - DXGI_Usage, NVML_Free)`, pre-flight admission `request_vram_budget`, and staged pressure shedding with thread-safe hook registry.
+    - **Audio Subsystem Consumers (`jarvis/audio/stt.py`, `jarvis/audio/tts.py`):** Wired Faster-Whisper dynamic compute type adaptation (`float16` $\to$ `int8_float16` $\to$ `cpu`) via `request_vram_budget`, registered Kokoro session cache shedding hook (`_flush_kokoro_gpu_cache`), and gated Kokoro GPU provider admission.
+    - **Zero-CLS Workstation Metrics (`jarvis/ui/metrics.py`):** Extended `WorkstationMetricsCollector` to expose `vram_headroom_mb`, `vram_pressure_tier`, `vram_budget_mb`, `shed_events_count`, `vh`, and `vpt` in HUD WebSocket telemetry without breaking existing schema keys.
+    - **Hermetic Test Suite (`tests/test_nvml_vram_arbiter.py`):** Expanded suite to 15 tests covering effective headroom math, all 4 watermark tier transitions, Stage 1/2 shedding execution, fail-closed `OOM_GUARD` rejection, cross-platform Linux/non-NVIDIA graceful fallback, COM failure resiliency, and additive HUD metrics.
+    - **Test Accounting & Classifier:** Expanded test manifest from 2,492 to 2,502 collected nodes (1,522 Tier 1 nodes) with 0 orphans, 0 duplicates, and 100% classification compliance.
   - **Track B (Plan 042 COMPLETED & VERIFIED): Autonomous AppContainer Code-Patch & Sandboxed Verify Loop:**
     - **AST Code Surgeon (`jarvis/skills/ast_code_surgeon.py`):** Added `FORBIDDEN_PATCH_MODULES` and path traversal safety checks (`validate_target_patch_path`), built ephemeral shadow staging (`create_shadow_patch`), created 3-stage AppContainer / Job Object verification runner (`verify_patch_in_appcontainer`), and added `DualKeyApprovalManager` gated promotion (`promote_verified_patch`).
     - **Self-Evolution Skills (`jarvis/skills/self_evolution.py`):** Registered `propose_and_verify_code_patch` with deterministic shadow cleanup.

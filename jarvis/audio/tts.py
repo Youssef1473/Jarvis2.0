@@ -358,6 +358,22 @@ _CACHED_KOKORO_SESSION: dict[tuple[str, str], Any] = {}
 _CACHED_KOKORO_LOCK = threading.Lock()
 
 
+def _flush_kokoro_gpu_cache() -> str:
+    """Flushes cached Kokoro session to shed GPU memory under pressure."""
+    with _CACHED_KOKORO_LOCK:
+        count = len(_CACHED_KOKORO_SESSION)
+        _CACHED_KOKORO_SESSION.clear()
+    return f"flushed_{count}_kokoro_sessions"
+
+
+try:
+    from jarvis.skills.nvml_dxgi_vram_arbiter import register_vram_shed_hook
+
+    register_vram_shed_hook("kokoro_tts", _flush_kokoro_gpu_cache)
+except (ImportError, AttributeError):
+    pass
+
+
 class TextToSpeech:
     """Streams and plays synthesized neural audio with instant interrupt capability and local fallback."""
 
@@ -588,18 +604,18 @@ class TextToSpeech:
                 if use_cuda:
                     try:
                         from jarvis.skills.nvml_dxgi_vram_arbiter import (
-                            audit_vram_and_thermal_budget,
+                            request_vram_budget,
                         )
-                        vram_info = audit_vram_and_thermal_budget(reclaim_if_pressured=True)
-                        if vram_info.get("status") == "ok":
-                            free_mb = vram_info.get("vram_free_mb", 4000.0)
-                            if free_mb < 600.0:
-                                logger.warning(
-                                    "RTX 3050 VRAM heavily pressured (%.1f MB free < 600MB). Falling back to CPU.",
-                                    free_mb,
-                                )
-                                use_cuda = False
-                    except Exception as arb_err:  # noqa: BLE001
+                        granted, decision = request_vram_budget("kokoro_tts", estimated_mb=250.0, auto_shed=True)
+                        if not granted or decision.recommended_action == "cpu_fallback":
+                            tier_str = decision.pressure_tier.value if hasattr(decision.pressure_tier, "value") else str(decision.pressure_tier)
+                            logger.warning(
+                                "RTX 3050 VRAM heavily pressured (%.1f MB headroom, tier %s). Falling back to CPU.",
+                                decision.headroom_mb,
+                                tier_str,
+                            )
+                            use_cuda = False
+                    except (RuntimeError, OSError, ValueError, ImportError, AttributeError) as arb_err:
                         logger.debug("VRAM arbiter check note in Kokoro init: %s", arb_err)
 
                 if use_cuda:

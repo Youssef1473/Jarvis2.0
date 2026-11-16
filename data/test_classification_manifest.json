@@ -1,11 +1,11 @@
 {
-  "total_collected": 2492,
+  "total_collected": 2502,
   "assigned_by_tier": {
     "tier1_hermetic_unit": 1522,
     "tier2a_async_safe": 273,
     "tier2b_loopback_ipc": 201,
     "tier3_windows_integration": 225,
-    "tier4_hardware_integration": 251,
+    "tier4_hardware_integration": 261,
     "tier_browser_integration": 20
   },
   "node_ids_by_tier": {
@@ -2320,8 +2320,18 @@
       "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_audit_vram_error_schema",
       "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_audit_vram_structure",
       "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_audit_vram_unavailable_schema",
+      "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_cross_platform_non_nvidia_and_linux_fallback",
+      "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_dxgi_query_graceful_on_com_failure",
+      "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_effective_headroom_math",
+      "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_hud_workstation_telemetry_additive_fields",
       "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_nvml_resilient_resolution",
       "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_registry_registration",
+      "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_request_vram_budget_elevated_int8",
+      "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_request_vram_budget_granted_nominal",
+      "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_request_vram_budget_oom_guard_fail_closed",
+      "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_request_vram_budget_triggers_staged_shedding",
+      "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_shed_hooks_registration_and_execution",
+      "tests/test_nvml_vram_arbiter.py::TestNvmlVramArbiter::test_watermark_tier_transitions",
       "tests/test_onnx_embeddings.py::TestOnnxEmbeddingEngine::test_asymmetric_query_prefix",
       "tests/test_onnx_embeddings.py::TestOnnxEmbeddingEngine::test_batch_encoding_and_determinism",
       "tests/test_onnx_embeddings.py::TestOnnxEmbeddingEngine::test_native_384_dimension_and_unit_norm",

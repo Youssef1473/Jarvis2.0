@@ -28,6 +28,10 @@ class WorkstationMetricsCollector:
         "vram_used_mb": 0,
         "vram_total_mb": 4096,
         "gpu_temp_c": 0,
+        "vram_headroom_mb": 4096.0,
+        "vram_pressure_tier": "NOMINAL",
+        "vram_budget_mb": 4096.0,
+        "shed_events_count": 0,
     }
 
     @classmethod
@@ -93,12 +97,36 @@ class WorkstationMetricsCollector:
 
             gpu_temp_c = int(nvml.nvmlDeviceGetTemperature(handle, nvml.NVML_TEMPERATURE_GPU))
 
+            vram_headroom_mb = float(max(0, vram_total_mb - vram_used_mb))
+            vram_pressure_tier = "NOMINAL"
+            vram_budget_mb = float(vram_total_mb)
+            shed_events_count = 0
+            try:
+                from jarvis.skills.nvml_dxgi_vram_arbiter import get_vram_telemetry
+
+                arb_telemetry = get_vram_telemetry()
+                if arb_telemetry.status == "ok":
+                    vram_headroom_mb = arb_telemetry.headroom_mb
+                    vram_pressure_tier = (
+                        arb_telemetry.pressure_tier.value
+                        if hasattr(arb_telemetry.pressure_tier, "value")
+                        else str(arb_telemetry.pressure_tier)
+                    )
+                    vram_budget_mb = arb_telemetry.dxgi_budget_mb or float(vram_total_mb)
+                    shed_events_count = arb_telemetry.shed_events_count
+            except (ImportError, AttributeError, RuntimeError, OSError):
+                pass
+
             return {
                 "gpu_name": gpu_name,
                 "gpu_load": gpu_load,
                 "vram_used_mb": vram_used_mb,
                 "vram_total_mb": vram_total_mb,
                 "gpu_temp_c": gpu_temp_c,
+                "vram_headroom_mb": vram_headroom_mb,
+                "vram_pressure_tier": vram_pressure_tier,
+                "vram_budget_mb": vram_budget_mb,
+                "shed_events_count": shed_events_count,
             }
         except Exception as exc:  # noqa: BLE001 - Driver read failure resets device handle
             logger.debug("NVML hardware poll failed; resetting handle: %s", exc)
@@ -249,6 +277,8 @@ class WorkstationMetricsCollector:
             "gl": gpu_data["gpu_load"],
             "vu": gpu_data["vram_used_mb"],
             "vt": gpu_data["vram_total_mb"],
+            "vh": gpu_data.get("vram_headroom_mb", 0.0),
+            "vpt": gpu_data.get("vram_pressure_tier", "NOMINAL"),
             "gt": gpu_data["gpu_temp_c"],
             "st": state,
             "md": active_model,
@@ -269,6 +299,10 @@ class WorkstationMetricsCollector:
             "vram_used": f"{gpu_data['vram_used_mb']} MB",
             "vram_used_mb": gpu_data["vram_used_mb"],
             "vram_total_mb": gpu_data["vram_total_mb"],
+            "vram_headroom_mb": gpu_data.get("vram_headroom_mb", 0.0),
+            "vram_pressure_tier": gpu_data.get("vram_pressure_tier", "NOMINAL"),
+            "vram_budget_mb": gpu_data.get("vram_budget_mb", 0.0),
+            "shed_events_count": gpu_data.get("shed_events_count", 0),
             "model": active_model,
             "tier": tier,
             "provider": provider,

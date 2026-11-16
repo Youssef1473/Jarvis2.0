@@ -139,26 +139,27 @@ class SpeechToText:
         # Dynamic VRAM arbiter check for GPU allocation and compute type adaptation
         if device == "cuda":
             try:
-                from jarvis.skills.nvml_dxgi_vram_arbiter import (
-                    audit_vram_and_thermal_budget,
-                )
-                vram_info = audit_vram_and_thermal_budget(reclaim_if_pressured=True)
-                if vram_info.get("status") == "ok":
-                    free_mb = vram_info.get("vram_free_mb", 4000.0)
-                    if free_mb < 350.0:
-                        logger.warning(
-                            "VRAM critically low (%.1f MB free < 350MB). Falling back Whisper STT to CPU (int8).",
-                            free_mb
-                        )
-                        device = "cpu"
-                        compute_type = "int8"
-                    elif free_mb < 700.0:
-                        logger.info(
-                            "VRAM constrained (%.1f MB free). Adapting Whisper compute_type to int8_float16.",
-                            free_mb
-                        )
-                        compute_type = "int8_float16"
-            except (RuntimeError, OSError, ValueError) as arb_err:
+                from jarvis.skills.nvml_dxgi_vram_arbiter import request_vram_budget
+
+                granted, decision = request_vram_budget("whisper_stt", estimated_mb=350.0, auto_shed=True)
+                if not granted or decision.recommended_action == "cpu_fallback":
+                    tier_str = decision.pressure_tier.value if hasattr(decision.pressure_tier, "value") else str(decision.pressure_tier)
+                    logger.warning(
+                        "VRAM critically low (%.1f MB headroom, tier %s). Falling back Whisper STT to CPU (int8).",
+                        decision.headroom_mb,
+                        tier_str,
+                    )
+                    device = "cpu"
+                    compute_type = "int8"
+                elif decision.recommended_action == "gpu_int8":
+                    tier_str = decision.pressure_tier.value if hasattr(decision.pressure_tier, "value") else str(decision.pressure_tier)
+                    logger.info(
+                        "VRAM constrained (%.1f MB headroom, tier %s). Adapting Whisper compute_type to int8_float16.",
+                        decision.headroom_mb,
+                        tier_str,
+                    )
+                    compute_type = "int8_float16"
+            except (RuntimeError, OSError, ValueError, ImportError, AttributeError) as arb_err:
                 logger.debug("VRAM arbiter check note in STT init: %s", arb_err)
 
         # Try CUDA first if requested
