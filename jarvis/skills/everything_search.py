@@ -47,8 +47,8 @@ def find_es_executable() -> str | None:
             matches = list(WINGET_ES_GLOB.glob("voidtools.Everything.Cli*/es.exe"))
             if matches:
                 return str(matches[0])
-        except Exception:
-            pass
+        except OSError as e:
+            logger.debug("WinGet glob notice: %s", e)
 
     return None
 
@@ -82,7 +82,7 @@ def ensure_everything_service() -> bool:
                 )
                 time.sleep(0.35)
                 return True
-            except Exception as e:
+            except (OSError, RuntimeError, subprocess.SubprocessError) as e:
                 logger.debug("Failed to spawn Everything service: %s", e)
     return False
 
@@ -109,7 +109,8 @@ def _fallback_local_search(query: str, max_results: int = 20) -> str:
                     found.append(str(p))
                     if len(found) >= max_results:
                         break
-        except Exception:
+        except OSError as e:
+            logger.debug("Fallback scan dir notice: %s", e)
             continue
         if len(found) >= max_results:
             break
@@ -208,6 +209,6 @@ def search_everything(
 
     except subprocess.TimeoutExpired:
         return _fallback_local_search(query=q_clean, max_results=max_results)
-    except Exception as e:
+    except (OSError, RuntimeError, subprocess.SubprocessError) as e:
         logger.warning("Everything search error: %s. Falling back to local directory search.", e)
         return _fallback_local_search(query=q_clean, max_results=max_results)

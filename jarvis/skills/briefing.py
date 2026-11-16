@@ -42,7 +42,7 @@ def get_daily_briefing() -> str:
         for name, future in [("time", f_time), ("weather", f_weather), ("vitals", f_vitals), ("news", f_news)]:
             try:
                 results[name] = future.result(timeout=2.5)
-            except Exception as e:
+            except (TimeoutError, concurrent.futures.CancelledError, RuntimeError, OSError) as e:
                 logger.debug(f"Briefing fetch error for {name}: {e}")
                 results[name] = None
 

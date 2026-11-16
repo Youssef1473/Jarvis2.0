@@ -32,7 +32,7 @@ def web_search(query: str, max_results: int = 4) -> str:
         if not results:
             return f"No results found for query: '{query}'."
         return "\n\n".join(results)
-    except Exception as e:
+    except (requests.RequestException, TimeoutError, ValueError, KeyError, OSError, RuntimeError) as e:
         return f"Web search error: {e}"
 
 
@@ -67,7 +67,7 @@ def get_weather(city: str) -> str:
         wind = current.get("windspeed", "N/A")
 
         return f"Weather in {city_name}, {country}: {temp}°C, Wind Speed: {wind} km/h."
-    except Exception as e:
+    except (requests.RequestException, TimeoutError, ValueError, KeyError, OSError, RuntimeError) as e:
         return f"Weather lookup failed: {e}"
 
 
@@ -85,5 +85,5 @@ def get_wikipedia_summary(topic: str) -> str:
             data = res.json()
             return data.get("extract", "No extract found.")
         return f"Could not find Wikipedia entry for '{topic}'."
-    except Exception as e:
+    except (requests.RequestException, TimeoutError, ValueError, KeyError, OSError, RuntimeError) as e:
         return f"Wikipedia lookup error: {e}"
