@@ -17,7 +17,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Generator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from jarvis.audio.prosodic_chunker import TwoGearProsodicChunker
 from jarvis.core.stream_tool_parser import NonceGuardedStreamParser, ParsedToolCall
@@ -26,6 +26,11 @@ try:
     import jarvis.skills.job_object_sandbox as job_sandbox
 except ImportError:
     job_sandbox = None
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 logger = logging.getLogger("Jarvis.Antigravity")
 
@@ -197,11 +202,11 @@ class AntigravityDaemon:
         """Determines if a process ID is actively running on Windows / OS."""
         if pid <= 0:
             return False
-        try:
-            import psutil
-            return psutil.pid_exists(pid)
-        except Exception:
-            pass
+        if psutil is not None:
+            try:
+                return psutil.pid_exists(pid)
+            except (OSError, ValueError, ProcessLookupError, psutil.Error) as err:
+                logger.debug("psutil PID probe error for PID %s: %s", pid, err)
         if sys.platform == "win32":
             try:
                 import ctypes
@@ -220,7 +225,8 @@ class AntigravityDaemon:
                     kernel32.CloseHandle(h_proc)
                     return True
                 return False
-            except Exception:
+            except (OSError, ValueError, AttributeError, RuntimeError) as err:
+                logger.debug("Win32 OpenProcess PID check error for PID %s: %s", pid, err)
                 return False
         else:
             try:
@@ -242,7 +248,7 @@ class AntigravityDaemon:
                 # 1. Versioned multi-lease format: {"version": 1, "leases": {"101": {...}}}
                 if data.get("version") == 1 and isinstance(data.get("leases"), dict):
                     normalized_leases: dict[str, Any] = {}
-                    for k, v in data["leases"].items():
+                    for v in data["leases"].values():
                         if isinstance(v, dict) and "pid" in v:
                             try:
                                 pid_int = int(v["pid"])
@@ -269,8 +275,8 @@ class AntigravityDaemon:
                             }
                         }
                     }
-        except Exception:
-            pass
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError) as err:
+            logger.debug("Non-critical registry JSON parse error: %s", err)
 
         # 3. Legacy raw numeric PID format (e.g. "1001")
         if raw_text.isdigit():
@@ -287,8 +293,8 @@ class AntigravityDaemon:
                             }
                         }
                     }
-            except Exception:
-                pass
+            except (ValueError, TypeError, OverflowError) as err:
+                logger.debug("Non-critical numeric PID parse error: %s", err)
 
         return None
 
@@ -347,11 +353,11 @@ class AntigravityDaemon:
                 if acquired:
                     try:
                         kernel32.ReleaseMutex(h_mutex)
-                    except Exception as e:
+                    except (OSError, RuntimeError, ValueError) as e:
                         logger.debug("Error releasing Win32 named mutex: %s", e)
                 try:
                     kernel32.CloseHandle(h_mutex)
-                except Exception as e:
+                except (OSError, RuntimeError, ValueError) as e:
                     logger.debug("Error closing Win32 named mutex handle: %s", e)
         else:
             try:
@@ -379,13 +385,13 @@ class AntigravityDaemon:
                 if acquired and fd is not None:
                     try:
                         fcntl.flock(fd, fcntl.LOCK_UN)
-                    except Exception:
-                        pass
+                    except (OSError, ValueError) as e:
+                        logger.debug("Error unlocking flock mutex: %s", e)
                 if fd is not None:
                     try:
                         os.close(fd)
-                    except Exception:
-                        pass
+                    except (OSError, ValueError) as e:
+                        logger.debug("Error closing flock mutex fd: %s", e)
 
     @classmethod
     def _write_registry_atomic(cls, workspace: Path, registry: dict[str, Any], pid_for_tmp: int) -> bool:
@@ -503,163 +509,168 @@ class AntigravityDaemon:
                                 win_err,
                                 replace_err,
                             )
-                        raise replace_err
+                        raise
                 else:
-                    raise replace_err
+                    raise
             return True
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.debug("Failed atomic registry write: %s", e)
             if not preserve_tmp:
                 try:
                     if tmp_lock.exists():
                         tmp_lock.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                except OSError as unlink_err:
+                    logger.debug("Failed cleaning up tmp_lock %s: %s", tmp_lock, unlink_err)
             return False
 
     def _register_lease(self, pid: int, model: str) -> bool:
         """Registers a daemon PID in the shared multi-lease registry with thread and process locks.
         Returns True if and only if the lease was successfully persisted.
         """
-        with AntigravityDaemon._registry_lock:
-            with AntigravityDaemon._interprocess_lock(self.runtime_workspace) as ipc_ok:
-                if not ipc_ok:
-                    logger.error("Could not acquire cross-process lock for lease registration; aborting fail-closed.")
+        with (
+            AntigravityDaemon._registry_lock,
+            AntigravityDaemon._interprocess_lock(self.runtime_workspace) as ipc_ok,
+        ):
+            if not ipc_ok:
+                logger.error("Could not acquire cross-process lock for lease registration; aborting fail-closed.")
+                return False
+
+            lock_file = self.runtime_workspace / ".agy_lock"
+            registry: dict[str, Any] = {"version": 1, "leases": {}}
+            if lock_file.exists():
+                try:
+                    raw_text = lock_file.read_text(encoding="utf-8").strip()
+                except (OSError, UnicodeDecodeError) as e:
+                    logger.debug("Could not read .agy_lock for registration: %s", e)
+                    raw_text = ""
+
+                if not raw_text:
+                    # Fail-closed: Never overwrite empty .agy_lock blindly
+                    logger.warning("Preserving empty .agy_lock; cannot safely reconcile ownership; refusing to overwrite.")
                     return False
 
-                lock_file = self.runtime_workspace / ".agy_lock"
-                registry: dict[str, Any] = {"version": 1, "leases": {}}
-                if lock_file.exists():
-                    try:
-                        raw_text = lock_file.read_text(encoding="utf-8").strip()
-                    except Exception as e:
-                        logger.debug("Could not read .agy_lock for registration: %s", e)
-                        raw_text = ""
+                parsed = self._parse_registry(raw_text)
+                if parsed is None:
+                    # Fail-closed: Malformed or unparseable content. Preserve file and fail closed
+                    logger.warning("Preserving unparseable .agy_lock; cannot safely reconcile lease for PID %s", pid)
+                    return False
+                registry = parsed
 
-                    if not raw_text:
-                        # Fail-closed: Never overwrite empty .agy_lock blindly
-                        logger.warning("Preserving empty .agy_lock; cannot safely reconcile ownership; refusing to overwrite.")
-                        return False
+            # Audit existing leases: prune dead PIDs only (preserve live long-lived daemons)
+            leases = registry.setdefault("leases", {})
+            for existing_pid_str, info in list(leases.items()):
+                existing_pid = info.get("pid")
+                if isinstance(existing_pid, int) and existing_pid > 0 and not self._is_pid_alive(existing_pid):
+                    del leases[existing_pid_str]
 
-                    parsed = self._parse_registry(raw_text)
-                    if parsed is None:
-                        # Fail-closed: Malformed or unparseable content. Preserve file and fail closed
-                        logger.warning("Preserving unparseable .agy_lock; cannot safely reconcile lease for PID %s", pid)
-                        return False
-                    registry = parsed
-
-                # Audit existing leases: prune dead PIDs only (preserve live long-lived daemons)
-                leases = registry.setdefault("leases", {})
-                for existing_pid_str, info in list(leases.items()):
-                    existing_pid = info.get("pid")
-                    if isinstance(existing_pid, int) and existing_pid > 0:
-                        if not self._is_pid_alive(existing_pid):
-                            del leases[existing_pid_str]
-
-                try:
-                    clean_pid = int(pid)
-                    if clean_pid <= 0:
-                        clean_pid = 99999
-                except (ValueError, TypeError):
+            try:
+                clean_pid = int(pid)
+                if clean_pid <= 0:
                     clean_pid = 99999
+            except (ValueError, TypeError):
+                clean_pid = 99999
 
-                # Register or update this daemon's lease
-                leases[str(clean_pid)] = {
-                    "pid": clean_pid,
-                    "timestamp": time.time(),
-                    "model": model,
-                }
-                return self._write_registry_atomic(self.runtime_workspace, registry, clean_pid)
+            # Register or update this daemon's lease
+            leases[str(clean_pid)] = {
+                "pid": clean_pid,
+                "timestamp": time.time(),
+                "model": model,
+            }
+            return self._write_registry_atomic(self.runtime_workspace, registry, clean_pid)
 
     def _deregister_lease(self, pid: int) -> None:
         """Deregisters a daemon PID from the shared multi-lease registry with thread and process locks."""
-        with AntigravityDaemon._registry_lock:
-            with AntigravityDaemon._interprocess_lock(self.runtime_workspace) as ipc_ok:
-                if not ipc_ok:
-                    logger.error("Could not acquire cross-process lock for lease deregistration.")
-                    return
+        with (
+            AntigravityDaemon._registry_lock,
+            AntigravityDaemon._interprocess_lock(self.runtime_workspace) as ipc_ok,
+        ):
+            if not ipc_ok:
+                logger.error("Could not acquire cross-process lock for lease deregistration.")
+                return
 
-                lock_file = self.runtime_workspace / ".agy_lock"
-                if not lock_file.exists():
-                    return
-                try:
-                    raw_text = lock_file.read_text(encoding="utf-8").strip()
-                except Exception as e:
-                    logger.debug("Could not read .agy_lock for deregistration: %s", e)
-                    return
+            lock_file = self.runtime_workspace / ".agy_lock"
+            if not lock_file.exists():
+                return
+            try:
+                raw_text = lock_file.read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeDecodeError) as e:
+                logger.debug("Could not read .agy_lock for deregistration: %s", e)
+                return
 
-                if not raw_text:
-                    logger.debug("Preserving empty .agy_lock during daemon stop for PID %s", pid)
-                    return
+            if not raw_text:
+                logger.debug("Preserving empty .agy_lock during daemon stop for PID %s", pid)
+                return
 
-                registry = self._parse_registry(raw_text)
-                if registry is None:
-                    # Malformed or unrecognized lock file. Never delete blindly on stop.
-                    logger.debug("Preserving unparseable .agy_lock during daemon stop for PID %s", pid)
-                    return
+            registry = self._parse_registry(raw_text)
+            if registry is None:
+                # Malformed or unrecognized lock file. Never delete blindly on stop.
+                logger.debug("Preserving unparseable .agy_lock during daemon stop for PID %s", pid)
+                return
 
-                try:
-                    clean_pid = int(pid)
-                except (ValueError, TypeError):
-                    clean_pid = 99999
+            try:
+                clean_pid = int(pid)
+            except (ValueError, TypeError):
+                clean_pid = 99999
 
-                leases = registry.get("leases", {})
-                pid_str = str(clean_pid)
-                if pid_str in leases:
-                    del leases[pid_str]
-                    if len(leases) == 0:
-                        try:
-                            lock_file.unlink(missing_ok=True)
-                        except Exception as e:
-                            logger.debug("Failed unlinking empty .agy_lock: %s", e)
-                    else:
-                        self._write_registry_atomic(self.runtime_workspace, registry, clean_pid)
-
-    def _recover_stale_lock(self) -> None:
-        """Audits data/agy_runtime_workspace/.agy_lock for stale process leases (dead PIDs only)."""
-        with AntigravityDaemon._registry_lock:
-            with AntigravityDaemon._interprocess_lock(self.runtime_workspace) as ipc_ok:
-                if not ipc_ok:
-                    logger.error("Could not acquire cross-process lock for stale lease recovery.")
-                    return
-
-                lock_file = self.runtime_workspace / ".agy_lock"
-                if not lock_file.exists():
-                    return
-                try:
-                    raw_text = lock_file.read_text(encoding="utf-8").strip()
-                except Exception as e:
-                    logger.debug("Error inspecting .agy_lock: %s", e)
-                    return
-
-                if not raw_text:
-                    # Fail-closed: Never delete empty .agy_lock merely because of age
-                    logger.warning("Preserving empty .agy_lock during stale recovery; cannot safely reconcile ownership.")
-                    return
-
-                registry = self._parse_registry(raw_text)
-                if registry is None:
-                    # Fail-closed: Never delete unparseable .agy_lock merely because of age
-                    logger.warning("Preserving malformed/unparseable .agy_lock during stale recovery; failing closed.")
-                    return
-
-                leases = registry.get("leases", {})
-                pruned_any = False
-                for pid_str, info in list(leases.items()):
-                    lease_pid = info.get("pid")
-                    if not isinstance(lease_pid, int) or lease_pid <= 0 or not self._is_pid_alive(lease_pid):
-                        del leases[pid_str]
-                        pruned_any = True
-                    # Intentionally long-lived daemons: do NOT prune live PIDs based solely on timestamp!
-
+            leases = registry.get("leases", {})
+            pid_str = str(clean_pid)
+            if pid_str in leases:
+                del leases[pid_str]
                 if len(leases) == 0:
                     try:
                         lock_file.unlink(missing_ok=True)
-                        logger.info("Purged stale .agy_lock (all leases dead) from agy_runtime_workspace.")
-                    except Exception as e:
-                        logger.debug("Failed to delete empty .agy_lock: %s", e)
-                elif pruned_any:
-                    self._write_registry_atomic(self.runtime_workspace, registry, os.getpid())
+                    except OSError as e:
+                        logger.debug("Failed unlinking empty .agy_lock: %s", e)
+                else:
+                    self._write_registry_atomic(self.runtime_workspace, registry, clean_pid)
+
+    def _recover_stale_lock(self) -> None:
+        """Audits data/agy_runtime_workspace/.agy_lock for stale process leases (dead PIDs only)."""
+        with (
+            AntigravityDaemon._registry_lock,
+            AntigravityDaemon._interprocess_lock(self.runtime_workspace) as ipc_ok,
+        ):
+            if not ipc_ok:
+                logger.error("Could not acquire cross-process lock for stale lease recovery.")
+                return
+
+            lock_file = self.runtime_workspace / ".agy_lock"
+            if not lock_file.exists():
+                return
+            try:
+                raw_text = lock_file.read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeDecodeError) as e:
+                logger.debug("Error inspecting .agy_lock: %s", e)
+                return
+
+            if not raw_text:
+                # Fail-closed: Never delete empty .agy_lock merely because of age
+                logger.warning("Preserving empty .agy_lock during stale recovery; cannot safely reconcile ownership.")
+                return
+
+            registry = self._parse_registry(raw_text)
+            if registry is None:
+                # Fail-closed: Never delete unparseable .agy_lock merely because of age
+                logger.warning("Preserving malformed/unparseable .agy_lock during stale recovery; failing closed.")
+                return
+
+            leases = registry.get("leases", {})
+            pruned_any = False
+            for pid_str, info in list(leases.items()):
+                lease_pid = info.get("pid")
+                if not isinstance(lease_pid, int) or lease_pid <= 0 or not self._is_pid_alive(lease_pid):
+                    del leases[pid_str]
+                    pruned_any = True
+                # Intentionally long-lived daemons: do NOT prune live PIDs based solely on timestamp!
+
+            if len(leases) == 0:
+                try:
+                    lock_file.unlink(missing_ok=True)
+                    logger.info("Purged stale .agy_lock (all leases dead) from agy_runtime_workspace.")
+                except OSError as e:
+                    logger.debug("Failed to delete empty .agy_lock: %s", e)
+            elif pruned_any:
+                self._write_registry_atomic(self.runtime_workspace, registry, os.getpid())
 
     def _clean_workspace(self) -> None:
         """Workspace hygiene guard: purges stray files to avoid CLI startup indexing latency."""
@@ -681,9 +692,9 @@ class AntigravityDaemon:
                         item.unlink(missing_ok=True)
                     elif item.is_dir():
                         shutil.rmtree(item, ignore_errors=True)
-                except Exception as e:
+                except (OSError, ValueError) as e:
                     logger.debug("Could not purge workspace item %s: %s", item, e)
-        except Exception as e:
+        except (OSError, ValueError) as e:
             logger.debug("Workspace hygiene purge notice: %s", e)
 
     @classmethod
@@ -705,7 +716,8 @@ class AntigravityDaemon:
                     if is_windows:
                         import msvcrt
                         pipe_handle = msvcrt.get_osfhandle(raw_fd)
-            except Exception:
+            except (OSError, ValueError, AttributeError) as err:
+                logger.debug("Pipe handle extraction notice: %s", err)
                 pipe_handle = None
                 raw_fd = None
 
@@ -794,18 +806,18 @@ class AntigravityDaemon:
         """Kills an unstarted/suspended child and releases its pipes (fail-closed)."""
         try:
             proc.kill()
-        except Exception:
-            pass
+        except (OSError, subprocess.SubprocessError) as kill_err:
+            logger.debug("Failed killing unstarted proc: %s", kill_err)
         for pipe in (proc.stdin, proc.stdout, proc.stderr):
             if pipe and not getattr(pipe, "closed", True):
                 try:
                     pipe.close()
-                except Exception:
-                    pass
+                except OSError as pipe_err:
+                    logger.debug("Failed closing unstarted proc pipe: %s", pipe_err)
         try:
             proc.wait(timeout=0.5)
-        except Exception:
-            pass
+        except (OSError, subprocess.SubprocessError, TimeoutError) as wait_err:
+            logger.debug("Failed waiting for unstarted proc: %s", wait_err)
 
     def start(self, model: str, effort: str | None = None) -> bool:
         """Spawns persistent worker process with --input-format stream-json contained in a Win32 Job Object."""
@@ -858,7 +870,7 @@ class AntigravityDaemon:
                                 kill_on_close=True,
                                 requested_affinity=0xFF00,
                             )
-                        except Exception as e:
+                        except (OSError, RuntimeError, ValueError) as e:
                             logger.error("Job Object creation error for Antigravity daemon: %s", e)
                             h_job = None
 
@@ -874,7 +886,7 @@ class AntigravityDaemon:
                     assigned = False
                     try:
                         assigned = job_sandbox.assign_process_to_job(h_job, proc) if job_sandbox else False
-                    except Exception as e:
+                    except (OSError, RuntimeError, ValueError) as e:
                         logger.error("Job Object assignment error for Antigravity daemon: %s", e)
                         assigned = False
 
@@ -883,8 +895,8 @@ class AntigravityDaemon:
                         if job_sandbox:
                             try:
                                 job_sandbox.terminate_and_close_job(h_job)
-                            except Exception:
-                                pass
+                            except (OSError, RuntimeError, ValueError) as job_err:
+                                logger.debug("Failed terminating/closing Job Object on assignment failure: %s", job_err)
                         self._job_handle = None
                         self.proc = None
                         logger.error("Failed to assign Antigravity daemon to Job Object; aborting startup fail-closed.")
@@ -894,7 +906,7 @@ class AntigravityDaemon:
                     resumed = False
                     try:
                         resumed = job_sandbox.resume_process(proc) if job_sandbox else False
-                    except Exception as e:
+                    except (OSError, RuntimeError, ValueError) as e:
                         logger.error("Failed to resume suspended Antigravity daemon: %s", e)
                         resumed = False
 
@@ -903,8 +915,8 @@ class AntigravityDaemon:
                         if job_sandbox:
                             try:
                                 job_sandbox.terminate_and_close_job(h_job)
-                            except Exception:
-                                pass
+                            except (OSError, RuntimeError, ValueError) as job_err:
+                                logger.debug("Failed terminating/closing Job Object on resume failure: %s", job_err)
                         self._job_handle = None
                         self.proc = None
                         logger.error("Failed to resume suspended Antigravity daemon; aborting startup fail-closed.")
@@ -913,7 +925,7 @@ class AntigravityDaemon:
                 # Increment generation and record my_gen under lock
                 self._generation += 1
                 my_gen = self._generation
-            except Exception as e:
+            except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as e:
                 logger.error("Failed to spawn Antigravity persistent daemon: %s", e)
                 self.stop()
                 return False
@@ -937,11 +949,11 @@ class AntigravityDaemon:
                         self.conversation_id = data.get("conversation_id")
                         handshake_ok = True
                         break
-                except Exception:
-                    pass
+                except (json.JSONDecodeError, ValueError, KeyError, TypeError) as parse_err:
+                    logger.debug("Non-critical init handshake line parse notice: %s", parse_err)
                 if time.time() >= init_deadline:
                     break
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError, TimeoutError, RuntimeError) as e:
             logger.debug("Antigravity daemon handshake read notice: %s", e)
 
         # Phase 3: Finalize startup or fail-closed under _lifecycle_lock
@@ -951,7 +963,7 @@ class AntigravityDaemon:
                     registered = False
                     try:
                         registered = self._register_lease(self.proc.pid, model)
-                    except Exception as e:
+                    except (OSError, RuntimeError, ValueError) as e:
                         logger.error("Lease registration error for PID %s: %s", self.proc.pid, e)
                         registered = False
 
@@ -997,15 +1009,15 @@ class AntigravityDaemon:
                 try:
                     if not getattr(proc.stdin, "closed", True):
                         proc.stdin.close()
-                except Exception:
-                    pass
+                except OSError as e:
+                    logger.debug("Error closing daemon stdin: %s", e)
 
             # 2. Allow a short, bounded grace period for the root process to exit
             if proc and proc.poll() is None:
                 try:
                     proc.wait(timeout=0.5)
-                except Exception:
-                    pass
+                except (OSError, subprocess.SubprocessError, TimeoutError) as e:
+                    logger.debug("Error waiting for daemon during stop: %s", e)
 
             # 3. Unconditionally terminate and close the Job Object.
             # Critical invariant: Even if the parent process exited gracefully, descendant
@@ -1014,7 +1026,7 @@ class AntigravityDaemon:
             if job_handle is not None and job_sandbox is not None:
                 try:
                     job_sandbox.terminate_and_close_job(job_handle)
-                except Exception as e:
+                except (OSError, RuntimeError, ValueError) as e:
                     logger.debug("Error while terminating/closing Job Object: %s", e)
 
             # 4. Fallback process termination for root process (e.g. non-Windows or if job was not attached)
@@ -1023,10 +1035,10 @@ class AntigravityDaemon:
                     proc.terminate()
                     try:
                         proc.wait(timeout=1.0)
-                    except subprocess.TimeoutExpired:
+                    except (subprocess.TimeoutExpired, TimeoutError):
                         proc.kill()
                         proc.wait(timeout=0.5)
-                except Exception as e:
+                except (OSError, subprocess.SubprocessError) as e:
                     logger.debug("Error terminating Antigravity daemon root process: %s", e)
 
             # 5. Close remaining pipe resources safely
@@ -1035,15 +1047,15 @@ class AntigravityDaemon:
                     if pipe and not getattr(pipe, "closed", True):
                         try:
                             pipe.close()
-                        except Exception:
-                            pass
+                        except OSError as e:
+                            logger.debug("Error closing pipe during daemon stop: %s", e)
 
             # 6. Clean up lease in shared registry strictly when positive PID ownership is verified
             proc_pid = getattr(proc, "pid", None) if proc else None
             if isinstance(proc_pid, int) and proc_pid > 0:
                 try:
                     self._deregister_lease(proc_pid)
-                except Exception as e:
+                except (OSError, RuntimeError, ValueError) as e:
                     logger.debug("Safe lock deregistration notice: %s", e)
 
     def __del__(self):
@@ -1147,7 +1159,7 @@ class AntigravityDaemon:
                                 self.conversation_id = final_result_data.get("conversation_id")
                             break
 
-                    except Exception as parse_err:
+                    except (json.JSONDecodeError, ValueError, KeyError, TypeError) as parse_err:
                         logger.debug("Daemon parse notice on stream line: %s (%s)", line_str[:60], parse_err)
 
             except (ValueError, OSError) as pipe_err:
@@ -1155,7 +1167,7 @@ class AntigravityDaemon:
                     logger.warning("Antigravity daemon pipe error: %s", pipe_err)
                 self.stop()
                 return None
-            except Exception as stream_err:
+            except (subprocess.SubprocessError, TimeoutError, RuntimeError) as stream_err:
                 logger.warning("Antigravity daemon streaming read error: %s", stream_err)
                 self.stop()
                 return None
@@ -1208,7 +1220,7 @@ class AntigravityBridge:
     """
 
     # Comprehensive catalog of Antigravity models and convenient shorthand aliases
-    MODEL_CATALOG: dict[str, str] = {
+    MODEL_CATALOG: ClassVar[dict[str, str]] = {
         # Gemini 3.8 Flash Tier (Primary Active Engine - High, Medium, Low Reasoning)
         "gemini-3.8-flash": "gemini-3.8-flash-high",
         "gemini-3.8-flash-high": "gemini-3.8-flash-high",
@@ -1261,17 +1273,17 @@ class AntigravityBridge:
         "argon-low": "gemini-4-argon-low",
     }
 
-    TIER_FLASH = [
+    TIER_FLASH: ClassVar[list[str]] = [
         "gemini-3.8-flash-medium",
         "gemini-3.8-flash-high",
         "gemini-3.8-flash-low",
     ]
-    TIER_ARGON = [
+    TIER_ARGON: ClassVar[list[str]] = [
         "gemini-4-argon-high",
         "gemini-4-argon-medium",
         "gemini-4-argon-low",
     ]
-    TIER_CLAUDE = [
+    TIER_CLAUDE: ClassVar[list[str]] = [
         "claude-sonnet-4-6",
         "claude-opus-4-6-thinking",
     ]
@@ -1433,7 +1445,7 @@ class AntigravityBridge:
                 logger.info("Evicting LRU warm daemon for %s", oldest_key)
                 try:
                     oldest_daemon.stop()
-                except Exception as e:
+                except (OSError, RuntimeError, ValueError) as e:
                     logger.debug("Error stopping evicted daemon: %s", e)
 
             new_daemon = AntigravityDaemon(
@@ -1567,10 +1579,10 @@ class AntigravityBridge:
         if has_steps and word_count >= 15:
             return True
 
-        if word_count > 35 and ("```" in p or "def " in p or "class " in p or "error" in p or "traceback" in p):
-            return True
-
-        return False
+        return bool(
+            word_count > 35
+            and ("```" in p or "def " in p or "class " in p or "error" in p or "traceback" in p)
+        )
 
     def stop(self):
         """Cleanly terminates all persistent warm daemons in the pool and any child processes."""
@@ -1590,20 +1602,20 @@ class AntigravityBridge:
         for s in sandboxes_to_stop:
             try:
                 s.terminate_tree()
-            except Exception:
-                pass
+            except (OSError, subprocess.SubprocessError, TimeoutError, RuntimeError) as err:
+                logger.debug("Sandbox terminate notice on stop: %s", err)
 
         for d in daemons_to_stop:
             try:
                 d.stop()
-            except Exception:
-                pass
+            except (OSError, RuntimeError, ValueError) as err:
+                logger.debug("Daemon stop notice on stop: %s", err)
 
         if active_d:
             try:
                 active_d.stop()
-            except Exception:
-                pass
+            except (OSError, RuntimeError, ValueError) as err:
+                logger.debug("Active daemon stop notice on stop: %s", err)
 
     def abort_active_turn(self) -> None:
         """Interrupts any in-flight persistent daemon turn or one-shot process across all daemons in the pool."""
@@ -1621,20 +1633,20 @@ class AntigravityBridge:
         for s in sandboxes_to_abort:
             try:
                 s.terminate_tree()
-            except Exception:
-                pass
+            except (OSError, subprocess.SubprocessError, TimeoutError, RuntimeError) as err:
+                logger.debug("Sandbox terminate notice on abort: %s", err)
 
         if active_d:
             try:
                 active_d.abort_active_turn()
-            except Exception:
-                pass
+            except (OSError, RuntimeError, ValueError) as err:
+                logger.debug("Active daemon abort notice on abort: %s", err)
 
         for d in pool_daemons:
             try:
                 d.abort_active_turn()
-            except Exception:
-                pass
+            except (OSError, RuntimeError, ValueError) as err:
+                logger.debug("Daemon abort notice on abort: %s", err)
 
     def __del__(self):
         self.stop()
@@ -1839,7 +1851,7 @@ class AntigravityBridge:
             right = float(arithmetic_match.group(2))
             answer = left + right
             if abs(answer - round(answer)) < 1e-9:
-                answer_text = str(int(round(answer)))
+                answer_text = str(round(answer))
             else:
                 answer_text = str(answer)
             return {
@@ -1977,7 +1989,7 @@ class AntigravityBridge:
                             if not remaining_non_flash and not self.is_claude_exhausted():
                                 remaining_non_flash = ["claude-sonnet-4-6"]
                             cascade_models = remaining_non_flash
-                except Exception as d_err:
+                except (OSError, subprocess.SubprocessError, TimeoutError, RuntimeError, ValueError) as d_err:
                     logger.debug("Persistent daemon turn encountered error: %s", d_err)
 
             logger.debug("Persistent daemon fast-path bypassed or failed; cascading to one-shot execution.")
@@ -2149,7 +2161,7 @@ class AntigravityBridge:
                 "duration_seconds": timeout,
                 "usage": {},
             }
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError, TimeoutError, ValueError, RuntimeError) as e:
             logger.error("Antigravity execution failed: %s", e)
             return {
                 "status": "ERROR",
@@ -2228,8 +2240,8 @@ class AntigravityBridge:
                 logger.info("Antigravity streaming cancelled during startup (generation mismatch)")
                 try:
                     sandboxed.terminate_tree()
-                except Exception:
-                    pass
+                except (OSError, subprocess.SubprocessError, TimeoutError) as err:
+                    logger.debug("Bridge subprocess termination notice during cancellation: %s", err)
                 return {
                     "status": "ABORTED",
                     "response": "Request cancelled during process initialization.",
@@ -2274,7 +2286,7 @@ class AntigravityBridge:
                             if final_result_data.get("conversation_id"):
                                 self.last_conversation_id = final_result_data.get("conversation_id")
 
-                    except Exception as parse_err:
+                    except (json.JSONDecodeError, ValueError, KeyError, TypeError) as parse_err:
                         logger.debug("Non-critical stream JSON parse error on line: %s (%s)", line_str[:60], parse_err)
 
             except (ValueError, OSError) as pipe_err:
@@ -2286,8 +2298,8 @@ class AntigravityBridge:
             if proc.stderr and not getattr(proc.stderr, "closed", True):
                 try:
                     stderr_out = proc.stderr.read().strip()
-                except Exception:
-                    pass
+                except (OSError, ValueError) as err:
+                    logger.debug("Error draining subprocess stderr: %s", err)
             proc.wait(timeout=5.0)
 
             if proc.returncode != 0:
@@ -2320,7 +2332,7 @@ class AntigravityBridge:
                 "model": model,
             }
 
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError, TimeoutError, ValueError, RuntimeError) as e:
             logger.error("Antigravity streaming failed: %s", e)
             elapsed = time.perf_counter() - t_start
             return {
@@ -2335,8 +2347,8 @@ class AntigravityBridge:
             if sandboxed:
                 try:
                     sandboxed.terminate_tree()
-                except Exception:
-                    pass
+                except (OSError, subprocess.SubprocessError, TimeoutError) as err:
+                    logger.debug("Bridge subprocess termination notice in finally: %s", err)
 
     @staticmethod
     def _extract_speech_chunk(buffer: str) -> tuple[str | None, str]:
