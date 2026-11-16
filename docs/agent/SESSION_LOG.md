@@ -4437,3 +4437,26 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Live E2E Smoke Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing (Exit code: 0).
    - **Tier 1 Fast Test Suite:** 1,491 passed, 0 failed, 11 skipped (Exit code: 0).
    - **SQLite WAL & Vector Table Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
+
+---
+
+## Session Log: 2026-11-16 — CI Hardening: Enforce Zero-Ruff & AST-Grep Gate in CI
+
+- **Session Timestamp:** 2026-11-16T12:05:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Active Git Branch:** `ci/enforce-zero-ruff-and-ast-grep-gate` (branched from `main` @ `ff34799`)
+- **Starting Git HEAD SHA:** `ff347996592703d45fc25e86573b5023682e5780` (`ff34799`)
+- **Active Milestone:** `CI Hardening & Static Analysis Regression Lock (tools/lint.py + tools/diagnostics.py)`
+
+### Summary of Actions & Deliverables
+1. **CI Workflow Hardening (`.github/workflows/ci.yml`):**
+   - Added a blocking `Verify Zero Static Lint & AST-Grep Diagnostics (jarvis/)` step to `security-gate` executing `python tools/lint.py check jarvis/` and `python tools/diagnostics.py check jarvis/`.
+   - Prevents static analysis regression across the entire `jarvis/` codebase by failing GitHub Actions if any Ruff diagnostic or AST-Grep structural rule is violated.
+2. **Local Verification Gates & Invariants:**
+   - Static Linter: 0 Ruff diagnostics in `jarvis/` (`tools/lint.py`).
+   - Structural Rules: 0 AST-Grep violations in `jarvis/` (`tools/diagnostics.py`).
+   - Consecutive Turns E2E Smoke Gate: 4/4 turns passed (`tools/verify_consecutive_turns.py --headless`).
+   - Test Manifest Accounting: 2,472 collected nodes accounted for (100.0%, 0 drift).
+   - Test Classifier Integrity: 0 orphans, 0 duplicates, 2,472 valid nodes confirmed.
+   - SQLite Parity: `PRAGMA integrity_check` = `ok`, `facts` = 238, `facts_vec` = 238.
