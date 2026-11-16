@@ -95,7 +95,7 @@ def _db_worker_loop():
                 if conn:
                     conn.close()
                 _db_queue.task_done()
-        except Exception as e:
+        except (sqlite3.Error, OSError, ValueError, RuntimeError) as e:
             logger.error("Async SQLite photo worker error: %s", e)
 
 
@@ -119,7 +119,7 @@ def shutdown_photo_manager(timeout: float = 2.0):
             _db_queue.put(None)
             _db_thread.join(timeout=timeout)
         _db_thread = None
-    except Exception as e:
+    except (RuntimeError, TimeoutError, OSError) as e:
         logger.debug("Photo manager shutdown notice: %s", e)
 
 
@@ -211,7 +211,7 @@ def save_photo(file_path: str) -> str:
             f"Resolution: {result['dimensions']}, Size: {result['file_size_kb']} KB. "
             f"EXIF metadata stripped and stored in data/photos/."
         )
-    except Exception as e:
+    except (OSError, ValueError, PermissionError) as e:
         logger.error("Failed to save photo from path '%s': %s", file_path, e)
         return f"Failed to save photo: {e}"
 
@@ -225,7 +225,7 @@ def save_clipboard_photo() -> str:
     """Event-driven clipboard extraction. Executes strictly on demand without background polling."""
     try:
         data = ImageGrab.grabclipboard()
-    except Exception as err:
+    except (OSError, ValueError, RuntimeError, ImportError) as err:
         return f"Clipboard access error: {err}"
 
     if data is None:
@@ -243,7 +243,7 @@ def save_clipboard_photo() -> str:
                 f"Archived clipboard image (ID: {result['photo_id']}), Sir. "
                 f"Resolution: {result['dimensions']}, Size: {result['file_size_kb']} KB."
             )
-        except Exception as e:
+        except (OSError, ValueError) as e:
             return f"Failed to process clipboard image: {e}"
 
     elif isinstance(data, list):
@@ -288,7 +288,7 @@ def list_photos(limit: int = 10) -> str:
             lines.append(f"• ID: {r['photo_id']} | {r['dimensions']} | {size_kb} KB | {r['created_at']}{cap}")
 
         return "\n".join(lines)
-    except Exception as e:
+    except (sqlite3.Error, OSError, ValueError) as e:
         logger.error("Failed to list photos: %s", e)
         return f"Error retrieving photo gallery: {e}"
 
@@ -313,8 +313,8 @@ def describe_photo(photo_id: str) -> str:
                 target_path = Path(row["file_path"])
         finally:
             conn.close()
-    except Exception:
-        pass
+    except (sqlite3.Error, OSError) as e:
+        logger.debug("Error inspecting photo database: %s", e)
 
     if not target_path or not target_path.exists():
         direct_candidate = PHOTOS_DIR / (clean_id if clean_id.endswith(".jpg") else f"{clean_id}.jpg")
@@ -326,7 +326,7 @@ def describe_photo(photo_id: str) -> str:
     try:
         with open(target_path, "rb") as f:
             image_bytes = f.read()
-    except Exception as e:
+    except (OSError, PermissionError, FileNotFoundError) as e:
         return f"Error reading photo from disk: {e}"
 
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -356,7 +356,7 @@ def describe_photo(photo_id: str) -> str:
             gc.collect(0)
 
             return f"[Visual Analysis for {clean_id}]: {caption}"
-        except Exception as err:
+        except (ConnectionError, TimeoutError, OSError, ValueError, RuntimeError, Exception) as err:  # noqa: BLE001 - Cloud vision API client can raise arbitrary API errors
             logger.warning("Cloud vision API error (%s). Checking alternative bridge...", err)
 
     del image_bytes
