@@ -102,7 +102,7 @@ def audit_webpage_accessibility(url: str = "http://127.0.0.1:20129") -> str:
                     lines.append(f"... and {len(issues) - 10} additional warnings.")
 
             return "\n".join(lines)
-    except Exception as e:
+    except (RuntimeError, OSError, ValueError, TimeoutError) as e:
         logger.warning("Playwright-based a11y audit fallback: %s", e)
         return f"Accessibility audit completed via basic heuristic: unable to load page '{clean_url}' ({e})."
 
@@ -181,7 +181,7 @@ def audit_webpage_performance(url: str = "http://127.0.0.1:20129") -> str:
                 lines.append("  *Warning: High DOM node count (>1500). Consider virtualizing lists or using `content-visibility: auto`.*")
 
             return "\n".join(lines)
-    except Exception as e:
+    except (RuntimeError, OSError, ValueError, TimeoutError) as e:
         logger.warning("Performance audit fallback: %s", e)
         return f"Performance audit encountered an error profiling '{clean_url}': {e}"
 
@@ -242,6 +242,6 @@ def capture_devtools_snapshot(url: str = "http://127.0.0.1:20129", max_elements:
             if len(elements) > max_elements:
                 lines.append(f"... and {len(elements) - max_elements} more elements.")
             return "\n".join(lines)
-    except Exception as e:
+    except (RuntimeError, OSError, ValueError, TimeoutError) as e:
         logger.warning("Snapshot fallback: %s", e)
         return f"DevTools snapshot encountered an error for '{clean_url}': {e}"

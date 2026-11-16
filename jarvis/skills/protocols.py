@@ -33,8 +33,8 @@ def execute_protocol(protocol_name: str) -> str:
         # 2. Lockdown Protocol: wipe clipboard, minimize all, lock workstation
         try:
             pyperclip.copy("")
-        except Exception:
-            pass
+        except (pyperclip.PyperclipException, RuntimeError, OSError) as e:
+            logger.debug("Clipboard purge notice: %s", e)
         minimize_all_windows()
         lock_workstation()
         return "Lockdown protocol engaged, Sir. Clipboard sanitized, desktop minimized, workstation locked."

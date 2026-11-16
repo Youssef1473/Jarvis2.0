@@ -4,6 +4,7 @@ import datetime
 import ipaddress
 import logging
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
@@ -82,11 +83,8 @@ def _is_safe_url(url: str) -> bool:
 
         path_lower = parsed.path.lower()
         disallowed_exts = (".pdf", ".exe", ".zip", ".tar", ".gz", ".mp4", ".mp3", ".png", ".jpg", ".jpeg", ".apk")
-        if any(path_lower.endswith(ext) for ext in disallowed_exts):
-            return False
-
-        return True
-    except Exception:
+        return not any(path_lower.endswith(ext) for ext in disallowed_exts)
+    except (ValueError, AttributeError):
         return False
 
 
@@ -113,7 +111,7 @@ def _fetch_page_content(url: str, timeout: float = 4.0) -> str | None:
         parser.feed(raw_html)
         text = parser.get_text()
         return text if len(text) > 100 else None
-    except Exception as e:
+    except (urllib.error.URLError, TimeoutError, OSError, RuntimeError, ValueError) as e:
         logger.debug(f"Webpage fetch notice for '{url}': {e}")
         return None
 
@@ -149,7 +147,7 @@ def deep_research(topic: str, max_sources: int = 3) -> str:
                         "url": href,
                         "snippet": hit.get("body", ""),
                     })
-    except Exception as e:
+    except (urllib.error.URLError, TimeoutError, OSError, RuntimeError, ValueError) as e:
         logger.warning(f"DuckDuckGo search error in deep research: {e}")
 
     if not search_hits:
@@ -176,7 +174,8 @@ def deep_research(topic: str, max_sources: int = 3) -> str:
                     # Fallback to search snippet if page blocked
                     src_info["body"] = src_info["snippet"]
                     extracted_sources.append(src_info)
-            except Exception:
+            except (urllib.error.URLError, TimeoutError, OSError, RuntimeError, ValueError) as e:
+                logger.debug("Source extraction fallback notice: %s", e)
                 src_info["body"] = src_info["snippet"]
                 extracted_sources.append(src_info)
 
@@ -215,7 +214,7 @@ def deep_research(topic: str, max_sources: int = 3) -> str:
         report_path = RESEARCH_DIR / f"{slug}.md"
         report_path.write_text(full_report, encoding="utf-8")
         save_notice = f" Full dossier saved to '{report_path}'."
-    except Exception as e:
+    except (OSError, UnicodeEncodeError) as e:
         logger.debug(f"Report save notice: {e}")
         save_notice = ""
 

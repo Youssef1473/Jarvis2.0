@@ -78,7 +78,7 @@ def search_modern_web_guidance(query: str, limit: int = 5) -> str:
             results = results[:limit]
         except subprocess.TimeoutExpired:
             return f"Modern Web Guidance search timed out for query '{clean_query}'."
-        except Exception as e:
+        except (subprocess.SubprocessError, OSError, ValueError, RuntimeError, json.JSONDecodeError) as e:
             logger.error("Error invoking modern-web-guidance: %s", e)
             return f"Error querying modern web guidance: {e}"
 
@@ -138,7 +138,7 @@ def retrieve_modern_web_guide(guide_id: str, max_chars: int = 4000) -> str:
             _GUIDE_CACHE[clean_id] = content
         except subprocess.TimeoutExpired:
             return f"Timeout retrieving guide '{clean_id}'."
-        except Exception as e:
+        except (subprocess.SubprocessError, OSError, ValueError, RuntimeError) as e:
             logger.error("Error retrieving modern web guide: %s", e)
             return f"Error retrieving modern web guide '{clean_id}': {e}"
 

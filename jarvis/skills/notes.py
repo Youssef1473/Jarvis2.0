@@ -72,7 +72,7 @@ def read_recent_notes(count: int = 5) -> str:
         _ensure_notes_storage()
         try:
             raw = NOTES_FILE.read_text(encoding="utf-8")
-        except Exception as e:
+        except (OSError, UnicodeDecodeError, ValueError) as e:
             return f"Unable to read notes archive: {e}"
 
     # Parse entries by ### header
@@ -113,7 +113,7 @@ def search_notes(keyword: str) -> str:
         _ensure_notes_storage()
         try:
             raw = NOTES_FILE.read_text(encoding="utf-8")
-        except Exception as e:
+        except (OSError, UnicodeDecodeError, ValueError) as e:
             return f"Unable to read notes archive: {e}"
 
     blocks = [b.strip() for b in raw.split("### ") if b.strip() and not b.startswith("# Jarvis")]

@@ -29,6 +29,6 @@ def play_youtube_media(query: str) -> str:
     try:
         webbrowser.open_new_tab(url)
         return f"Streaming '{clean}' on YouTube, Sir."
-    except Exception as e:
+    except (webbrowser.Error, OSError, RuntimeError) as e:
         logger.error(f"Failed to launch YouTube media: {e}")
         return f"Could not stream media on YouTube: {e}"

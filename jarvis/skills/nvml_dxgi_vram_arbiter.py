@@ -5,12 +5,15 @@ preventing WDDM 3.1 PCIe memory paging and faster-whisper transcription spikes.
 """
 import ctypes
 import glob
+import logging
 import os
 from typing import Any
 
 import psutil
 
 from jarvis.skills.base import SkillRegistry
+
+logger = logging.getLogger("Jarvis.VramArbiter")
 
 
 class c_nvmlMemory_t(ctypes.Structure):
@@ -153,14 +156,14 @@ def audit_vram_and_thermal_budget(reclaim_if_pressured: bool = True) -> dict[str
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                     actions.append("flushed_cuda_allocator_cache")
-            except (ImportError, Exception):
-                pass
+            except (ImportError, RuntimeError, AttributeError) as e:
+                logger.debug("CUDA allocator flush notice: %s", e)
             try:
                 import gc
                 gc.collect()
                 actions.append("invoked_host_gc")
-            except Exception:
-                pass
+            except (RuntimeError, OSError, AttributeError) as e:
+                logger.debug("Host GC invocation notice: %s", e)
             if actions:
                 reclaimed_action = ";".join(actions)
 
@@ -173,7 +176,7 @@ def audit_vram_and_thermal_budget(reclaim_if_pressured: bool = True) -> dict[str
             "compute_processes": process_breakdown,
             "reclaimed_action": reclaimed_action,
         }
-    except Exception as e:
+    except (RuntimeError, ValueError, OSError, AttributeError) as e:
         return {
             "status": "error",
             "reason": f"NVML query exception: {e}",

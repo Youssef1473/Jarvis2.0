@@ -1,12 +1,16 @@
 """Calendar, schedule management, and Stark executive morning briefing protocol."""
 import datetime
+import logging
 import re
+import urllib.error
 from typing import Any
 
 from jarvis.core.config_loader import load_config
 from jarvis.core.memory import MemoryManager
 from jarvis.skills.base import SkillRegistry
 from jarvis.skills.web_search import get_weather
+
+logger = logging.getLogger("Jarvis.CalendarManager")
 
 _memory_instance = None
 
@@ -79,7 +83,7 @@ def list_calendar_events(include_all: bool = False) -> str:
         try:
             dt = datetime.datetime.strptime(d_str, "%Y-%m-%d")
             day_header = dt.strftime("%A, %B %d, %Y")
-        except Exception:
+        except (ValueError, TypeError):
             day_header = d_str
         lines.append(f"• {day_header}:")
         for e in grouped[d_str]:
@@ -124,8 +128,8 @@ def delete_calendar(calendar_name: str = "", calendar_id: Any = None, clear_even
     if calendar_id is not None:
         try:
             target_id = int(calendar_id)
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            logger.debug("Calendar ID parse notice: %s", e)
 
     if target_id is None and target_title:
         for c in cals:
@@ -165,7 +169,8 @@ def morning_protocol(city: str = "") -> str:
     # 1. Weather
     try:
         weather_info = get_weather(target_city)
-    except Exception:
+    except (RuntimeError, OSError, ValueError, urllib.error.URLError) as e:
+        logger.debug("Weather query notice: %s", e)
         weather_info = "Weather telemetry unavailable."
 
     # 2. Schedule
@@ -193,8 +198,8 @@ def morning_protocol(city: str = "") -> str:
         email_info = check_unread_emails()
         if "Neither Gmail nor Outlook" not in email_info:
             email_section = f"\nInbox Telemetry: {email_info}"
-    except Exception:
-        pass
+    except (KeyError, ValueError, TypeError, OSError) as e:
+        logger.debug("Email briefing check notice: %s", e)
 
     briefing = (
         f"Good morning, Sir. Today is {greeting_time}.\n"

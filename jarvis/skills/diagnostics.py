@@ -117,7 +117,7 @@ def profile_runtime(mode: str = "dump", target_pid: int | None = None) -> str:
             metadata={"pid": pid, "mode": clean_mode, "status": "timeout"},
         )
         return f"Diagnostic profiling timed out while sampling PID {pid}, Sir."
-    except Exception as e:
+    except (OSError, RuntimeError, subprocess.SubprocessError) as e:
         logger.error(f"Failed to profile runtime: {e}")
         return f"Failed to execute runtime diagnostics: {e}"
 

@@ -42,7 +42,8 @@ def open_project(project_name: str) -> str:
                         matched_path = full_path
                         matched_name = item
                         break
-        except Exception:
+        except OSError as e:
+            logger.debug("Directory scan notice: %s", e)
             continue
         if matched_path:
             break
@@ -60,7 +61,7 @@ def open_project(project_name: str) -> str:
             shell=False
         )
         return f"Project '{matched_name}' opened in Visual Studio Code, Sir."
-    except Exception as e:
+    except (OSError, FileNotFoundError, subprocess.SubprocessError, RuntimeError) as e:
         logger.error(f"Failed to open project in VS Code: {e}")
         return f"Found project at '{matched_path}', but failed to launch VS Code: {e}"
 
@@ -102,6 +103,6 @@ def open_user_folder(folder_name: str) -> str:
     try:
         os.startfile(target_dir)
         return f"Opened your {folder_name} folder in Explorer, Sir."
-    except Exception as e:
+    except (OSError, FileNotFoundError, RuntimeError) as e:
         return f"Failed to open folder '{folder_name}': {e}"
 

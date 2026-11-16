@@ -10,6 +10,12 @@ from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.Timers")
 
+try:
+    import pywintypes
+    _COM_ERRORS: tuple[type[Exception], ...] = (pywintypes.com_error, AttributeError, RuntimeError, OSError, ImportError)
+except ImportError:
+    _COM_ERRORS = (AttributeError, RuntimeError, OSError, ImportError)
+
 _active_timers: dict[str, dict[str, Any]] = {}
 _timer_lock = threading.Lock()
 _timer_counter = 0
@@ -64,7 +70,7 @@ def _announce_timer_completion(label: str, duration_str: str):
             sound_path = os.path.abspath("data/sounds/alert.wav")
         if os.path.exists(sound_path):
             winsound.PlaySound(sound_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
-    except Exception as e:
+    except (RuntimeError, OSError) as e:
         logger.debug(f"Chime playback notice: {e}")
 
     co_inited = False
@@ -77,14 +83,14 @@ def _announce_timer_completion(label: str, duration_str: str):
         sapi.Rate = 1
         spoken_msg = f"Sir, your timer for {label} ({duration_str}) has finished."
         sapi.Speak(spoken_msg, 1)  # 1 = Async speak
-    except Exception as e:
+    except _COM_ERRORS as e:
         logger.warning(f"Timer speech announcement notice: {e}")
     finally:
         if co_inited:
             try:
                 pythoncom.CoUninitialize()
-            except Exception:
-                pass
+            except _COM_ERRORS as e:
+                logger.debug(f"CoUninitialize notice: {e}")
 
 
 def _timer_worker(timer_id: str, label: str, duration_sec: int, cancel_event: threading.Event):

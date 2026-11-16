@@ -20,7 +20,6 @@ def set_tts_instance(tts) -> None:
 
 def get_tts_instance():
     """Returns active TextToSpeech instance, or None if not yet initialized."""
-    global _tts_instance
     return _tts_instance
 
 
@@ -94,7 +93,7 @@ def list_audio_devices() -> str:
             return "No audio output devices detected, Sir."
 
         return "Available Audio Output Devices, Sir:\n" + "\n".join(outputs[:12])
-    except Exception as e:
+    except (sd.PortAudioError, RuntimeError, ValueError, OSError) as e:
         logger.error(f"Failed to query audio devices: {e}")
         return f"Unable to query audio endpoints: {e}"
 
@@ -137,6 +136,6 @@ def set_audio_output_device(device_name_or_index: str) -> str:
         curr_in, _ = sd.default.device
         sd.default.device = (curr_in, target_idx)
         return f"Audio output successfully routed to [{target_idx}] '{target_name}', Sir."
-    except Exception as e:
+    except (sd.PortAudioError, RuntimeError, ValueError, OSError) as e:
         logger.error(f"Error setting audio device: {e}")
         return f"Failed to switch audio output device: {e}"
