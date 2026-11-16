@@ -1,25 +1,19 @@
 """Integration and startup compatibility audit for decomposed JarvisBrain and MemoryManager."""
 import inspect
-import os
 import shutil
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
+from jarvis.core.brain import JarvisBrain
+from jarvis.core.brain_antigravity import AntigravityProviderMixin
+from jarvis.core.brain_gemini import GeminiProviderMixin
+from jarvis.core.brain_openai import OpenAIProviderMixin
+from jarvis.core.brain_specialist import SpecialistConsultationMixin
 from jarvis.core.config_loader import load_config
 from jarvis.core.memory import (
     MemoryManager,
-    VectorMemoryEngine,
-    SingleWriterActor,
-    fuse_vec_and_fts_rrf,
-    sanitize_fts5_query,
-    sanitize_memory_taint,
 )
-from jarvis.core.brain import JarvisBrain
-from jarvis.core.brain_openai import OpenAIProviderMixin
-from jarvis.core.brain_gemini import GeminiProviderMixin
-from jarvis.core.brain_antigravity import AntigravityProviderMixin
-from jarvis.core.brain_specialist import SpecialistConsultationMixin
 from jarvis.core.safety import SafetyGate
 
 
@@ -42,12 +36,12 @@ class TestApplicationStartupAudit(unittest.TestCase):
         try:
             # Check mixin inheritance
             self.assertTrue(issubclass(MemoryManager, OpenAIProviderMixin) is False)
-            from jarvis.core.memory.sqlite_base import SqliteBaseMixin
-            from jarvis.core.memory.temporal_graph import TemporalGraphMixin
-            from jarvis.core.memory.facts_manager import FactsManagerMixin
-            from jarvis.core.memory.tasks_calendar import TasksCalendarMixin
             from jarvis.core.memory.document_vault import DocumentVaultMixin
+            from jarvis.core.memory.facts_manager import FactsManagerMixin
             from jarvis.core.memory.interaction_memory import InteractionMemoryMixin
+            from jarvis.core.memory.sqlite_base import SqliteBaseMixin
+            from jarvis.core.memory.tasks_calendar import TasksCalendarMixin
+            from jarvis.core.memory.temporal_graph import TemporalGraphMixin
 
             self.assertTrue(issubclass(MemoryManager, SqliteBaseMixin))
             self.assertTrue(issubclass(MemoryManager, TemporalGraphMixin))

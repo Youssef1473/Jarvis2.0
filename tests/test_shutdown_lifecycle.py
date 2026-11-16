@@ -4,18 +4,21 @@ import subprocess
 import sys
 import time
 import unittest
-from unittest.mock import MagicMock, patch
+
 import psutil
 
-from jarvis.core.config_loader import load_config
-from jarvis.core.orchestrator import JarvisOrchestrator
-from jarvis.core.services import ManagedServiceManager, kill_orphaned_jarvis_processes
-from jarvis.core.providers.base import UnifiedRunner
 from jarvis.audio.stt import SpeechToText
 from jarvis.audio.tts import TextToSpeech
-from jarvis.skills.system_watchdog import start_hardware_watchdog, stop_hardware_watchdog, _watchdog_active
-from jarvis.skills.timers import start_timer, cancel_timer, _active_timers
+from jarvis.core.config_loader import load_config
+from jarvis.core.orchestrator import JarvisOrchestrator
+from jarvis.core.providers.base import UnifiedRunner
+from jarvis.core.services import ManagedServiceManager, kill_orphaned_jarvis_processes
 from jarvis.skills.photo_manager import shutdown_photo_manager
+from jarvis.skills.system_watchdog import (
+    start_hardware_watchdog,
+    stop_hardware_watchdog,
+)
+from jarvis.skills.timers import _active_timers, cancel_timer, start_timer
 
 
 class TestShutdownLifecycle(unittest.TestCase):
@@ -83,7 +86,7 @@ class TestShutdownLifecycle(unittest.TestCase):
         sm.stop_all(timeout_seconds=2.0)
         try:
             proc.wait(timeout=1.0)
-        except Exception:
+        except (OSError, RuntimeError, subprocess.SubprocessError):
             pass
 
         # Verify child process is dead
@@ -182,6 +185,7 @@ class TestShutdownLifecycle(unittest.TestCase):
 
         res = subprocess.run(
             [sys.executable, "-c", sub_code],
+            check=False,
             capture_output=True,
             text=True,
             timeout=45,

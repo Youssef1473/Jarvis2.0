@@ -2,18 +2,19 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
+
 from PIL import Image
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.vision.som_grounding import (
-    SetOfMarkAnnotator,
-    MarkRegistry,
-    MarkElement,
-)
 from jarvis.skills.screen_vision import click_marked_element
+from jarvis.vision.som_grounding import (
+    MarkElement,
+    MarkRegistry,
+    SetOfMarkAnnotator,
+)
 
 
 class TestSoMGrounding(unittest.TestCase):

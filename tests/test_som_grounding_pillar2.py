@@ -1,17 +1,16 @@
 """Unit test suite for Pillar 2: Set-of-Marks (SoM) Semantic UI Grounding in Jarvis 2.0."""
 import sys
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
+
 from PIL import Image
 
 from jarvis.vision.som_grounding import (
-    SetOfMarkAnnotator,
-    MarkRegistry,
     MarkElement,
-    is_window_privacy_blocked,
-    is_sensitive_element,
+    MarkRegistry,
+    SetOfMarkAnnotator,
     enable_per_monitor_v2_dpi,
+    is_window_privacy_blocked,
 )
 
 
@@ -42,11 +41,13 @@ class TestSoMGroundingPillar2(unittest.TestCase):
     def test_annotate_window_raises_permission_error_on_blocked_window(self):
         """annotate_window must raise PermissionError if foreground window is classified as sensitive."""
         annotator = SetOfMarkAnnotator()
-        with patch.object(annotator, "_get_window_title", return_value="Bitwarden - Master Password"):
-            with patch("ctypes.windll.user32.GetForegroundWindow", return_value=1234):
-                with patch("ctypes.windll.user32.IsWindow", return_value=1):
-                    with self.assertRaises(PermissionError):
-                        annotator.annotate_window(hwnd=1234)
+        with (
+            patch.object(annotator, "_get_window_title", return_value="Bitwarden - Master Password"),
+            patch("ctypes.windll.user32.GetForegroundWindow", return_value=1234),
+            patch("ctypes.windll.user32.IsWindow", return_value=1),
+            self.assertRaises(PermissionError),
+        ):
+            annotator.annotate_window(hwnd=1234)
 
     def test_negative_secondary_monitor_coordinate_mapping_and_password_redaction(self):
         """Must correctly map secondary monitor with negative coords and redact password fields with (10, 14, 23)."""
@@ -62,8 +63,8 @@ class TestSoMGroundingPillar2(unittest.TestCase):
             {"control_type": "Edit", "name": "User Password", "auto_id": "txt_password", "rect": (-1820, 200, -1620, 240), "is_password": True},
         ]
 
-        t0 = time_start = sys.modules["time"].perf_counter()
-        annotated_img, marks, manifest = annotator.annotate(
+        time_start = sys.modules["time"].perf_counter()
+        annotated_img, marks, _manifest = annotator.annotate(
             image=img,
             win_rect=win_rect,
             hwnd=777,
@@ -100,12 +101,14 @@ class TestSoMGroundingPillar2(unittest.TestCase):
         )
         MarkRegistry.set_marks({1: mock_mark})
 
-        with patch("ctypes.windll.user32.IsWindow", return_value=1), \
-             patch("ctypes.windll.user32.GetForegroundWindow", return_value=999):
-            with patch("ctypes.windll.user32.GetWindowRect") as mock_rect:
-                # Same geometry (no drift)
-                mock_rect.side_effect = lambda h, r: setattr(r._obj, 'left', 0) or setattr(r._obj, 'top', 0) or setattr(r._obj, 'right', 500) or setattr(r._obj, 'bottom', 500)
-                res = SetOfMarkAnnotator.click_element(1, verify_window_geometry=True)
+        with (
+            patch("ctypes.windll.user32.IsWindow", return_value=1),
+            patch("ctypes.windll.user32.GetForegroundWindow", return_value=999),
+            patch("ctypes.windll.user32.GetWindowRect") as mock_rect,
+        ):
+            # Same geometry (no drift)
+            mock_rect.side_effect = lambda h, r: setattr(r._obj, 'left', 0) or setattr(r._obj, 'top', 0) or setattr(r._obj, 'right', 500) or setattr(r._obj, 'bottom', 500)
+            res = SetOfMarkAnnotator.click_element(1, verify_window_geometry=True)
 
         mock_uia.invoke.assert_called_once()
         self.assertEqual(res["status"], "clicked")
@@ -128,12 +131,14 @@ class TestSoMGroundingPillar2(unittest.TestCase):
         )
         MarkRegistry.set_marks({2: mock_mark})
 
-        with patch("ctypes.windll.user32.IsWindow", return_value=1), \
-             patch("ctypes.windll.user32.GetForegroundWindow", return_value=999):
-            with patch("ctypes.windll.user32.GetWindowRect") as mock_rect:
-                # Window shifted by 20px (100 -> 120)
-                mock_rect.side_effect = lambda h, r: setattr(r._obj, 'left', 120) or setattr(r._obj, 'top', 100) or setattr(r._obj, 'right', 620) or setattr(r._obj, 'bottom', 600)
-                res = SetOfMarkAnnotator.click_element(2, verify_window_geometry=True)
+        with (
+            patch("ctypes.windll.user32.IsWindow", return_value=1),
+            patch("ctypes.windll.user32.GetForegroundWindow", return_value=999),
+            patch("ctypes.windll.user32.GetWindowRect") as mock_rect,
+        ):
+            # Window shifted by 20px (100 -> 120)
+            mock_rect.side_effect = lambda h, r: setattr(r._obj, 'left', 120) or setattr(r._obj, 'top', 100) or setattr(r._obj, 'right', 620) or setattr(r._obj, 'bottom', 600)
+            res = SetOfMarkAnnotator.click_element(2, verify_window_geometry=True)
 
         self.assertEqual(res["status"], "geometry_drift")
         self.assertIn("shifted by > 8px", res["error"])
