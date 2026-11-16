@@ -10,12 +10,12 @@ import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar
 
 logger = logging.getLogger("Jarvis.Cognition.EVI")
 
 
-class CognitiveState(str, Enum):  # noqa: UP042
+class CognitiveState(str, Enum):
     DEEP_FLOW = "DEEP_FLOW"
     ACTIVE_DEBUGGING = "ACTIVE_DEBUGGING"
     EXPLORATORY_RESEARCH = "EXPLORATORY_RESEARCH"
@@ -23,7 +23,7 @@ class CognitiveState(str, Enum):  # noqa: UP042
     FATIGUED_DRIFT = "FATIGUED_DRIFT"
 
 
-class DeliveryModality(str, Enum):  # noqa: UP042
+class DeliveryModality(str, Enum):
     SUPPRESS = "SUPPRESS"
     SILENT_ACT = "SILENT_ACT"
     HUD_PULSE = "HUD_PULSE"
@@ -46,7 +46,7 @@ class CognitiveTwinEngine:
     """Infers Sir's latent cognitive state and gates proactive actions via EVI."""
 
     # Disruption cost matrix C_interrupt(state, modality)
-    INTERRUPTION_COST: dict[CognitiveState, dict[DeliveryModality, float]] = {
+    INTERRUPTION_COST: ClassVar[dict[CognitiveState, dict[DeliveryModality, float]]] = {
         CognitiveState.DEEP_FLOW: {
             DeliveryModality.VOICE: 0.92,
             DeliveryModality.HUD_PULSE: 0.18,
@@ -192,10 +192,13 @@ class CognitiveTwinEngine:
         """Evaluates whether to speculatively pre-warm read-only context under Option A.
         Returns (is_approved, score). Disapproves if epochs are incompatible or benefit too low.
         """
-        if epoch_vector is not None and current_vector is not None:
-            if hasattr(epoch_vector, "is_compatible_with"):
-                if not epoch_vector.is_compatible_with(current_vector):
-                    return False, 0.0
+        if (
+            epoch_vector is not None
+            and current_vector is not None
+            and hasattr(epoch_vector, "is_compatible_with")
+            and not epoch_vector.is_compatible_with(current_vector)
+        ):
+            return False, 0.0
         benefit = utility * relevance
         costs = self.INTERRUPTION_COST.get(self.state, self.INTERRUPTION_COST[CognitiveState.ROUTINE_ADMIN])
         silent_cost = costs.get(DeliveryModality.SILENT_ACT, 0.01)

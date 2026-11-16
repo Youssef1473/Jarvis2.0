@@ -163,7 +163,7 @@ class StreamingToolCallParser:
         if self.coordinator is not None:
             try:
                 args_repr = json.dumps(tool_args or {}, sort_keys=True, default=str)
-            except Exception:
+            except (TypeError, ValueError):
                 args_repr = str(sorted((tool_args or {}).items()))
             cache_key = f"{tool_name}:{args_repr}"
             cached = self.coordinator._get_cached_result(cache_key)
@@ -319,7 +319,7 @@ class NonceGuardedStreamParser:
             if isinstance(raw_args, str):
                 try:
                     args = json.loads(raw_args)
-                except Exception:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     args = {}
             elif isinstance(raw_args, dict):
                 args = raw_args
@@ -328,7 +328,7 @@ class NonceGuardedStreamParser:
 
             if name:
                 return ParsedToolCall(name=name, args=args, raw_payload=raw_json)
-        except Exception as e:
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             logger.warning("Failed to parse nonce-guarded tool payload: %s (err: %s)", raw_json[:80], e)
         return None
 
@@ -475,7 +475,7 @@ def extract_tool_call_json(text: str) -> tuple[str, dict[str, Any], int, int] | 
                     if isinstance(raw_args, str):
                         try:
                             args = json.loads(raw_args)
-                        except Exception:
+                        except (json.JSONDecodeError, TypeError, ValueError):
                             args = {}
                     elif isinstance(raw_args, dict):
                         args = raw_args
