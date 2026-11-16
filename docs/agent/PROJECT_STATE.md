@@ -14,18 +14,18 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-16T17:10:00+01:00 (CET)
-- **Active Git Branch:** `feat/multi-workspace-hud-and-fact-promotion`
-- **Recorded HEAD Commit SHA:** `a476759`
-- **HEAD Commit Subject:** `Release v2.1.0-hardened tag and baseline checkpoint`
-- **Milestone State:** **Track A Completed: Multi-Workspace HUD & Quarantined Fact Promotion (Plan 041 Verified); Repository-Wide 0 Ruff Diagnostics across jarvis/, tools/, tests/**
-- **Active Milestone:** **Track A: Multi-Workspace HUD & Memory UI (Plan 041 Completed)**
+- **Validation Timestamp:** 2026-11-16T18:25:00+01:00 (CET)
+- **Active Git Branch:** `feat/autonomous-appcontainer-patch-verify-loop`
+- **Recorded HEAD Commit SHA:** `170400b`
+- **HEAD Commit Subject:** `Merge pull request #59 from Youssef1473/feat/multi-workspace-hud-and-fact-promotion`
+- **Milestone State:** **Track B Completed: Autonomous AppContainer Code-Patch & Verify Loop (Plan 042 Verified); 2,492 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
+- **Active Milestone:** **Track B: Autonomous AppContainer Code-Patch & Verify Loop (Plan 042 Completed)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications:**
-  - `data/test_classification_manifest.json` (test manifest accounting updated to 2,482 nodes)
-  - `jarvis/ui/routes/memory.py` (quarantined_count telemetry + list/promote/purge handlers)
-  - `jarvis/ui/server.py` (mounted select alias and quarantined memory endpoints)
-  - `jarvis/ui/templates/hud.html` (Zero-CLS quarantined badge + tactical review drawer)
+  - `data/test_classification_manifest.json` (test manifest accounting updated to 2,492 nodes)
+  - `jarvis/skills/ast_code_surgeon.py` (shadow staging, AppContainer verification, report dataclass, and DualKey approval gate)
+  - `jarvis/skills/self_evolution.py` (registered propose_and_verify_code_patch skill)
+  - `tests/test_autonomous_patch_verify.py` (10 hermetic unit and security-boundary tests)
   - `docs/agent/PROJECT_STATE.md`
   - `docs/agent/SESSION_LOG.md`
 
@@ -41,8 +41,13 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Full Repository-Wide Zero-Ruff Parity & CI Quality Seal (Plans 001–040 Closed)`
+- **Active Milestone:** `Track B: Autonomous AppContainer Code-Patch & Verify Loop (Plan 042 Completed)`
 - **Completed Work:**
+  - **Track B (Plan 042 COMPLETED & VERIFIED): Autonomous AppContainer Code-Patch & Sandboxed Verify Loop:**
+    - **AST Code Surgeon (`jarvis/skills/ast_code_surgeon.py`):** Added `FORBIDDEN_PATCH_MODULES` and path traversal safety checks (`validate_target_patch_path`), built ephemeral shadow staging (`create_shadow_patch`), created 3-stage AppContainer / Job Object verification runner (`verify_patch_in_appcontainer`), and added `DualKeyApprovalManager` gated promotion (`promote_verified_patch`).
+    - **Self-Evolution Skills (`jarvis/skills/self_evolution.py`):** Registered `propose_and_verify_code_patch` with deterministic shadow cleanup.
+    - **Hermetic Test Suite (`tests/test_autonomous_patch_verify.py`):** Implemented 10 tests verifying path traversal boundaries, syntax error rejection, AST security checks, unified diff generation without live file mutation, Ruff lint failure detection, test failure detection, end-to-end green verification, and human approval gating.
+    - **Test Accounting & Classifier:** Expanded test manifest from 2,482 to 2,492 collected nodes with 0 orphans and 100% classification compliance.
   - **Track A (Plan 041 COMPLETED & VERIFIED): Multi-Workspace HUD & Quarantined Fact Promotion:**
     - **Backend Routes & Mixin (`jarvis/ui/server.py`, `jarvis/ui/routes/memory.py`):** Added `POST /api/workspaces/select` alias, exposed `quarantined_count` on `GET /api/workspaces`, and implemented authenticated `GET /api/memory/quarantined` (paginated list with category/search filters), `POST /api/memory/quarantined/promote` (single-writer transactional promotion with vector sync), and `POST /api/memory/quarantined/purge` (defense-in-depth quarantined purge).
     - **Zero-CLS Holographic HUD Integration (`jarvis/ui/templates/hud.html`):** Added fixed-width `#workspaceQuarantinedBadge` to the top-bar pill and a dedicated interactive Quarantined Memory Review drawer with batch promote/purge controls and real-time telemetry updates.
