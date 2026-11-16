@@ -10,9 +10,8 @@ from jarvis.core.providers.ollama import OllamaProvider
 class TestAudioRingBufferCapacity(unittest.TestCase):
     def test_rejects_nonpositive_capacity(self):
         for capacity in (0, -1):
-            with self.subTest(capacity=capacity):
-                with self.assertRaises(ValueError):
-                    AudioRingBuffer(capacity_samples=capacity)
+            with self.subTest(capacity=capacity), self.assertRaises(ValueError):
+                AudioRingBuffer(capacity_samples=capacity)
 
     def test_rejects_noninteger_capacity(self):
         with self.assertRaises(ValueError):

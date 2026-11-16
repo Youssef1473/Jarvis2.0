@@ -1,13 +1,14 @@
 """Unit and regression tests for PC control extensions, fast reflex routing, and self-knowledge."""
-import unittest
 import time
-from unittest.mock import MagicMock, patch
-from jarvis.core.config_loader import load_config
-from jarvis.skills.base import SkillRegistry
-from jarvis.skills import os_control
+import unittest
+from unittest.mock import patch
+
 from jarvis.core.brain import JarvisBrain
+from jarvis.core.config_loader import load_config
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
+from jarvis.skills import os_control
+from jarvis.skills.base import SkillRegistry
 
 
 class TestPCControlAndPerformance(unittest.TestCase):
@@ -66,7 +67,7 @@ class TestPCControlAndPerformance(unittest.TestCase):
 
     def test_fast_reflex_brave_tab(self):
         """Verifies 'open a brave tab' and its speech variations execute via fast reflex in <10ms."""
-        with patch("subprocess.Popen") as mock_popen, patch("webbrowser.open_new_tab") as mock_web, patch("jarvis.skills.windows_uia.focus_window_uia", return_value=None):
+        with patch("subprocess.Popen"), patch("webbrowser.open_new_tab"), patch("jarvis.skills.windows_uia.focus_window_uia", return_value=None):
             for utterance in [
                 "open a brave tab",
                 "open a tab in brave",
@@ -76,7 +77,7 @@ class TestPCControlAndPerformance(unittest.TestCase):
                 "new tab in brave",
             ]:
                 spoken = []
-                reply = self.brain.process_query(utterance, sentence_callback=lambda s: spoken.append(s))
+                reply = self.brain.process_query(utterance, sentence_callback=spoken.append)
                 self.assertTrue("Brave" in reply or "browser" in reply.lower(), f"Failed on utterance: '{utterance}' (got reply: {reply!r})")
                 self.assertTrue(len(spoken) > 0, f"No speech callback on utterance: '{utterance}'")
 

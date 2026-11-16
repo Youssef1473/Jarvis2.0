@@ -3,19 +3,22 @@
 2. Semantic Vector Memory Engine & Context Biasing (MemoryManager & Productivity Skills)
 3. Progressive Chunked TTS Streaming (TextToSpeech)
 """
+import os
 import sys
 from pathlib import Path
-import time
-import os
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from jarvis.core.config_loader import load_config
-from jarvis.core.memory import MemoryManager, VectorMemoryEngine
-from jarvis.skills.productivity import recall_fact, semantic_search_memory, set_memory_manager
 from jarvis.audio.tts import TextToSpeech
 from jarvis.core.brain import JarvisBrain
+from jarvis.core.config_loader import load_config
+from jarvis.core.memory import MemoryManager, VectorMemoryEngine
 from jarvis.core.safety import SafetyGate
+from jarvis.skills.productivity import (
+    recall_fact,
+    semantic_search_memory,
+    set_memory_manager,
+)
 from jarvis.ui.server import JarvisUIService
 
 
@@ -58,7 +61,7 @@ def test_semantic_memory_integration():
         if f.exists():
             try:
                 os.remove(f)
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
 
     cfg["memory"]["db_path"] = "data/test_semantic_memory.db"
@@ -103,7 +106,7 @@ def test_semantic_memory_integration():
         if f.exists():
             try:
                 os.remove(f)
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
     print("Semantic Memory Integration: PASSED")
 

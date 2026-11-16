@@ -2,16 +2,13 @@
 import os
 import tempfile
 import unittest
-from pathlib import Path
 
 from jarvis.context.flow_state_mirror import (
-    FlowStateMirror,
-    FlowStateSnapshot,
     EnvironmentEpochTracker,
+    FlowStateMirror,
     ResourceScope,
     VisualPrivacyGuard,
     extract_enclosing_ast_symbol,
-    sanitize_ambient_text,
 )
 
 

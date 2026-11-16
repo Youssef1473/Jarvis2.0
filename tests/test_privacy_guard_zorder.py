@@ -1,6 +1,7 @@
 """Unit tests for Z-Order HWND Scanning & In-RAM Pixel Redaction Privacy Guard."""
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
 from PIL import Image
 
 from jarvis.vision.privacy_guard import BoundingRect, ZOrderPrivacyGuard

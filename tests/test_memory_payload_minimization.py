@@ -12,9 +12,8 @@ Asserts:
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from jarvis.context.context_orchestrator import ContextOrchestrator
 from jarvis.core.brain import JarvisBrain
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate

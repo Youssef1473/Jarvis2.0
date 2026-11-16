@@ -1,7 +1,6 @@
 """Unit tests for jarvis/skills/usn_journal_delta_radar.py."""
 import os
 import tempfile
-import time
 import unittest
 
 from jarvis.skills.base import SkillRegistry

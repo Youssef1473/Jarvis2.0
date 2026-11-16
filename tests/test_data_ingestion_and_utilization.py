@@ -1,18 +1,16 @@
 """Unit and Integration Tests for Tier 2/Tier 3 Data Ingestion & Cognitive Utilization.
 Verifies Atomic Fact Distillation, Chunk Sandwiching, Document Retrieval, and Context Bounding.
 """
-import datetime
 import json
-import os
-from pathlib import Path
 import unittest
-from unittest.mock import patch, MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from jarvis.skills.base import SkillRegistry
-from jarvis.core.memory import MemoryManager
-from jarvis.core.config_loader import load_config
 import jarvis.skills.document_ingest
 import jarvis.skills.productivity
+from jarvis.core.config_loader import load_config
+from jarvis.core.memory import MemoryManager
+from jarvis.skills.base import SkillRegistry
 
 
 class TestDataIngestionAndUtilization(unittest.TestCase):
@@ -26,7 +24,7 @@ class TestDataIngestionAndUtilization(unittest.TestCase):
             if f.exists():
                 try:
                     f.unlink()
-                except Exception:
+                except (OSError, RuntimeError):
                     pass
         cls.test_config = dict(cls.config)
         cls.test_config["memory"] = {"db_path": str(cls.test_db)}
@@ -43,7 +41,7 @@ class TestDataIngestionAndUtilization(unittest.TestCase):
             if f.exists():
                 try:
                     f.unlink()
-                except Exception:
+                except (OSError, RuntimeError):
                     pass
 
     def setUp(self):
@@ -206,13 +204,15 @@ class TestDataIngestionAndUtilization(unittest.TestCase):
         mock_openai_client = MagicMock()
         mock_openai_client.chat.completions.create.return_value = mock_res
 
-        with patch("jarvis.skills.document_ingest.extract_text_from_pdf", return_value="Quantum physics syllabus contents"):
-            with patch("os.getenv", side_effect=lambda k, d="": "fake_groq_key" if k == "GROQ_API_KEY" else ""):
-                with patch("jarvis.skills.document_ingest.load_config", return_value=self.test_config):
-                    with patch("openai.OpenAI", return_value=mock_openai_client):
-                        res = SkillRegistry.execute("process_staged_document", identifier=str(staged_id), user_context="Extract all rules and facts.")
-                        self.assertIn("Processed", res)
-                        self.assertIn("3 atomic facts", res)
+        with (
+            patch("jarvis.skills.document_ingest.extract_text_from_pdf", return_value="Quantum physics syllabus contents"),
+            patch("os.getenv", side_effect=lambda k, d="": "fake_groq_key" if k == "GROQ_API_KEY" else ""),
+            patch("jarvis.skills.document_ingest.load_config", return_value=self.test_config),
+            patch("openai.OpenAI", return_value=mock_openai_client),
+        ):
+            res = SkillRegistry.execute("process_staged_document", identifier=str(staged_id), user_context="Extract all rules and facts.")
+            self.assertIn("Processed", res)
+            self.assertIn("3 atomic facts", res)
 
         # Verify atomic facts were distilled into SQLite facts table
         prof_fact = self.memory.get_fact("quantum_professor")

@@ -9,11 +9,12 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
-from jarvis.core.config_loader import load_config
 from jarvis.core.antigravity_bridge import AntigravityBridge
 from jarvis.core.brain import JarvisBrain
+from jarvis.core.config_loader import load_config
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
 
@@ -113,7 +114,7 @@ class TestAntigravityIntegration(unittest.TestCase):
     def test_antigravity_streaming_clause_extraction(self):
         """Verifies real-time speech clause extraction during token streaming."""
         buffer = "Good afternoon, Sir. All systems are operational. What would you like to review?"
-        chunk, remaining = AntigravityBridge._extract_speech_chunk(buffer)
+        chunk, _remaining = AntigravityBridge._extract_speech_chunk(buffer)
         self.assertIsNotNone(chunk)
         self.assertTrue(any(c in chunk for c in ["Good afternoon", "All systems"]))
 

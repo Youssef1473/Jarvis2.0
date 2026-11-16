@@ -8,13 +8,11 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from jarvis.core.cognition.cadence_tracker import (
-    MotorCadenceTracker,
-    VK_BACK,
     LLKHF_INJECTED,
+    VK_BACK,
     WM_KEYDOWN,
     WM_KEYUP,
-    WM_SYSKEYDOWN,
-    WM_SYSKEYUP,
+    MotorCadenceTracker,
 )
 
 

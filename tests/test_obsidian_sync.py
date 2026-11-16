@@ -1,17 +1,12 @@
 """Unit tests for the non-blocking, background-threaded Obsidian Context Sync Engine."""
-import json
-import os
-from pathlib import Path
-import sqlite3
 import tempfile
 import time
 import unittest
+from pathlib import Path
 
 from jarvis.core.memory.obsidian_sync import (
     ObsidianContextSyncEngine,
     ObsidianNoteParser,
-    ObsidianChunk,
-    SyncStats,
 )
 
 

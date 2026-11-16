@@ -8,11 +8,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jarvis.vision.window_hook_daemon import (
-    WinEventHookDaemon,
-    EVENT_SYSTEM_FOREGROUND,
-    EVENT_OBJECT_NAMECHANGE,
-    OBJID_WINDOW,
     CHILDID_SELF,
+    EVENT_OBJECT_NAMECHANGE,
+    EVENT_SYSTEM_FOREGROUND,
+    OBJID_WINDOW,
+    WinEventHookDaemon,
 )
 
 

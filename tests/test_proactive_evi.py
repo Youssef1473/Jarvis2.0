@@ -1,7 +1,6 @@
 """Automated tests for Cognitive Twin Engine and Expected Value of Interruption (EVI) routing."""
-import time
-import unittest
 import sys
+import unittest
 from pathlib import Path
 
 # Add project root to path
@@ -9,10 +8,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jarvis.core.cognition.proactive_evi import (
     CognitiveState,
-    DeliveryModality,
-    TelemetrySlice,
     CognitiveTwinEngine,
+    DeliveryModality,
     PrewarmedContextEntry,
+    TelemetrySlice,
 )
 from jarvis.speculative.engine import EpochVector
 
@@ -73,7 +72,7 @@ class TestProactiveEVISuite(unittest.TestCase):
         self.engine.infer_state(t)
 
         # Low utility alert (e.g. routine tab cleanup suggestion)
-        modality, score = self.engine.evaluate_proactive_action(
+        modality, _score = self.engine.evaluate_proactive_action(
             intrinsic_utility=0.20,
             context_relevance=0.30,
             urgency=0.10,

@@ -1,9 +1,9 @@
 """Unit tests for Hybrid CDP AXTree + BoxModel Actuator skill."""
 import json
-import unittest
-from unittest.mock import MagicMock, patch
-from pathlib import Path
 import sys
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -11,10 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jarvis.skills.base import SkillRegistry
 from jarvis.skills.hybrid_actuator import (
     SemanticTarget,
-    send_cdp_command,
-    locate_semantic_target,
     actuate_with_verification,
     click_web_element_semantic,
+    locate_semantic_target,
     type_into_web_element_semantic,
 )
 

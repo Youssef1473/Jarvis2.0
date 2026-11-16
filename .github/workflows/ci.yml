@@ -34,9 +34,9 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
-      - name: Verify Zero Static Lint & AST-Grep Diagnostics (jarvis/ tools/)
+      - name: Verify Zero Static Lint & AST-Grep Diagnostics (Repository-Wide)
         run: |
-          python tools/lint.py check jarvis/ tools/
+          python tools/lint.py check jarvis/ tools/ tests/
           python tools/diagnostics.py check jarvis/ tools/
 
       - name: Verify Test Classification Integrity (Zero Orphans)

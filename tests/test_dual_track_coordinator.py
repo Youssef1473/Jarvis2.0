@@ -12,16 +12,14 @@ Verifies:
 from __future__ import annotations
 
 import asyncio
-import time
 import unittest
-from unittest.mock import AsyncMock, MagicMock
 
+from jarvis.conversation.bookmarks import ReasoningBookmarkStack
 from jarvis.core.pipeline.dual_track import (
     BookmarkSnapshot,
     DualTrackCoordinator,
     MonotonicCancellationToken,
 )
-from jarvis.conversation.bookmarks import ReasoningBookmarkStack
 
 
 class TestMonotonicCancellationToken(unittest.TestCase):

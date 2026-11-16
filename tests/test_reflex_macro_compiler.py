@@ -7,15 +7,16 @@ import unittest
 from jarvis.skills.base import SkillRegistry
 from jarvis.skills.reflex_macro_compiler import (
     compile_workflow_reflex,
+    delete_compiled_reflex_macro,
     execute_workflow_reflex,
     list_compiled_reflex_macros,
-    delete_compiled_reflex_macro,
 )
 
 
 class TestReflexMacroCompiler(unittest.TestCase):
     def setUp(self):
-        self.tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            self.tmp_db = f.name
         # Register a mock test tool
         @SkillRegistry.register(
             name="_mock_reflex_step",

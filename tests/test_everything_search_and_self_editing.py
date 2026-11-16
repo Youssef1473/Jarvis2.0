@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 # Add project root to sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from jarvis.core.config_loader import load_config
 from jarvis.core.brain import JarvisBrain
+from jarvis.core.config_loader import load_config
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
 from jarvis.skills.base import SkillRegistry

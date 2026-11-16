@@ -22,14 +22,14 @@ SKILL = os.path.join(REPO, ".agents", "skills", "arena")
 BRACKET = os.path.join(SKILL, "bracket.py")
 sys.path.insert(0, SKILL)
 
-import bracket as B  # noqa: E402
+import bracket as B
 
 EM_DASH, EN_DASH = chr(0x2014), chr(0x2013)   # spelled as code points so this file stays clean
 
 
 def cli(*args):
     return subprocess.run([sys.executable, BRACKET] + [str(a) for a in args],
-                          capture_output=True, text=True)
+                          check=False, capture_output=True, text=True)
 
 
 def write(path, text):
@@ -56,7 +56,7 @@ class TempDir(unittest.TestCase):
 
     def ok(self, *args):
         r = cli(*args)
-        self.assertEqual(r.returncode, 0, "bracket.py %s failed:\n%s%s" % (" ".join(map(str, args)), r.stdout, r.stderr))
+        self.assertEqual(r.returncode, 0, "bracket.py {} failed:\n{}{}".format(" ".join(map(str, args)), r.stdout, r.stderr))
         return r.stdout
 
 
@@ -64,7 +64,7 @@ class SimulatedTournament(TempDir):
     """Random winners, driven only through the CLI: init, pairings, record, advance, status, winner."""
 
     def run_tournament(self, n, seed):
-        d = os.path.join(self.tmp, "run-%d" % n)
+        d = os.path.join(self.tmp, f"run-{n}")
         self.ok("init", "--agents", n, "--seed", seed, "--task", "Simulated task.", "--dir", d)
         rng = random.Random(seed)
         alive_at_start = []
@@ -75,7 +75,7 @@ class SimulatedTournament(TempDir):
             rd = state["rounds"][-1]
             alive_at_start.append(len(rd["alive"]))
             out = self.ok("pairings", "--dir", d)
-            self.assertIn("round %d:" % rd["n"], out)
+            self.assertIn(f"round {rd['n']}:", out)
             in_round = [x for m in rd["matches"] for x in (m["a"], m["b"])] + ([rd["bye"]] if rd["bye"] else [])
             self.assertEqual(sorted(in_round), sorted(rd["alive"]), "everyone alive plays once or gets the bye")
             self.assertEqual(len(in_round), len(set(in_round)))
@@ -99,9 +99,9 @@ class SimulatedTournament(TempDir):
                          [False, False, True, True, True, False, False])
         self.assertTrue(all(v["byes"] <= 1 for v in state["agents"].values()), "no agent gets two byes")
         status = self.ok("status", "--dir", d)
-        self.assertIn("now: 1 alive, 99 eliminated, champion %s" % state["champion"], status)
+        self.assertIn("now: 1 alive, 99 eliminated, champion {}".format(state["champion"]), status)
         won = self.ok("winner", "--dir", d)
-        self.assertIn("CHAMPION  %s" % state["champion"], won)
+        self.assertIn("CHAMPION  {}".format(state["champion"]), won)
         self.assertIn("7 played, 100 agents in, 1 left", won)
         self.assertIn("last one standing", self.ok("pairings", "--dir", d))
 
@@ -161,11 +161,11 @@ class Dealer(unittest.TestCase):
         for dim, size in enumerate((15, 12, 12)):
             count = collections.Counter(c[dim] for c in cards)
             per = [count.get(i, 0) for i in range(size)]
-            self.assertLessEqual(max(per) - min(per), 1, "balanced: n=%d seed=%d dim=%d %s" % (n, seed, dim, per))
+            self.assertLessEqual(max(per) - min(per), 1, f"balanced: n={n} seed={seed} dim={dim} {per}")
         if n <= 144:
             for a, b in ((0, 1), (0, 2), (1, 2)):
                 pairs = collections.Counter((c[a], c[b]) for c in cards)
-                self.assertEqual(max(pairs.values()), 1, "two agents share two parts: n=%d seed=%d" % (n, seed))
+                self.assertEqual(max(pairs.values()), 1, f"two agents share two parts: n={n} seed={seed}")
         return cards
 
     def test_100_agents_unique_balanced_and_every_part_used(self):
@@ -216,7 +216,7 @@ class Verdicts(unittest.TestCase):
 
     def test_weights_match_the_rubric(self):
         with open(os.path.join(SKILL, "rubric.md"), encoding="utf-8") as fh:
-            rows = re.findall(r"^\| (\w+) \| (\d+) \|", fh.read(), re.M)
+            rows = re.findall(r"^\| (\w+) \| (\d+) \|", fh.read(), re.MULTILINE)
         self.assertEqual([(k.lower(), int(w)) for k, w in rows], list(B.WEIGHTS))
         self.assertEqual(sum(w for _, w in B.WEIGHTS), 100)
 
@@ -227,7 +227,7 @@ class Verdicts(unittest.TestCase):
 
     def test_scores_beat_the_judges_pick(self):
         v = {"scores": {"a001": self.scores(5, 5, 5, 5, 5), "a002": self.scores(8, 8, 8, 8, 8)}, "winner": "a001"}
-        w, totals, note = B.decide(v, "a001", "a002")
+        w, _totals, note = B.decide(v, "a001", "a002")
         self.assertEqual(w, "a002")
         self.assertIn("scores win", note)
 
@@ -261,13 +261,13 @@ class FullPipelineWithFakeAgents(TempDir):
             for path in j["outputs"]:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
             if phase == "spawn":
-                body = "Salt on the wind, from %s." % j["agent"]
+                body = "Salt on the wind, from {}.".format(j["agent"])
                 write(j["outputs"][0], body)
             elif phase == "attack":
                 write(j["outputs"][0], "ATTACK 1 [MINOR] too short\nWhere: line 1\nProblem: it is short.\n")
             elif phase == "defend":
                 write(j["outputs"][0], "ATTACK 1: CONCEDE. Made it longer.\n")
-                write(j["outputs"][1], "Salt on the long wind, revised by %s." % j["agent"])
+                write(j["outputs"][1], "Salt on the long wind, revised by {}.".format(j["agent"]))
             elif phase == "judge":
                 a, b = j["a"], j["b"]
                 s = lambda: {k: rng.randint(3, 10) for k, _ in B.WEIGHTS}
@@ -291,7 +291,7 @@ class FullPipelineWithFakeAgents(TempDir):
         seen = []
         for _ in range(200):
             out = self.ok("next", "--dir", d)
-            phase = re.search(r"^(NEXT: (\w+)|DONE)", out, re.M)
+            phase = re.search(r"^(NEXT: (\w+)|DONE)", out, re.MULTILINE)
             phase = "done" if phase.group(0) == "DONE" else phase.group(2)
             seen.append(phase)
             if phase == "done":
@@ -314,7 +314,7 @@ class FullPipelineWithFakeAgents(TempDir):
                     task_block = task_block.split("\n=== END OF THE TASK ===")[0]
                     self.assertEqual(task_block, self.TASK)
                     card = state["agents"][j["agent"]]["card"]
-                    self.assertIn("Reasoning mode: %s." % card["reasoning"]["name"], brief)
+                    self.assertIn("Reasoning mode: {}.".format(card["reasoning"]["name"]), brief)
                     self.assertIn("NOT satisfied", brief)
                 if phase == "judge":
                     self.assertNotIn("Reasoning mode", brief, "judges never see the cards")
@@ -327,7 +327,7 @@ class FullPipelineWithFakeAgents(TempDir):
         state = load(d)
         champ = state["agents"][state["champion"]]
         self.assertIn(".solution.md", champ["solution"], "the champion carries its revised solution")
-        self.assertIn("revised by %s" % state["champion"], read(champ["solution"]))
+        self.assertIn("revised by {}".format(state["champion"]), read(champ["solution"]))
         pair = {read(os.path.join(d, "final", "X.md")).strip(), read(os.path.join(d, "final", "Y.md")).strip()}
         self.assertIn("The sea is big.", pair)
         rep = json.loads(self.ok("winner", "--json", "--dir", d))
@@ -396,8 +396,8 @@ class Guards(TempDir):
                 path = os.path.join(root, name)
                 with open(path, encoding="utf-8", errors="ignore") as fh:
                     text = fh.read()
-                self.assertNotIn(EM_DASH, text, "em dash in %s" % os.path.relpath(path, SKILL))
-                self.assertNotIn(EN_DASH, text, "en dash in %s" % os.path.relpath(path, SKILL))
+                self.assertNotIn(EM_DASH, text, f"em dash in {os.path.relpath(path, SKILL)}")
+                self.assertNotIn(EN_DASH, text, f"en dash in {os.path.relpath(path, SKILL)}")
 
 
 if __name__ == "__main__":

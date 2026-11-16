@@ -2,12 +2,13 @@
 import time
 import unittest
 import uuid
+
 import numpy as np
 
+import jarvis.audio.cancellation as audio_canc
+import jarvis.core.cancellation as core_canc
 from jarvis.audio.shm_transport import ShmAudioRingTransport
 from jarvis.core.pipeline.latency_profiler import PipelineLatencyProfiler, TurnTrace
-import jarvis.core.cancellation as core_canc
-import jarvis.audio.cancellation as audio_canc
 
 
 class TestShmAudioRingTransport(unittest.TestCase):
@@ -21,7 +22,7 @@ class TestShmAudioRingTransport(unittest.TestCase):
         for transport in self.transports_to_close:
             try:
                 transport.close()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
 
     def test_write_read_basic(self):

@@ -1,10 +1,7 @@
 """Unit tests for jarvis/skills/rstrtmgr_lock_surgeon.py."""
 import os
 import socket
-import subprocess
-import sys
 import tempfile
-import time
 import unittest
 
 from jarvis.skills.base import SkillRegistry

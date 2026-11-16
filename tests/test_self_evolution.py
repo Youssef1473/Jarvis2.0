@@ -9,14 +9,13 @@ import pytest
 # Add project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from jarvis.skills.base import SkillRegistry
 from jarvis.core.security_boundaries import DualKeyApprovalManager, TurnTaintTracker
+from jarvis.skills.base import SkillRegistry
 from jarvis.skills.self_evolution import (
-    create_or_update_custom_skill,
-    list_custom_skills,
-    delete_custom_skill,
-    load_all_custom_skills,
     CUSTOM_SKILLS_DIR,
+    create_or_update_custom_skill,
+    delete_custom_skill,
+    list_custom_skills,
 )
 
 
@@ -113,8 +112,8 @@ def test_mock_greeter(target_name: str = "Sir") -> str:
 
     def test_user_model_choice_for_self_building(self):
         """Verifies that self-building requests strictly use the user's chosen model and do not auto-override."""
-        from jarvis.core.config_loader import load_config
         from jarvis.core.brain import JarvisBrain
+        from jarvis.core.config_loader import load_config
         from jarvis.core.memory import MemoryManager
         from jarvis.core.safety import SafetyGate
 
@@ -128,7 +127,7 @@ def test_mock_greeter(target_name: str = "Sir") -> str:
         brain.antigravity_auto_tiering = False
 
         # When asking to build a feature, it must stay locked to gemini-3.8-flash-high
-        prompt = "Add a feature to yourself to open a Brave tab"
+        _prompt = "Add a feature to yourself to open a Brave tab"
         # Simulate model extraction logic
         self.assertEqual(brain.antigravity_model, "gemini-3.8-flash-high")
 
