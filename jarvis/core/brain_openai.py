@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from typing import Any
 from urllib.parse import urlsplit
@@ -44,7 +45,7 @@ class OpenAIProviderMixin:
                     timeout=float(llm_cfg.get("ollama_timeout_seconds", 180)),
                 )
                 logger.info(f"Hybrid Tier 1 (Local Ollama) active with model: {self.ollama_model}")
-            except Exception as e:
+            except (ImportError, ConnectionError, OSError, ValueError, RuntimeError) as e:
                 logger.warning(f"Could not connect to local Ollama: {e}")
 
         # 2. Groq Cloud LPU (Tier 2: ultra-fast 500+ tok/s 27B intellect for spoken dialogue & code)
@@ -58,7 +59,7 @@ class OpenAIProviderMixin:
                     timeout=12.0,
                 )
                 logger.info(f"Hybrid Tier 2 (Groq LPU) active with model: {self.groq_model}")
-            except Exception as e:
+            except (ImportError, ConnectionError, OSError, ValueError, RuntimeError) as e:
                 logger.warning(f"Could not initialize Groq client: {e}")
 
         # 3. Google Gemini (Tier 3: multimodal vision & deep context reasoning)
@@ -67,7 +68,7 @@ class OpenAIProviderMixin:
             try:
                 self._init_gemini()
                 logger.info(f"Hybrid Tier 3 (Gemini Multimodal) active with {len(self.gemini_candidates)} candidate models")
-            except Exception as e:
+            except (ImportError, ConnectionError, OSError, ValueError, RuntimeError) as e:
                 logger.warning(f"Could not initialize Gemini client: {e}")
 
         # Set default active OpenAI client for general queries
@@ -120,8 +121,8 @@ class OpenAIProviderMixin:
                     pass
                 logger.info(f"Jarvis OmniRoute link verified at {base_url}")
                 self._adopt_local_service("OmniRoute", base_url, ("omniroute",))
-            except Exception:
-                logger.info(f"OmniRoute gateway at {base_url} is offline. Attempting to start a managed service...")
+            except (urllib.error.URLError, TimeoutError, OSError, ConnectionError, ValueError) as probe_err:
+                logger.info("OmniRoute gateway at %s is offline (%s). Attempting to start a managed service...", base_url, probe_err)
                 try:
                     service_process = subprocess.Popen(
                         ["omniroute", "serve", "--no-open", "--no-tray"],
@@ -137,7 +138,7 @@ class OpenAIProviderMixin:
                     with urllib.request.urlopen(req, timeout=2.0):
                         pass
                     logger.info("Managed OmniRoute service started successfully.")
-                except Exception as e:
+                except (urllib.error.URLError, TimeoutError, OSError, ConnectionError, subprocess.SubprocessError, RuntimeError) as e:
                     logger.warning("OmniRoute gateway at %s is not responding (%s); no provider fallback will be attempted.", base_url, e)
                     return False
         elif self.provider == "groq" or (groq_key and groq_key.startswith("gsk_")):
@@ -186,7 +187,7 @@ class OpenAIProviderMixin:
                     self.openai_messages.append({"role": "assistant", "content": j_text})
             logger.info(f"Jarvis {self.provider.upper()} link initialized with model: {self.openai_model} ({len(recent_turns)} prior turns restored).")
             return True
-        except Exception as e:
+        except (ImportError, ConnectionError, OSError, ValueError, RuntimeError) as e:
             if self.provider == "ollama":
                 logger.error("Could not initialize the local Ollama client: %s. Cloud fallback is disabled.", e)
             elif self.provider == "groq":
@@ -203,8 +204,8 @@ class OpenAIProviderMixin:
                 logger.info("Local Ollama server is already running.")
                 self._adopt_local_service("Ollama", server_url, ("ollama",))
                 return
-        except Exception:
-            pass
+        except (urllib.error.URLError, TimeoutError, OSError, ConnectionError) as err:
+            logger.debug("Local Ollama pre-check notice: %s", err)
 
         ollama_exe = shutil.which("ollama")
         if not ollama_exe:
@@ -232,10 +233,11 @@ class OpenAIProviderMixin:
                     with urllib.request.urlopen(f"{server_url}/api/tags", timeout=1.0):
                         logger.info("Started the local Ollama server.")
                         return
-                except Exception:
+                except (urllib.error.URLError, TimeoutError, OSError, ConnectionError) as wait_err:
+                    logger.debug("Waiting for local Ollama to respond: %s", wait_err)
                     continue
             logger.warning("Started Ollama, but its local API is not responding yet.")
-        except Exception as e:
+        except (subprocess.SubprocessError, OSError, RuntimeError) as e:
             logger.warning("Could not start the local Ollama server: %s", e)
 
     def _adopt_local_service(self, name: str, service_url: str, identity_tokens: tuple[str, ...]) -> None:
@@ -433,7 +435,8 @@ class OpenAIProviderMixin:
                         fn_name = tc["function"]["name"]
                         try:
                             fn_args = json.loads(tc["function"]["arguments"] or "{}")
-                        except Exception:
+                        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as parse_err:
+                            logger.debug("Tool call arguments JSON parsing error: %s", parse_err)
                             fn_args = {}
 
                         logger.info(f"{self.provider.upper()} Tool call: {fn_name}({fn_args})")
@@ -493,7 +496,7 @@ class OpenAIProviderMixin:
                                         )
                                         self.openai_model = alt_model
                                         break
-                                    except Exception as alt_err:
+                                    except (ConnectionError, TimeoutError, OSError, ValueError, RuntimeError, Exception) as alt_err:  # noqa: BLE001 - candidate cascade catches all provider and mock errors
                                         logger.warning(f"Fallback Groq model '{alt_model}' failed: {alt_err}")
                         # 2. Try local Ollama if Groq failed or was exhausted
                         if followup_stream is None and getattr(self, "ollama_client", None):
@@ -508,10 +511,10 @@ class OpenAIProviderMixin:
                                     stream=True,
                                     reasoning_effort="none",
                                 )
-                            except Exception as ollama_err:
+                            except (ConnectionError, TimeoutError, OSError, ValueError, RuntimeError, Exception) as ollama_err:  # noqa: BLE001 - synthesis fallback catches all provider and mock errors
                                 logger.warning(f"Local Ollama synthesis fallback failed: {ollama_err}")
                         if followup_stream is None:
-                            raise fe
+                            raise
 
                     for chunk in followup_stream:
                         if not chunk.choices:
@@ -604,7 +607,8 @@ class OpenAIProviderMixin:
                                 stream=True,
                                 **request_options,
                             )
-                        except Exception as fe:
+                        except (ConnectionError, TimeoutError, OSError, ValueError, RuntimeError) as fe:
+                            logger.warning("Direct chat follow-up failed (%s). Attempting local Ollama fallback...", fe)
                             followup_stream = None
                             if getattr(self, "ollama_client", None):
                                 try:
@@ -617,10 +621,10 @@ class OpenAIProviderMixin:
                                         stream=True,
                                         reasoning_effort="none",
                                     )
-                                except Exception:
-                                    pass
+                                except (ConnectionError, TimeoutError, OSError, ValueError, RuntimeError, Exception) as ollama_err:  # noqa: BLE001 - direct chat fallback catches all provider and mock errors
+                                    logger.debug("Direct chat local Ollama fallback error: %s", ollama_err)
                             if followup_stream is None:
-                                raise fe
+                                raise
 
                         full_content_chunks = []
                         text_buffer = ""
@@ -666,7 +670,7 @@ class OpenAIProviderMixin:
 
                 return reply_text
 
-            except Exception as e:
+            except (ConnectionError, TimeoutError, OSError, json.JSONDecodeError, KeyError, ValueError, RuntimeError, Exception) as e:  # noqa: BLE001 - model cascade catches all provider and mock errors
                 last_error = e
                 if include_vision and user_msg.get("role") == "user" and isinstance(user_msg.get("content"), list):
                     logger.warning(

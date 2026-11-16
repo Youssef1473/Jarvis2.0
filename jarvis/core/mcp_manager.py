@@ -208,7 +208,7 @@ def _setup_win32_job_object(proc_handle: int, max_memory_mb: int = STDIO_MEMORY_
             return None
 
         return int(h_job)
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError, AttributeError) as e:
         logger.debug("Win32 Job Object setup bypassed: %s", e)
         return None
 
@@ -228,7 +228,7 @@ def _close_win32_job_object(h_job: int | None) -> None:
 
         kernel32.TerminateJobObject(wintypes.HANDLE(h_job), 1)
         kernel32.CloseHandle(wintypes.HANDLE(h_job))
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError, AttributeError) as e:
         logger.debug("Error closing Job Object handle: %s", e)
 
 
@@ -388,7 +388,7 @@ class MCPClientSession:
             with opener.open(req, timeout=timeout) as resp:
                 resp_bytes = resp.read()
                 raw_text = resp_bytes.decode("utf-8").strip()
-                if raw_text.startswith("{") or raw_text.startswith("["):
+                if raw_text.startswith(("{", "[")):
                     return json.loads(raw_text)
                 for line in raw_text.splitlines():
                     line_str = line.strip()
@@ -464,7 +464,7 @@ class MCPClientSession:
                 try:
                     raw_handle = int(proc._handle)
                     h_job = _setup_win32_job_object(raw_handle, max_memory_mb=STDIO_MEMORY_LIMIT_MB)
-                except Exception as setup_err:
+                except (OSError, RuntimeError, subprocess.SubprocessError, ValueError, AttributeError) as setup_err:
                     logger.error("Job Object setup error for '%s': %s", self.name, setup_err)
                     h_job = None
 
@@ -473,8 +473,8 @@ class MCPClientSession:
                     try:
                         proc.kill()
                         proc.communicate()
-                    except Exception:
-                        pass
+                    except (OSError, subprocess.SubprocessError) as kill_err:
+                        logger.debug("Error killing uncontained MCP process '%s': %s", self.name, kill_err)
                     self._proc = None
                     raise RuntimeError(f"Failed to contain MCP stdio server '{self.name}' in Windows Job Object.")
 
@@ -482,7 +482,7 @@ class MCPClientSession:
                 try:
                     from jarvis.skills.job_object_sandbox import resume_process
                     resumed = resume_process(proc)
-                except Exception as res_err:
+                except (OSError, RuntimeError, subprocess.SubprocessError, ImportError) as res_err:
                     logger.error("Failed to resume suspended MCP process '%s': %s", self.name, res_err)
                     resumed = False
 
@@ -490,8 +490,8 @@ class MCPClientSession:
                     try:
                         proc.kill()
                         proc.communicate()
-                    except Exception:
-                        pass
+                    except (OSError, subprocess.SubprocessError) as kill_err:
+                        logger.debug("Error killing unresumed MCP process '%s': %s", self.name, kill_err)
                     _close_win32_job_object(h_job)
                     self._proc = None
                     self._job_handle = None
@@ -507,7 +507,8 @@ class MCPClientSession:
                         if not line or not isinstance(line, str):
                             break
                         self._stderr_buffer.append(line.rstrip())
-                    except Exception:
+                    except (OSError, UnicodeDecodeError, ValueError) as err:
+                        logger.debug("MCP stderr drain error for '%s': %s", self.name, err)
                         break
 
             self._stderr_thread = threading.Thread(target=_drain_stderr, daemon=True, name=f"mcp-stderr-{self.name}")
@@ -525,7 +526,7 @@ class MCPClientSession:
                             continue
                         try:
                             msg = json.loads(trimmed)
-                        except Exception:
+                        except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
                             self._stdout_queue.put(trimmed)
                             continue
 
@@ -538,7 +539,8 @@ class MCPClientSession:
                                 continue
 
                         self._stdout_queue.put(trimmed)
-                    except Exception:
+                    except (OSError, UnicodeDecodeError, ValueError) as err:
+                        logger.debug("MCP stdout drain error for '%s': %s", self.name, err)
                         break
 
             self._stdout_thread = threading.Thread(target=_drain_stdout, daemon=True, name=f"mcp-stdout-{self.name}")
@@ -609,8 +611,8 @@ class MCPClientSession:
                 try:
                     if self._proc.stdin and not self._proc.stdin.closed:
                         self._proc.stdin.close()
-                except Exception:
-                    pass
+                except (OSError, ValueError) as err:
+                    logger.debug("MCP stdin close notice for '%s': %s", self.name, err)
 
                 # Terminate Job Object to kill process tree cleanly
                 if self._job_handle:
@@ -621,16 +623,16 @@ class MCPClientSession:
                     if self._proc.poll() is None:
                         self._proc.kill()
                         self._proc.wait(timeout=1.0)
-                except Exception:
-                    pass
+                except (OSError, subprocess.SubprocessError, TimeoutError) as err:
+                    logger.debug("MCP process kill notice for '%s': %s", self.name, err)
 
                 try:
                     if self._proc.stdout and not self._proc.stdout.closed:
                         self._proc.stdout.close()
                     if self._proc.stderr and not self._proc.stderr.closed:
                         self._proc.stderr.close()
-                except Exception:
-                    pass
+                except (OSError, ValueError) as err:
+                    logger.debug("MCP stdout/stderr close notice for '%s': %s", self.name, err)
 
                 self._proc = None
 
@@ -795,7 +797,7 @@ class MCPManager:
                     t_copy = dict(t)
                     t_copy["server"] = sess.name
                     all_tools.append(t_copy)
-            except Exception as e:
+            except (OSError, TimeoutError, json.JSONDecodeError, KeyError, ValueError, RuntimeError, ConnectionError) as e:
                 logger.warning("Could not list tools from MCP session '%s': %s", sess.name, e)
 
     def load_servers_config(self) -> dict[str, Any]:
@@ -807,7 +809,7 @@ class MCPManager:
             with open(self.config_path, encoding="utf-8") as f:
                 data = json.load(f)
                 return data.get("mcpServers", {})
-        except Exception as e:
+        except (OSError, json.JSONDecodeError, ValueError) as e:
             logger.error("Failed to parse MCP config '%s': %s", self.config_path, e)
             return {}
 
@@ -875,7 +877,7 @@ class MCPManager:
                     logger.info("MCP server '%s' started with %d tools registered.", server_name, len(registered_tools))
                 elif session:
                     registered_by_server[server_name] = []
-            except Exception as e:
+            except (OSError, TimeoutError, json.JSONDecodeError, KeyError, ValueError, RuntimeError, ConnectionError) as e:
                 logger.warning("Failed to start MCP server '%s': %s", server_name, e)
 
         return registered_by_server
@@ -889,6 +891,6 @@ class MCPManager:
         for sess in sessions:
             try:
                 sess.close()
-            except Exception as err:
+            except (OSError, RuntimeError, TimeoutError, AttributeError, ValueError) as err:
                 logger.debug("Error closing MCP session '%s': %s", sess.name, err)
         logger.info("All active MCP sessions have been terminated.")
