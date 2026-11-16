@@ -165,7 +165,7 @@ class BackgroundTaskManager:
                         return False, "Failed to resume background task after containment, Sir.", None
 
                     job_handle = h_job
-                except Exception as job_err:
+                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as job_err:
                     proc.kill()
                     proc.communicate()
                     logger.error("Unexpected error initializing Job Object for task %s: %s", task_id, job_err)
@@ -208,7 +208,7 @@ class BackgroundTaskManager:
             logger.info("Launched background task '%s' (ID %s, PID %s).", task.name, task_id, proc.pid)
             return True, f"Launched background task '{task.name}' (ID: {task_id}, PID: {proc.pid}), Sir.", task_id
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError, TimeoutError) as e:
             logger.error("Failed to spawn background task: %s", e)
             return False, f"Failed to launch background task: {e}", None
 
@@ -220,8 +220,8 @@ class BackgroundTaskManager:
                     clean = line.rstrip()
                     target_deque.append(clean)
             stream.close()
-        except Exception:
-            pass
+        except (OSError, UnicodeDecodeError, ValueError) as err:
+            logger.debug("Pipe reader drain notice: %s", err)
 
     def _monitor_completion(self, task: BackgroundTask):
         """Monitors process completion, updates telemetry, and coordinates voice notifications."""
@@ -248,14 +248,14 @@ class BackgroundTaskManager:
                         "duration_s": task.duration_seconds,
                         "summary": task.get_output_summary(max_lines=5),
                     })
-                except Exception as b_err:
+                except (OSError, RuntimeError, ValueError, AttributeError) as b_err:
                     logger.debug("Telemetry broadcast error on task completion: %s", b_err)
 
             # 2. Coordinate spoken announcement respecting user focus
             if task.notify_voice and self.orchestrator:
                 self._notify_user_verbally(task)
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as e:
             logger.error("Error monitoring background task %s: %s", task.id, e)
             task.status = "failed"
             task.end_time = time.time()
@@ -264,8 +264,8 @@ class BackgroundTaskManager:
                 try:
                     from jarvis.skills.job_object_sandbox import terminate_and_close_job
                     terminate_and_close_job(task.job_handle)
-                except Exception:
-                    pass
+                except (OSError, RuntimeError, ValueError) as err:
+                    logger.debug("Job object termination notice for task %s: %s", task.id, err)
                 task.job_handle = None
 
     def _notify_user_verbally(self, task: BackgroundTask):
@@ -291,7 +291,7 @@ class BackgroundTaskManager:
 
             heartbeat.speak_proactive(msg)
 
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError, AttributeError) as e:
             logger.debug("Failed to deliver verbal notification for task %s: %s", task.id, e)
 
     def list_tasks(self) -> list[dict[str, Any]]:
@@ -345,8 +345,8 @@ class BackgroundTaskManager:
                             terminate_and_close_job,
                         )
                         terminate_and_close_job(task.job_handle)
-                    except Exception:
-                        pass
+                    except (OSError, RuntimeError, ValueError) as err:
+                        logger.debug("Job object termination notice on cancel for task %s: %s", task.id, err)
                     task.job_handle = None
 
                 task.process.terminate()
@@ -358,7 +358,7 @@ class BackgroundTaskManager:
                 task.end_time = time.time()
                 logger.info("Cancelled background task '%s' (ID %s).", task.name, task_id)
                 return True
-            except Exception as e:
+            except (OSError, RuntimeError, KeyError, ValueError, subprocess.SubprocessError) as e:
                 logger.error("Error cancelling task %s: %s", task_id, e)
                 return False
 
@@ -372,22 +372,23 @@ class BackgroundTaskManager:
                 try:
                     from jarvis.skills.job_object_sandbox import terminate_and_close_job
                     terminate_and_close_job(t.job_handle)
-                except Exception:
-                    pass
+                except (OSError, RuntimeError, ValueError) as err:
+                    logger.debug("Job object termination notice on stop_all for task %s: %s", t.id, err)
                 t.job_handle = None
             try:
                 t.process.terminate()
-            except Exception:
-                pass
+            except (OSError, subprocess.SubprocessError) as err:
+                logger.debug("Task process terminate notice for task %s: %s", t.id, err)
 
         for t in running:
             try:
                 t.process.wait(timeout=timeout)
-            except Exception:
+            except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError) as wait_err:
+                logger.debug("Task process wait expired or error for task %s: %s", t.id, wait_err)
                 try:
                     t.process.kill()
-                except Exception:
-                    pass
+                except (OSError, subprocess.SubprocessError) as kill_err:
+                    logger.debug("Task process kill notice for task %s: %s", t.id, kill_err)
             t.status = "cancelled"
             t.end_time = time.time()
 
