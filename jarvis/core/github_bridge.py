@@ -11,6 +11,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 from jarvis.audio.prosodic_chunker import TwoGearProsodicChunker
 from jarvis.core.stream_tool_parser import NonceGuardedStreamParser
 
@@ -302,15 +304,15 @@ class GitHubCopilotBridge:
             if sandboxed:
                 try:
                     sandboxed.terminate_tree()
-                except Exception:
-                    pass
+                except (psutil.Error, ProcessLookupError, PermissionError, OSError, StopIteration) as e:
+                    logger.debug("Sandbox process tree cleanup error: %s", e)
             raise
         finally:
             if sandboxed:
                 try:
                     sandboxed.terminate_tree()
-                except Exception:
-                    pass
+                except (psutil.Error, ProcessLookupError, PermissionError, OSError, StopIteration) as e:
+                    logger.debug("Sandbox process tree cleanup error: %s", e)
 
         return {
             "status": "SUCCESS",

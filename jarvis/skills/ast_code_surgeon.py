@@ -10,6 +10,7 @@ import ast
 import logging
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from typing import Any
@@ -95,7 +96,7 @@ def localize_ast_fault_node(file_path: str, target_line: int) -> dict[str, Any]:
         with open(file_path, encoding="utf-8") as f:
             source = f.read()
         lines = source.splitlines()
-    except Exception as e:
+    except (OSError, UnicodeDecodeError) as e:
         return {"status": "error", "error": f"Could not read '{file_path}': {e}"}
 
     try:
@@ -238,7 +239,7 @@ def apply_and_verify_surgical_patch(
     try:
         with open(abs_path, encoding="utf-8") as f:
             orig_content = f.read()
-    except Exception as e:
+    except (OSError, UnicodeDecodeError) as e:
         return {"status": "error", "error": f"Failed to read original file '{file_path}': {e}", "rolled_back": False}
 
     orig_lines = orig_content.splitlines(keepends=True)
@@ -258,12 +259,12 @@ def apply_and_verify_surgical_patch(
         with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
             tmp_file.write(new_content)
         os.replace(tmp_path, abs_path)
-    except Exception as w_err:
+    except (OSError, UnicodeEncodeError) as w_err:
         if os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
-            except Exception:
-                pass
+            except OSError as rm_err:
+                logger.debug("Failed removing candidate patch tempfile: %s", rm_err)
         return {"status": "error", "error": f"Failed to write candidate patch: {w_err}", "rolled_back": False}
 
     # Helper function to rollback byte-for-byte
@@ -272,7 +273,7 @@ def apply_and_verify_surgical_patch(
             with open(abs_path, "w", encoding="utf-8") as rb_file:
                 rb_file.write(orig_content)
             logger.info("Rolled back surgical patch on '%s' byte-for-byte.", file_path)
-        except Exception as rb_err:
+        except OSError as rb_err:
             logger.error("Critical failure rolling back patch on '%s': %s", file_path, rb_err)
 
     # 4. Execute target test in sandboxed Win32 Job Object
@@ -326,7 +327,7 @@ def apply_and_verify_surgical_patch(
             "target_test": target_test_module,
         }
 
-    except Exception as exec_err:
+    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exec_err:
         _rollback()
         return {
             "status": "rejected_execution_error",
