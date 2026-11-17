@@ -31,7 +31,8 @@ AVRT_PRIORITY_HIGH = 1
 AVRT_PRIORITY_CRITICAL = 2
 
 # Alder Lake i5-12500H Core Topology Constants (4 P-Cores = 0..7, 8 E-Cores = 8..15)
-MASK_PCORE_AUDIO_ISOLATED = 0x0003  # Logical CPUs 0-1 (P-Core 0: WASAPI playback; wake-word uses 0x0055 via get_physical_pcore_mask)
+MASK_PCORE_AUDIO_ISOLATED = 0x0003  # Logical CPUs 0-1 (P-Core 0 exclusive: WASAPI playback)
+MASK_PCORE_WAKEWORD = 0x0054        # Logical CPUs 2, 4, 6 (P-Cores 1-3 non-SMT: avoids collision on Logical CPU 0 with P-Core 0 / 0x0003)
 MASK_PCORE_COMPUTE = 0x00FC         # Logical CPUs 2-7 (P-Cores 1-3: Kokoro ONNX, Whisper, Brain)
 MASK_ECORE_BACKGROUND = 0xFF00     # Logical CPUs 8-15 (All 8 E-Cores: SQLite, UIA, FastAPI, Sync)
 
@@ -73,6 +74,17 @@ def get_physical_pcore_mask() -> int:
         return 0x55
     elif logical_cpus >= 4:
         return 0x05
+    else:
+        return (1 << logical_cpus) - 1
+
+
+def get_wakeword_affinity_mask() -> int:
+    """Calculates affinity bitmask selecting physical P-cores excluding P-Core 0 (0x0003)."""
+    logical_cpus = os.cpu_count() or 1
+    if logical_cpus >= 8:
+        return MASK_PCORE_WAKEWORD  # 0x0054 (Logical CPUs 2, 4, 6)
+    elif logical_cpus >= 4:
+        return 0x04  # Logical CPU 2 (avoiding CPU 0/1)
     else:
         return (1 << logical_cpus) - 1
 
@@ -326,19 +338,25 @@ def pin_and_elevate_current_thread(
     time_critical: bool = False,
     physical_only: bool = True,
     mmcss: bool = True,
+    mask: int | None = None,
 ) -> bool:
     """Convenience helper to pin calling thread to physical P-cores, elevate priority, and register with MMCSS."""
     if sys.platform != "win32":
         return False
 
     priority = THREAD_PRIORITY_TIME_CRITICAL if time_critical else THREAD_PRIORITY_HIGHEST
-    p_pinned = pin_thread_to_pcores(physical_only=physical_only)
+    p_pinned = pin_thread_to_pcores(thread_handle=None, mask=mask, physical_only=physical_only)
     p_elevated = elevate_thread_priority(priority=priority)
     h_mmcss = elevate_to_pro_audio_mmcss() if mmcss else None
     eco_disabled = disable_thread_power_throttling()
 
     if p_pinned or p_elevated or h_mmcss or eco_disabled:
-        mask_used = get_physical_pcore_mask() if physical_only else get_pcore_affinity_mask()
+        if mask is not None:
+            mask_used = mask
+        elif physical_only:
+            mask_used = get_physical_pcore_mask()
+        else:
+            mask_used = get_pcore_affinity_mask()
         logger.info(
             "[%s] High-Performance Audio active: P-Cores pinned (0x%X), priority=%d, MMCSS=%s, EcoQoSDisabled=%s",
             tag, mask_used, priority, bool(h_mmcss), eco_disabled

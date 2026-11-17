@@ -338,8 +338,11 @@ class WakeWordDetector:
     def _worker_loop(self):
         """Dedicated background worker thread for processing raw audio frames and routing."""
         try:
-            from jarvis.audio.affinity import pin_and_elevate_current_thread
-            pin_and_elevate_current_thread(tag="MicRouterWorker")
+            from jarvis.audio.affinity import (
+                get_wakeword_affinity_mask,
+                pin_and_elevate_current_thread,
+            )
+            pin_and_elevate_current_thread(tag="MicRouterWorker", mask=get_wakeword_affinity_mask())
         except Exception:  # noqa: BLE001, S110
             pass
 

@@ -490,7 +490,6 @@ class TextToSpeech:
         self._stream_active = False
         self._session_word_count = 0
         self._underrun_count: int = 0
-        self._retained_streams: deque = deque(maxlen=8)
         self._stream_shutdown_timed_out: bool = False
         self._stream_cleanup_uncertain: bool = False
         self._last_shutdown_outcome: str = "NONE"
@@ -503,7 +502,7 @@ class TextToSpeech:
         self._chunker = StreamingSentenceChunker()
         self._ring_buffer = AudioRingBuffer(capacity_samples=48000 * 120, ramp_samples=120)
         self._stream_device: int | None = None
-        self._stream_sample_rate: int = 24000
+        self._stream_sample_rate: int = 48000
         self._synth_has_started: bool = False
         self._resampler = StatefulPolyphaseUpsampler(up=2, down=1, pad_samples=32)
 
@@ -865,9 +864,6 @@ class TextToSpeech:
         """Safely stops and closes a PortAudio hardware stream on a dedicated control thread."""
         if stream is None:
             return True
-
-        if hasattr(self, "_retained_streams"):
-            self._retained_streams.append(stream)
 
         worker_to_join = None
         prior_worker_to_join = None
@@ -2106,6 +2102,14 @@ class TextToSpeech:
             self._ring_buffer.clear()
 
         self._stream_device, self._stream_sample_rate = self._resolve_output_stream_params()
+
+        expected_capacity = self._stream_sample_rate * 120
+        expected_ramp = 120 if self._stream_sample_rate == 48000 else 60
+        if hasattr(self, "_ring_buffer") and (
+            self._ring_buffer.capacity != expected_capacity
+            or self._ring_buffer.ramp_samples != expected_ramp
+        ):
+            self._ring_buffer = AudioRingBuffer(capacity_samples=expected_capacity, ramp_samples=expected_ramp)
 
         if self.engine == "kokoro":
             if not self._kokoro:

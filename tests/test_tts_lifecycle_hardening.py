@@ -2621,6 +2621,27 @@ class TestTtsLifecycleHardening(unittest.TestCase):
         with self.tts._stream_claim_lock:
             self.assertFalse(self.tts._default_stop_pending)
 
+    def test_retained_streams_removed_and_no_leak_across_50_cycles(self):
+        """Plan 001 Step 2: Verifies _retained_streams is removed and stream references do not leak across 50 start/stop cycles."""
+        self.assertFalse(hasattr(self.tts, "_retained_streams"))
+        stream_refs = []
+
+        for _ in range(50):
+            mock_stream = MagicMock()
+            mock_stream.active = False
+            mock_stream.stop.return_value = None
+            mock_stream.close.return_value = None
+            stream_refs.append(weakref.ref(mock_stream))
+
+            ok = self.tts._close_stream_safely(mock_stream, stop_timeout=0.050)
+            self.assertTrue(ok)
+            del mock_stream
+
+        gc.collect()
+
+        alive_count = sum(1 for r in stream_refs if r() is not None)
+        self.assertEqual(alive_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

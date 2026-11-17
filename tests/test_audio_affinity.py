@@ -48,6 +48,36 @@ class TestAudioAffinity(unittest.TestCase):
         with patch("os.cpu_count", return_value=4):
             self.assertEqual(get_physical_pcore_mask(), 0x05)
 
+    def test_get_wakeword_affinity_mask_topology(self):
+        """Verifies calculation of wake-word affinity mask avoiding P-Core 0 across topologies."""
+        from jarvis.audio.affinity import (
+            MASK_PCORE_AUDIO_ISOLATED,
+            MASK_PCORE_WAKEWORD,
+            get_wakeword_affinity_mask,
+        )
+
+        with patch("os.cpu_count", return_value=16):
+            # 16-thread hybrid: 0x0054 (Logical CPUs 2, 4, 6)
+            mask = get_wakeword_affinity_mask()
+            self.assertEqual(mask, MASK_PCORE_WAKEWORD)
+            self.assertEqual(mask & MASK_PCORE_AUDIO_ISOLATED, 0)
+
+        with patch("os.cpu_count", return_value=12):
+            mask = get_wakeword_affinity_mask()
+            self.assertEqual(mask, MASK_PCORE_WAKEWORD)
+            self.assertEqual(mask & MASK_PCORE_AUDIO_ISOLATED, 0)
+
+        with patch("os.cpu_count", return_value=8):
+            mask = get_wakeword_affinity_mask()
+            self.assertEqual(mask, MASK_PCORE_WAKEWORD)
+            self.assertEqual(mask & MASK_PCORE_AUDIO_ISOLATED, 0)
+
+        with patch("os.cpu_count", return_value=4):
+            # 4-core CPU: 0x04 (Logical CPU 2)
+            mask = get_wakeword_affinity_mask()
+            self.assertEqual(mask, 0x04)
+            self.assertEqual(mask & MASK_PCORE_AUDIO_ISOLATED, 0)
+
     @unittest.skipUnless(sys.platform == "win32", "Win32 native API required for live affinity tests")
     def test_live_win32_pin_and_elevate(self):
         """Verifies live Win32 thread affinity and priority elevation on Windows host."""

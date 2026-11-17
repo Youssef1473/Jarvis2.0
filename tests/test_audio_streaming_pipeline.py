@@ -468,7 +468,8 @@ class TestPlaybackReliabilityAndRingAllocation(unittest.TestCase):
         self.assertLess(elapsed, 0.150)
         self.assertTrue(self.tts._stream_shutdown_timed_out)
         self.assertIsNone(self.tts._output_stream)
-        self.assertIn(mock_stream, self.tts._retained_streams)
+        self.assertIn(mock_stream, self.tts._unresolved_streams)
+        self.assertFalse(hasattr(self.tts, "_retained_streams"))
 
         # CRITICAL SAFETY INVARIANT: abort() must NOT be called concurrently on the stalled handle
         mock_stream.abort.assert_not_called()
@@ -498,7 +499,8 @@ class TestPlaybackReliabilityAndRingAllocation(unittest.TestCase):
         self.assertLess(elapsed, 0.150)
         self.assertTrue(self.tts._stream_shutdown_timed_out)
         self.assertIsNone(self.tts._output_stream)
-        self.assertIn(mock_stream, self.tts._retained_streams)
+        self.assertIn(mock_stream, self.tts._unresolved_streams)
+        self.assertFalse(hasattr(self.tts, "_retained_streams"))
 
         # Active worker exists and is still waiting on stop_gate
         active_worker = self.tts._shutdown_worker
