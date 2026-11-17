@@ -1692,6 +1692,7 @@
         </select>
         <span id="workspaceVectorBadge" class="thermal-badge tabular-nums inline-block" style="font-size: 0.65rem; padding: 1px 5px; color: var(--holo-emerald); border-color: var(--holo-emerald);" title="Vector Index Volume and Headroom against 2,500 ceiling">0/2500 VEC</span>
         <span id="workspaceQuarantinedBadge" class="thermal-badge tabular-nums inline-block" style="font-size: 0.65rem; padding: 1px 5px; color: var(--holo-amber); border-color: var(--holo-amber); cursor: pointer;" title="Quarantined Unscoped Facts (Click to Inspect &amp; Promote)" data-action="open-quarantine-drawer">0 QUAR</span>
+        <span id="evolutionPendingBadge" class="thermal-badge tabular-nums inline-block" style="font-size: 0.65rem; padding: 1px 5px; color: var(--holo-emerald); border-color: var(--holo-emerald); cursor: pointer;" title="Self-Evolution Verified Patches (Click to Review &amp; Promote)" data-action="open-patches-drawer">0 PATCH</span>
       </div>
       <div class="pill">
         <span id="clockDisplay">00:00:00</span>
@@ -1928,6 +1929,7 @@
       <button class="drawer-tab" id="tabStagedBtn" data-action="switch-drawer-tab" data-tab="staged">STAGED (<span id="drawerStagedCount">0</span>)</button>
       <button class="drawer-tab" id="tabAgendaBtn" data-action="switch-drawer-tab" data-tab="agenda">AGENDA (<span id="drawerAgendaCount">0</span>)</button>
       <button class="drawer-tab" id="tabQuarantineBtn" data-action="switch-drawer-tab" data-tab="quarantine">QUARANTINE (<span id="drawerQuarantineCount">0</span>)</button>
+      <button class="drawer-tab" id="tabPatchesBtn" data-action="switch-drawer-tab" data-tab="patches">PATCHES (<span id="drawerPatchesCount">0</span>)</button>
     </div>
     <div class="drawer-body" id="drawerBody">
       <div style="color: var(--text-dim); font-size: 0.85rem; text-align: center; margin-top: 20px;">Loading archive data...</div>
@@ -2187,6 +2189,7 @@
       domRefs.workspaceSelect = document.getElementById('workspaceSelect');
       domRefs.workspaceVectorBadge = document.getElementById('workspaceVectorBadge');
       domRefs.workspaceQuarantinedBadge = document.getElementById('workspaceQuarantinedBadge');
+      domRefs.evolutionPendingBadge = document.getElementById('evolutionPendingBadge');
       domRefs.telemetryWsVal = document.getElementById('telemetryWsVal');
       domRefs.telemetryVecHeadroomVal = document.getElementById('telemetryVecHeadroomVal');
       domRefs.chatContainer = document.getElementById('chatContainer');
@@ -2199,10 +2202,12 @@
       domRefs.drawerBody = document.getElementById('drawerBody');
       domRefs.drawerTimerCount = document.getElementById('drawerTimerCount');
       domRefs.drawerStagedCount = document.getElementById('drawerStagedCount');
+      domRefs.drawerPatchesCount = document.getElementById('drawerPatchesCount');
       domRefs.tabTimersBtn = document.getElementById('tabTimersBtn');
       domRefs.tabNotesBtn = document.getElementById('tabNotesBtn');
       domRefs.tabStagedBtn = document.getElementById('tabStagedBtn');
       domRefs.tabAgendaBtn = document.getElementById('tabAgendaBtn');
+      domRefs.tabPatchesBtn = document.getElementById('tabPatchesBtn');
       domRefs.pdfFileInput = document.getElementById('pdfFileInput');
       domRefs.calendarModalBackdrop = document.getElementById('calendarModalBackdrop');
       domRefs.calConfirmBackdrop = document.getElementById('calConfirmBackdrop');
@@ -2377,6 +2382,42 @@
           case 'open-quarantine-drawer': {
             if (!isDrawerOpen) toggleDrawer();
             switchDrawerTab('quarantine');
+            break;
+          }
+
+          case 'open-patches-drawer': {
+            if (!isDrawerOpen) toggleDrawer();
+            switchDrawerTab('patches');
+            break;
+          }
+
+          case 'arm-approve-patch': {
+            actionEl.textContent = 'CONFIRM APPROVE ↵';
+            actionEl.dataset.action = 'approve-patch-proposal';
+            actionEl.style.color = 'var(--holo-emerald)';
+            actionEl.style.borderColor = 'var(--holo-emerald)';
+            actionEl.style.background = 'rgba(0, 225, 153, 0.2)';
+            break;
+          }
+
+          case 'arm-reject-patch': {
+            actionEl.textContent = 'CONFIRM REJECT ✕';
+            actionEl.dataset.action = 'reject-patch-proposal';
+            actionEl.style.color = 'var(--holo-crimson)';
+            actionEl.style.borderColor = 'var(--holo-crimson)';
+            actionEl.style.background = 'rgba(255, 51, 102, 0.2)';
+            break;
+          }
+
+          case 'approve-patch-proposal': {
+            const propId = actionEl.dataset.id;
+            if (propId) executePatchApprove(propId);
+            break;
+          }
+
+          case 'reject-patch-proposal': {
+            const propId = actionEl.dataset.id;
+            if (propId) executePatchReject(propId);
             break;
           }
 
@@ -3131,6 +3172,9 @@ void main() {
       } else if (data.type === "memory_updated") {
         if (typeof loadWorkspaces === "function") loadWorkspaces();
         if (isDrawerOpen && activeDrawerTab === 'quarantine' && typeof renderQuarantineTab === "function") renderQuarantineTab();
+      } else if (data.type === "patch_proposal_ready" || data.type === "patch_proposal_resolved") {
+        if (typeof refreshPatchesBadge === "function") refreshPatchesBadge();
+        if (isDrawerOpen && activeDrawerTab === 'patches' && typeof renderPatchesTab === "function") renderPatchesTab();
       }
     }
 
@@ -3395,6 +3439,8 @@ void main() {
       if (agendaBtn) agendaBtn.classList.toggle('active', tab === 'agenda');
       const quarantineBtn = document.getElementById('tabQuarantineBtn');
       if (quarantineBtn) quarantineBtn.classList.toggle('active', tab === 'quarantine');
+      const patchesBtn = document.getElementById('tabPatchesBtn');
+      if (patchesBtn) patchesBtn.classList.toggle('active', tab === 'patches');
       loadDrawerContent();
     }
 
@@ -4088,6 +4134,8 @@ void main() {
           });
         } else if (activeDrawerTab === 'quarantine') {
           renderQuarantineTab();
+        } else if (activeDrawerTab === 'patches') {
+          renderPatchesTab();
         }
       }
 
@@ -4263,6 +4311,177 @@ void main() {
         }
       } catch (err) {
         console.error("Quarantine purge error:", err);
+      }
+    }
+
+    async function refreshPatchesBadge() {
+      try {
+        const res = await fetch('/api/evolution/proposals?include_resolved=false', { headers: jarvisHeaders() });
+        if (!res.ok) return;
+        const data = await res.json();
+        const pendingCount = data.pending_count !== undefined ? data.pending_count : (data.proposals ? data.proposals.length : 0);
+        const pBadge = domRefs.evolutionPendingBadge || document.getElementById('evolutionPendingBadge');
+        if (pBadge) {
+          pBadge.textContent = `${pendingCount} PATCH`;
+          pBadge.style.color = pendingCount > 0 ? 'var(--holo-emerald)' : 'var(--holo-cyan)';
+          pBadge.style.borderColor = pendingCount > 0 ? 'var(--holo-emerald)' : 'var(--holo-cyan)';
+        }
+        const drawerPCount = domRefs.drawerPatchesCount || document.getElementById('drawerPatchesCount');
+        if (drawerPCount) {
+          drawerPCount.textContent = pendingCount;
+        }
+      } catch (err) {
+        console.debug('Patches badge refresh notice:', err);
+      }
+    }
+
+    function formatUnifiedDiff(diffText) {
+      if (!diffText) return '<div style="color: var(--text-dim); font-style: italic;">No diff content.</div>';
+      const lines = diffText.split('\n');
+      const formatted = lines.map(line => {
+        const escaped = escapeHtml(line);
+        if (line.startsWith('+') && !line.startsWith('+++')) {
+          return `<div style="color: var(--holo-emerald); background: rgba(0, 225, 153, 0.08); padding: 1px 4px;">${escaped}</div>`;
+        } else if (line.startsWith('-') && !line.startsWith('---')) {
+          return `<div style="color: var(--holo-crimson); background: rgba(255, 51, 102, 0.08); padding: 1px 4px;">${escaped}</div>`;
+        } else if (line.startsWith('@@')) {
+          return `<div style="color: var(--holo-cyan); background: rgba(0, 255, 255, 0.05); padding: 1px 4px; font-weight: bold;">${escaped}</div>`;
+        } else {
+          return `<div style="color: var(--text-dim); padding: 1px 4px;">${escaped}</div>`;
+        }
+      }).join('');
+      return `<pre style="font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; line-height: 1.35; margin: 6px 0; overflow-x: auto; background: rgba(6, 11, 20, 0.85); padding: 8px; border-radius: 4px; border: 1px solid rgba(0, 240, 255, 0.15);">${formatted}</pre>`;
+    }
+
+    async function renderPatchesTab() {
+      const container = document.getElementById('drawerBody');
+      if (!container) return;
+      container.innerHTML = '<div style="color: var(--holo-cyan); font-size: 0.85rem; text-align: center; margin-top: 20px;">Fetching candidate AST patch proposals...</div>';
+      try {
+        const res = await fetch('/api/evolution/proposals?include_resolved=false', { headers: jarvisHeaders() });
+        if (!res.ok) {
+          container.innerHTML = `<div style="color: var(--holo-crimson); font-size: 0.85rem;">Error loading patches: HTTP ${res.status}</div>`;
+          return;
+        }
+        const data = await res.json();
+        const proposals = data.proposals || [];
+        const pendingCount = data.pending_count !== undefined ? data.pending_count : proposals.length;
+
+        const countEl = domRefs.drawerPatchesCount || document.getElementById('drawerPatchesCount');
+        if (countEl) countEl.textContent = pendingCount;
+
+        const pBadge = domRefs.evolutionPendingBadge || document.getElementById('evolutionPendingBadge');
+        if (pBadge) {
+          pBadge.textContent = `${pendingCount} PATCH`;
+          pBadge.style.color = pendingCount > 0 ? 'var(--holo-emerald)' : 'var(--holo-cyan)';
+          pBadge.style.borderColor = pendingCount > 0 ? 'var(--holo-emerald)' : 'var(--holo-cyan)';
+        }
+
+        let headerHtml = `
+          <div style="margin-bottom: 12px; padding: 10px; background: rgba(0, 240, 255, 0.05); border: 1px solid var(--panel-border); border-radius: 4px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 4px;">
+              <span style="font-family:'Orbitron',sans-serif; font-size:0.8rem; font-weight:700; color:var(--holo-emerald);">VERIFIED AST PATCHES</span>
+              <span style="font-size:0.75rem; color:var(--text-dim); font-family:'JetBrains Mono',monospace;">PENDING: ${pendingCount}</span>
+            </div>
+            <div style="font-size:0.72rem; color:var(--text-dim); line-height:1.35;">
+              Shadow-verified in Win32 AppContainer sandbox. Protected by 900s TTL and sha256_before optimistic concurrency guards.
+            </div>
+          </div>
+        `;
+
+        if (!proposals.length) {
+          container.innerHTML = headerHtml + `
+            <div style="color: var(--text-dim); text-align: center; margin-top: 25px; font-size: 0.85rem;">
+              <div style="color: var(--holo-emerald); font-weight:700; margin-bottom: 6px;">✓ 0 PENDING PATCH PROPOSALS</div>
+              No candidate code modifications awaiting promotion.
+            </div>
+          `;
+          return;
+        }
+
+        const cardsHtml = proposals.map(p => {
+          const rep = p.report || {};
+          const diffMarkup = formatUnifiedDiff(p.unified_diff || '');
+          const expiresInMin = Math.round((p.expires_in || 0) / 60);
+
+          return `
+            <div class="drawer-card" style="border-left-color: var(--holo-emerald); margin-bottom: 12px; padding: 10px;">
+              <div class="drawer-card-header" style="margin-bottom: 6px;">
+                <span style="color: var(--holo-emerald); font-weight: 700; font-size: 0.82rem; font-family:'JetBrains Mono',monospace;">${escapeHtml(p.proposal_id)}</span>
+                <span style="color: var(--holo-amber); font-size: 0.72rem; font-family:'JetBrains Mono',monospace;">TTL: ${expiresInMin}m</span>
+              </div>
+              <div style="font-size: 0.76rem; color: var(--holo-cyan); margin-bottom: 4px; font-family:'JetBrains Mono',monospace; word-break:break-all;">
+                TARGET: ${escapeHtml(p.file_path)} (L${p.node_start_line}-${p.node_end_line})
+              </div>
+              <div style="display:flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap;">
+                <span class="thermal-badge tabular-nums inline-block" style="font-size: 0.65rem; padding: 1px 5px; color: var(--holo-emerald); border-color: var(--holo-emerald);">RUFF 0</span>
+                <span class="thermal-badge tabular-nums inline-block" style="font-size: 0.65rem; padding: 1px 5px; color: var(--holo-emerald); border-color: var(--holo-emerald);">DIAG 0</span>
+                <span class="thermal-badge tabular-nums inline-block" style="font-size: 0.65rem; padding: 1px 5px; color: var(--holo-emerald); border-color: var(--holo-emerald);">TEST PASS</span>
+                <span class="thermal-badge tabular-nums inline-block" style="font-size: 0.65rem; padding: 1px 5px; color: var(--text-dim); border-color: rgba(0,240,255,0.2);">${Math.round(rep.elapsed_ms || 0)}ms</span>
+              </div>
+              <div style="font-size: 0.72rem; color: var(--text-dim); margin-bottom: 2px;">
+                VERIFIED UNIFIED DIFF:
+              </div>
+              ${diffMarkup}
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top: 8px;">
+                <button class="drawer-close-btn" style="color: var(--holo-emerald); border-color: rgba(0, 225, 153, 0.4); font-size:0.75rem; flex:1;" data-action="arm-approve-patch" data-id="${escapeHtml(p.proposal_id)}">
+                  APPROVE ↵
+                </button>
+                <button class="drawer-close-btn" style="color: var(--holo-crimson); border-color: rgba(255, 51, 102, 0.4); font-size:0.75rem;" data-action="arm-reject-patch" data-id="${escapeHtml(p.proposal_id)}">
+                  REJECT ✕
+                </button>
+              </div>
+            </div>
+          `;
+        }).join('');
+
+        container.innerHTML = headerHtml + cardsHtml;
+      } catch (err) {
+        container.innerHTML = `<div style="color: var(--holo-crimson); font-size: 0.85rem;">Error loading patches: ${err}</div>`;
+      }
+    }
+
+    async function executePatchApprove(proposalId) {
+      if (!proposalId) return;
+      try {
+        const res = await fetch(`/api/evolution/proposals/${encodeURIComponent(proposalId)}/approve`, {
+          method: 'POST',
+          headers: jarvisHeaders(),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          appendChatMessage('jarvis', `AST code patch '${proposalId}' approved and promoted atomically to live repository, Sir.`);
+          refreshPatchesBadge();
+          renderPatchesTab();
+        } else {
+          const errDetail = data.error || `HTTP ${res.status}`;
+          appendChatMessage('system', `⚠️ Failed to promote patch '${proposalId}': ${errDetail}`);
+          renderPatchesTab();
+        }
+      } catch (err) {
+        appendChatMessage('system', `⚠️ Network error approving patch: ${err}`);
+      }
+    }
+
+    async function executePatchReject(proposalId) {
+      if (!proposalId) return;
+      try {
+        const res = await fetch(`/api/evolution/proposals/${encodeURIComponent(proposalId)}/reject`, {
+          method: 'POST',
+          headers: jarvisHeaders(),
+          body: JSON.stringify({ reason: 'Rejected from Holographic HUD' }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          appendChatMessage('jarvis', `AST code patch '${proposalId}' has been rejected.`);
+          refreshPatchesBadge();
+          renderPatchesTab();
+        } else {
+          appendChatMessage('system', `⚠️ Failed to reject patch '${proposalId}': ${data.error || res.status}`);
+          renderPatchesTab();
+        }
+      } catch (err) {
+        appendChatMessage('system', `⚠️ Network error rejecting patch: ${err}`);
       }
     }
 
@@ -5367,6 +5586,7 @@ void main() {
       loadWorkspaces();
       checkStagedDocuments();
       updateAgendaCountBadge();
+      refreshPatchesBadge();
 
       // Fallback polling loop if WebSocket connection is lost or offline
       setInterval(() => {
@@ -5375,10 +5595,11 @@ void main() {
         }
       }, 3000);
 
-      // Periodic check for staged documents & calendar badge
+      // Periodic check for staged documents, calendar badge & patch proposals
       setInterval(() => {
         checkStagedDocuments();
         updateAgendaCountBadge();
+        refreshPatchesBadge();
       }, 5000);
 
       // Auto-refresh countdown timers when drawer is open

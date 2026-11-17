@@ -27,6 +27,7 @@ from jarvis.ui.routes import resolve_request_workspace
 from jarvis.ui.routes.approval import ApprovalRoutesMixin
 from jarvis.ui.routes.calendar import CalendarRoutesMixin
 from jarvis.ui.routes.command import CommandRoutesMixin
+from jarvis.ui.routes.evolution import EvolutionRoutesMixin
 from jarvis.ui.routes.media import MediaRoutesMixin, resolve_safe_photo_path
 from jarvis.ui.routes.memory import MemoryRoutesMixin
 from jarvis.ui.security import (
@@ -91,6 +92,7 @@ class JarvisUIService(
     MemoryRoutesMixin,
     MediaRoutesMixin,
     CommandRoutesMixin,
+    EvolutionRoutesMixin,
 ):
     """Manages the lifecycle of the Starlette HUD server, routing assembly, and WebSocket broadcasting."""
 
@@ -195,6 +197,9 @@ class JarvisUIService(
             Route("/api/approval/pending", endpoint=self._handle_approval_pending, methods=["GET"]),
             Route("/api/approval/respond", endpoint=self._handle_approval_respond, methods=["POST"]),
             Route("/api/approval/grant", endpoint=self._handle_approval_grant, methods=["POST"]),
+            Route("/api/evolution/proposals", endpoint=self._handle_evolution_proposals_list, methods=["GET"]),
+            Route("/api/evolution/proposals/{proposal_id}/approve", endpoint=self._handle_evolution_proposal_approve, methods=["POST"]),
+            Route("/api/evolution/proposals/{proposal_id}/reject", endpoint=self._handle_evolution_proposal_reject, methods=["POST"]),
             WebSocketRoute("/ws", endpoint=self._handle_websocket),
             WebSocketRoute("/api/telemetry", endpoint=self._handle_websocket),
         ]

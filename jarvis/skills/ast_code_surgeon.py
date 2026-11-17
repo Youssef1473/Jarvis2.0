@@ -9,14 +9,17 @@ from __future__ import annotations
 import ast
 import contextlib
 import difflib
+import hashlib
 import logging
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -594,6 +597,279 @@ def promote_verified_patch(
             "error": f"Failed to promote verified patch: {exc}",
             "promoted": False,
         }
+
+
+@dataclass
+class PatchProposal:
+    """Represents a verified AST patch proposal awaiting human operator promotion."""
+
+    proposal_id: str
+    file_path: str
+    node_start_line: int
+    node_end_line: int
+    replacement_code: str
+    target_test_module: str
+    sha256_before: str
+    sha256_shadow: str
+    unified_diff: str
+    report: EvolutionVerificationReport
+    created_at: float = field(default_factory=time.time)
+    ttl_seconds: float = 900.0
+    status: str = "pending"  # "pending" | "approved" | "rejected" | "expired" | "conflict"
+    rejection_reason: str | None = None
+    workspace_root: str = "."
+
+    @property
+    def is_expired(self) -> bool:
+        return time.time() > (self.created_at + self.ttl_seconds)
+
+    @property
+    def expires_in(self) -> float:
+        return max(0.0, (self.created_at + self.ttl_seconds) - time.time())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "proposal_id": self.proposal_id,
+            "file_path": self.file_path,
+            "node_start_line": self.node_start_line,
+            "node_end_line": self.node_end_line,
+            "sha256_before": self.sha256_before,
+            "sha256_shadow": self.sha256_shadow,
+            "unified_diff": self.unified_diff,
+            "report": self.report.to_dict() if hasattr(self.report, "to_dict") else getattr(self.report, "__dict__", {}),
+            "created_at": self.created_at,
+            "expires_in": self.expires_in,
+            "status": "expired" if self.status == "pending" and self.is_expired else self.status,
+            "rejection_reason": self.rejection_reason,
+            "workspace_root": self.workspace_root,
+        }
+
+
+class PatchProposalRegistry:
+    """Thread-safe bounded in-memory registry for AppContainer verified code patch proposals."""
+
+    def __init__(self, max_proposals: int = 50, ttl_seconds: float = 900.0) -> None:
+        self.max_proposals = max_proposals
+        self.ttl_seconds = ttl_seconds
+        self._proposals: dict[str, PatchProposal] = {}
+        self._lock = threading.Lock()
+
+    def register_proposal(
+        self,
+        file_path: str | Path,
+        node_start_line: int,
+        node_end_line: int,
+        replacement_code: str,
+        target_test_module: str,
+        sha256_before: str,
+        sha256_shadow: str,
+        unified_diff: str,
+        report: EvolutionVerificationReport,
+        proposal_id: str | None = None,
+        ttl_seconds: float | None = None,
+        workspace_root: str | Path = ".",
+    ) -> PatchProposal:
+        """Validates path safety and stores a verified candidate patch proposal."""
+        validate_target_patch_path(file_path, workspace_root=workspace_root)
+
+        pid = proposal_id or f"prop_{uuid.uuid4().hex[:12]}"
+        ttl = float(ttl_seconds if ttl_seconds is not None else self.ttl_seconds)
+
+        proposal = PatchProposal(
+            proposal_id=pid,
+            file_path=str(file_path),
+            node_start_line=node_start_line,
+            node_end_line=node_end_line,
+            replacement_code=replacement_code,
+            target_test_module=target_test_module,
+            sha256_before=sha256_before,
+            sha256_shadow=sha256_shadow,
+            unified_diff=unified_diff,
+            report=report,
+            ttl_seconds=ttl,
+            workspace_root=str(workspace_root),
+        )
+
+        with self._lock:
+            # Prune expired proposals if approaching capacity
+            if len(self._proposals) >= self.max_proposals:
+                expired_keys = [
+                    k for k, p in self._proposals.items()
+                    if p.is_expired or p.status in ("approved", "rejected", "conflict")
+                ]
+                for k in expired_keys:
+                    self._proposals.pop(k, None)
+
+            # If still at max capacity, evict oldest by created_at
+            if len(self._proposals) >= self.max_proposals:
+                oldest_key = min(self._proposals.keys(), key=lambda k: self._proposals[k].created_at)
+                self._proposals.pop(oldest_key, None)
+
+            self._proposals[pid] = proposal
+
+        logger.info("Registered patch proposal '%s' for '%s' (TTL: %.0fs)", pid, file_path, ttl)
+        return proposal
+
+    def get_proposal(self, proposal_id: str) -> PatchProposal | None:
+        """Retrieves proposal by id, updating expired state lazily."""
+        with self._lock:
+            p = self._proposals.get(proposal_id)
+            if p is not None and p.status == "pending" and p.is_expired:
+                p.status = "expired"
+            return p
+
+    def list_proposals(self, include_resolved: bool = False, limit: int = 50) -> list[PatchProposal]:
+        """Lists proposals filtered by active unexpired status (or all if include_resolved=True)."""
+        with self._lock:
+            res: list[PatchProposal] = []
+            for p in self._proposals.values():
+                if p.status == "pending" and p.is_expired:
+                    p.status = "expired"
+                if include_resolved or p.status == "pending":
+                    res.append(p)
+            res.sort(key=lambda x: x.created_at, reverse=True)
+            return res[:limit]
+
+    def get_pending_count(self) -> int:
+        """Returns the number of currently pending unexpired proposals."""
+        with self._lock:
+            count = 0
+            for p in self._proposals.values():
+                if p.status == "pending" and p.is_expired:
+                    p.status = "expired"
+                if p.status == "pending":
+                    count += 1
+            return count
+
+    def approve_proposal(
+        self,
+        proposal_id: str,
+        user_approved: bool = True,
+        workspace_root: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Approves and promotes verified proposal guarded by optimistic concurrency (sha256_before check)."""
+        with self._lock:
+            p = self._proposals.get(proposal_id)
+            if not p:
+                return {"status": "not_found", "error": f"Proposal '{proposal_id}' not found."}
+            if p.is_expired:
+                p.status = "expired"
+                return {"status": "expired", "error": f"Proposal '{proposal_id}' has expired."}
+            if p.status != "pending":
+                return {
+                    "status": "invalid_status",
+                    "error": f"Proposal status is '{p.status}', expected 'pending'.",
+                }
+
+        ws_root = workspace_root if workspace_root is not None else getattr(p, "workspace_root", ".")
+        abs_target = validate_target_patch_path(p.file_path, workspace_root=ws_root)
+        if not os.path.isfile(abs_target):
+            return {"status": "error", "error": f"Target file '{p.file_path}' does not exist on disk."}
+
+        # Compute live disk SHA-256 for optimistic concurrency guard
+        try:
+            with open(abs_target, "rb") as f:
+                current_sha256 = hashlib.sha256(f.read()).hexdigest()
+        except OSError as e:
+            return {"status": "error", "error": f"Failed reading live file '{p.file_path}': {e}"}
+
+        if current_sha256 != p.sha256_before:
+            with self._lock:
+                p.status = "conflict"
+            logger.warning(
+                "Optimistic concurrency conflict on '%s': expected sha256=%s, actual=%s",
+                p.file_path,
+                p.sha256_before,
+                current_sha256,
+            )
+            return {
+                "status": "conflict",
+                "error": f"Optimistic concurrency conflict: live file '{p.file_path}' has drifted on disk.",
+                "sha256_expected": p.sha256_before,
+                "sha256_actual": current_sha256,
+            }
+
+        # Record human authorization in DualKeyApprovalManager
+        approval_mgr = DualKeyApprovalManager.get_instance()
+        with contextlib.suppress(Exception):
+            approval_mgr.grant_approval(
+                "promote_verified_patch",
+                {
+                    "file_path": str(p.file_path),
+                    "node_start_line": p.node_start_line,
+                    "node_end_line": p.node_end_line,
+                },
+                summary=f"HUD Operator approved evolution patch {proposal_id} for {p.file_path}",
+                ttl_seconds=60.0,
+            )
+
+        # Atomic promotion
+        promote_res = promote_verified_patch(
+            file_path=p.file_path,
+            replacement_code=p.replacement_code,
+            node_start_line=p.node_start_line,
+            node_end_line=p.node_end_line,
+            user_approved=user_approved,
+            workspace_root=ws_root,
+        )
+
+        if promote_res.get("status") == "promoted":
+            with self._lock:
+                p.status = "approved"
+            with open(abs_target, "rb") as f_new:
+                new_sha256 = hashlib.sha256(f_new.read()).hexdigest()
+            return {
+                "status": "approved",
+                "proposal_id": proposal_id,
+                "file_path": p.file_path,
+                "promoted": True,
+                "sha256_before": p.sha256_before,
+                "sha256_after": new_sha256,
+            }
+
+        return promote_res
+
+    def reject_proposal(self, proposal_id: str, reason: str = "") -> dict[str, Any]:
+        """Rejects a pending proposal with an optional operator rationale."""
+        with self._lock:
+            p = self._proposals.get(proposal_id)
+            if not p:
+                return {"status": "not_found", "error": f"Proposal '{proposal_id}' not found."}
+            if p.is_expired:
+                p.status = "expired"
+                return {"status": "expired", "error": f"Proposal '{proposal_id}' has expired."}
+            if p.status != "pending":
+                return {
+                    "status": "invalid_status",
+                    "error": f"Proposal status is '{p.status}', expected 'pending'.",
+                }
+
+            p.status = "rejected"
+            p.rejection_reason = reason or "Rejected by operator"
+            return {
+                "status": "rejected",
+                "proposal_id": proposal_id,
+                "reason": p.rejection_reason,
+            }
+
+    def reset(self) -> None:
+        """Clears all stored proposals (used for hermetic test isolation)."""
+        with self._lock:
+            self._proposals.clear()
+
+
+_GLOBAL_PROPOSAL_REGISTRY: PatchProposalRegistry | None = None
+_REGISTRY_LOCK = threading.Lock()
+
+
+def get_proposal_registry() -> PatchProposalRegistry:
+    """Returns the singleton PatchProposalRegistry instance."""
+    global _GLOBAL_PROPOSAL_REGISTRY
+    if _GLOBAL_PROPOSAL_REGISTRY is None:
+        with _REGISTRY_LOCK:
+            if _GLOBAL_PROPOSAL_REGISTRY is None:
+                _GLOBAL_PROPOSAL_REGISTRY = PatchProposalRegistry()
+    return _GLOBAL_PROPOSAL_REGISTRY
 
 
 @SkillRegistry.register(

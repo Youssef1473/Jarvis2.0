@@ -56,3 +56,12 @@ def handle_route_errors(func: Callable) -> Callable:
             logger.error("Unhandled route exception in %s: %s", getattr(func, "__name__", "endpoint"), exc)
             return JSONResponse({"error": str(exc)}, status_code=500)
     return wrapper
+
+
+from jarvis.ui.routes.evolution import EvolutionRoutesMixin
+
+__all__ = [
+    "EvolutionRoutesMixin",
+    "handle_route_errors",
+    "resolve_request_workspace",
+]
