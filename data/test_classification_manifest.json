@@ -1,8 +1,8 @@
 {
-  "total_collected": 2544,
+  "total_collected": 2549,
   "assigned_by_tier": {
     "tier1_hermetic_unit": 1562,
-    "tier2a_async_safe": 273,
+    "tier2a_async_safe": 278,
     "tier2b_loopback_ipc": 201,
     "tier3_windows_integration": 225,
     "tier4_hardware_integration": 263,
@@ -1688,6 +1688,11 @@
       "tests/test_ro_pool.py::TestVectorMemoryPoolSuite::test_on_demand_connection_spinup_without_initialize",
       "tests/test_ro_pool.py::TestVectorMemoryPoolSuite::test_pool_initialization_and_prewarming",
       "tests/test_ro_pool.py::TestVectorMemoryPoolSuite::test_write_operations_strictly_rejected",
+      "tests/test_ro_pool.py::TestReadOnlyConnectionPoolAndWALSuite::test_interleaved_readers_and_250_writes_concurrency_stress",
+      "tests/test_ro_pool.py::TestReadOnlyConnectionPoolAndWALSuite::test_ro_pool_query_timeout_progress_handler",
+      "tests/test_ro_pool.py::TestReadOnlyConnectionPoolAndWALSuite::test_ro_pool_rollback_releases_wal_read_mark",
+      "tests/test_ro_pool.py::TestReadOnlyConnectionPoolAndWALSuite::test_single_writer_clean_shutdown_truncates_wal",
+      "tests/test_ro_pool.py::TestReadOnlyConnectionPoolAndWALSuite::test_single_writer_periodic_wal_checkpoint",
       "tests/test_security_boundaries.py::TestSecurityBoundaries::test_action_binding_prevents_cross_tool_and_cross_arg_reuse",
       "tests/test_security_boundaries.py::TestSecurityBoundaries::test_allows_valid_public_domain",
       "tests/test_security_boundaries.py::TestSecurityBoundaries::test_application_control_tools_permitted_on_tainted_turn_with_grant",

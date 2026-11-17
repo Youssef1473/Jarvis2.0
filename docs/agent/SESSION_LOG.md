@@ -4831,3 +4831,47 @@ Following independent engineering reviews of the Context B ingestion audit, the 
 - `python tools/run_fast_tests.py tests/test_cancellation_registry.py` -> **Passed: 19, Failed: 0, Exit code: 0** (2.03s)
 - `git diff --check` -> **Exit code: 0** (No whitespace or syntax errors)
 - `python tools/test_classifier.py --check-orphaned` -> **PASSED: Manifest integrity confirmed. 0 orphans, 0 duplicates, 2544 nodes verified.** (Exit code: 0)
+
+---
+
+### Session 2026-11-17.04 — Architectural Hardening & Simplification Sprint: Plan 003 (SQLite ro_pool Timeouts & Periodic WAL Checkpointing)
+
+#### Context & Objectives
+- **Target:** Plan 003 (`plans/003-sqlite-ro-pool-timeout-and-wal-checkpointing.md`)
+- **Objective:** Enforce query timeouts on `ro_pool`, reset/rollback read snapshots on context manager exit to prevent pinning WAL read marks, track committed write counts in `SingleWriterActor`, trigger periodic passive WAL checkpoints (`PRAGMA wal_checkpoint(PASSIVE)`) every 100 transactions, and execute `PRAGMA wal_checkpoint(TRUNCATE)` on clean actor shutdown.
+
+#### Actions Taken
+1. **Pre-Flight Invariant & STOP Condition Audit:**
+   - Audited all callers of `ro_pool`, `_get_ro_connection()`, `get_ro_connection()`, `ReadOnlyConnectionPool`, and `VectorMemoryPool` across `jarvis/`.
+   - Verified that NO connection checkout is held across an `await` yield point. All checkouts in `jarvis/core/memory/` and `jarvis/ui/routes/memory.py` are strictly enclosed in synchronous blocks or executed in worker threads via `asyncio.to_thread` (STOP condition satisfied).
+2. **Bounded Read Transactions & Snapshot Rollback (`jarvis/memory/ro_pool.py`, `jarvis/core/ro_pool.py`):**
+   - Introduced `DEFAULT_RO_QUERY_TIMEOUT_MS = 2000` and `DEFAULT_RO_QUERY_TIMEOUT_SECONDS = 2.0`.
+   - Implemented `bounded_ro_connection(conn, timeout_ms, close_on_exit)` context manager installing `conn.set_progress_handler` with deadline checking, raising `sqlite3.OperationalError: query interrupted` if a query exceeds the deadline.
+   - Guaranteed deterministic rollback of active read snapshots (`conn.rollback()`) and uninstallation of the progress handler (`conn.set_progress_handler(None, 0)`) in `finally:` blocks on exit.
+   - Integrated bounded execution and snapshot rollback into `ReadOnlyConnectionPool.connection(...)` and `VectorMemoryPool` methods (`_sync_knn_traversal`, `_sync_query`, and `_release_conn`).
+   - Re-exported pool timeout constants and `bounded_ro_connection` in `jarvis/core/ro_pool.py`.
+3. **Periodic Passive Checkpointing & Clean Shutdown Truncate (`jarvis/core/memory/sqlite_base.py`):**
+   - Added `_committed_write_count` tracking and `committed_write_count` property to `SingleWriterActor`.
+   - Triggered `local_conn.execute("PRAGMA wal_checkpoint(PASSIVE);")` every 100 successfully committed write transactions.
+   - Added `clean_shutdown` lifecycle tracking in `SingleWriterActor._worker_loop` to trigger `PRAGMA wal_checkpoint(TRUNCATE);` before closing connections on clean shutdown (`actor.stop()`).
+4. **Hermetic Test Suite & Concurrency Stress Test (`tests/test_ro_pool.py`):**
+   - Authored `TestReadOnlyConnectionPoolAndWALSuite` with 5 new tests:
+     - `test_ro_pool_query_timeout_progress_handler`: Verifies progress handler raises `sqlite3.OperationalError: query interrupted` on a query exceeding the deadline.
+     - `test_ro_pool_rollback_releases_wal_read_mark`: Verifies read snapshot rollback on context manager exit releases WAL read marks and allows subsequent `wal_checkpoint(TRUNCATE)` without `busy` contention.
+     - `test_single_writer_periodic_wal_checkpoint`: Verifies `SingleWriterActor` tracks committed write counts and performs passive checkpoints every 100 transactions.
+     - `test_single_writer_clean_shutdown_truncates_wal`: Verifies clean actor shutdown executes `wal_checkpoint(TRUNCATE)` and truncates WAL file to 0 bytes.
+     - `test_interleaved_readers_and_250_writes_concurrency_stress`: Concurrency stress test with 4 rapid reader threads and 250 sequential writes via `SingleWriterActor`, verifying zero `sqlite3.OperationalError: database is locked`, zero reader errors, and clean shutdown WAL truncation.
+5. **Plan Materialization & Manifest Accounting:**
+   - Marked Plan 003 `VERIFIED DONE` in `plans/README.md` and `plans/003-sqlite-ro-pool-timeout-and-wal-checkpointing.md`.
+   - Re-exported `data/test_classification_manifest.json` updating test accounting from 2,544 to 2,549 collected nodes (1,562 Tier 1) with 0 drift and 0 orphans.
+   - Reconciled persistent project state in `docs/agent/PROJECT_STATE.md`.
+
+#### Verification Commands & Exact Outputs
+- `python tools/lint.py check jarvis/core/memory/sqlite_base.py jarvis/core/ro_pool.py jarvis/memory/ro_pool.py tests/test_ro_pool.py` -> **Exit code: 0** (All checks passed)
+- `python tools/diagnostics.py check jarvis/core/memory/sqlite_base.py jarvis/core/ro_pool.py jarvis/memory/ro_pool.py tests/test_ro_pool.py` -> **Exit code: 0** (ALL DIAGNOSTICS PASSED)
+- `python tools/run_fast_tests.py tests/test_ro_pool.py` -> **Passed: 12, Failed: 0, Exit code: 0** (11.76s)
+- `python tools/run_fast_tests.py tests/test_memory_concurrency_stress.py` -> **Passed: 3, Failed: 0, Exit code: 0** (38.88s)
+- `python tools/run_fast_tests.py tests/test_persistence_concurrency.py` -> **Passed: 29, Failed: 0, Exit code: 0** (11.05s)
+- `python tools/run_fast_tests.py tests/test_milestone2_memory_hardening.py` -> **Passed: 10, Failed: 0, Exit code: 0** (4.81s)
+- `git diff --check` -> **Exit code: 0** (Empty output, 0 whitespace errors)
+- `python tools/test_classifier.py --check-orphaned` -> **PASSED: Manifest integrity confirmed. 0 orphans, 0 duplicates, 2549 nodes verified.** (Exit code: 0)

@@ -127,6 +127,8 @@ class SingleWriterActor:
                     )
 
             self._current_item: tuple | None = None
+            self._committed_write_count: int = 0
+            self._checkpoint_interval: int = 100
             self._queue: queue.Queue[
                 tuple[Callable[[sqlite3.Connection], Any], threading.Event, list, list, threading.Event, dict, threading.Lock]
                 | None
@@ -227,11 +229,17 @@ class SingleWriterActor:
             )
         return c
 
+    @property
+    def committed_write_count(self) -> int:
+        """Returns the number of write transactions successfully committed by this actor."""
+        return self._committed_write_count
+
     def _worker_loop(self) -> None:
         key = str(self.db_path.resolve())
         is_temp = "tmp" in key.lower() or "temp" in key.lower() or self.db_path.name.startswith("test_")
 
         conn: sqlite3.Connection | None = None
+        clean_shutdown = False
         try:
             if not is_temp:
                 try:
@@ -242,17 +250,20 @@ class SingleWriterActor:
             while True:
                 with self._state_lock:
                     if self._state == self.STATE_STOPPED:
+                        clean_shutdown = True
                         break
                 try:
                     item = self._queue.get(timeout=0.1)
                 except queue.Empty:
                     with self._state_lock:
                         if self._state != self.STATE_RUNNING and self._queue.empty():
+                            clean_shutdown = True
                             break
                     continue
 
                 if item is None:
                     self._queue.task_done()
+                    clean_shutdown = True
                     break
 
                 self._current_item = item
@@ -304,6 +315,12 @@ class SingleWriterActor:
                 try:
                     with local_conn:
                         result = func(local_conn)
+                    self._committed_write_count += 1
+                    if self._committed_write_count % self._checkpoint_interval == 0:
+                        try:
+                            local_conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+                        except Exception as cp_err:  # noqa: BLE001
+                            logger.debug("SingleWriterActor passive checkpoint notice: %s", cp_err)
                     with item_lock:
                         res_box.append(result)
                         status["phase"] = "completed"
@@ -370,6 +387,19 @@ class SingleWriterActor:
             self._drain_and_reject_pending(
                 reason=RuntimeError("SingleWriterActor worker terminated unexpectedly; queued write rejected.")
             )
+            if clean_shutdown:
+                try:
+                    if conn is not None:
+                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                    elif self.db_path.exists():
+                        shutdown_conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+                        try:
+                            shutdown_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                        finally:
+                            shutdown_conn.close()
+                except Exception as cp_err:  # noqa: BLE001
+                    logger.debug("SingleWriterActor clean shutdown truncate checkpoint notice: %s", cp_err)
+
             if conn is not None:
                 try:
                     conn.close()

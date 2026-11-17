@@ -14,12 +14,12 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-17T14:08:00+01:00 (CET)
+- **Validation Timestamp:** 2026-11-17T20:34:00+01:00 (CET)
 - **Active Git Branch:** `main`
-- **Recorded HEAD Commit SHA:** `e318a0b`
-- **HEAD Commit Subject:** `perf(ipc): replace pipe sleep-polling with event-driven waits, async readers, and deterministic handle closure`
-- **Milestone State:** **Architectural Hardening & Simplification Sprint — Plan 001 & Plan 002 Committed & Verified; 2,544 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
-- **Active Milestone:** **Architectural Hardening & Simplification Sprint (Plan 002 Committed; Plan 003 Ready)**
+- **Recorded HEAD Commit SHA:** `64347fb`
+- **HEAD Commit Subject:** `perf(memory): enforce bounded ro_pool query timeouts and periodic WAL checkpointing`
+- **Milestone State:** **Architectural Hardening & Simplification Sprint — Plan 001, Plan 002, and Plan 003 Committed & Verified; 2,549 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
+- **Active Milestone:** **Architectural Hardening & Simplification Sprint (Plan 003 Committed; Plan 004 Ready)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications:** `0 files` (clean working tree)
 
@@ -35,8 +35,13 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Architectural Hardening & Simplification Sprint (Plan 002 Completed)`
+- **Active Milestone:** `Architectural Hardening & Simplification Sprint (Plan 003 Completed; Plan 004 Ready)`
 - **Completed Work:**
+  - **Plan 003 (COMPLETED & VERIFIED): Enforce Query Timeouts on `ro_pool` & Periodic WAL Checkpointing:**
+    - **Bounded Read-Only Checkout Connections (`jarvis/memory/ro_pool.py`, `jarvis/core/ro_pool.py`):** Added `DEFAULT_RO_QUERY_TIMEOUT_MS = 2000` and `DEFAULT_RO_QUERY_TIMEOUT_SECONDS = 2.0`. Implemented `bounded_ro_connection(conn, timeout_ms, close_on_exit)` context manager installing `conn.set_progress_handler` with 2,000ms deadline (raising `sqlite3.OperationalError: query interrupted`), automatically rolling back active read snapshots (`conn.rollback()`) to avoid pinning WAL read marks, and uninstalling the progress handler on exit. Applied bounded checkout across all `ReadOnlyConnectionPool.connection(...)` calls and `VectorMemoryPool` background queries. Re-exported canonical pool timeout constants and helpers in `jarvis/core/ro_pool.py`.
+    - **SingleWriterActor Periodic Passive WAL Checkpointing & Clean Shutdown Truncate (`jarvis/core/memory/sqlite_base.py`):** Added `_committed_write_count` and `committed_write_count` property tracking committed transactions. Executed `PRAGMA wal_checkpoint(PASSIVE);` every 100 transactions on committed transactions, and triggered `PRAGMA wal_checkpoint(TRUNCATE);` on clean actor shutdown (`stop()`).
+    - **Hermetic Test Suite & Concurrency Stress (`tests/test_ro_pool.py`):** Added `TestReadOnlyConnectionPoolAndWALSuite` covering: 50ms progress handler query interruption; read snapshot rollback releasing WAL read marks; 100-transaction passive checkpointing; clean shutdown WAL truncation to 0 bytes; and 4-reader concurrent stress with 250 writes verifying zero `sqlite3.OperationalError: database is locked` and clean shutdown truncation.
+    - **Test Accounting & Classifier:** Expanded test manifest from 2,544 to 2,549 collected nodes (1,562 Tier 1 nodes) with 0 orphans, 0 unclassified, and 100% accounting compliance.
   - **Plan 002 (COMPLETED & VERIFIED): Replace `PeekNamedPipe` Sleep-Polling with Async Proactor I/O & Teardown Hardening:**
     - **Event-Driven Subprocess Wait (`jarvis/core/antigravity_bridge.py`):** Replaced 10ms `time.sleep(0.01)` polling loop with event-driven wait on `proc._handle` using `kernel32.WaitForSingleObject(int(proc_handle), 1)` (1ms max slice, waking instantly upon child exit). Ensured available buffer lines are read and yielded without sleeping. Added `_iter_unbuffered_lines_async` with coroutine support and epoch invalidation; added `execute_turn_async` and `generate_response_async`.
     - **Deterministic Pipe Handle Closure (`jarvis/core/antigravity_bridge.py`):** Guaranteed deterministic closure of `proc.stdin`, `proc.stdout`, and `proc.stderr` inside `finally` blocks of `_generate_streaming` and `execute_turn` upon broken pipes (`BrokenPipeError`), cancellations, or exceptions.

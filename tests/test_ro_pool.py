@@ -4,6 +4,8 @@ import sqlite3
 import struct
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -13,7 +15,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import sqlite_vec
 
 from jarvis.core.memory import MemoryManager
-from jarvis.memory.ro_pool import VectorMemoryPool
+from jarvis.core.memory.sqlite_base import SingleWriterActor
+from jarvis.memory.ro_pool import (
+    VectorMemoryPool,
+    get_ro_connection,
+)
 
 
 class TestVectorMemoryPoolSuite(unittest.IsolatedAsyncioTestCase):
@@ -166,6 +172,163 @@ class TestVectorMemoryPoolSuite(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hybrid_res[0]["key"], "pref_editor")
 
         mem.close()
+
+
+class TestReadOnlyConnectionPoolAndWALSuite(unittest.TestCase):
+    """Verifies ro_pool query timeouts, snapshot release, and SingleWriterActor WAL checkpointing."""
+
+    def test_ro_pool_query_timeout_progress_handler(self):
+        """Verifies progress handler enforces 2000ms deadline and raises query interrupted."""
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "test_timeout.db"
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY);")
+            conn.commit()
+            conn.close()
+
+            # Checkout with 50ms deadline to rapidly verify progress handler interruption
+            with (
+                self.assertRaises(sqlite3.OperationalError) as ctx,
+                get_ro_connection(db_path, timeout_ms=50) as ro_conn,
+            ):
+                ro_conn.execute(
+                    "WITH RECURSIVE r(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM r) SELECT count(*) FROM r"
+                )
+            self.assertIn("query interrupted", str(ctx.exception).lower())
+
+    def test_ro_pool_rollback_releases_wal_read_mark(self):
+        """Verifies context manager exit rolls back read snapshot and releases WAL read mark."""
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "test_wal_release.db"
+            actor = SingleWriterActor(db_path)
+            actor.execute_write(lambda c: c.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT);"))
+
+            # Reader executes query and exits context manager
+            with get_ro_connection(db_path) as ro_conn:
+                res = ro_conn.execute("SELECT count(*) FROM t;").fetchone()
+                self.assertEqual(res[0], 0)
+
+            # Perform 50 writes via actor
+            for i in range(50):
+                actor.execute_write(lambda c, i=i: c.execute("INSERT INTO t VALUES (?, ?);", (i, f"v_{i}")))
+
+            # Because ro_pool rolled back read snapshot on exit, TRUNCATE checkpoint must not be blocked
+            chk_conn = sqlite3.connect(str(db_path))
+            try:
+                res = chk_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchall()
+                self.assertEqual(res[0][0], 0, "Checkpoint was busy; WAL read mark was not released")
+            finally:
+                chk_conn.close()
+                actor.stop()
+
+    def test_single_writer_periodic_wal_checkpoint(self):
+        """Verifies SingleWriterActor executes passive checkpoint every 100 transactions."""
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "test_periodic.db"
+            actor = SingleWriterActor(db_path)
+            actor.execute_write(lambda c: c.execute("CREATE TABLE items (id INT, val TEXT);"))
+
+            # Write 105 transactions
+            for i in range(105):
+                actor.execute_write(lambda c, i=i: c.execute("INSERT INTO items VALUES (?, ?);", (i, f"item_{i}")))
+
+            self.assertEqual(actor.committed_write_count, 106)
+            actor.stop()
+
+    def test_single_writer_clean_shutdown_truncates_wal(self):
+        """Verifies SingleWriterActor clean shutdown triggers wal_checkpoint(TRUNCATE)."""
+        test_dir = Path("scratch/test_wal_shutdown")
+        test_dir.mkdir(parents=True, exist_ok=True)
+        db_path = test_dir / "wal_truncation_actor.db"
+        try:
+            if db_path.exists():
+                db_path.unlink()
+            actor = SingleWriterActor(db_path)
+            actor.execute_write(lambda c: c.execute("CREATE TABLE t (id INT);"))
+            for i in range(20):
+                actor.execute_write(lambda c, i=i: c.execute("INSERT INTO t VALUES (?);", (i,)))
+
+            wal_path = Path(f"{db_path}-wal")
+            self.assertTrue(wal_path.exists(), "Persistent writer did not retain WAL file during active session")
+            self.assertGreater(wal_path.stat().st_size, 0, "WAL size must be >0 before checkpoint shutdown")
+
+            # Clean shutdown should truncate WAL
+            actor.stop()
+            if wal_path.exists():
+                self.assertEqual(wal_path.stat().st_size, 0, "Clean shutdown failed to truncate WAL")
+        finally:
+            for p in [db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")]:
+                if p.exists():
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
+            try:
+                test_dir.rmdir()
+            except OSError:
+                pass
+
+    def test_interleaved_readers_and_250_writes_concurrency_stress(self):
+        """Concurrency stress test: 4 rapid readers and 250 writes keep WAL bounded without SQLITE_BUSY."""
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "test_stress.db"
+            actor = SingleWriterActor(db_path)
+            actor.execute_write(
+                lambda c: c.execute("CREATE TABLE counter (id INT PRIMARY KEY, val INT, payload TEXT);")
+            )
+
+            reader_errors: list[Exception] = []
+            stop_readers = threading.Event()
+            read_count = [0]
+
+            def reader_worker():
+                while not stop_readers.is_set():
+                    try:
+                        with get_ro_connection(db_path) as ro_conn:
+                            cursor = ro_conn.execute("SELECT count(*), max(val) FROM counter;")
+                            cursor.fetchone()
+                            read_count[0] += 1
+                        time.sleep(0.001)
+                    except Exception as exc:  # noqa: BLE001
+                        reader_errors.append(exc)
+
+            readers = [threading.Thread(target=reader_worker, daemon=True) for _ in range(4)]
+            for r in readers:
+                r.start()
+
+            # Execute 250 sequential writes via SingleWriterActor
+            write_errors: list[Exception] = []
+            wal_sizes: list[int] = []
+            wal_path = Path(f"{db_path}-wal")
+
+            for i in range(250):
+                try:
+                    actor.execute_write(
+                        lambda c, i=i: c.execute(
+                            "INSERT INTO counter (id, val, payload) VALUES (?, ?, ?);",
+                            (i, i, "payload_padding_" + str(i) * 5),
+                        )
+                    )
+                    if wal_path.exists():
+                        wal_sizes.append(wal_path.stat().st_size)
+                except Exception as exc:  # noqa: BLE001
+                    write_errors.append(exc)
+
+            stop_readers.set()
+            for r in readers:
+                r.join(timeout=2.0)
+
+            # Verify no locking or database errors
+            self.assertEqual(len(write_errors), 0, f"Write errors occurred: {write_errors}")
+            self.assertEqual(len(reader_errors), 0, f"Reader errors occurred: {reader_errors}")
+            self.assertGreater(read_count[0], 50, "Readers failed to execute sufficient concurrent queries")
+            self.assertEqual(actor.committed_write_count, 251)
+
+            # Clean shutdown of SingleWriterActor triggers TRUNCATE checkpoint
+            actor.stop()
+            if wal_path.exists():
+                self.assertEqual(wal_path.stat().st_size, 0, "Clean shutdown failed to truncate WAL to 0 bytes")
 
 
 if __name__ == "__main__":
