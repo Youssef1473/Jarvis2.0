@@ -1,11 +1,11 @@
 {
-  "total_collected": 2535,
+  "total_collected": 2544,
   "assigned_by_tier": {
-    "tier1_hermetic_unit": 1555,
+    "tier1_hermetic_unit": 1562,
     "tier2a_async_safe": 273,
     "tier2b_loopback_ipc": 201,
     "tier3_windows_integration": 225,
-    "tier4_hardware_integration": 261,
+    "tier4_hardware_integration": 263,
     "tier_browser_integration": 20
   },
   "node_ids_by_tier": {
@@ -46,7 +46,11 @@
       "tests/test_antigravity_integration.py::TestAntigravityIntegration::test_bridge_discovery_and_model_resolution",
       "tests/test_antigravity_integration.py::TestAntigravityIntegration::test_cascade_pool_building",
       "tests/test_antigravity_integration.py::TestAntigravityIntegration::test_code_task_momentum_multi_turn",
+      "tests/test_antigravity_integration.py::TestAntigravityIntegration::test_execute_turn_async_and_generate_response_async",
+      "tests/test_antigravity_integration.py::TestAntigravityIntegration::test_generate_streaming_deterministic_pipe_cleanup_on_exception",
       "tests/test_antigravity_integration.py::TestAntigravityIntegration::test_hybrid_token_shield_routing",
+      "tests/test_antigravity_integration.py::TestAntigravityIntegration::test_iter_unbuffered_lines_async_stream",
+      "tests/test_antigravity_integration.py::TestAntigravityIntegration::test_iter_unbuffered_lines_barge_in_epoch_abort",
       "tests/test_antigravity_integration.py::TestAntigravityIntegration::test_prompt_complexity_auto_tiering",
       "tests/test_antigravity_integration.py::TestAntigravityIntegration::test_specialist_consultation_routing",
       "tests/test_antigravity_integration.py::TestAntigravityIntegration::test_specialist_consultation_routing_mocked",
@@ -1232,6 +1236,9 @@
       "tests/test_phase1_flow_state.py::TestPhase1FlowStateMirror::test_extract_enclosing_ast_symbol",
       "tests/test_phase1_flow_state.py::TestPhase1FlowStateMirror::test_privacy_lock_suppression",
       "tests/test_phase1_flow_state.py::TestPhase1FlowStateMirror::test_workspace_epoch_bumping",
+      "tests/test_phase1_flow_state.py::TestFlowStateBridgeListener::test_datagram_protocol_routes_to_listener",
+      "tests/test_phase1_flow_state.py::TestFlowStateBridgeListener::test_process_packet_hmac_authentication",
+      "tests/test_phase1_flow_state.py::TestFlowStateBridgeListener::test_process_packet_terminal_state_updates_mirror",
       "tests/test_phase2_speculative_engine.py::TestPhase2SpeculativeEngine::test_environment_epoch_tracker_dimensions",
       "tests/test_phase2_speculative_engine.py::TestPhase2SpeculativeEngine::test_epoch_vector_immutability_and_compatibility",
       "tests/test_phase2_speculative_engine.py::TestPhase2SpeculativeEngine::test_pre_completed_cache_hit",
@@ -2274,6 +2281,7 @@
     "tier4_hardware_integration": [
       "tests/test_audio_affinity.py::TestAudioAffinity::test_get_pcore_affinity_mask_topology",
       "tests/test_audio_affinity.py::TestAudioAffinity::test_get_physical_pcore_mask_topology",
+      "tests/test_audio_affinity.py::TestAudioAffinity::test_get_wakeword_affinity_mask_topology",
       "tests/test_audio_affinity.py::TestAudioAffinity::test_live_win32_elevate_priority_levels",
       "tests/test_audio_affinity.py::TestAudioAffinity::test_live_win32_mmcss_registration",
       "tests/test_audio_affinity.py::TestAudioAffinity::test_live_win32_pin_and_elevate",
@@ -2457,6 +2465,7 @@
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_reconcile_stream_lifecycle_fails_closed_with_force_until_stream_confirmed_closed",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_reconcile_stream_lifecycle_never_clears_live_worker_even_with_force",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_repeated_non_blocking_stop_detaches_stream_cleanly",
+      "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_retained_streams_removed_and_no_leak_across_50_cycles",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_ring_buffer_interleaved_barge_in_preserves_consumer_ramp",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_safe_sd_stop_bounds_wait_on_driver_stall",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_safe_sd_stop_does_not_block_behind_stalled_sd_play",

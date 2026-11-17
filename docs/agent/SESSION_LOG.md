@@ -4750,5 +4750,84 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Tier 1 Hermetic Fast Test Suite:** 1,544 passed, 0 errors, 11 skipped across 4 parallel workers (Exit code: 0).
    - **SQLite Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 240 rows (234 quarantined unscoped, 6 ws_default), and `facts_vec` = 240 rows.
 
+---
+
+### Session 2026-11-17.02 — Architectural Hardening & Simplification Sprint: Plan 001 (P-Core 0 Isolation & Stream Lifecycle Hardening)
+
+#### Context & Objectives
+- **Target:** Plan 001 (`plans/001-audio-pcore-isolation-and-stream-lifecycle.md`)
+- **Objective:** Eliminate CPU 0 affinity scheduling collision between WASAPI playback (`0x0003`) and wake-word worker (`0x0055`), remove PortAudio dead stream handle leak in `_retained_streams`, and reconcile ring buffer constants with native WASAPI device sample rates.
+
+#### Actions Taken
+1. **P-Core 0 Hardware Isolation (`jarvis/core/win32_affinity.py`, `jarvis/audio/wake_word.py`, `jarvis/audio/affinity.py`):**
+   - Introduced `MASK_PCORE_WAKEWORD = 0x0054` (Logical CPUs 2, 4, 6) and dynamic fallback helper `get_wakeword_affinity_mask()`, eliminating scheduling collision on Logical CPU 0 (`0x0003 & 0x0055 = 0x0001`).
+   - Extended `pin_and_elevate_current_thread` with explicit `mask: int | None = None` support.
+   - Pinned `MicRouterWorker` in `WakeWordDetector._worker_loop` to `get_wakeword_affinity_mask()`, ensuring `WASAPIPlaybackWorker` has 100% exclusive access to Physical Core 0 (`0x0003`).
+   - Re-exported `MASK_PCORE_WAKEWORD` and `get_wakeword_affinity_mask` in `jarvis/audio/affinity.py`.
+2. **PortAudio Stream Teardown & Leak Elimination (`jarvis/audio/tts.py`):**
+   - Removed `_retained_streams = deque(maxlen=8)` and its append hook in `_close_stream_safely`.
+   - Guaranteed closed OS stream handles finalize immediately upon worker drain rather than pinning up to 8 dead audio stream handles across long uptime.
+   - Updated `test_shutdown_timed_out_marks_state_uncertain` and `test_shutdown_bounded_single_worker_and_fail_closed_on_stalled_shutdown` in `tests/test_audio_streaming_pipeline.py` to assert membership in `_unresolved_streams` and absence of `_retained_streams`.
+   - Added `test_retained_streams_removed_and_no_leak_across_50_cycles` in `tests/test_tts_lifecycle_hardening.py` confirming 0 alive weak references across 50 consecutive cycles.
+3. **Ring Buffer Sample Rate Reconciliation (`jarvis/audio/tts.py`):**
+   - Initialized `_stream_sample_rate = 48000` to align with WASAPI shared-mode defaults and 120-sample (2.5ms) fade ramp.
+   - Added dynamic ring buffer capacity/ramp reconciliation in `start_streaming_session` adjusting to `24000 * 120, ramp=60` if 24kHz mode is selected.
+4. **Plan Materialization & Manifest Accounting:**
+   - Materialized `plans/README.md` and `plans/001` through `plans/005`.
+   - Re-exported `data/test_classification_manifest.json` updating test accounting from 2,535 to 2,537 collected nodes (1,555 Tier 1) with 0 drift and 0 orphans.
+   - Marked Plan 001 `VERIFIED DONE` in `plans/README.md` and `plans/001-audio-pcore-isolation-and-stream-lifecycle.md`.
+
+#### Verification Commands & Exact Outputs
+- `python tools/lint.py check jarvis/core/win32_affinity.py jarvis/audio/tts.py jarvis/audio/wake_word.py jarvis/audio/affinity.py tests/test_win32_affinity.py tests/test_audio_affinity.py tests/test_audio_streaming_pipeline.py tests/test_tts_lifecycle_hardening.py` -> **Exit code: 0** (All checks passed)
+- `python tools/diagnostics.py check jarvis/core/win32_affinity.py jarvis/audio/tts.py jarvis/audio/wake_word.py` -> **Exit code: 0** (ALL DIAGNOSTICS PASSED)
+- `python tools/run_fast_tests.py tests/test_win32_affinity.py` -> **Passed: 4, Failed: 0, Exit code: 0** (1.83s)
+- `python tools/run_fast_tests.py tests/test_audio_affinity.py` -> **Passed: 7, Failed: 0, Exit code: 0** (1.88s)
+- `python tools/run_fast_tests.py tests/test_audio_streaming_pipeline.py` -> **Passed: 26, Failed: 0, Exit code: 0** (4.91s)
+- `python tools/run_fast_tests.py tests/test_milestone3_audio_invariants.py` -> **Passed: 6, Failed: 0, Exit code: 0** (4.39s)
+- `python tools/run_fast_tests.py tests/test_tts_lifecycle_hardening.py` -> **Passed: 123, Failed: 0, Exit code: 0** (12.20s)
+- `git diff --check` -> **Exit code: 0** (Empty output)
+- `python tools/test_classifier.py --check-orphaned` -> **PASSED: Manifest integrity confirmed. 0 orphans, 0 duplicates, 2537 nodes verified.** (Exit code: 0)
 
 
+---
+
+### Session 2026-11-17.03 — Architectural Hardening & Simplification Sprint: Plan 002 (Async Proactor Pipe I/O & Teardown Hardening)
+
+#### Context & Objectives
+- **Target:** Plan 002 (`plans/002-async-proactor-pipe-io.md`)
+- **Objective:** Replace fixed-interval `PeekNamedPipe` 10ms sleep-polling loops with event-driven Win32 wait, provide native async pipe reader (`_iter_unbuffered_lines_async`), wire non-blocking UDP/IPC listener (`start_async`), and guarantee deterministic pipe handle closure inside `try...finally` blocks upon broken pipes or barge-in epoch cancellations.
+
+#### Actions Taken
+1. **Pre-Flight Invariant & STOP Condition Audit:**
+   - Audited Starlette/Uvicorn configuration in `jarvis/ui/server.py` and `run.py`. Verified no custom `SelectorEventLoop` policy is enforced on Windows (STOP condition satisfied).
+   - Audited pipe readers and consumers using `tools/agy_context_slicer.py` across `jarvis/core/antigravity_bridge.py` and `jarvis/context/bridges/pipe_listener.py`.
+2. **Event-Driven Subprocess Wait (`jarvis/core/antigravity_bridge.py`):**
+   - In `_iter_unbuffered_lines`: Replaced unconditional `time.sleep(0.01)` (10ms) polling loop with event-driven wait on `proc._handle` using `kernel32.WaitForSingleObject(int(proc_handle), 1)` (1ms max slice, waking instantly upon child termination).
+   - Ensured available buffer lines are read and yielded without sleeping when `n_avail > 0`.
+   - Hardened `else:` (fallback readline) branch to check `initial_epoch` against `GLOBAL_EPOCH_STATE.barge_in_epoch` and respect deadline timeouts.
+   - Handled `GeneratorExit` cleanly across all branches to eliminate `RuntimeError: generator ignored GeneratorExit`.
+3. **Async Pipe Reader & Bridge Methods (`jarvis/core/antigravity_bridge.py`):**
+   - Implemented `_iter_unbuffered_lines_async`: Async generator consuming `stdout.readline()` coroutines or synchronous generators with bounded timeouts and instant `GLOBAL_EPOCH_STATE` barge-in cancellation.
+   - Added `AntigravityDaemon.execute_turn_async` and `AntigravityBridge.generate_response_async` for non-blocking execution on active asyncio event loops.
+4. **Deterministic Pipe Handle Closure (`jarvis/core/antigravity_bridge.py`):**
+   - Guaranteed deterministic closure of `proc.stdin`, `proc.stdout`, and `proc.stderr` inside `finally` blocks of `_generate_streaming` and `execute_turn` upon broken pipes (`BrokenPipeError`), cancellations, or exceptions.
+5. **Async Datagram Endpoint & Fast Polling (`jarvis/context/bridges/pipe_listener.py`):**
+   - Extracted `process_packet(self, data: bytes) -> bool` with cryptographic HMAC session verification and `FlowStateMirror` updating.
+   - Implemented `_FlowStateDatagramProtocol(asyncio.DatagramProtocol)` and `start_async(self, loop=None) -> bool` using `loop.create_datagram_endpoint` for non-blocking event-driven telemetry ingestion.
+   - Reduced synchronous socket timeout from 0.5s to 0.1s and ensured clean `_async_transport` and `_sock` closure in `stop()`.
+6. **Hermetic Test Suite & Manifest Accounting:**
+   - Added 3 unit tests in `tests/test_phase1_flow_state.py` covering HMAC authentication, terminal state mirroring, and datagram protocol integration.
+   - Added 4 unit and integration tests in `tests/test_antigravity_integration.py` covering barge-in epoch cancellation, async line iteration, async execution delegation, and deterministic pipe handle cleanup.
+   - Fixed pre-existing mock issue in `tests/test_antigravity_job_containment.py` line 328.
+   - Re-exported `data/test_classification_manifest.json` updating test accounting from 2,537 to 2,544 collected nodes (1,562 Tier 1) with 0 drift and 0 orphans.
+   - Marked Plan 002 `VERIFIED DONE` in `plans/README.md` and `plans/002-async-proactor-pipe-io.md`.
+
+#### Verification Commands & Exact Outputs
+- `python tools/lint.py check jarvis/core/antigravity_bridge.py jarvis/context/bridges/pipe_listener.py tests/test_antigravity_integration.py tests/test_phase1_flow_state.py` -> **Exit code: 0** (All checks passed)
+- `python tools/diagnostics.py check jarvis/core/antigravity_bridge.py jarvis/context/bridges/pipe_listener.py tests/test_antigravity_integration.py tests/test_phase1_flow_state.py` -> **Exit code: 0** (ALL DIAGNOSTICS PASSED)
+- `python tools/run_fast_tests.py tests/test_phase1_flow_state.py` -> **Passed: 7, Failed: 0, Exit code: 0** (2.94s)
+- `python tools/run_fast_tests.py tests/test_antigravity_integration.py` -> **Passed: 19, Failed: 0, Skipped: 3, Exit code: 0** (5.03s)
+- `python tools/run_fast_tests.py tests/test_antigravity_job_containment.py` -> **Passed: 38, Failed: 0, Exit code: 0** (3.28s)
+- `python tools/run_fast_tests.py tests/test_cancellation_registry.py` -> **Passed: 19, Failed: 0, Exit code: 0** (2.03s)
+- `git diff --check` -> **Exit code: 0** (No whitespace or syntax errors)
+- `python tools/test_classifier.py --check-orphaned` -> **PASSED: Manifest integrity confirmed. 0 orphans, 0 duplicates, 2544 nodes verified.** (Exit code: 0)

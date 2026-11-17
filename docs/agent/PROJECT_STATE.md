@@ -14,27 +14,14 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-17T11:45:00+01:00 (CET)
-- **Active Git Branch:** `perf/low-latency-voice-and-memory-optimization`
-- **Recorded HEAD Commit SHA:** `2e37191`
-- **HEAD Commit Subject:** `Merge pull request #63 from Youssef1473/feat/hud-patch-approval-and-live-diff-viewer`
-- **Milestone State:** **Track F Completed: Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration (Plan 046 Verified); 2,535 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
-- **Active Milestone:** **Track F: Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration (Plan 046 Completed)**
+- **Validation Timestamp:** 2026-11-17T14:08:00+01:00 (CET)
+- **Active Git Branch:** `main`
+- **Recorded HEAD Commit SHA:** `e318a0b`
+- **HEAD Commit Subject:** `perf(ipc): replace pipe sleep-polling with event-driven waits, async readers, and deterministic handle closure`
+- **Milestone State:** **Architectural Hardening & Simplification Sprint — Plan 001 & Plan 002 Committed & Verified; 2,544 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
+- **Active Milestone:** **Architectural Hardening & Simplification Sprint (Plan 002 Committed; Plan 003 Ready)**
 - **Staged Modifications:** `0 files` (clean staging index)
-- **Unstaged Tracked Modifications:**
-  - `data/test_classification_manifest.json` (test manifest accounting updated to 2,535 nodes, 1,555 Tier 1)
-  - `jarvis/__main__.py` (Package CLI entry point forwarder)
-  - `jarvis/audio/speech_capture.py` (Conversational fast-path VAD 0.65s silence cutoff)
-  - `jarvis/audio/tts.py` (Kokoro ONNX Zero-VRAM CPUExecutionProvider isolation, P-core 0x00FC affinity, pipelined lookahead synthesis, elastic 85ms pre-buffer cushion)
-  - `jarvis/core/cognition/cognitive_router.py` (Zero-tool prompt pruning on casual turns)
-  - `jarvis/core/cognition/intent_acknowledgments.py` (Conversational acoustic reflex bridge <10ms for casual dialogue)
-  - `jarvis/core/orchestrator.py` (Greeting prefix stripping for delivered reflex bridges)
-  - `jarvis/core/pipeline/interim_bridge.py` (Minimum clause floor preventing tiny 1-2 word fragment starvation)
-  - `tools/profile_voice_turn.py` (Standalone voice turn stage latency profiler and telemetry diagnostic)
-  - `tools/test_classifier.py` (Nargs-optional export target defaulting to canonical manifest path)
-  - `tests/test_low_latency_voice_pipeline.py` (9 hermetic unit and integration tests)
-  - `docs/agent/PROJECT_STATE.md`
-  - `docs/agent/SESSION_LOG.md`
+- **Unstaged Tracked Modifications:** `0 files` (clean working tree)
 
 - **Untracked Items (8 items):**
   1. `data/agy_112_nodes.json` (Diagnostic node map)
@@ -48,8 +35,18 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Track F: Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration (Plan 046 Completed)`
+- **Active Milestone:** `Architectural Hardening & Simplification Sprint (Plan 002 Completed)`
 - **Completed Work:**
+  - **Plan 002 (COMPLETED & VERIFIED): Replace `PeekNamedPipe` Sleep-Polling with Async Proactor I/O & Teardown Hardening:**
+    - **Event-Driven Subprocess Wait (`jarvis/core/antigravity_bridge.py`):** Replaced 10ms `time.sleep(0.01)` polling loop with event-driven wait on `proc._handle` using `kernel32.WaitForSingleObject(int(proc_handle), 1)` (1ms max slice, waking instantly upon child exit). Ensured available buffer lines are read and yielded without sleeping. Added `_iter_unbuffered_lines_async` with coroutine support and epoch invalidation; added `execute_turn_async` and `generate_response_async`.
+    - **Deterministic Pipe Handle Closure (`jarvis/core/antigravity_bridge.py`):** Guaranteed deterministic closure of `proc.stdin`, `proc.stdout`, and `proc.stderr` inside `finally` blocks of `_generate_streaming` and `execute_turn` upon broken pipes (`BrokenPipeError`), cancellations, or exceptions.
+    - **Async Datagram Endpoint & Fast Polling (`jarvis/context/bridges/pipe_listener.py`):** Extracted `process_packet(data)` with HMAC verification; added `_FlowStateDatagramProtocol` and `start_async(loop)` for non-blocking event-driven packet ingestion; reduced synchronous socket timeout from 0.5s to 0.1s with clean transport and socket closure in `stop()`.
+    - **Hermetic Tests & Manifest Accounting:** Added 7 new test nodes across `tests/test_antigravity_integration.py` and `tests/test_phase1_flow_state.py`. Re-exported test manifest to 2,544 total nodes (1,562 Tier 1) with 0 orphans, 0 unclassified, and 100% accounting.
+  - **Plan 001 (COMPLETED & VERIFIED): Fix P-Core 0 Affinity Collision & PortAudio Stream Leak:**
+    - **Physical Core 0 Isolation (`jarvis/core/win32_affinity.py`, `jarvis/audio/wake_word.py`, `jarvis/audio/affinity.py`):** Introduced `MASK_PCORE_WAKEWORD = 0x0054` (Logical CPUs 2, 4, 6) and `get_wakeword_affinity_mask()`, eliminating scheduling collision on Logical CPU 0 (`0x0003 & 0x0055 = 0x0001`) and reserving Physical Core 0 exclusively for `WASAPIPlaybackWorker` (`0x0003`). Added dynamic `mask` parameter support to `pin_and_elevate_current_thread`.
+    - **PortAudio Stream Teardown & Zero Leak (`jarvis/audio/tts.py`, `tests/test_tts_lifecycle_hardening.py`, `tests/test_audio_streaming_pipeline.py`):** Eliminated `_retained_streams` collection, allowing closed OS audio stream handles to finalize immediately upon callback drain. Verified handle collection across 50 consecutive start/stop cycles with zero alive weak references. Updated timeout blocked assertions to `_unresolved_streams`.
+    - **Dynamic Ring Buffer Sample Rate Reconciliation (`jarvis/audio/tts.py`):** Initialized `_stream_sample_rate` to 48,000 Hz with 120-sample (2.5ms) fade ramp matching WASAPI defaults, and added dynamic capacity/ramp reconciliation in `start_streaming_session` for 24kHz / 48kHz hardware modes.
+    - **Hermetic Tests & Manifest Reconciliation:** Authored new regression tests in `tests/test_audio_affinity.py` and `tests/test_tts_lifecycle_hardening.py`. Test manifest updated to 2,537 collected nodes (1,555 Tier 1) with 0 drift and 0 orphans.
   - **Track F (Plan 046 COMPLETED & VERIFIED): Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration:**
     - **Stage Latency Profiler (`tools/profile_voice_turn.py`):** Standalone CLI profiler measuring stage latencies (`t_vad`, `t_stt`, `t_route`, `t_ttft`, `t_synth1`, `t_play1`, `t_gap`, `t_play2`), process RSS, and DXGI/NVML telemetry with `--mock-query` and `--dry-run` modes, asserting $t_{\text{gap}} < 350\text{ ms}$ and Zero-VRAM Kokoro invariants.
     - **Kokoro-82M P-Core Affinity & Zero-VRAM CPU Isolation (`jarvis/audio/tts.py`):** Hard-configured Kokoro ONNX exclusively to `CPUExecutionProvider` (`intra_op_num_threads=4`, `inter_op_num_threads=1`, `execution_mode=ORT_SEQUENTIAL`, Intel i5-12500H P-core affinity `0x00FC` on Windows), eliminating the 2GB CUDA VRAM request and protecting 100% of the RTX 3050's `3,367.7 MiB` WDDM budget exclusively for Faster-Whisper and local Ollama inference.
