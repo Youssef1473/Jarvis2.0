@@ -366,7 +366,14 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Jarvis 2.0 Test Dependency Classifier")
     parser.add_argument("--report", action="store_true", help="Print complete classification scorecard")
-    parser.add_argument("--export", type=str, default=None, help="Export manifest to JSON file path")
+    parser.add_argument(
+        "--export",
+        type=str,
+        nargs="?",
+        const="data/test_classification_manifest.json",
+        default=None,
+        help="Export manifest to JSON file path (defaults to data/test_classification_manifest.json)",
+    )
     parser.add_argument("--check-orphaned", action="store_true", help="Check for orphaned test nodes not in manifest")
     args = parser.parse_args()
 

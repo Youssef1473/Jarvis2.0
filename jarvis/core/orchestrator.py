@@ -551,7 +551,7 @@ class JarvisOrchestrator:
                 # Strip standard prefix repetitions if immediate ack was already delivered
                 if queued_ack:
                     s_clean = re.sub(
-                        r"^(?:right away|on it|certainly|understood|very well)(?:,?\s+[a-z\s]+)?[.,]?\s*",
+                        r"^(?:right away|on it|certainly|understood|very well|good day|good morning|good evening|good afternoon|at your service)(?:,?\s+[a-z\s]+)?[.,]?\s*",
                         "",
                         s_clean,
                         flags=re.IGNORECASE,

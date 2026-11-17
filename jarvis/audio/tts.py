@@ -5,6 +5,7 @@ import logging
 import os
 import queue
 import re
+import sys
 import threading
 import time
 import weakref
@@ -588,58 +589,22 @@ class TextToSpeech:
                 rt.set_default_logger_severity(3)
                 from kokoro_onnx import Kokoro
                 opts = rt.SessionOptions()
-                opts.intra_op_num_threads = self.cpu_threads
+                opts.intra_op_num_threads = getattr(self, "cpu_threads", 4) or 4
                 opts.inter_op_num_threads = 1
+                opts.execution_mode = rt.ExecutionMode.ORT_SEQUENTIAL
                 opts.enable_cpu_mem_arena = False
                 opts.log_severity_level = 3
                 opts.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
                 opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
                 opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
 
-                available = rt.get_available_providers()
-                providers = []
-                preferred_device = getattr(self, "device", "cpu")
-                use_cuda = (preferred_device == "cuda") and ("CUDAExecutionProvider" in available)
-
-                if use_cuda:
-                    try:
-                        from jarvis.skills.nvml_dxgi_vram_arbiter import (
-                            request_vram_budget,
-                        )
-                        granted, decision = request_vram_budget("kokoro_tts", estimated_mb=250.0, auto_shed=True)
-                        if not granted or decision.recommended_action == "cpu_fallback":
-                            tier_str = decision.pressure_tier.value if hasattr(decision.pressure_tier, "value") else str(decision.pressure_tier)
-                            logger.warning(
-                                "RTX 3050 VRAM heavily pressured (%.1f MB headroom, tier %s). Falling back to CPU.",
-                                decision.headroom_mb,
-                                tier_str,
-                            )
-                            use_cuda = False
-                    except (RuntimeError, OSError, ValueError, ImportError, AttributeError) as arb_err:
-                        logger.debug("VRAM arbiter check note in Kokoro init: %s", arb_err)
-
-                if use_cuda:
-                    cuda_opts = {
-                        "device_id": 0,
-                        "arena_extend_strategy": "kNextPowerOfTwo",
-                        "gpu_mem_limit": 2 * 1024 * 1024 * 1024,
-                        "cudnn_conv_algo_search": "HEURISTIC",
-                        "do_copy_in_default_stream": "1",
-                    }
-                    providers.append(("CUDAExecutionProvider", cuda_opts))
-                elif "DmlExecutionProvider" in available:
-                    providers.append(("DmlExecutionProvider", {"device_id": 0}))
-                providers.append("CPUExecutionProvider")
-
-                try:
-                    sess = rt.InferenceSession(self.kokoro_model_path, sess_options=opts, providers=providers)
-                except Exception as prov_err:  # noqa: BLE001
-                    logger.warning("GPU provider init failed (%s); falling back to CPUExecutionProvider.", prov_err)
-                    sess = rt.InferenceSession(
-                        self.kokoro_model_path, sess_options=opts, providers=["CPUExecutionProvider"]
-                    )
+                # Plan 046 Phase 2: Kokoro-82M is strictly isolated to Intel P-cores on CPUExecutionProvider
+                # (Zero-VRAM CPU Isolation), reserving 100% of GPU VRAM for Faster-Whisper and local Ollama.
+                providers = ["CPUExecutionProvider"]
+                sess = rt.InferenceSession(self.kokoro_model_path, sess_options=opts, providers=providers)
 
                 self._kokoro = Kokoro.from_session(sess, self.kokoro_voices_path)
+                self._kokoro._session = sess
 
                 orig_create = self._kokoro.create
                 orig_get_style = self._kokoro.get_voice_style
@@ -1957,7 +1922,7 @@ class TextToSpeech:
             synth_done = getattr(self, "_synth_has_started", False) and (not synth_active) and (not q_has_work)
 
             if not getattr(self, "_prebuffer_filled", True) and not has_pending_ramp:
-                cushion = max(1024, frames * 2)
+                cushion = max(2048, frames * 2)
                 if self._ring_buffer.available_samples >= cushion or (
                     synth_done and self._ring_buffer.available_samples > 0
                 ):
@@ -2182,7 +2147,10 @@ class TextToSpeech:
                     self._playback_thread.join(timeout=0.05)
 
             def _synth_worker():
-                if not pin_current_thread_to_mask(MASK_PCORE_COMPUTE, THREAD_PRIORITY_ABOVE_NORMAL):
+                if sys.platform == "win32":
+                    if not pin_current_thread_to_mask(MASK_PCORE_COMPUTE, THREAD_PRIORITY_ABOVE_NORMAL):
+                        _set_thread_realtime_priority("KokoroSynthWorker")
+                else:
                     _set_thread_realtime_priority("KokoroSynthWorker")
                 while (
                     self._stream_active
@@ -2323,7 +2291,10 @@ class TextToSpeech:
                         self._spoken_clauses.append(sentence)
 
             def _playback_worker():
-                if not elevate_audio_thread_mmcss("Pro Audio"):
+                if sys.platform == "win32":
+                    if not elevate_audio_thread_mmcss("Pro Audio"):
+                        _set_thread_realtime_priority("WASAPIPlaybackWorker")
+                else:
                     _set_thread_realtime_priority("WASAPIPlaybackWorker")
                 stream_startup_done.wait(timeout=3.0)
                 while (

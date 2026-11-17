@@ -193,8 +193,16 @@ class AdaptiveSpeechCapture:
                             silence_chunk_count = 0
                         elif speech_started:
                             spoken_duration_s = active_speech_chunks * chunk_duration
-                            dynamic_silence_s = min(thinking_pause_s, base_silence_s + (spoken_duration_s * 0.35))
-                            silence_chunks_needed = max(14, int(dynamic_silence_s / chunk_duration))
+                            # Conversational Fast-Path VAD:
+                            # For short utterances (<1.5s speech), lower silence cutoff to 0.65s for sub-800ms response onset.
+                            # For longer, complex dictations, dynamic silence scales smoothly towards thinking_pause_s.
+                            if spoken_duration_s < 1.5:
+                                conversational_base_s = min(base_silence_s, 0.65)
+                                dynamic_silence_s = conversational_base_s + (spoken_duration_s * 0.20)
+                            else:
+                                dynamic_silence_s = min(thinking_pause_s, base_silence_s + (spoken_duration_s * 0.35))
+                            min_chunks_floor = max(5, int(0.65 / chunk_duration))
+                            silence_chunks_needed = max(min_chunks_floor, int(dynamic_silence_s / chunk_duration))
 
                             # Hesitation & Murmur Damping:
                             # Intermediate vocal energy (vad 0.12-0.29 or breathing RMS >= 0.0038) indicates active thinking
