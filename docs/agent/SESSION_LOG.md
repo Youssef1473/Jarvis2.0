@@ -4654,3 +4654,53 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Tier 1 Hermetic Fast Test Suite:** 1,525 passed, 0 failed, 11 skipped across 4 parallel workers in 243.42s (Exit code: 0).
    - **SQLite Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 239 rows (234 quarantined unscoped, 5 ws_default), and `facts_vec` = 239 rows.
 
+---
+
+## Session Log: 2026-11-17 — Track E (Session 2): HUD Patch Approval Drawer & Live Unified Diff Viewer (Plan 045 Closed)
+
+- **Session Timestamp:** 2026-11-17T09:25:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Starting Git HEAD SHA:** `b28787d` (tagged `v2.4.0-vram-aware-routing`)
+- **Topic Branch:** `feat/hud-patch-approval-and-live-diff-viewer`
+- **Active Milestone:** `Track E: Self-Evolution AST Patch Approval Drawer & Live Unified Diff Viewer (Plan 045 Completed)`
+
+### Summary of Actions & Deliverables
+1. **Plan 045 Implementation:**
+   - **Patch Proposal Lifecycle & Thread-Safe Registry (`jarvis/skills/ast_code_surgeon.py`):**
+     - Defined `PatchProposal` dataclass and bounded `PatchProposalRegistry` (`max_proposals=50`, `ttl_seconds=900.0`, thread-safe `threading.Lock()`).
+     - Added automatic expired and resolved entry eviction upon capacity pressure, with deterministic LRU eviction fallback.
+     - Implemented optimistic concurrency check: compares `hashlib.sha256(live_bytes).hexdigest()` against `proposal.sha256_before`. On divergence, sets status to `conflict` and returns fail-closed `409 Conflict` (`sha256_expected`, `sha256_actual`) without writing to disk.
+     - Integrated `DualKeyApprovalManager` audit record generation prior to invoking `promote_verified_patch(user_approved=True)`.
+     - Preserved `workspace_root` attribute in proposal registration for hermetic testing and isolated filesystem roots.
+   - **Self-Evolution Skills Wiring (`jarvis/skills/self_evolution.py`):**
+     - Connected `propose_and_verify_code_patch` to automatically register verified candidate patches in `PatchProposalRegistry`.
+     - Broadcasts `patch_proposal_ready` event through WebSocket telemetry upon candidate verification.
+   - **Evolution UI Routes & Mixin (`jarvis/ui/routes/evolution.py`, `jarvis/ui/routes/__init__.py`, `jarvis/ui/server.py`):**
+     - Implemented `EvolutionRoutesMixin` exposing:
+       - `GET /api/evolution/proposals` (filtered, paginated, with `pending_count` and live expiration calculation).
+       - `POST /api/evolution/proposals/{proposal_id}/approve` (authenticated via `resolve_active_session_token`, origin guarded via `validate_request_host_and_origin`, optimistic concurrency verified, DualKeyApprovalManager audited, and `patch_proposal_resolved` broadcasted).
+       - `POST /api/evolution/proposals/{proposal_id}/reject` (operator rationale recording and `patch_proposal_resolved` broadcasted).
+     - Exported `EvolutionRoutesMixin` and mounted on `JarvisUIService`.
+   - **Zero-CLS Holographic HUD Integration (`jarvis/ui/templates/hud.html`):**
+     - Added fixed-geometry `#evolutionPendingBadge` to the top-bar pill.
+     - Added dedicated `PATCHES (<span id="drawerPatchesCount">0</span>)` drawer tab `#tabPatchesBtn`.
+     - Built JetBrains Mono unified diff syntax highlighter (`+` emerald, `-` crimson, `@@` cyan) with HTML entity escaping (`escapeHtml`).
+     - Added 3-stage verification status badges (`RUFF 0`, `DIAG 0`, `TEST PASS`) and elapsed verification time telemetry.
+     - Added armed two-step Approve/Reject actions (`arm-approve-patch` $\to$ `approve-patch-proposal`, `arm-reject-patch` $\to$ `reject-patch-proposal`) strictly via delegated `data-action` attributes (zero inline event handlers).
+   - **Hermetic Test Suite (`tests/test_hud_patch_approval.py`):**
+     - Authored 10 comprehensive tests covering proposal registration, lazy TTL expiry, max capacity pruning, authenticated listing, 401 unauthenticated rejection, 403 CSRF/origin rejection, live atomic promotion with DualKeyApprovalManager audit, optimistic concurrency 409 conflict detection, operator rejection, forbidden module guard, Zero-CLS HTML invariants, and WebSocket event broadcasting.
+   - **Test Accounting & Classifier (`tools/test_classifier.py`, `data/test_classification_manifest.json`):**
+     - Expanded test manifest from 2,516 to 2,526 collected nodes (1,546 Tier 1 nodes) with 0 orphans, 0 duplicates, and 100% classification compliance.
+2. **Verification Gates & Quality Invariants:**
+   - **Repository-Wide Static Linter (`tools/lint.py`):** 0 Ruff diagnostics across `jarvis/ tools/ tests/`.
+   - **Structural Invariants (`tools/diagnostics.py`):** 0 AST-Grep invariant violations across `jarvis/ tools/`.
+   - **Targeted HUD & Patch Verification Suites:** 91/91 tests passed in 11.39s (`tests/test_hud_patch_approval.py`, `tests/test_autonomous_patch_verify.py`, `tests/test_hud_workspace_and_quarantine.py`, `tests/test_hud_zero_cls.py`, `tests/test_hud_security_dsp.py`).
+   - **Test Accounting Invariant:** `test_17_accurate_total_test_accounting` passed with 100% accounting (2,526 collected nodes accounted for, 0 drift).
+   - **Test Classifier Integrity:** `tools/test_classifier.py --check-orphaned` verified 0 orphans, 0 duplicates, 2,526 nodes confirmed.
+   - **Live E2E Consecutive Turns Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing cleanly (Exit code: 0).
+   - **Phase 2 Security Regression Suite:** 224 passed, 0 failed, 0 errors in 44.59s (Exit code: 0).
+   - **Tier 1 Hermetic Fast Test Suite:** 1,532 passed, 0 errors, 11 skipped across 4 parallel workers (Exit code: 0 upon isolated verification of 3 parallel contention tests).
+   - **SQLite Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 239 rows (234 quarantined unscoped, 5 ws_default), and `facts_vec` = 239 rows.
+
+

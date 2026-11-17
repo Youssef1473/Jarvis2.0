@@ -14,21 +14,22 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-16T20:30:00+01:00 (CET)
-- **Active Git Branch:** `feat/dynamic-vram-aware-local-model-routing`
-- **Recorded HEAD Commit SHA:** `f6ea0a6`
-- **HEAD Commit Subject:** `feat(hardware,gpu): add real-time rtx3050 vram arbiter, dxgi budget tracking, and pressure shedding (Plan 043)`
-- **Milestone State:** **Track D Completed: Dynamic VRAM-Aware Local Model Routing & Adaptive Context/Offload Scaling (Plan 044 Verified); 2,516 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
-- **Active Milestone:** **Track D: Dynamic VRAM-Aware Local Model Routing (Plan 044 Completed)**
+- **Validation Timestamp:** 2026-11-17T09:25:00+01:00 (CET)
+- **Active Git Branch:** `feat/hud-patch-approval-and-live-diff-viewer`
+- **Recorded HEAD Commit SHA:** `b28787d`
+- **HEAD Commit Subject:** `Merge pull request #62 from Youssef1473/feat/dynamic-vram-aware-local-model-routing`
+- **Milestone State:** **Track E Completed: Self-Evolution AST Patch Approval Drawer & Live Unified Diff Viewer (Plan 045 Verified); 2,526 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
+- **Active Milestone:** **Track E: Self-Evolution AST Patch Approval Drawer & Live Unified Diff Viewer (Plan 045 Completed)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications:**
-  - `data/test_classification_manifest.json` (test manifest accounting updated to 2,516 nodes)
-  - `jarvis/routing/vram_profile.py` (VramInferenceProfile, 5-tier dynamic context/layer scaling, staged shedding integration)
-  - `jarvis/routing/__init__.py` (exported VramInferenceProfile, VramInferenceTier, resolve_vram_inference_profile, register_ollama_vram_shed_hook)
-  - `jarvis/core/providers/ollama.py` (wired options extra_body and unload_model shedding hook)
-  - `jarvis/core/brain_openai.py` (wired pre-dispatch VRAM profile selection, extra_body options injection, Gemini failover, and routing telemetry)
-  - `jarvis/core/cognition/cognitive_router.py` (wired VramInferenceProfile into determine_hybrid_route)
-  - `tests/test_vram_aware_routing.py` (14 hermetic unit, cloud failover, extra_body options, and thread-safety tests)
+  - `data/test_classification_manifest.json` (test manifest accounting updated to 2,526 nodes)
+  - `jarvis/skills/ast_code_surgeon.py` (PatchProposal, thread-safe PatchProposalRegistry, 900s TTL, sha256_before optimistic concurrency guard, DualKeyApprovalManager integration)
+  - `jarvis/skills/self_evolution.py` (wired propose_and_verify_code_patch to PatchProposalRegistry and patch_proposal_ready broadcast)
+  - `jarvis/ui/routes/__init__.py` (exported EvolutionRoutesMixin)
+  - `jarvis/ui/routes/evolution.py` (EvolutionRoutesMixin: GET /api/evolution/proposals, POST .../approve, POST .../reject)
+  - `jarvis/ui/server.py` (composed EvolutionRoutesMixin into JarvisUIService)
+  - `jarvis/ui/templates/hud.html` (Zero-CLS #evolutionPendingBadge, #tabPatchesBtn, unified diff viewer, armed data-action approve/reject controls)
+  - `tests/test_hud_patch_approval.py` (10 hermetic unit and integration tests)
   - `docs/agent/PROJECT_STATE.md`
   - `docs/agent/SESSION_LOG.md`
 
@@ -44,8 +45,15 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Track D: Dynamic VRAM-Aware Local Model Routing (Plan 044 Completed)`
+- **Active Milestone:** `Track E: Self-Evolution AST Patch Approval Drawer & Live Unified Diff Viewer (Plan 045 Completed)`
 - **Completed Work:**
+  - **Track E (Plan 045 COMPLETED & VERIFIED): HUD Patch Approval Drawer & Live Unified Diff Viewer:**
+    - **Patch Proposal Lifecycle & Thread-Safe Registry (`jarvis/skills/ast_code_surgeon.py`):** Implemented `PatchProposal` and `PatchProposalRegistry` (`max_proposals=50`, `ttl_seconds=900.0`, thread-safe `threading.Lock()`, automatic expired/resolved pruning, `sha256_before` optimistic concurrency guard returning `409 Conflict` on live file drift, `DualKeyApprovalManager` audit grant, and atomic `promote_verified_patch` execution).
+    - **Self-Evolution Skills Integration (`jarvis/skills/self_evolution.py`):** Wired `propose_and_verify_code_patch` to automatically register AppContainer verified candidate patches into `PatchProposalRegistry` and broadcast `patch_proposal_ready` via WebSocket telemetry.
+    - **Evolution UI Routes & Mixin (`jarvis/ui/routes/evolution.py`, `jarvis/ui/routes/__init__.py`, `jarvis/ui/server.py`):** Built and composed `EvolutionRoutesMixin` exposing `GET /api/evolution/proposals` (filtered, paginated, pending count), `POST /api/evolution/proposals/{proposal_id}/approve` (authenticated, host/origin validated, TTL checked, sha256_before conflict guarded, DualKeyApprovalManager audited, and `patch_proposal_resolved` broadcasted), and `POST /api/evolution/proposals/{proposal_id}/reject` (operator rationale recording).
+    - **Zero-CLS Holographic HUD Integration (`jarvis/ui/templates/hud.html`):** Added fixed-geometry `#evolutionPendingBadge` to top pill, dedicated `PATCHES (<span id="drawerPatchesCount">0</span>)` drawer tab, JetBrains Mono syntax-highlighted unified diff viewer (`+` emerald, `-` crimson, `@@` cyan), 3-stage verification status badges (`RUFF 0`, `DIAG 0`, `TEST PASS`), and armed two-step Approve/Reject actions via delegated `data-action` attributes (zero inline event handlers).
+    - **Hermetic Test Suite (`tests/test_hud_patch_approval.py`):** Authored 10 isolated unit and integration tests covering proposal registration, TTL expiration, capacity eviction, unauthenticated 401 rejection, CSRF/origin 403 rejection, live atomic promotion with DualKeyApprovalManager audit, optimistic concurrency 409 conflict detection, operator rejection, forbidden module guard, Zero-CLS HTML invariants, and WebSocket event broadcasting.
+    - **Test Accounting & Classifier:** Expanded test manifest from 2,516 to 2,526 collected nodes (1,546 Tier 1 nodes) with 0 orphans, 0 duplicates, and 100% classification compliance.
   - **Track D (Plan 044 COMPLETED & VERIFIED): Dynamic VRAM-Aware Local Model Routing & Adaptive Context/Offload Scaling:**
     - **VRAM-Calibrated Inference Profile Governor (`jarvis/routing/vram_profile.py`):** Pre-dispatch governor querying `nvml_dxgi_vram_arbiter` to dynamically scale local LLM runtime parameters across 5 pressure tiers (`NOMINAL`: 8k ctx, -1 GPU; `ELEVATED`: 4k ctx, -1 GPU + Stage 1 shed; `CRITICAL`: 2k ctx, <=12 layers + Stage 2 shed or cloud failover; `OOM_GUARD`: 2k ctx, 0 GPU fail-closed barrier + cloud failover or CPU-only; `UNAVAILABLE`: safe CI/non-NVIDIA CPU defaults).
     - **Ollama Provider Integration (`jarvis/core/providers/ollama.py`):** Extended `generate_turn` to accept and pass dynamic `options` via `extra_body={"options": options}` and connected `register_ollama_vram_shed_hook` during initialization so idle Ollama models are safely unloaded during Stage 2 memory shedding.

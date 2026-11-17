@@ -2,6 +2,7 @@
 Enables Jarvis to write, validate, register, and hot-reload new Python skills
 into his own running brain at runtime using Google AI Pro models.
 """
+import hashlib
 import json
 import logging
 import os
@@ -454,8 +455,54 @@ def propose_and_verify_code_patch(
             unified_diff=unified_diff,
             file_path=file_path,
         )
+        if report.passed:
+            from jarvis.skills.ast_code_surgeon import (
+                get_proposal_registry,
+                validate_target_patch_path,
+            )
+
+            abs_target = validate_target_patch_path(file_path, workspace_root=workspace_root)
+            with open(abs_target, "rb") as f_orig:
+                sha256_before = hashlib.sha256(f_orig.read()).hexdigest()
+            with open(shadow_target, "rb") as f_shad:
+                sha256_shadow = hashlib.sha256(f_shad.read()).hexdigest()
+
+            registry = get_proposal_registry()
+            proposal = registry.register_proposal(
+                file_path=str(file_path),
+                node_start_line=node_start_line,
+                node_end_line=node_end_line,
+                replacement_code=replacement_code,
+                target_test_module=target_test_module,
+                sha256_before=sha256_before,
+                sha256_shadow=sha256_shadow,
+                unified_diff=unified_diff,
+                report=report,
+                workspace_root=workspace_root,
+            )
+
+            try:
+                from jarvis.ui.server import JarvisUIService
+
+                service = JarvisUIService.get_instance()
+                if service and hasattr(service, "broadcast"):
+                    service.broadcast({
+                        "type": "patch_proposal_ready",
+                        "data": proposal.to_dict(),
+                    })
+            except Exception as b_err:  # noqa: BLE001
+                logger.debug("Telemetry broadcast notice: %s", b_err)
+
+            return {
+                "status": "verified",
+                "report": report.to_dict(),
+                "proposal_id": proposal.proposal_id,
+                "sha256_before": sha256_before,
+                "sha256_shadow": sha256_shadow,
+            }
+
         return {
-            "status": "verified" if report.passed else "verification_failed",
+            "status": "verification_failed",
             "report": report.to_dict(),
         }
     except (OSError, RuntimeError, ValueError, SyntaxError, SecurityBoundaryViolation) as exc:
