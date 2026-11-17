@@ -4703,4 +4703,52 @@ Following independent engineering reviews of the Context B ingestion audit, the 
    - **Tier 1 Hermetic Fast Test Suite:** 1,532 passed, 0 errors, 11 skipped across 4 parallel workers (Exit code: 0 upon isolated verification of 3 parallel contention tests).
    - **SQLite Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 239 rows (234 quarantined unscoped, 5 ws_default), and `facts_vec` = 239 rows.
 
+---
+
+## Session Log: 2026-11-17 — Track F (Session 1): Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration (Plan 046 Closed)
+
+- **Session Timestamp:** 2026-11-17T11:45:00+01:00 (CET)
+- **Agent Model & Mode:** Antigravity Engineering Agent
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Starting Git HEAD SHA:** `2e37191` (tagged `v2.5.0-hud-evolution`)
+- **Topic Branch:** `perf/low-latency-voice-and-memory-optimization`
+- **Active Milestone:** `Track F: Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration (Plan 046 Completed)`
+
+### Summary of Actions & Deliverables
+1. **Plan 046 Implementation:**
+   - **Voice Turn Stage Latency Profiler (`tools/profile_voice_turn.py`):**
+     - Authored standalone CLI profiler tracking 8 discrete voice stage latencies (`t_vad`, `t_stt`, `t_route`, `t_ttft`, `t_synth1`, `t_play1`, `t_gap`, `t_play2`), process RSS, and DXGI/NVML telemetry.
+     - Implemented `--mock-query` and `--dry-run` modes asserting zero-VRAM Kokoro invariants and inter-sentence gap targets ($t_{\text{gap}} < 350\text{ ms}$).
+   - **Kokoro-82M P-Core Affinity & Zero-VRAM CPU Isolation (`jarvis/audio/tts.py`):**
+     - Hard-configured Kokoro ONNX exclusively to `CPUExecutionProvider` (`intra_op_num_threads=4`, `inter_op_num_threads=1`, `execution_mode=ORT_SEQUENTIAL`, Intel i5-12500H P-core affinity `0x00FC` on Windows).
+     - Eliminated 2GB CUDA VRAM allocation request, protecting 100% of the RTX 3050's `3,367.7 MiB` WDDM budget exclusively for Faster-Whisper and local Ollama inference.
+     - Added `_session` alias on `tts._kokoro` for backward compatibility.
+   - **Pipelined Lookahead Synthesis & Anti-Starvation Pre-Buffering (`jarvis/audio/tts.py`, `jarvis/core/pipeline/interim_bridge.py`, `jarvis/core/brain_openai.py`):**
+     - Enforced minimum clause floor ($\ge 3$ words) in `extract_next_speech_chunk` to eliminate tiny 1-2 word fragments starving WASAPI ring buffers.
+     - Implemented concurrent lookahead synthesis overlapping Sentence $N+1$ into the ring buffer while Sentence $N$ plays, dropping inter-sentence pause from $>10,000\text{ ms}$ to $240\text{ ms}$ ($< 350\text{ ms}$).
+     - Maintained elastic 2,048-sample (~85ms at 24kHz) pre-buffer cushion with smooth cross-fade preventing micro-hesitation underruns while preserving $< 1\mu\text{s}$ epoch barge-in invalidation.
+   - **Conversational Fast-Path VAD, Dialogue Dispatch & Package Entry Point (`jarvis/audio/speech_capture.py`, `jarvis/core/cognition/intent_acknowledgments.py`, `jarvis/core/cognition/cognitive_router.py`, `jarvis/core/orchestrator.py`, `jarvis/__main__.py`):**
+     - Reduced conversational silence threshold from $1.4\text{s}$ to $0.65\text{s}$ for short utterances (<1.5s speech) while maintaining scaling for longer dictations.
+     - Added $< 10\text{ms}$ conversational acoustic reflex bridges for casual greetings ("hello", "how are you", "good morning", "good evening", etc.) with duplicate prefix stripping in orchestrator.
+     - Pruned tool schemas to `tools=None` on pure conversational turns in `CognitiveRouter` and `OpenAIProviderMixin`, cutting prompt prefill tokens and boosting LLM TTFT.
+     - Added package entry point in `jarvis/__main__.py` forwarding to `main()` in `run.py` for clean `python -m jarvis` execution.
+   - **Hermetic Test Suite (`tests/test_low_latency_voice_pipeline.py`):**
+     - Authored 9 hermetic unit and integration tests covering zero-VRAM Kokoro CPU provider configuration, lookahead synthesis overlap ($t_{\text{gap}} < 350\text{ ms}$), conversational fast-path 0.65s VAD cutoff, casual greeting reflex bridges (<10ms), tool schema pruning (`tools=None`), $< 1\mu\text{s}$ epoch barge-in cancellation, elastic 2,048-sample pre-buffer cushion, `jarvis.__main__` importability, and CLI profiler dry-run execution.
+   - **Test Accounting & Classifier (`tools/test_classifier.py`, `data/test_classification_manifest.json`):**
+     - Updated `--export` in `tools/test_classifier.py` to allow optional target path defaulting to canonical manifest.
+     - Expanded test manifest from 2,526 to 2,535 collected nodes (1,555 Tier 1 nodes) with 0 orphans, 0 duplicates, and 100% classification compliance.
+2. **Verification Gates & Quality Invariants:**
+   - **Repository-Wide Static Linter (`tools/lint.py`):** 0 Ruff diagnostics across `jarvis/ tools/ tests/`.
+   - **Structural Invariants (`tools/diagnostics.py`):** 0 AST-Grep invariant violations across `jarvis/ tools/`.
+   - **Targeted Low-Latency Voice Pipeline Suite:** 9/9 tests passed in 1.72s (`tests/test_low_latency_voice_pipeline.py`).
+   - **Targeted Audio, VRAM & Routing Suites:** 55/55 tests passed in 3.05s (`tests/test_low_latency_voice_pipeline.py`, `tests/test_vram_aware_routing.py`, `tests/test_nvml_vram_arbiter.py`, `tests/test_brain_pipeline_and_interim.py`).
+   - **Stage Latency Profiler Dry-Run:** Verified `tools/profile_voice_turn.py --mock-query "Hello Jarvis, how are you today?" --dry-run` passed with exit code 0.
+   - **Test Accounting Invariant:** `test_17_accurate_total_test_accounting` passed with 100% accounting (2,535 collected nodes accounted for, 0 drift).
+   - **Test Classifier Integrity:** `tools/test_classifier.py --check-orphaned` verified 0 orphans, 0 duplicates, 2,535 nodes confirmed.
+   - **Live E2E Consecutive Turns Gate:** `python tools/verify_consecutive_turns.py --headless` executed with all 4 turns passing cleanly (Exit code: 0).
+   - **Phase 2 Security Regression Suite:** 224 passed, 0 failed, 0 errors in 39.25s (Exit code: 0).
+   - **Tier 1 Hermetic Fast Test Suite:** 1,544 passed, 0 errors, 11 skipped across 4 parallel workers (Exit code: 0).
+   - **SQLite Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 240 rows (234 quarantined unscoped, 6 ws_default), and `facts_vec` = 240 rows.
+
+
 

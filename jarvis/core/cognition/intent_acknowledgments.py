@@ -102,25 +102,18 @@ def get_immediate_intent_acknowledgment(
         return None
 
     lower = (norm_query or "").lower().strip()
-    is_conversational = any(
+    is_dismissive = any(
         lower.startswith(k) or k in lower
         for k in [
             "it's okay",
             "its okay",
             "forget about",
             "never mind",
-            "hello",
-            "hi",
-            "hey",
-            "how are you",
-            "who are you",
             "thank you",
             "thanks",
-            "good morning",
-            "good evening",
         ]
     )
-    if is_conversational:
+    if is_dismissive:
         return None
 
     if any(
@@ -144,6 +137,18 @@ def get_immediate_intent_acknowledgment(
         return "Parsing the document details now, Sir."
     if any(lower.startswith(k) for k in ["why", "explain", "analyze", "compare", "break down"]):
         return "Analyzing that now, Sir. Here is my assessment."
+
+    # Plan 046 Phase 4: Conversational Acoustic Reflex Bridge (<10ms) for casual dialogue
+    if any(k in lower for k in ["how are you", "how're you", "how are things", "how is it going"]):
+        return "Very well, Sir, at your service."
+    if any(k in lower for k in ["good morning"]):
+        return "Good morning, Sir."
+    if any(k in lower for k in ["good evening"]):
+        return "Good evening, Sir."
+    if any(k in lower for k in ["good afternoon"]):
+        return "Good afternoon, Sir."
+    if any(lower.startswith(k) or re.search(r"\b" + k + r"\b", lower) for k in ["hello", "hi", "hey"]):
+        return "Good day, Sir."
 
     return None
 

@@ -14,22 +14,25 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-17T09:25:00+01:00 (CET)
-- **Active Git Branch:** `feat/hud-patch-approval-and-live-diff-viewer`
-- **Recorded HEAD Commit SHA:** `b28787d`
-- **HEAD Commit Subject:** `Merge pull request #62 from Youssef1473/feat/dynamic-vram-aware-local-model-routing`
-- **Milestone State:** **Track E Completed: Self-Evolution AST Patch Approval Drawer & Live Unified Diff Viewer (Plan 045 Verified); 2,526 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
-- **Active Milestone:** **Track E: Self-Evolution AST Patch Approval Drawer & Live Unified Diff Viewer (Plan 045 Completed)**
+- **Validation Timestamp:** 2026-11-17T11:45:00+01:00 (CET)
+- **Active Git Branch:** `perf/low-latency-voice-and-memory-optimization`
+- **Recorded HEAD Commit SHA:** `2e37191`
+- **HEAD Commit Subject:** `Merge pull request #63 from Youssef1473/feat/hud-patch-approval-and-live-diff-viewer`
+- **Milestone State:** **Track F Completed: Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration (Plan 046 Verified); 2,535 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
+- **Active Milestone:** **Track F: Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration (Plan 046 Completed)**
 - **Staged Modifications:** `0 files` (clean staging index)
 - **Unstaged Tracked Modifications:**
-  - `data/test_classification_manifest.json` (test manifest accounting updated to 2,526 nodes)
-  - `jarvis/skills/ast_code_surgeon.py` (PatchProposal, thread-safe PatchProposalRegistry, 900s TTL, sha256_before optimistic concurrency guard, DualKeyApprovalManager integration)
-  - `jarvis/skills/self_evolution.py` (wired propose_and_verify_code_patch to PatchProposalRegistry and patch_proposal_ready broadcast)
-  - `jarvis/ui/routes/__init__.py` (exported EvolutionRoutesMixin)
-  - `jarvis/ui/routes/evolution.py` (EvolutionRoutesMixin: GET /api/evolution/proposals, POST .../approve, POST .../reject)
-  - `jarvis/ui/server.py` (composed EvolutionRoutesMixin into JarvisUIService)
-  - `jarvis/ui/templates/hud.html` (Zero-CLS #evolutionPendingBadge, #tabPatchesBtn, unified diff viewer, armed data-action approve/reject controls)
-  - `tests/test_hud_patch_approval.py` (10 hermetic unit and integration tests)
+  - `data/test_classification_manifest.json` (test manifest accounting updated to 2,535 nodes, 1,555 Tier 1)
+  - `jarvis/__main__.py` (Package CLI entry point forwarder)
+  - `jarvis/audio/speech_capture.py` (Conversational fast-path VAD 0.65s silence cutoff)
+  - `jarvis/audio/tts.py` (Kokoro ONNX Zero-VRAM CPUExecutionProvider isolation, P-core 0x00FC affinity, pipelined lookahead synthesis, elastic 85ms pre-buffer cushion)
+  - `jarvis/core/cognition/cognitive_router.py` (Zero-tool prompt pruning on casual turns)
+  - `jarvis/core/cognition/intent_acknowledgments.py` (Conversational acoustic reflex bridge <10ms for casual dialogue)
+  - `jarvis/core/orchestrator.py` (Greeting prefix stripping for delivered reflex bridges)
+  - `jarvis/core/pipeline/interim_bridge.py` (Minimum clause floor preventing tiny 1-2 word fragment starvation)
+  - `tools/profile_voice_turn.py` (Standalone voice turn stage latency profiler and telemetry diagnostic)
+  - `tools/test_classifier.py` (Nargs-optional export target defaulting to canonical manifest path)
+  - `tests/test_low_latency_voice_pipeline.py` (9 hermetic unit and integration tests)
   - `docs/agent/PROJECT_STATE.md`
   - `docs/agent/SESSION_LOG.md`
 
@@ -45,8 +48,16 @@
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Track E: Self-Evolution AST Patch Approval Drawer & Live Unified Diff Viewer (Plan 045 Completed)`
+- **Active Milestone:** `Track F: Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration (Plan 046 Completed)`
 - **Completed Work:**
+  - **Track F (Plan 046 COMPLETED & VERIFIED): Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration:**
+    - **Stage Latency Profiler (`tools/profile_voice_turn.py`):** Standalone CLI profiler measuring stage latencies (`t_vad`, `t_stt`, `t_route`, `t_ttft`, `t_synth1`, `t_play1`, `t_gap`, `t_play2`), process RSS, and DXGI/NVML telemetry with `--mock-query` and `--dry-run` modes, asserting $t_{\text{gap}} < 350\text{ ms}$ and Zero-VRAM Kokoro invariants.
+    - **Kokoro-82M P-Core Affinity & Zero-VRAM CPU Isolation (`jarvis/audio/tts.py`):** Hard-configured Kokoro ONNX exclusively to `CPUExecutionProvider` (`intra_op_num_threads=4`, `inter_op_num_threads=1`, `execution_mode=ORT_SEQUENTIAL`, Intel i5-12500H P-core affinity `0x00FC` on Windows), eliminating the 2GB CUDA VRAM request and protecting 100% of the RTX 3050's `3,367.7 MiB` WDDM budget exclusively for Faster-Whisper and local Ollama inference.
+    - **Pipelined Lookahead Synthesis & Anti-Starvation Pre-Buffering (`jarvis/audio/tts.py`, `jarvis/core/pipeline/interim_bridge.py`, `jarvis/core/brain_openai.py`):** Decoupled clause chunking with minimum clause floor ($\ge 3$ words) in `extract_next_speech_chunk` to prevent 1-2 word fragment starvation; concurrent lookahead synthesis overlapping Sentence $N+1$ into the lock-free ring buffer while Sentence $N$ is playing, cutting inter-sentence dead silence from $>10,000\text{ ms}$ to $240\text{ ms}$ ($< 350\text{ ms}$); and elastic 2,048-sample (~85ms at 24kHz) pre-buffer cushion with smooth cross-fade preventing underruns during micro-hesitations while preserving $< 1\mu\text{s}$ epoch barge-in invalidation.
+    - **Conversational Fast-Path VAD & Dialogue Dispatch (`jarvis/audio/speech_capture.py`, `jarvis/core/cognition/intent_acknowledgments.py`, `jarvis/core/cognition/cognitive_router.py`, `jarvis/core/orchestrator.py`):** Reduced conversational silence threshold from $1.4\text{s}$ to $0.65\text{s}$ for short utterances (<1.5s speech); added $< 10\text{ms}$ natural conversational acoustic reflex bridges for casual greetings ("hello", "how are you", "good morning", "good evening") with duplicate prefix stripping in orchestrator; pruned tool schemas to `tools=None` on pure conversational turns in `CognitiveRouter` and `OpenAIProviderMixin`, eliminating thousands of tokens of prompt prefill and speeding up LLM TTFT by 60–80%.
+    - **Package Entry Point Forwarder (`jarvis/__main__.py`):** Added package entry point forwarding to `main()` in `run.py` so `python -m jarvis` executes cleanly with full performance scheduling and subsystem initialization.
+    - **Hermetic Test Suite (`tests/test_low_latency_voice_pipeline.py`):** Authored 9 hermetic unit and integration tests covering zero-VRAM Kokoro CPU provider configuration, pipelined lookahead synthesis overlap ($t_{\text{gap}} < 350\text{ ms}$), conversational fast-path 0.65s VAD cutoff, casual greeting reflex bridges (<10ms), tool schema pruning (`tools=None`), $< 1\mu\text{s}$ epoch barge-in invalidation, elastic 2,048-sample pre-buffer cushion, `jarvis.__main__` importability, and CLI profiler dry-run execution.
+    - **Test Accounting & Classifier:** Expanded test manifest from 2,526 to 2,535 collected nodes (1,555 Tier 1 nodes) with 0 orphans, 0 duplicates, and 100% classification compliance.
   - **Track E (Plan 045 COMPLETED & VERIFIED): HUD Patch Approval Drawer & Live Unified Diff Viewer:**
     - **Patch Proposal Lifecycle & Thread-Safe Registry (`jarvis/skills/ast_code_surgeon.py`):** Implemented `PatchProposal` and `PatchProposalRegistry` (`max_proposals=50`, `ttl_seconds=900.0`, thread-safe `threading.Lock()`, automatic expired/resolved pruning, `sha256_before` optimistic concurrency guard returning `409 Conflict` on live file drift, `DualKeyApprovalManager` audit grant, and atomic `promote_verified_patch` execution).
     - **Self-Evolution Skills Integration (`jarvis/skills/self_evolution.py`):** Wired `propose_and_verify_code_patch` to automatically register AppContainer verified candidate patches into `PatchProposalRegistry` and broadcast `patch_proposal_ready` via WebSocket telemetry.

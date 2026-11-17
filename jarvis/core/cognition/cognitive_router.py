@@ -623,7 +623,27 @@ class CognitiveRouter:
                 return frozenset()
             return frozenset({"inspect_screen", "see_screen"})
 
-        query = (user_text or "").lower()
+        query = (user_text or "").lower().strip()
+        if not query:
+            return frozenset()
+
+        # Plan 046 Phase 4: Zero-tool prompt pruning for conversational turns.
+        # Casual conversational greetings without explicit tool actuation verbs require 0 tools.
+        conversational_greetings = (
+            "hello", "hi", "hey", "how are you", "how're you", "how are things",
+            "good morning", "good evening", "good afternoon", "good day",
+            "who are you", "what are you", "thank you", "thanks",
+        )
+        tool_action_verbs = {
+            "search", "find", "locate", "open", "launch", "close", "run", "read",
+            "write", "patch", "git", "commit", "timer", "alarm", "schedule", "calendar",
+            "weather", "battery", "vitals", "ram", "cpu", "inspect", "audit", "calculate",
+            "multiply", "divide", "add", "subtract",
+        }
+        query_tokens = set(re.findall(r"\b[a-z0-9_-]+\b", query))
+        if any(query.startswith(g) for g in conversational_greetings) and not (query_tokens & tool_action_verbs):
+            return frozenset()
+
         selected: set[str] = set()
         for keywords, tools in TOOL_INTENT_GROUPS:
             if any(keyword in query for keyword in keywords):

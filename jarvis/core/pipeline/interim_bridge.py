@@ -143,6 +143,7 @@ def clean_speech_clause(text: str) -> str:
 def extract_next_speech_chunk(buffer: str) -> tuple[str | None, str]:
     """Extracts the next natural spoken clause or sentence from the streaming buffer
     with speculative punctuation boundary emission for sub-100ms voice reflex latency.
+    Enforces a minimum clause floor to prevent tiny 1-2 word fragments from starving WASAPI.
     """
     # Terminal punctuation (. ! ? \n)
     m_term = re.search(r"(?<!\d)(?<!\b[A-Za-z])[.!?\n]+(?!\d)(\s+|$)", buffer)
@@ -151,10 +152,14 @@ def extract_next_speech_chunk(buffer: str) -> tuple[str | None, str]:
 
     candidates = []
     if m_term and m_term.start() >= 2:
-        candidates.append((m_term.end(), m_term.start()))
+        term_prefix = buffer[:m_term.start()].strip()
+        if term_prefix and (len(term_prefix.split()) >= 2 or len(term_prefix) >= 8):
+            candidates.append((m_term.end(), m_term.start()))
     if m_clause and m_clause.start() >= 3:
         prefix_candidate = buffer[:m_clause.start()].strip()
-        if prefix_candidate and len(prefix_candidate.split()) >= 1:
+        # Enforce minimum clause floor: require >= 3 words for clause boundary
+        # so tiny 1-2 word fragments do not starve downstream WASAPI playback
+        if prefix_candidate and len(prefix_candidate.split()) >= 3:
             candidates.append((m_clause.end(), m_clause.start()))
 
     if candidates:
