@@ -1,7 +1,7 @@
 {
-  "total_collected": 2333,
+  "total_collected": 2334,
   "assigned_by_tier": {
-    "tier1_hermetic_unit": 1435,
+    "tier1_hermetic_unit": 1436,
     "tier2a_async_safe": 281,
     "tier2b_loopback_ipc": 170,
     "tier3_windows_integration": 164,
@@ -1336,6 +1336,7 @@
       "tests/test_screen_vision.py::TestScreenVisionSkill::test_check_visual_privacy_matrix",
       "tests/test_screen_vision.py::TestScreenVisionSkill::test_gemini_fallback_to_window_telemetry",
       "tests/test_screen_vision.py::TestScreenVisionSkill::test_gemini_vision_success",
+      "tests/test_screen_vision.py::TestScreenVisionSkill::test_get_active_window_details_invalid_pid_graceful",
       "tests/test_screen_vision.py::TestScreenVisionSkill::test_save_latest_screenshot",
       "tests/test_screen_vision.py::TestScreenVisionSkill::test_see_screen_alias",
       "tests/test_screen_vision.py::TestScreenVisionSkill::test_skills_registered",
