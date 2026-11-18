@@ -14,10 +14,10 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-18T22:32:00+01:00 (CET)
+- **Validation Timestamp:** 2026-11-18T22:48:00+01:00 (CET)
 - **Active Git Branch:** `main`
-- **Recorded HEAD Commit SHA:** `0eacde5b2dfe1c4d333da9aac14ce766f0bfad7f`
-- **HEAD Commit Subject:** `refactor(arch): consolidate core/browser modules, add argument-level tainting, and accept ADRs 001-006`
+- **Recorded HEAD Commit SHA:** `d96137aff488570394f312ea33023d693aac8d5c`
+- **HEAD Commit Subject:** `fix(vision): guard against invalid TID and negative stack-garbage PID in active window lookup`
 - **Milestone State:** **Architectural Hardening & Simplification Sprint — Plans 001, 002, 003, 004, and 005 Executed, Verified, and Committed; 2,333 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics; All 5 Verification Gates Passed**
 - **Active Milestone:** **Architectural Hardening & Simplification Sprint (Plans 001–005 Committed & Fully Verified; Ready for Live-Hardware Validation)**
 - **Staged Modifications:** `0 files` (clean staging index)
