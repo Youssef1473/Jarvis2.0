@@ -10,7 +10,6 @@ from PIL import Image
 
 from jarvis.desktop.uia_delta_worker import UIADeltaWorker
 from jarvis.skills.os_control import CRITICAL_PROCESS_DENYLIST
-from jarvis.skills.rstrtmgr_lock_surgeon import PROTECTED_PROCESS_NAMES
 from jarvis.vision.screen_capture import ScreenPerception
 from jarvis.vision.som_grounding import MarkElement, MarkRegistry
 
@@ -191,7 +190,6 @@ class TestMilestone5WindowsHardware(unittest.TestCase):
         """m-04: Critical process denylists contain agy.exe, ollama.exe, and wininit.exe."""
         for proc in ("agy.exe", "ollama.exe", "wininit.exe"):
             self.assertIn(proc, CRITICAL_PROCESS_DENYLIST)
-            self.assertIn(proc, PROTECTED_PROCESS_NAMES)
 
     def test_com_uninitialize_balanced_in_timers(self):
         """m-04: timers speech alert reliably invokes pythoncom.CoUninitialize()."""

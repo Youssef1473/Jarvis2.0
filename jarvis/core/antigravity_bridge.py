@@ -21,7 +21,10 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from jarvis.audio.prosodic_chunker import TwoGearProsodicChunker
-from jarvis.core.stream_tool_parser import NonceGuardedStreamParser, ParsedToolCall
+from jarvis.core.pipeline.streaming_tool_parser import (
+    NonceGuardedStreamParser,
+    ParsedToolCall,
+)
 
 try:
     import jarvis.skills.job_object_sandbox as job_sandbox

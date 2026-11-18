@@ -132,7 +132,7 @@ class AdaptiveSpeechCapture:
         """Spawns an elevated background worker to capture speech with adaptive silence scaling and hesitation damping."""
         def record_and_process_vad() -> None:
             try:
-                from jarvis.audio.affinity import pin_and_elevate_current_thread
+                from jarvis.core.win32_affinity import pin_and_elevate_current_thread
                 pin_and_elevate_current_thread(tag="OrchestratorVADCapture")
             except (ImportError, AttributeError, OSError) as exc:
                 logger.debug("VAD capture thread affinity elevation notice: %s", exc)

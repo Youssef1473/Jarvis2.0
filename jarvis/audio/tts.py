@@ -15,7 +15,6 @@ from typing import Any, ClassVar
 import numpy as np
 import sounddevice as sd
 
-from jarvis.audio.affinity import pin_and_elevate_current_thread
 from jarvis.audio.chunker import StreamingSentenceChunker
 from jarvis.audio.ring_buffer import AudioRingBuffer, apply_cinematic_jarvis_dsp
 from jarvis.core.cancellation import GLOBAL_EPOCH_STATE, is_in_cancellation_flush
@@ -23,6 +22,7 @@ from jarvis.core.win32_affinity import (
     MASK_PCORE_COMPUTE,
     THREAD_PRIORITY_ABOVE_NORMAL,
     elevate_audio_thread_mmcss,
+    pin_and_elevate_current_thread,
     pin_current_thread_to_mask,
 )
 

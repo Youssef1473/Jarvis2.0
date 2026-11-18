@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jarvis.core.pipeline.dual_track import DualTrackCoordinator
-from jarvis.core.streaming_tool_parser import StreamingToolCallParser
+from jarvis.core.pipeline.streaming_tool_parser import StreamingToolCallParser
 
 
 class TestStreamingToolParserSuite(unittest.TestCase):

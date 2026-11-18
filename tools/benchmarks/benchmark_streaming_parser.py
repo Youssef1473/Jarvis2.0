@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import numpy as np
 
-from jarvis.core.streaming_tool_parser import StreamingToolCallParser
+from jarvis.core.pipeline.streaming_tool_parser import StreamingToolCallParser
 
 
 def run_benchmark():

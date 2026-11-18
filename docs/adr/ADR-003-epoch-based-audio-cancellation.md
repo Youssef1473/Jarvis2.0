@@ -1,7 +1,7 @@
 # ADR-003: Epoch-Based Audio Cancellation and Barge-In Invalidation
 
 ## Status
-PROPOSED
+ACCEPTED
 
 ## Date
 2026-11-02
@@ -27,7 +27,7 @@ Implement a process-wide shared mutable monotonic epoch counter (`GLOBAL_EPOCH_S
 3. **Signal Dispatch:** When barge-in or execution abort occurs, `signal_global_barge_in()` performs the increment `GLOBAL_EPOCH_STATE.barge_in_epoch += 1`.
 4. **Cooperative Worker Invalidation:** Workers evaluate `token.is_cancelled` (which tests `int(GLOBAL_EPOCH_STATE.barge_in_epoch) != self._snapshot_epoch`) at loop iteration boundaries:
    - **TTS Synthesis Worker ([`tts.py`](../../jarvis/audio/tts.py)):** Verifies epoch before inferring sentence chunks, discarding stale text units when an epoch advance is detected.
-   - **Audio Ring Buffer ([`ring_buffer.py`](../../jarvis/audio/ring_buffer.py)):** Maintains an internal `_barge_in_epoch` counter and evicts queued PCM audio frames when consumer and producer epochs diverge.
+   - **Audio Ring Buffer ([`ring_buffer.py`](../../jarvis/audio/ring_buffer.py)):** Maintains an internal `_barge_in_epoch` counter and evicts queued PCM audio frames when consumer and producer epochs diverge. Configured with dual-rate ring buffer capacity: 24kHz (24,000 * 120 = 2,880,000 samples, 60 ramp samples) for neural TTS synthesis and 48kHz (48,000 * 120 = 5,760,000 samples, 120 ramp samples) for real-time WASAPI hardware playback streaming.
    - **Antigravity IPC Daemon ([`antigravity_bridge.py`](../../jarvis/core/antigravity_bridge.py)):** Evaluates epoch during token streaming to abort outbound LLM streaming responses.
 5. **Asynchronous Flush Callbacks:** Registered audio flush callbacks (`_FLUSH_CALLBACKS`) are dispatched on a background daemon thread (`Jarvis-AsyncBargeInCallbacks`) so the real-time audio input callback thread is not blocked by slow callback execution.
 

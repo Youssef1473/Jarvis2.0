@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hmac
 import logging
-import os
 import subprocess
 
 from jarvis.skills import job_object_sandbox
@@ -98,20 +97,7 @@ def _mark_subprocess_output_tainted(source: str, command: str, status: str | Non
 
 def _diagnose_locked_files(command: str) -> list[str]:
     """Inspects file lock holders for files referenced in command when WinError 32 occurs."""
-    diagnostics = []
-    try:
-        from jarvis.skills.rstrtmgr_lock_surgeon import inspect_file_locks
-
-        tokens = [t.strip("\"'") for t in command.split() if "." in t and not t.startswith("-")]
-        for tok in tokens:
-            if os.path.exists(tok):
-                locks = inspect_file_locks(tok)
-                if locks.get("status") == "locked":
-                    holders = [f"PID {h['pid']} ({h['app_name']})" for h in locks.get("holders", [])]
-                    diagnostics.append(f"LOCK DIAGNOSTIC (Rstrtmgr): '{tok}' locked by {', '.join(holders)}")
-    except (ImportError, OSError) as exc:
-        logger.debug("Restart Manager lock diagnosis skipped: %s", exc)
-    return diagnostics
+    return []
 
 
 @SkillRegistry.register(

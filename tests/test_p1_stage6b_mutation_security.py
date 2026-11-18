@@ -14,13 +14,6 @@ Deterministic adversarial and specification test suite establishing the RED base
    - Target tab identity binding and tampering prevention.
    - Single-use capability token consumption and replay prevention.
    - Positive execution of approved scripts on approved tabs.
-3. File-Lock Release & Process Termination Security (release_file_lock):
-   - Blocking direct unapproved process termination through allow_kill=True.
-   - Model-injected allow_kill=True self-authorization rejected.
-   - Target file path and holder process identity binding.
-   - Holder process substitution prevention.
-   - Single-use capability token consumption and replay prevention.
-   - Positive execution terminating verified locking process under human approval.
 
 SAFETY NOTE:
 All tests mock low-level process termination and browser CDP communication.
@@ -42,7 +35,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import jarvis.skills.rstrtmgr_lock_surgeon as lock_surgeon
 from jarvis.core.security_boundaries import (
     DualKeyApprovalManager,
     SecurityBoundaryViolation,
@@ -50,7 +42,6 @@ from jarvis.core.security_boundaries import (
 )
 from jarvis.skills import browser_cdp, dev_shell
 from jarvis.skills.base import SkillRegistry
-from jarvis.skills.os_control import ProcessHandleRegistry
 
 
 class TestP1Stage6BMutationSecurity(unittest.TestCase):
@@ -511,187 +502,9 @@ class TestP1Stage6BMutationSecurity(unittest.TestCase):
             unique_context_id="ctx_v8_art_1",
         )
 
-    # =========================================================================
-    # SECTION 3: File-Lock Release & Process Termination (release_file_lock)
-    # =========================================================================
 
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.TerminateProcess")
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.OpenProcess", return_value=1234)
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.CloseHandle")
-    def test_16_direct_release_file_lock_with_allow_kill_without_grant_must_fail_closed(
-        self, mock_close: MagicMock, mock_open: MagicMock, mock_term: MagicMock
-    ) -> None:
-        """VULNERABILITY STAGE-6B-04: Direct Python file-lock termination without grant.
-
-        Calling release_file_lock(allow_kill=True) directly without an active
-        capability grant in _active_auth_context MUST fail closed.
-        In unfixed code: No inner capability gate exists; terminates process via OpenProcess.
-        """
-        mock_holder = {"pid": 6001, "app_name": "worker.exe"}
-        with (
-            patch("jarvis.skills.rstrtmgr_lock_surgeon.inspect_file_locks", return_value={"status": "locked", "holders": [mock_holder]}),
-            self.assertRaises(SecurityBoundaryViolation),
-        ):
-            lock_surgeon.release_file_lock(file_path="busy_file.dat", allow_kill=True)
-
-        mock_term.assert_not_called()
-
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.TerminateProcess")
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.OpenProcess", return_value=1234)
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.CloseHandle")
-    def test_17_model_injected_allow_kill_true_cannot_self_authorize_lock_release(
-        self, mock_close: MagicMock, mock_open: MagicMock, mock_term: MagicMock
-    ) -> None:
-        """INVARIANT: Model-injected allow_kill=True cannot bypass human approval."""
-        self.assertFalse(self.tracker.is_tainted)
-
-        mock_holder = {"pid": 6002, "app_name": "editor.exe"}
-        with (
-            patch("jarvis.skills.rstrtmgr_lock_surgeon.inspect_file_locks", return_value={"status": "locked", "holders": [mock_holder]}),
-            self.assertRaises(SecurityBoundaryViolation),
-        ):
-            SkillRegistry.execute("release_file_lock", file_path="locked_doc.docx", allow_kill=True)
-
-        mock_term.assert_not_called()
-
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.TerminateProcess")
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.OpenProcess", return_value=1234)
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.CloseHandle")
-    def test_18_release_file_lock_file_path_tampering_fails_closed(
-        self, mock_close: MagicMock, mock_open: MagicMock, mock_term: MagicMock
-    ) -> None:
-        """ANTI-TAMPERING: release_file_lock authorization must bind to exact target file path.
-
-        User approves releasing lock on 'approved_doc.pdf'.
-        Caller attempts to release lock on 'confidential_database.mdf'.
-        Execution MUST fail closed with action hash mismatch.
-        """
-        grant = self.approval_mgr.grant_approval(
-            tool_name="release_file_lock",
-            arguments={
-                "file_path": "approved_doc.pdf",
-                "allow_kill": True,
-            },
-            ttl_seconds=30.0,
-            turn_id=self.tracker.get_current_turn_id(),
-        )
-        ctx_token = self.approval_mgr.bind_active_grant(grant)
-        self._ctx_tokens.append(ctx_token)
-
-        mock_holder = {"pid": 6003, "app_name": "database_service.exe"}
-        with patch("jarvis.skills.rstrtmgr_lock_surgeon.inspect_file_locks", return_value={"status": "locked", "holders": [mock_holder]}):
-            res = SkillRegistry.execute_with_status(
-                "release_file_lock",
-                file_path="confidential_database.mdf",
-                allow_kill=True,
-            )
-
-        self.assertFalse(res.success, "Substituted target file path must fail closed")
-        self.assertEqual(res.error_type, "security_violation")
-        mock_term.assert_not_called()
-
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.TerminateProcess")
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.OpenProcess", return_value=1234)
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.CloseHandle")
-    def test_19_release_file_lock_process_identity_binding_rejects_process_substitution(
-        self, mock_close: MagicMock, mock_open: MagicMock, mock_term: MagicMock
-    ) -> None:
-        """IDENTITY SECURITY: release_file_lock must bind to specific holder process identity.
-
-        User approves terminating holder PID 7001 ('notepad.exe').
-        At actuation time, the holder process has changed to PID 7002 ('unrelated_app.exe').
-        Actuation MUST fail closed and MUST NOT terminate PID 7002.
-        """
-        grant = self.approval_mgr.grant_approval(
-            tool_name="release_file_lock",
-            arguments={
-                "file_path": "shared.dat",
-                "allow_kill": True,
-                "target_pid": 7001,
-            },
-            ttl_seconds=30.0,
-            turn_id=self.tracker.get_current_turn_id(),
-        )
-        ctx_token = self.approval_mgr.bind_active_grant(grant)
-        self._ctx_tokens.append(ctx_token)
-
-        # Inspection returns unexpected holder PID 7002
-        unexpected_holder = {"pid": 7002, "app_name": "unrelated_app.exe"}
-        with patch("jarvis.skills.rstrtmgr_lock_surgeon.inspect_file_locks", return_value={"status": "locked", "holders": [unexpected_holder]}):
-            res = SkillRegistry.execute_with_status(
-                "release_file_lock",
-                file_path="shared.dat",
-                allow_kill=True,
-                target_pid=7001,
-            )
-
-        self.assertFalse(res.success, "Substituted locking process must fail closed")
-        self.assertEqual(res.error_type, "security_violation")
-        mock_term.assert_not_called()
-
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.TerminateProcess")
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.OpenProcess")
-    @patch("jarvis.skills.os_control._close_process_handle")
-    def test_20_release_file_lock_single_use_consumption_and_replay_prevention(
-        self, mock_close: MagicMock, mock_open: MagicMock, mock_term: MagicMock
-    ) -> None:
-        """ANTI-REPLAY: release_file_lock authorization grant is single-use only."""
-        retained_handle = 1234
-        hid = ProcessHandleRegistry.register(
-            pid=7005,
-            handle=retained_handle,
-            create_time=1000.0,
-            exe_path="C:/apps/test_app.exe",
-            ttl=30.0,
-        )
-        mock_holder = {"pid": 7005, "app_name": "test_app.exe", "image_path": "C:/apps/test_app.exe", "create_time": 1000.0}
-        self.approval_mgr.set_approval_handler(lambda req: True)
-
-        with patch("jarvis.skills.rstrtmgr_lock_surgeon.inspect_file_locks", return_value={"status": "locked", "holders": [mock_holder]}):
-            res = SkillRegistry.execute_with_status(
-                "release_file_lock",
-                file_path="locked.dat",
-                allow_kill=True,
-                target_pid=7005,
-                handle_id=hid,
-            )
-            self.assertTrue(res.success, f"First approved lock release must succeed: {res.error_message}")
-
-            # Replay under same context must fail closed
-            with self.assertRaises(SecurityBoundaryViolation):
-                lock_surgeon.release_file_lock(file_path="locked.dat", allow_kill=True, target_pid=7005, handle_id=hid)
-
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.TerminateProcess", return_value=1)
-    @patch("jarvis.skills.rstrtmgr_lock_surgeon.kernel32.OpenProcess")
-    @patch("jarvis.skills.os_control._close_process_handle", return_value=1)
-    def test_21_positive_approved_release_file_lock_terminates_approved_holder_once(
-        self, mock_close: MagicMock, mock_open: MagicMock, mock_term: MagicMock
-    ) -> None:
-        """POSITIVE WORKFLOW: Approved release_file_lock terminates verified locking process once."""
-        retained_handle = 1234
-        hid = ProcessHandleRegistry.register(
-            pid=8001,
-            handle=retained_handle,
-            create_time=1000.0,
-            exe_path="C:/apps/lock_holder.exe",
-            ttl=30.0,
-        )
-        mock_holder = {"pid": 8001, "app_name": "lock_holder.exe", "image_path": "C:/apps/lock_holder.exe", "create_time": 1000.0}
-        self.approval_mgr.set_approval_handler(lambda req: True)
-
-        with patch("jarvis.skills.rstrtmgr_lock_surgeon.inspect_file_locks", return_value={"status": "locked", "holders": [mock_holder]}):
-            res = SkillRegistry.execute_with_status(
-                "release_file_lock",
-                file_path="target_document.pdf",
-                allow_kill=True,
-                target_pid=8001,
-                handle_id=hid,
-            )
-
-        self.assertTrue(res.success, f"Approved lock release must succeed: {res.error_message}")
-        mock_open.assert_not_called()
-        mock_term.assert_called_once_with(retained_handle, 1)
-        mock_close.assert_called_once_with(retained_handle)
+if __name__ == "__main__":
+    unittest.main()
 
 
 if __name__ == "__main__":

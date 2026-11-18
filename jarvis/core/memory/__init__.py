@@ -30,13 +30,6 @@ from jarvis.core.memory.vector_engine import (
     scrub_sensitive_credentials,
 )
 
-from .obsidian_sync import (
-    ObsidianChunk,
-    ObsidianContextSyncEngine,
-    ObsidianNoteParser,
-    SyncStats,
-)
-from .sleep_consolidator import SleepPhaseConsolidator
 from .transcript_distiller import TranscriptDistiller
 
 logger = logging.getLogger("Jarvis.Memory")
@@ -74,12 +67,7 @@ class MemoryManager(
 
 __all__ = [
     "MemoryManager",
-    "ObsidianChunk",
-    "ObsidianContextSyncEngine",
-    "ObsidianNoteParser",
     "SingleWriterActor",
-    "SleepPhaseConsolidator",
-    "SyncStats",
     "TranscriptDistiller",
     "VectorMemoryEngine",
     "contains_unredacted_credentials",

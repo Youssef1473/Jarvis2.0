@@ -673,7 +673,7 @@ class SqliteBaseMixin:
         if hasattr(self, "_ro_vector_pool") and self._ro_vector_pool and not getattr(self._ro_vector_pool, "is_vector_extension_loaded", True):
             return False
         try:
-            from jarvis.memory.ro_pool import ReadOnlyConnectionPool
+            from jarvis.core.memory.ro_pool import ReadOnlyConnectionPool
             ro_pool = ReadOnlyConnectionPool.get_instance()
             if hasattr(ro_pool, "vector_load_error") and ro_pool.vector_load_error is not None:
                 return False
@@ -691,7 +691,7 @@ class SqliteBaseMixin:
         if hasattr(self, "_ro_vector_pool") and self._ro_vector_pool and getattr(self._ro_vector_pool, "vector_load_error", None):
             return self._ro_vector_pool.vector_load_error
         try:
-            from jarvis.memory.ro_pool import ReadOnlyConnectionPool
+            from jarvis.core.memory.ro_pool import ReadOnlyConnectionPool
             ro_pool = ReadOnlyConnectionPool.get_instance()
             if hasattr(ro_pool, "vector_load_error") and ro_pool.vector_load_error:
                 return ro_pool.vector_load_error
@@ -719,7 +719,7 @@ class SqliteBaseMixin:
     @contextlib.contextmanager
     def _get_ro_connection(self):
         """Thread-local read-only SQLite connection from ReadOnlyConnectionPool."""
-        from jarvis.memory.ro_pool import get_ro_connection
+        from jarvis.core.memory.ro_pool import get_ro_connection
         with get_ro_connection(self.db_path) as conn:
             yield conn
 

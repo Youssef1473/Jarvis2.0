@@ -229,6 +229,12 @@ class ToolOrchestrator:
                 and skill_res.result is not None
             ):
                 self.dual_track_coordinator._set_cached_result(cache_key, skill_res.result)
+            if (
+                skill_res.success
+                and skill_res.result is not None
+                and self.taint_tracker.is_ingestion_tool(tool_name)
+            ):
+                self.taint_tracker.record_tainted_value(skill_res.result, source=tool_name)
             return OrchestratorStepResult(
                 result=skill_res.result,
                 success=skill_res.success,
@@ -449,6 +455,8 @@ class ToolOrchestrator:
                 tool_coro=_orch_run,
                 milestone_phrase=milestone_phrase,
             )
+            if res is not None and self.taint_tracker.is_ingestion_tool(tool_name):
+                self.taint_tracker.record_tainted_value(res, source=tool_name)
             return res
         except asyncio.CancelledError:
             step_cancel_tok.cancel()

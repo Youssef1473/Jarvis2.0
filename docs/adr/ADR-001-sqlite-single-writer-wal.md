@@ -1,7 +1,7 @@
 # ADR-001: SQLite Single-Writer Serialization and WAL Mode
 
 ## Status
-PROPOSED
+ACCEPTED
 
 ## Date
 2026-11-02

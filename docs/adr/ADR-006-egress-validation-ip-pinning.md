@@ -1,7 +1,7 @@
 # ADR-006: Egress URL Validation and Outbound IP Pinning
 
 ## Status
-PROPOSED
+ACCEPTED
 
 ## Date
 2026-11-02

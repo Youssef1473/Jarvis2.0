@@ -3,7 +3,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from jarvis.audio.affinity import (
+from jarvis.core.win32_affinity import (
     THREAD_PRIORITY_HIGHEST,
     THREAD_PRIORITY_TIME_CRITICAL,
     elevate_thread_priority,
@@ -33,7 +33,7 @@ class TestAudioAffinity(unittest.TestCase):
 
     def test_get_physical_pcore_mask_topology(self):
         """Verifies calculation of non-SMT physical P-core bitmask across topologies."""
-        from jarvis.audio.affinity import get_physical_pcore_mask
+        from jarvis.core.win32_affinity import get_physical_pcore_mask
 
         with patch("os.cpu_count", return_value=16):
             # 16-thread hybrid: physical cores 0, 2, 4, 6 -> 0x55
@@ -50,7 +50,7 @@ class TestAudioAffinity(unittest.TestCase):
 
     def test_get_wakeword_affinity_mask_topology(self):
         """Verifies calculation of wake-word affinity mask avoiding P-Core 0 across topologies."""
-        from jarvis.audio.affinity import (
+        from jarvis.core.win32_affinity import (
             MASK_PCORE_AUDIO_ISOLATED,
             MASK_PCORE_WAKEWORD,
             get_wakeword_affinity_mask,
@@ -87,7 +87,7 @@ class TestAudioAffinity(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "win32", "Win32 native API required for live affinity tests")
     def test_live_win32_mmcss_registration(self):
         """Verifies Windows MMCSS 'Pro Audio' elevation and revert on Windows host."""
-        from jarvis.audio.affinity import elevate_to_pro_audio_mmcss, revert_mmcss
+        from jarvis.core.win32_affinity import elevate_to_pro_audio_mmcss, revert_mmcss
         h_task = elevate_to_pro_audio_mmcss("Pro Audio")
         if h_task:
             self.assertIsInstance(h_task, int)
@@ -109,7 +109,7 @@ class TestAudioAffinity(unittest.TestCase):
 
     def test_non_windows_graceful_fallback(self):
         """Verifies that on non-Windows platforms, methods safely return False without error."""
-        from jarvis.audio.affinity import elevate_to_pro_audio_mmcss, revert_mmcss
+        from jarvis.core.win32_affinity import elevate_to_pro_audio_mmcss, revert_mmcss
         with patch("sys.platform", "linux"):
             self.assertFalse(pin_thread_to_pcores())
             self.assertFalse(elevate_thread_priority())

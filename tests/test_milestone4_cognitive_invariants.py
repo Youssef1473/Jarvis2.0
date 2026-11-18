@@ -7,7 +7,7 @@ import numpy as np
 
 from jarvis.context.context_orchestrator import ContextOrchestrator
 from jarvis.conversation.bookmarks import ReasoningBookmark, ReasoningBookmarkStack
-from jarvis.core.streaming_tool_parser import extract_tool_call_json
+from jarvis.core.pipeline.streaming_tool_parser import extract_tool_call_json
 from jarvis.routing.cascade import RoutingCascade, RoutingDecision
 from jarvis.routing.onnx_intent_router import ONNXIntentRouter
 

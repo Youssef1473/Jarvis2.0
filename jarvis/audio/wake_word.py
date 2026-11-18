@@ -338,7 +338,7 @@ class WakeWordDetector:
     def _worker_loop(self):
         """Dedicated background worker thread for processing raw audio frames and routing."""
         try:
-            from jarvis.audio.affinity import (
+            from jarvis.core.win32_affinity import (
                 get_wakeword_affinity_mask,
                 pin_and_elevate_current_thread,
             )

@@ -27,7 +27,7 @@ from jarvis.core.health_check import (
     run_system_health_check,
 )
 from jarvis.core.memory import MemoryManager, SingleWriterActor
-from jarvis.memory.ro_pool import ReadOnlyConnectionPool, VectorMemoryPool
+from jarvis.core.memory.ro_pool import ReadOnlyConnectionPool, VectorMemoryPool
 
 
 class TestMemoryVectorHealthTracking(unittest.TestCase):

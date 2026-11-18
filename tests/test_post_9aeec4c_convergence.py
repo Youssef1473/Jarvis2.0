@@ -318,7 +318,7 @@ class TestPost9aeec4cConvergence(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from jarvis.memory.ro_pool import ReadOnlyConnectionPool
+        from jarvis.core.memory.ro_pool import ReadOnlyConnectionPool
 
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "test_wal_unpin.db"

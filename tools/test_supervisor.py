@@ -179,6 +179,7 @@ class TestSupervisor:
         env_override: dict[str, str] | None = None,
         target_label: str = "",
         junit_xml_path: Path | None = None,
+        tee: bool = False,
     ) -> SupervisedResult:
         """Runs an arbitrary command in a Job Object with wall-clock deadline enforcement."""
         timeout = timeout_sec if timeout_sec is not None else self.default_timeout_sec
@@ -204,13 +205,16 @@ class TestSupervisor:
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
 
-        def _drain_stream(stream: Any, chunks: list[str]) -> None:
+        def _drain_stream(stream: Any, chunks: list[str], tee_stream: bool = False) -> None:
             try:
                 while True:
-                    data = stream.read(65536)
+                    data = stream.read(4096)
                     if not data:
                         break
                     chunks.append(data)
+                    if tee_stream:
+                        sys.stdout.write(data)
+                        sys.stdout.flush()
             except (OSError, ValueError):
                 pass
             finally:
@@ -249,10 +253,10 @@ class TestSupervisor:
                 )
 
             if proc.stdout:
-                t_out = threading.Thread(target=_drain_stream, args=(proc.stdout, stdout_chunks), daemon=True)
+                t_out = threading.Thread(target=_drain_stream, args=(proc.stdout, stdout_chunks, tee), daemon=True)
                 t_out.start()
             if proc.stderr:
-                t_err = threading.Thread(target=_drain_stream, args=(proc.stderr, stderr_chunks), daemon=True)
+                t_err = threading.Thread(target=_drain_stream, args=(proc.stderr, stderr_chunks, False), daemon=True)
                 t_err.start()
 
             # Deadline poll loop
@@ -358,6 +362,7 @@ class TestSupervisor:
         timeout_sec: float | None = None,
         run_id: str | None = None,
         record_junit: bool = True,
+        tee: bool = False,
     ) -> SupervisedResult:
         """Executes targeted pytest runs with automatic JUnit XML capture and timeout supervision."""
         target_list = [targets] if isinstance(targets, str) else list(targets)
@@ -392,4 +397,5 @@ class TestSupervisor:
             run_id=run_uuid,
             target_label=label,
             junit_xml_path=junit_xml,
+            tee=tee,
         )

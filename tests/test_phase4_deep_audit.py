@@ -13,21 +13,14 @@ Comprehensive adversarial regression suite covering:
 """
 from __future__ import annotations
 
-import json
 import os
-import subprocess
-import sys
-import tempfile
 import threading
 import time
 import unittest
-from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import MagicMock, patch
 
 from jarvis.core.cancellation import ToolCancellationToken
-from jarvis.core.evolution import isolated_runner
-from jarvis.core.evolution.sandbox import SkillSandbox
 from jarvis.core.mcp_manager import (
     MCP_BASE_ENV_ALLOWLIST,
     MCPClientSession,
@@ -495,132 +488,6 @@ class TestPhase4AffinityFallbackAndTracking(unittest.TestCase):
             self.assertIsInstance(res["affinity_degraded"], bool)
         finally:
             mgr.clear_active_authorized(ctx_token)
-
-
-class TestPhase4ASTSecurityAnalysis(unittest.TestCase):
-    """Finding 7: Loop-scoped break analysis and reflection aliasing prevention in AST checks."""
-
-    def test_nested_loop_break_does_not_satisfy_outer_while_true(self):
-        """A break inside an inner loop does NOT break the outer while True loop and is rejected."""
-        malicious_code = """
-def run_loop():
-    while True:
-        for x in range(10):
-            if x > 5:
-                break
-"""
-        ok, msg = SkillSandbox.check_ast_security(malicious_code)
-        self.assertFalse(ok)
-        self.assertIn("Unbounded 'while True' loop detected", msg)
-
-    def test_outer_loop_break_is_accepted(self):
-        """A break directly targeting the outer while True loop is accepted."""
-        valid_code = """
-def run_loop():
-    while True:
-        for x in range(10):
-            pass
-        if True:
-            break
-"""
-        ok, msg = SkillSandbox.check_ast_security(valid_code)
-        self.assertTrue(ok, f"Expected AST check to pass, but failed with: {msg}")
-
-    def test_reflection_function_aliasing_is_blocked(self):
-        """Assigning blocked reflection primitives to local aliases is rejected."""
-        aliased_getattr = """
-def exploit():
-    my_get = getattr
-    return my_get
-"""
-        ok, msg = SkillSandbox.check_ast_security(aliased_getattr)
-        self.assertFalse(ok)
-        self.assertIn("Aliasing blocked function/module 'getattr'", msg)
-
-    def test_globals_aliasing_is_blocked(self):
-        """Assigning globals to a local alias is rejected."""
-        aliased_globals = """
-def exploit():
-    g = globals
-    return g
-"""
-        ok, msg = SkillSandbox.check_ast_security(aliased_globals)
-        self.assertFalse(ok)
-        self.assertIn("Aliasing blocked function/module 'globals'", msg)
-
-
-class TestPhase4IsolatedRunnerEarlyValidation(unittest.TestCase):
-    """Finding 8: Child runner validates nonce and kwargs types before compiling or touching code."""
-
-    def test_malformed_nonce_rejected_with_exit_code_4(self):
-        """Isolated runner exits with code 4 when nonce is non-string or empty without loading skill."""
-        runner_path = Path(isolated_runner.__file__).resolve()
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            res_file = Path(tmp_dir) / "result.json"
-            fake_skill = Path(tmp_dir) / "skill.py"
-            fake_skill.write_text("raise RuntimeError('Should not execute!')", encoding="utf-8")
-
-            # Nonce is an integer instead of string
-            stdin_data = json.dumps({"nonce": 12345, "kwargs": {}})
-            cli_args = [
-                sys.executable,
-                "-I",
-                str(runner_path),
-                "--module-path", str(fake_skill),
-                "--tool-name", "sample_tool",
-                "--result-file", str(res_file),
-                "--expected-hash", "fakehash",
-                "--scratch-dir", str(tmp_dir),
-            ]
-
-            proc = subprocess.run(
-                cli_args,
-                input=stdin_data,
-                text=True,
-                capture_output=True,
-                timeout=5.0,
-                check=False,
-            )
-
-            self.assertEqual(proc.returncode, 4)
-            result_data = json.loads(res_file.read_text(encoding="utf-8"))
-            self.assertEqual(result_data.get("status"), "error")
-            self.assertIn("'nonce' must be a non-empty string", result_data.get("error", ""))
-
-    def test_malformed_kwargs_rejected_with_exit_code_4(self):
-        """Isolated runner exits with code 4 when kwargs is not a dict."""
-        runner_path = Path(isolated_runner.__file__).resolve()
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            res_file = Path(tmp_dir) / "result.json"
-            fake_skill = Path(tmp_dir) / "skill.py"
-            fake_skill.write_text("raise RuntimeError('Should not execute!')", encoding="utf-8")
-
-            # kwargs is a list instead of dict
-            stdin_data = json.dumps({"nonce": "valid_nonce_abc", "kwargs": ["not", "a", "dict"]})
-            cli_args = [
-                sys.executable,
-                "-I",
-                str(runner_path),
-                "--module-path", str(fake_skill),
-                "--tool-name", "sample_tool",
-                "--result-file", str(res_file),
-                "--expected-hash", "fakehash",
-                "--scratch-dir", str(tmp_dir),
-            ]
-
-            proc = subprocess.run(
-                cli_args,
-                input=stdin_data,
-                text=True,
-                capture_output=True,
-                timeout=5.0,
-                check=False,
-            )
-
-            self.assertEqual(proc.returncode, 4)
-            result_data = json.loads(res_file.read_text(encoding="utf-8"))
-            self.assertEqual(result_data.get("status"), "error")
-            self.assertIn("'kwargs' must be a JSON dictionary", result_data.get("error", ""))
 
 
 class TestPhase4SpeculativeTimeoutFutureCancellation(unittest.TestCase):

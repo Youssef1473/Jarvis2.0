@@ -58,10 +58,7 @@ def handle_route_errors(func: Callable) -> Callable:
     return wrapper
 
 
-from jarvis.ui.routes.evolution import EvolutionRoutesMixin
-
 __all__ = [
-    "EvolutionRoutesMixin",
     "handle_route_errors",
     "resolve_request_workspace",
 ]

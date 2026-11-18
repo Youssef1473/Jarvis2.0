@@ -616,7 +616,7 @@ def compute_attachments_digest(attachments: list[Any]) -> str:
             try:
                 with open(att, "rb") as f:
                     return hashlib.sha256(f.read()).hexdigest()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001  # noqa: BLE001
                 return "error_reading:" + str(att)
         return "invalid:" + str(att)
 
@@ -626,7 +626,7 @@ def compute_attachments_digest(attachments: list[Any]) -> str:
             try:
                 with open(att, "rb") as f:
                     parts.append(hashlib.sha256(f.read()).hexdigest())
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001  # noqa: BLE001
                 parts.append("error_reading:" + str(att))
         else:
             parts.append("invalid:" + str(att))
@@ -1685,10 +1685,21 @@ class IngestionRecord:
 
 class _TurnTaintState:
     """Thread-safe turn-scoped taint state holder enforcing monotonic taint within a logical turn."""
-    __slots__ = ("_is_compromised", "_is_tainted", "_lock", "_provenance_records", "_tainting_sources", "turn_id")
+    __slots__ = (
+        "_is_compromised",
+        "_is_tainted",
+        "_lock",
+        "_provenance_records",
+        "_tainted_value_digests",
+        "_tainted_value_snippets",
+        "_tainting_sources",
+        "turn_id",
+    )
 
     MAX_SOURCES_PER_TURN: int = 128
     MAX_SOURCE_LENGTH: int = 128
+    MAX_TAINTED_VALUES_PER_TURN: int = 512
+    MAX_SNIPPET_LENGTH: int = 4096
 
     def __init__(self, turn_id: str | None = None) -> None:
         self.turn_id = turn_id or secrets.token_hex(8)
@@ -1696,6 +1707,8 @@ class _TurnTaintState:
         self._is_compromised: bool = False
         self._tainting_sources: list[str] = []
         self._provenance_records: list[IngestionRecord] = []
+        self._tainted_value_digests: dict[str, dict[str, Any]] = {}
+        self._tainted_value_snippets: list[str] = []
         self._lock = threading.Lock()
 
     @property
@@ -1744,7 +1757,7 @@ class _TurnTaintState:
         else:
             try:
                 clean = str(source)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001  # noqa: BLE001
                 clean = ""
         clean = clean.strip()
         clean = re.sub(r"[\r\n\x00-\x1f]", "", clean)
@@ -1795,6 +1808,95 @@ class _TurnTaintState:
                     self._provenance_records.append(
                         IngestionRecord(source=clean_source, timestamp=time.time(), metadata=clean_meta)
                     )
+
+    def record_tainted_value(self, value: Any, source: str = "external_data") -> str:
+        """Records an untrusted external data value into this turn state.
+        Computes SHA-256 digest and records bounded string snippets for argument-level taint tracking.
+        Returns the SHA-256 hex digest string.
+        """
+        if value is None:
+            return ""
+        if isinstance(value, (dict, list, tuple)):
+            try:
+                serialized = json.dumps(value, ensure_ascii=False, default=str)
+            except Exception:  # noqa: BLE001
+                serialized = str(value)
+        else:
+            serialized = str(value)
+
+        clean_text = serialized.strip()
+        if not clean_text:
+            return ""
+
+        digest = hashlib.sha256(clean_text.encode("utf-8", errors="replace")).hexdigest()
+        clean_source = self._sanitize_source(source)
+
+        with self._lock:
+            self._is_tainted = True
+            if clean_source not in self._tainting_sources and len(self._tainting_sources) < self.MAX_SOURCES_PER_TURN:
+                self._tainting_sources.append(clean_source)
+
+            if len(self._tainted_value_digests) < self.MAX_TAINTED_VALUES_PER_TURN:
+                self._tainted_value_digests[digest] = {
+                    "source": clean_source,
+                    "timestamp": time.time(),
+                    "length": len(clean_text),
+                }
+
+            if len(clean_text) >= 4 and len(self._tainted_value_snippets) < self.MAX_TAINTED_VALUES_PER_TURN:
+                snippet = clean_text[:self.MAX_SNIPPET_LENGTH]
+                if snippet not in self._tainted_value_snippets:
+                    self._tainted_value_snippets.append(snippet)
+
+        return digest
+
+    def is_value_tainted(self, value: Any) -> bool:
+        """Checks if a scalar value or data structure contains tainted external data."""
+        if value is None or isinstance(value, (bool, int, float)):
+            return False
+
+        if isinstance(value, (list, tuple, set)):
+            return any(self.is_value_tainted(item) for item in value)
+
+        if isinstance(value, dict):
+            return any(self.is_value_tainted(k) or self.is_value_tainted(v) for k, v in value.items())
+
+        text = str(value).strip()
+        if len(text) < 4:
+            return False
+
+        digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+        with self._lock:
+            if digest in self._tainted_value_digests:
+                return True
+            for snip in self._tainted_value_snippets:
+                if text == snip:
+                    return True
+                if len(snip) >= 8 and snip in text:
+                    return True
+                if len(text) >= 8 and text in snip:
+                    return True
+
+        return False
+
+    def check_arguments_taint(self, arguments: dict[str, Any]) -> tuple[bool, list[str]]:
+        """Checks tool arguments for tainted external data.
+        Returns (has_tainted_arg, list_of_tainted_argument_keys).
+        """
+        if not arguments or not isinstance(arguments, dict):
+            return False, []
+
+        tainted_keys = []
+        for key, val in arguments.items():
+            if self.is_value_tainted(val):
+                tainted_keys.append(str(key))
+
+        return bool(tainted_keys), tainted_keys
+
+    @property
+    def tainted_value_digests(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return dict(self._tainted_value_digests)
 
 
 _turn_taint_context: contextvars.ContextVar[_TurnTaintState | None] = contextvars.ContextVar(
@@ -1932,6 +2034,25 @@ class TurnTaintTracker:
         "send_email",
         "shutdown_jarvis",
         "record_episodic_lesson",
+    }
+
+    BENIGN_LOCAL_CONTROL_TOOLS: ClassVar[set[str]] = {
+        "adjust_volume",
+        "control_media",
+        "start_timer",
+        "cancel_timer",
+        "list_active_timers",
+        "get_current_time_and_date",
+        "get_battery_status",
+        "get_system_vitals",
+        "get_pipeline_latency_stats",
+        "get_voice_settings",
+        "set_speech_rate",
+        "set_voice_profile",
+        "set_audio_output_device",
+        "list_audio_devices",
+        "minimize_all_windows",
+        "lock_workstation",
     }
 
     DYNAMIC_DOCUMENT_PROVENANCE_TOOLS: ClassVar[set[str]] = {
@@ -2212,6 +2333,8 @@ class TurnTaintTracker:
             IngestionTrustClassification.UNKNOWN,
         )
 
+    is_ingestion_tool = is_untrusted_ingestion
+
     def register_ingestion_tool(self, tool_name: Any) -> None:
         """Registers a dynamic tool name as an untrusted external ingestion source."""
         clean = _TurnTaintState._sanitize_source(tool_name)
@@ -2259,6 +2382,37 @@ class TurnTaintTracker:
             if "filename" in arguments and isinstance(arguments["filename"], str):
                 meta["filename"] = arguments["filename"][:64]
         self.mark_tainted(tool_name, metadata=meta)
+
+    def record_tainted_value(self, value: Any, source: str = "external_data") -> str:
+        """Records an untrusted external data value into the active turn context.
+        Computes SHA-256 digest and records bounded string snippets for argument-level taint tracking.
+        Returns the SHA-256 hex digest string.
+        """
+        state = self._get_context_state(create_if_missing=True)
+        return state.record_tainted_value(value, source=source)
+
+    def is_value_tainted(self, value: Any) -> bool:
+        """Returns True if the specified value contains or matches tainted external data."""
+        state = _turn_taint_context.get()
+        if state is None:
+            return False
+        return state.is_value_tainted(value)
+
+    def check_arguments_taint(self, arguments: dict[str, Any]) -> tuple[bool, list[str]]:
+        """Checks tool arguments against tainted external data in the active turn context.
+        Returns (has_tainted_arg, list_of_tainted_keys).
+        """
+        state = _turn_taint_context.get()
+        if state is None:
+            return False, []
+        return state.check_arguments_taint(arguments)
+
+    @property
+    def tainted_value_digests(self) -> dict[str, dict[str, Any]]:
+        state = _turn_taint_context.get()
+        if state is None:
+            return {}
+        return state.tainted_value_digests
 
     def get_current_turn_id(self) -> str | None:
         """Returns the active logical turn ID, or None if no context state exists."""
@@ -2343,19 +2497,21 @@ class TurnTaintTracker:
         if not is_verified_ro and effective_risk == 0:
             effective_risk = max(effective_risk, SkillRegistry.get_risk_level(clean_name) or 1)
 
+        has_tainted_args, tainted_keys = self.check_arguments_taint(args_dict)
+
         is_critical = (effective_risk >= 2) or (clean_name in self.CRITICAL_PRIVILEGE_TOOLS)
-        is_privileged_mutation = (
-            (clean_name == "check_code_diagnostics" and bool(args_dict.get("fix")))
-            or (not is_verified_ro and (
-                (effective_risk >= 1)
-                or (clean_name in self.HIGH_PRIVILEGE_MUTATION_TOOLS)
-            ))
+        is_benign_local = clean_name in self.BENIGN_LOCAL_CONTROL_TOOLS
+
+        is_high_risk_tool = (
+            (clean_name in self.HIGH_PRIVILEGE_MUTATION_TOOLS)
+            or (clean_name == "check_code_diagnostics" and bool(args_dict.get("fix")))
+            or (not is_verified_ro and not is_benign_local and effective_risk >= 1)
         )
 
         # SEC-H2-02: An uninitialized context has no provenance; treat as tainted for privileged mutations
         # CORE-SEC-04D: Check if the turn was already tainted prior to this tool, or if context is missing
         is_tainted = (prior_tainted or (state.is_compromised if state is not None else False)) if state is not None else True
-        is_tainted_mutation = is_tainted and is_privileged_mutation
+        is_tainted_mutation = (is_tainted and is_high_risk_tool) or has_tainted_args
 
         approval_mgr = DualKeyApprovalManager.get_instance()
 
@@ -2411,12 +2567,18 @@ class TurnTaintTracker:
                 "out-of-band user confirmation regardless of turn taint state."
             )
 
-        # 2. Tainted turn check for High Privilege (Level 1) operations
+        # 2. Tainted turn / tainted arguments check for High Privilege or tainted operations
         if is_tainted_mutation and not human_grant:
             if state is None:
                 raise SecurityBoundaryViolation(
                     f"Dual-Key Safety Gate: blocked high-privilege tool '{clean_name}' "
                     "execution in an uninitialized security context without turn provenance."
+                )
+            if has_tainted_args:
+                tainted_keys_str = ", ".join(tainted_keys)
+                raise SecurityBoundaryViolation(
+                    f"Dual-Key Safety Gate: blocked tool '{clean_name}' execution with "
+                    f"tainted argument(s) [{tainted_keys_str}] derived from untrusted external data."
                 )
             sources_str = ", ".join(state.tainting_sources) or "untrusted input"
             raise SecurityBoundaryViolation(

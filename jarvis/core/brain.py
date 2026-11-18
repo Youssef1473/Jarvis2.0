@@ -227,8 +227,11 @@ class JarvisBrain(
         else:
             db_path = "data/jarvis_memory.db"
         self.reflex_engine = DynamicReflexEngine(db_path=db_path)
-        import jarvis.skills.self_evolution as self_evo
-        self_evo.set_reflex_engine(self.reflex_engine)
+        try:
+            import jarvis.skills.diagnostics as diag_skills
+            diag_skills.set_reflex_engine(self.reflex_engine)
+        except (ImportError, AttributeError) as exc:
+            logger.debug("Diagnostics reflex engine binding notice: %s", exc)
         try:
             from jarvis.routing.cascade import RoutingCascade
             self.routing_cascade = RoutingCascade(reflex_engine=self.reflex_engine)

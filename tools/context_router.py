@@ -60,7 +60,7 @@ CATEGORY_PATTERNS: dict[str, list[re.Pattern[str]]] = {
     "SQLITE_PERSISTENCE": [
         re.compile(r"\b(sqlite|wal|single[-_ ]?writer|actor|pragmas?|read[-_ ]?pool|fts5|sqlite[-_ ]?vec|bm25|database|db|transaction|commit|schema|migration|facts[-_ ]?manager|interaction[-_ ]?memory)\b", re.IGNORECASE),
         re.compile(r"\bjarvis[./\\]core[./\\]memory\b", re.IGNORECASE),
-        re.compile(r"\b(sqlite_base\.py|interaction_memory\.py|sleep_consolidator\.py)\b", re.IGNORECASE),
+        re.compile(r"\b(sqlite_base\.py|interaction_memory\.py)\b", re.IGNORECASE),
         re.compile(r"\b(singlewriteractor|journal_mode|synchronous)\b", re.IGNORECASE),
     ],
     "SECURITY_BOUNDARY": [
@@ -140,7 +140,6 @@ CONTEXT_CATALOG: dict[str, dict[str, Any]] = {
         "canonical_modules": [
             {"path": "jarvis/core/memory/sqlite_base.py", "reason": "SingleWriterActor serialization, WAL pragma setup, and connection pooling"},
             {"path": "jarvis/core/memory/interaction_memory.py", "reason": "Interaction history storage and retrieval"},
-            {"path": "jarvis/core/memory/sleep_consolidator.py", "reason": "Background consolidation and vacuuming"},
         ],
         "applicable_rules": [
             {"path": ".agents/rules/persistence_sqlite.md", "reason": "SQLite WAL serialization, reader pool, and sqlite-vec"}

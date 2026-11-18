@@ -176,7 +176,7 @@ class GeminiProvider(BaseProvider):
 
         # Parse tool calls from output
         tool_calls: list[ToolCall] = []
-        from jarvis.core.streaming_tool_parser import extract_tool_call_json
+        from jarvis.core.pipeline.streaming_tool_parser import extract_tool_call_json
 
         tool_match_info = extract_tool_call_json(raw_text)
         if tool_match_info:

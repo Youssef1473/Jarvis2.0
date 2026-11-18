@@ -41,9 +41,13 @@ class TestLowLatencyVoicePipeline(unittest.TestCase):
 
     def setUp(self) -> None:
         self._orig_epoch = int(GLOBAL_EPOCH_STATE.barge_in_epoch)
+        from jarvis.audio.tts import _flush_kokoro_gpu_cache
+        _flush_kokoro_gpu_cache()
 
     def tearDown(self) -> None:
         GLOBAL_EPOCH_STATE.barge_in_epoch = self._orig_epoch
+        from jarvis.audio.tts import _flush_kokoro_gpu_cache
+        _flush_kokoro_gpu_cache()
 
     def test_01_kokoro_zero_vram_cpu_execution_provider(self) -> None:
         """Verifies Kokoro-82M ONNX initializes exclusively with CPUExecutionProvider

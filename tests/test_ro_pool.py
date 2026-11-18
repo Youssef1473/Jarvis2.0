@@ -15,15 +15,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import sqlite_vec
 
 from jarvis.core.memory import MemoryManager
-from jarvis.core.memory.sqlite_base import SingleWriterActor
-from jarvis.memory.ro_pool import (
+from jarvis.core.memory.ro_pool import (
     VectorMemoryPool,
     get_ro_connection,
 )
+from jarvis.core.memory.sqlite_base import SingleWriterActor
 
 
 class TestVectorMemoryPoolSuite(unittest.IsolatedAsyncioTestCase):
     """Verifies VectorMemoryPool concurrency, mode=ro protection, and non-blocking KNN."""
+
+    @classmethod
+    def setUpClass(cls):
+        from tools.run_fast_tests import probe_loopback_available
+        probe = probe_loopback_available()
+        if not probe:
+            raise unittest.SkipTest(
+                f"ProactorEventLoop self-pipe requires loopback socketpair: {probe.detail}"
+            )
 
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()

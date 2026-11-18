@@ -8,12 +8,10 @@ Verifies:
 """
 import sqlite3
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
 from jarvis.core.memory import MemoryManager, sanitize_fts5_query
-from jarvis.core.memory.obsidian_sync import ObsidianContextSyncEngine
 
 
 class TestFTS5QuerySanitizer(unittest.TestCase):
@@ -173,79 +171,6 @@ class TestMemoryFTS5Indexing(unittest.TestCase):
         res = migrated_mem.search_facts("Youssef")
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0]["value"], "Youssef")
-
-
-class TestObsidianFTS5Indexing(unittest.TestCase):
-    """Verifies SQLite FTS5 BM25 search and tag filtering for ObsidianContextSyncEngine."""
-
-    def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.vault_dir = Path(self.temp_dir.name) / "vault"
-        self.vault_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path = Path(self.temp_dir.name) / "test_obsidian_fts5.db"
-
-        self.engine = ObsidianContextSyncEngine(
-            vault_path=self.vault_dir,
-            db_path=self.db_path,
-            sync_interval=10.0,
-        )
-
-    def tearDown(self):
-        import gc
-        try:
-            self.engine.stop(timeout=1.0)
-        except (OSError, RuntimeError):
-            pass
-        del self.engine
-        gc.collect()
-        try:
-            self.temp_dir.cleanup()
-        except (OSError, RuntimeError):
-            pass
-
-    def test_obsidian_fts5_search_and_tag_filter(self):
-        # 1. Create notes in vault
-        note1 = self.vault_dir / "AudioPipeline.md"
-        note1.write_text("""---
-title: "Kokoro Audio Architecture"
-tags: [audio, cuda, latency]
----
-# Reflex Audio
-Sub-100ms voice reflex pipeline using pinned P-Cores on Windows WASAPI.
-""", encoding="utf-8")
-
-        note2 = self.vault_dir / "MemoryFTS.md"
-        note2.write_text("""---
-title: "Episodic Memory FTS5"
-tags: [memory, sqlite, fts5]
----
-# Full Text Search
-SQLite FTS5 virtual tables provide sub-millisecond BM25 keyword recall.
-""", encoding="utf-8")
-
-        # 2. Sync to DB
-        stats = self.engine.sync_now()
-        self.assertEqual(stats.total_files, 2)
-        self.assertEqual(stats.modified_files, 2)
-
-        # Drain DB writer queue
-        while not self.engine._db_queue.empty():
-            time.sleep(0.02)
-
-        # 3. Query context using FTS5 BM25
-        results_fts = self.engine.query_context("SQLite FTS5 keyword recall", limit=5)
-        self.assertTrue(len(results_fts) >= 1)
-        self.assertEqual(results_fts[0]["note_title"], "Episodic Memory FTS5")
-        self.assertIn("sub-millisecond BM25", results_fts[0]["content"])
-
-        # 4. Query with tag filter
-        results_audio = self.engine.query_context("reflex pipeline", limit=5, tag_filter="audio")
-        self.assertEqual(len(results_audio), 1)
-        self.assertEqual(results_audio[0]["note_title"], "Kokoro Audio Architecture")
-
-        # Query with non-matching tag filter returns empty
-        results_none = self.engine.query_context("reflex pipeline", limit=5, tag_filter="unrelated_tag")
-        self.assertEqual(len(results_none), 0)
 
 
 if __name__ == "__main__":

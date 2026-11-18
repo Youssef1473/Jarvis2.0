@@ -5,6 +5,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import jarvis.skills.dev_shell
+import jarvis.skills.fs_operations
+import jarvis.skills.os_control
+import jarvis.skills.productivity
+import jarvis.skills.web_search  # noqa: F401
 from jarvis.skills.base import SkillRegistry
 
 

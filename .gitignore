@@ -94,3 +94,7 @@ graphify-out/
 # Advisor generated implementation plans
 plans/
 
+# Temporary scratch files and test binaries
+scratch/*
+!scratch/.gitkeep
+

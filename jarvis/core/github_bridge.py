@@ -14,7 +14,7 @@ from typing import Any
 import psutil
 
 from jarvis.audio.prosodic_chunker import TwoGearProsodicChunker
-from jarvis.core.stream_tool_parser import NonceGuardedStreamParser
+from jarvis.core.pipeline.streaming_tool_parser import NonceGuardedStreamParser
 
 logger = logging.getLogger("Jarvis.GitHubCopilot")
 

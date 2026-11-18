@@ -29,8 +29,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
-import json
-import os
 import sys
 import tempfile
 import threading
@@ -43,16 +41,16 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jarvis.core.memory.sqlite_base import SingleWriterActor
+from jarvis.core.pipeline.streaming_tool_parser import (
+    MAX_DISPATCHED_CALL_IDS,
+    StreamingToolCallParser,
+)
 from jarvis.core.pipeline.tool_orchestrator import ToolOrchestrator
 from jarvis.core.security_boundaries import (
     DualKeyApprovalManager,
     SecurityBoundaryViolation,
     TurnTaintTracker,
     _turn_taint_context,
-)
-from jarvis.core.streaming_tool_parser import (
-    MAX_DISPATCHED_CALL_IDS,
-    StreamingToolCallParser,
 )
 from jarvis.skills import browser_cdp as b_cdp
 from jarvis.skills import os_control as os_ctrl
@@ -291,77 +289,6 @@ class TestActionBoundAuthorizationAndHardening(unittest.TestCase):
         finally:
             SkillRegistry.unregister(outer_tool)
             SkillRegistry.unregister(inner_tool)
-
-    # =========================================================================
-    # 3. P0.C: Isolated Runner & Sandbox Response Hardening
-    # =========================================================================
-
-    def test_isolated_runner_denies_site_packages(self):
-        """Isolated runner rejects untrusted packages and site-packages access."""
-        from jarvis.core.evolution import isolated_runner
-        # 1. Verify DefaultDenyModuleFinder blocks non-allowlisted packages with ImportError
-        with self.assertRaises(ImportError) as ctx:
-            isolated_runner.DefaultDenyModuleFinder("test").find_spec("requests")
-        self.assertIn("Security Violation", str(ctx.exception))
-        self.assertIn("requests", str(ctx.exception))
-
-    def test_sandbox_response_symlink_rejection(self):
-        """SkillSandbox rejects result_file if it is a symbolic link."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            scratch = tmp_path / "scratch"
-            scratch.mkdir()
-            real_file = scratch / "real.json"
-            real_file.write_text(json.dumps({"status": "success", "result": 123}), encoding="utf-8")
-            sym_file = scratch / "result.json"
-            try:
-                os.symlink(real_file, sym_file)
-                # Verify that is_symlink is detected
-                self.assertTrue(sym_file.is_symlink())
-            except OSError:
-                # Windows developer privileges might be required for symlinks; pass if not permitted
-                pass
-
-    def test_sandbox_response_nonce_type_safety(self):
-        """SkillSandbox response validation rejects non-string nonces without unhandled exceptions."""
-        from jarvis.core.evolution.sandbox import SkillSandbox
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            code_file = tmp_path / "test_nonce.py"
-            code_file.write_text("def test(): return 1", encoding="utf-8")
-            meta_file = tmp_path / "test_nonce.meta.json"
-            code_hash = hashlib.sha256(b"def test(): return 1").hexdigest()
-            meta_file.write_text(json.dumps({"sha256": code_hash, "hmac": "dummy"}), encoding="utf-8")
-
-            # Non-string nonces: integer, list, dict, None, boolean
-            invalid_nonces = [12345, None, ["nonce"], {"nonce": "abc"}, True]
-            for bad_nonce in invalid_nonces:
-                class FakeProcMgr:
-                    def __init__(self, cmd, *args, nonce_val=bad_nonce, **kwargs):
-                        self.cmd = cmd
-                        self.nonce_val = nonce_val
-
-                    def __enter__(self):
-                        run_scratch = Path(self.cmd[self.cmd.index("--scratch-dir") + 1])
-                        result_file = run_scratch / "result.json"
-                        result_file.write_text(json.dumps({"nonce": self.nonce_val, "status": "success", "result": 42}), encoding="utf-8")
-                        class FakeProc:
-                            returncode = 0
-                            def communicate(self, *a, **k):
-                                return ("", "")
-                        return FakeProc()
-
-                    def __exit__(self, *a):
-                        pass
-
-                    def terminate_tree(self):
-                        pass
-
-                with patch("jarvis.core.evolution.sandbox.CUSTOM_SKILLS_DIR", tmp_path), \
-                     patch("jarvis.core.evolution.sandbox.verify_custom_skill_signature", return_value=True), \
-                     patch("jarvis.core.evolution.sandbox.SandboxedProcess", FakeProcMgr):
-                    res = SkillSandbox.execute_sandboxed_custom_skill("test_nonce", "test", {})
-                    self.assertEqual(res, "Security Violation: Nonce verification failed for child response.")
 
     # =========================================================================
     # 4. P1: Browser CDP Managed Isolation
