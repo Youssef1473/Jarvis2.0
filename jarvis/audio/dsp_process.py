@@ -126,6 +126,8 @@ def _elevate_companion_process(pcore_mask: int = 0xFF) -> None:
     try:
         from ctypes import wintypes
         k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.argtypes = []
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
         curr_proc = k32.GetCurrentProcess()
         k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         k32.SetPriorityClass.restype = wintypes.BOOL

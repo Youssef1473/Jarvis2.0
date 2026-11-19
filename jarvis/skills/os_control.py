@@ -47,8 +47,11 @@ def _open_process_handle(pid: int) -> int | None:
         return None
     with contextlib.suppress(Exception):
         import ctypes
+        from ctypes import wintypes
         kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(PROCESS_ACCESS_RIGHTS, False, ctypes.c_ulong(pid))
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        handle = kernel32.OpenProcess(PROCESS_ACCESS_RIGHTS, False, wintypes.DWORD(pid))
         if handle and handle != 0 and handle != -1:
             return int(handle)
     return None
@@ -59,8 +62,11 @@ def _close_process_handle(handle: int) -> None:
         return
     with contextlib.suppress(Exception):
         import ctypes
+        from ctypes import wintypes
         kernel32 = ctypes.windll.kernel32
-        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle(wintypes.HANDLE(handle))
 
 
 class ProcessHandleRegistry:
@@ -309,6 +315,11 @@ def _ensure_desktop_access():
                     user32.SetProcessDPIAware()
                 except (OSError, AttributeError) as dpi_err:
                     logger.debug("SetProcessDPIAware fallback failed: %s", dpi_err)
+            from ctypes import wintypes
+            user32.OpenDesktopW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            user32.OpenDesktopW.restype = wintypes.HANDLE
+            user32.SetThreadDesktop.argtypes = [wintypes.HANDLE]
+            user32.SetThreadDesktop.restype = wintypes.BOOL
             hdesk = user32.OpenInputDesktop(0, False, 0x01FF)
             if not hdesk:
                 hdesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)

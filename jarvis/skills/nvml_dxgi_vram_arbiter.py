@@ -406,13 +406,43 @@ def execute_staged_shedding(stage: int = 1) -> list[str]:
     return actions
 
 
-def classify_pressure_tier(headroom_mb: float) -> VramPressureTier:
+def resolve_pressure_watermarks(budget_mb: float) -> tuple[float, float, float]:
+    """Computes calibrated or proportional VRAM pressure watermarks in MiB.
+
+    Args:
+        budget_mb: Total VRAM capacity or WDDM budget in MiB.
+
+    Returns:
+        (nominal_min_mb, elevated_min_mb, critical_min_mb)
+    """
+    if budget_mb <= 4096.0:
+        return (WATERMARK_NOMINAL_MB, WATERMARK_ELEVATED_MB, WATERMARK_CRITICAL_MB)
+
+    nominal_min_mb = max(1200.0, min(budget_mb * 0.25, 3072.0))
+    elevated_min_mb = max(700.0, min(budget_mb * 0.14, 1536.0))
+    critical_min_mb = max(350.0, min(budget_mb * 0.07, 768.0))
+    return (nominal_min_mb, elevated_min_mb, critical_min_mb)
+
+
+def classify_pressure_tier(
+    headroom_mb: float,
+    total_budget_mb: float | None = None,
+) -> VramPressureTier:
     """Classifies effective VRAM headroom into a deterministic pressure tier."""
-    if headroom_mb >= WATERMARK_NOMINAL_MB:
+    if total_budget_mb is not None:
+        nominal, elevated, critical = resolve_pressure_watermarks(total_budget_mb)
+    else:
+        nominal, elevated, critical = (
+            WATERMARK_NOMINAL_MB,
+            WATERMARK_ELEVATED_MB,
+            WATERMARK_CRITICAL_MB,
+        )
+
+    if headroom_mb >= nominal:
         return VramPressureTier.NOMINAL
-    if headroom_mb >= WATERMARK_ELEVATED_MB:
+    if headroom_mb >= elevated:
         return VramPressureTier.ELEVATED
-    if headroom_mb >= WATERMARK_CRITICAL_MB:
+    if headroom_mb >= critical:
         return VramPressureTier.CRITICAL
     return VramPressureTier.OOM_GUARD
 
@@ -428,7 +458,7 @@ def get_vram_telemetry() -> VramPressureTelemetry:
     if nvml is None:
         if dxgi_info is not None:
             dxgi_headroom = max(0.0, dxgi_budget_mb - dxgi_usage_mb)
-            tier = classify_pressure_tier(dxgi_headroom)
+            tier = classify_pressure_tier(dxgi_headroom, total_budget_mb=dxgi_budget_mb)
             return VramPressureTelemetry(
                 status="ok",
                 total_mb=dxgi_budget_mb,
@@ -532,7 +562,7 @@ def get_vram_telemetry() -> VramPressureTelemetry:
         else:
             effective_headroom = free_mb
 
-        tier = classify_pressure_tier(effective_headroom)
+        tier = classify_pressure_tier(effective_headroom, total_budget_mb=max(total_mb, dxgi_budget_mb))
 
         return VramPressureTelemetry(
             status="ok",
@@ -725,5 +755,6 @@ __all__ = [
     "register_vram_shed_hook",
     "request_vram_budget",
     "reset_shed_hooks",
+    "resolve_pressure_watermarks",
     "unregister_vram_shed_hook",
 ]

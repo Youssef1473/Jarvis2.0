@@ -117,6 +117,111 @@ class TestAudioAffinity(unittest.TestCase):
             self.assertIsNone(elevate_to_pro_audio_mmcss())
             self.assertFalse(revert_mmcss(123))
 
+    def test_alder_lake_4p_8e_exact_parity(self):
+        """Verifies exact bit-for-bit parity with Alder Lake i5-12500H topology."""
+        from jarvis.core.win32_affinity import compute_topology_from_cores
+
+        # 4 P-cores (SMT, eff=1) + 8 E-cores (non-SMT, eff=0)
+        alder_lake_cores = [
+            (0x0003, 1),
+            (0x000C, 1),
+            (0x0030, 1),
+            (0x00C0, 1),
+            (0x0100, 0),
+            (0x0200, 0),
+            (0x0400, 0),
+            (0x0800, 0),
+            (0x1000, 0),
+            (0x2000, 0),
+            (0x4000, 0),
+            (0x8000, 0),
+        ]
+        profile = compute_topology_from_cores(alder_lake_cores)
+        self.assertTrue(profile.is_hybrid)
+        self.assertEqual(profile.logical_cpu_count, 16)
+        self.assertEqual(profile.playback_mask, 0x0003)
+        self.assertEqual(profile.wakeword_mask, 0x0054)
+        self.assertEqual(profile.compute_mask, 0x00FC)
+        self.assertEqual(profile.background_mask, 0xFF00)
+        self.assertEqual(profile.playback_mask & profile.wakeword_mask, 0)
+        self.assertEqual(profile.playback_mask & profile.compute_mask, 0)
+        self.assertEqual(profile.playback_mask & profile.background_mask, 0)
+        self.assertEqual(profile.compute_mask & profile.background_mask, 0)
+
+    def test_homogeneous_8core_ryzen_topology(self):
+        """Verifies homogeneous 8-core / 16-thread CPU partitioning (e.g. AMD Ryzen 7)."""
+        from jarvis.core.win32_affinity import compute_topology_from_cores
+
+        ryzen_cores = [
+            (0x0003, 0),
+            (0x000C, 0),
+            (0x0030, 0),
+            (0x00C0, 0),
+            (0x0300, 0),
+            (0x0C00, 0),
+            (0x3000, 0),
+            (0xC000, 0),
+        ]
+        profile = compute_topology_from_cores(ryzen_cores)
+        self.assertFalse(profile.is_hybrid)
+        self.assertEqual(profile.logical_cpu_count, 16)
+        self.assertNotEqual(profile.playback_mask, 0)
+        self.assertNotEqual(profile.wakeword_mask, 0)
+        self.assertNotEqual(profile.compute_mask, 0)
+        self.assertNotEqual(profile.background_mask, 0)
+        self.assertEqual(profile.playback_mask & profile.wakeword_mask, 0)
+        self.assertEqual(profile.playback_mask & profile.compute_mask, 0)
+        self.assertEqual(profile.playback_mask, 0x0003)
+        self.assertEqual(profile.wakeword_mask, 0x0054)
+        self.assertEqual(profile.compute_mask, 0xFFFC)
+        self.assertEqual(profile.background_mask, 0xFF00)
+
+    def test_small_vm_core_fallback(self):
+        """Verifies graceful fallback on 1-core and 2-core VMs with non-zero masks."""
+        from jarvis.core.win32_affinity import compute_topology_from_cores
+
+        # 2-core non-SMT VM
+        vm_2c = [(0x0001, 0), (0x0002, 0)]
+        p2 = compute_topology_from_cores(vm_2c)
+        self.assertFalse(p2.is_hybrid)
+        self.assertEqual(p2.logical_cpu_count, 2)
+        self.assertGreater(p2.playback_mask, 0)
+        self.assertGreater(p2.wakeword_mask, 0)
+        self.assertGreater(p2.compute_mask, 0)
+        self.assertGreater(p2.background_mask, 0)
+        self.assertEqual(p2.playback_mask & p2.wakeword_mask, 0)
+
+        # 1-core VM
+        vm_1c = [(0x0001, 0)]
+        p1 = compute_topology_from_cores(vm_1c)
+        self.assertFalse(p1.is_hybrid)
+        self.assertEqual(p1.logical_cpu_count, 1)
+        self.assertGreater(p1.playback_mask, 0)
+        self.assertGreater(p1.wakeword_mask, 0)
+        self.assertGreater(p1.compute_mask, 0)
+        self.assertGreater(p1.background_mask, 0)
+
+    def test_win32_topology_failure_and_non_windows_fallback(self):
+        """Verifies graceful fallback when Win32 discovery fails or runs on non-Windows."""
+        from jarvis.core.win32_affinity import discover_cpu_topology
+
+        with patch("sys.platform", "linux"):
+            p_linux = discover_cpu_topology(force_refresh=True)
+            self.assertEqual(p_linux.source, "non_windows")
+            self.assertGreater(p_linux.playback_mask, 0)
+            self.assertGreater(p_linux.wakeword_mask, 0)
+            self.assertGreater(p_linux.compute_mask, 0)
+            self.assertGreater(p_linux.background_mask, 0)
+
+        with patch("sys.platform", "win32"), patch("ctypes.WinDLL", side_effect=OSError("DLL load failed")):
+            p_err = discover_cpu_topology(force_refresh=True)
+            self.assertEqual(p_err.source, "fallback_count")
+            self.assertGreater(p_err.playback_mask, 0)
+            self.assertGreater(p_err.wakeword_mask, 0)
+
+        # Restore cached topology for subsequent tests
+        discover_cpu_topology(force_refresh=True)
+
 
 if __name__ == "__main__":
     unittest.main()

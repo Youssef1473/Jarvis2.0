@@ -13,7 +13,11 @@ import logging
 import os
 import sys
 import threading
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger("Jarvis.Hardware.Affinity")
 
@@ -41,6 +45,293 @@ MASK_ECORE_BACKGROUND = 0xFF00     # Logical CPUs 8-15 (All 8 E-Cores: SQLite, U
 ThreadPowerThrottling = 4
 THREAD_POWER_THROTTLING_CURRENT_VERSION = 1
 THREAD_POWER_THROTTLING_EXECUTION_SPEED = 0x1
+
+
+@dataclass(frozen=True, slots=True)
+class CpuTopologyProfile:
+    """Hardware CPU topology discovery profile for thread affinity scheduling."""
+
+    is_hybrid: bool
+    logical_cpu_count: int
+    playback_mask: int
+    wakeword_mask: int
+    compute_mask: int
+    background_mask: int
+    source: str
+
+
+def compute_topology_from_cores(
+    cores: Sequence[tuple[int, int]],
+    source: str = "win32_topology",
+) -> CpuTopologyProfile:
+    """Computes pure affinity bitmasks from a sequence of (core_mask, efficiency_class) tuples."""
+    if not cores:
+        return _fallback_topology_from_count(os.cpu_count() or 1, source=source)
+
+    logical_cpu_count = sum(m.bit_count() for m, _ in cores)
+    if logical_cpu_count <= 0:
+        logical_cpu_count = os.cpu_count() or 1
+
+    distinct_eff = sorted({eff for _, eff in cores})
+    is_hybrid = len(distinct_eff) > 1
+
+    if is_hybrid:
+        p_cores = [m for m, eff in cores if eff == max(distinct_eff)]
+        e_cores = [m for m, eff in cores if eff < max(distinct_eff)]
+
+        playback_mask = p_cores[0] if p_cores else 1
+        rem_p = p_cores[1:]
+        if rem_p:
+            wakeword_mask = 0
+            for m in rem_p:
+                wakeword_mask |= (m & -m)
+            compute_mask = 0
+            for m in rem_p:
+                compute_mask |= m
+        else:
+            wakeword_mask = playback_mask
+            compute_mask = playback_mask
+
+        background_mask = 0
+        for m in e_cores:
+            background_mask |= m
+        if background_mask == 0:
+            background_mask = compute_mask or playback_mask
+
+        return CpuTopologyProfile(
+            is_hybrid=True,
+            logical_cpu_count=logical_cpu_count,
+            playback_mask=playback_mask,
+            wakeword_mask=wakeword_mask,
+            compute_mask=compute_mask,
+            background_mask=background_mask,
+            source=source,
+        )
+
+    # Homogeneous CPU topology
+    core_masks = [m for m, _ in cores]
+    n_cores = len(core_masks)
+    playback_mask = core_masks[0] if core_masks else 1
+
+    if n_cores >= 4:
+        lower_half = core_masks[: n_cores // 2]
+        upper_half = core_masks[n_cores // 2 :]
+        rem_lower = lower_half[1:]
+
+        wakeword_mask = 0
+        for m in rem_lower:
+            wakeword_mask |= (m & -m)
+        if wakeword_mask == 0:
+            wakeword_mask = playback_mask
+
+        compute_mask = 0
+        for m in core_masks[1:]:
+            compute_mask |= m
+        if compute_mask == 0:
+            compute_mask = playback_mask
+
+        background_mask = 0
+        for m in upper_half:
+            background_mask |= m
+        if background_mask == 0:
+            background_mask = compute_mask
+    elif n_cores >= 2:
+        rem_cores = core_masks[1:]
+        wakeword_mask = 0
+        for m in rem_cores:
+            wakeword_mask |= (m & -m)
+        if wakeword_mask == 0:
+            wakeword_mask = playback_mask
+
+        compute_mask = 0
+        for m in rem_cores:
+            compute_mask |= m
+        if compute_mask == 0:
+            compute_mask = playback_mask
+
+        background_mask = compute_mask
+    else:
+        wakeword_mask = playback_mask
+        compute_mask = playback_mask
+        background_mask = playback_mask
+
+    return CpuTopologyProfile(
+        is_hybrid=False,
+        logical_cpu_count=logical_cpu_count,
+        playback_mask=playback_mask,
+        wakeword_mask=wakeword_mask,
+        compute_mask=compute_mask,
+        background_mask=background_mask,
+        source=source,
+    )
+
+
+def _fallback_topology_from_count(logical_cpu_count: int, source: str = "fallback_count") -> CpuTopologyProfile:
+    """Provides safe, deterministic fallback affinity partitions derived from logical core count."""
+    count = max(1, logical_cpu_count)
+    if count >= 16:
+        return CpuTopologyProfile(
+            is_hybrid=True,
+            logical_cpu_count=count,
+            playback_mask=0x0003,
+            wakeword_mask=0x0054,
+            compute_mask=0x00FC,
+            background_mask=0xFF00,
+            source=source,
+        )
+    if count >= 12:
+        return CpuTopologyProfile(
+            is_hybrid=True,
+            logical_cpu_count=count,
+            playback_mask=0x0003,
+            wakeword_mask=0x0054,
+            compute_mask=0x00FC,
+            background_mask=0x0F00,
+            source=source,
+        )
+    if count >= 8:
+        half = count // 2
+        bg = ((1 << half) - 1) << half
+        return CpuTopologyProfile(
+            is_hybrid=False,
+            logical_cpu_count=count,
+            playback_mask=0x0003,
+            wakeword_mask=0x0054,
+            compute_mask=0x00FC,
+            background_mask=bg if bg != 0 else 0xFF00,
+            source=source,
+        )
+    if count >= 4:
+        return CpuTopologyProfile(
+            is_hybrid=False,
+            logical_cpu_count=count,
+            playback_mask=0x0003,
+            wakeword_mask=0x0004,
+            compute_mask=0x000C,
+            background_mask=0x000C,
+            source=source,
+        )
+    if count >= 2:
+        return CpuTopologyProfile(
+            is_hybrid=False,
+            logical_cpu_count=count,
+            playback_mask=0x0001,
+            wakeword_mask=0x0002,
+            compute_mask=0x0002,
+            background_mask=0x0002,
+            source=source,
+        )
+    return CpuTopologyProfile(
+        is_hybrid=False,
+        logical_cpu_count=count,
+        playback_mask=0x0001,
+        wakeword_mask=0x0001,
+        compute_mask=0x0001,
+        background_mask=0x0001,
+        source=source,
+    )
+
+
+def _discover_cpu_topology_impl() -> CpuTopologyProfile:
+    """Discovers CPU topology using Win32 kernel32.GetLogicalProcessorInformationEx."""
+    if sys.platform != "win32":
+        return _fallback_topology_from_count(os.cpu_count() or 1, source="non_windows")
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if not hasattr(k32, "GetLogicalProcessorInformationEx"):
+            return _fallback_topology_from_count(os.cpu_count() or 1, source="fallback_count")
+
+        k32.GetLogicalProcessorInformationEx.argtypes = [
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        k32.GetLogicalProcessorInformationEx.restype = wintypes.BOOL
+
+        relation_processor_core = 0
+        buf_len = wintypes.DWORD(0)
+        k32.GetLogicalProcessorInformationEx(relation_processor_core, None, ctypes.byref(buf_len))
+        if buf_len.value == 0:
+            return _fallback_topology_from_count(os.cpu_count() or 1, source="fallback_count")
+
+        buf = ctypes.create_string_buffer(buf_len.value)
+        ret = k32.GetLogicalProcessorInformationEx(relation_processor_core, buf, ctypes.byref(buf_len))
+        if not ret:
+            return _fallback_topology_from_count(os.cpu_count() or 1, source="fallback_count")
+
+        offset = 0
+        raw_cores: list[tuple[int, int]] = []
+        while offset < buf_len.value:
+            rel = int.from_bytes(buf[offset : offset + 4], "little")
+            size = int.from_bytes(buf[offset + 4 : offset + 8], "little")
+            if size <= 0:
+                break
+            if rel == relation_processor_core:
+                eff = buf[offset + 9]
+                mask = int.from_bytes(buf[offset + 32 : offset + 40], "little")
+                raw_cores.append((mask, eff))
+            offset += size
+
+        if not raw_cores:
+            return _fallback_topology_from_count(os.cpu_count() or 1, source="fallback_count")
+
+        return compute_topology_from_cores(raw_cores, source="win32_topology")
+    except (OSError, AttributeError, RuntimeError) as e:
+        logger.debug("Failed dynamic Win32 CPU topology discovery, using fallback: %s", e)
+        return _fallback_topology_from_count(os.cpu_count() or 1, source="fallback_count")
+
+
+_TOPOLOGY_LOCK = threading.Lock()
+_CACHED_TOPOLOGY: CpuTopologyProfile | None = None
+
+
+def discover_cpu_topology(force_refresh: bool = False) -> CpuTopologyProfile:
+    """Discovers CPU topology via Win32 GetLogicalProcessorInformationEx or fallback, cached safely."""
+    global _CACHED_TOPOLOGY
+    if not force_refresh and _CACHED_TOPOLOGY is not None:
+        return _CACHED_TOPOLOGY
+    with _TOPOLOGY_LOCK:
+        if not force_refresh and _CACHED_TOPOLOGY is not None:
+            return _CACHED_TOPOLOGY
+        profile = _discover_cpu_topology_impl()
+        _CACHED_TOPOLOGY = profile
+        return profile
+
+
+def get_cpu_topology_profile() -> CpuTopologyProfile:
+    """Returns the cached or newly discovered system CPU topology profile."""
+    return discover_cpu_topology()
+
+
+def get_playback_affinity_mask() -> int:
+    """Returns the exclusive Physical Core 0 SMT playback affinity mask."""
+    curr = os.cpu_count() or 1
+    prof = discover_cpu_topology()
+    if curr != prof.logical_cpu_count:
+        return _fallback_topology_from_count(curr, source="fallback_count").playback_mask
+    return prof.playback_mask
+
+
+def get_compute_affinity_mask() -> int:
+    """Returns affinity mask for high-performance compute P-Cores excluding Core 0."""
+    curr = os.cpu_count() or 1
+    prof = discover_cpu_topology()
+    if curr != prof.logical_cpu_count:
+        return _fallback_topology_from_count(curr, source="fallback_count").compute_mask
+    return prof.compute_mask
+
+
+def get_background_affinity_mask() -> int:
+    """Returns affinity mask for background / E-Cores."""
+    curr = os.cpu_count() or 1
+    prof = discover_cpu_topology()
+    if curr != prof.logical_cpu_count:
+        return _fallback_topology_from_count(curr, source="fallback_count").background_mask
+    return prof.background_mask
 
 if sys.platform == "win32":
     import ctypes
@@ -81,27 +372,16 @@ def get_physical_pcore_mask() -> int:
 
 def get_wakeword_affinity_mask() -> int:
     """Calculates affinity bitmask selecting physical P-cores excluding P-Core 0 (0x0003)."""
-    logical_cpus = os.cpu_count() or 1
-    if logical_cpus >= 8:
-        return MASK_PCORE_WAKEWORD  # 0x0054 (Logical CPUs 2, 4, 6)
-    elif logical_cpus >= 4:
-        return 0x04  # Logical CPU 2 (avoiding CPU 0/1)
-    else:
-        return (1 << logical_cpus) - 1
+    curr = os.cpu_count() or 1
+    prof = discover_cpu_topology()
+    if curr != prof.logical_cpu_count:
+        return _fallback_topology_from_count(curr, source="fallback_count").wakeword_mask
+    return prof.wakeword_mask
 
 
 def get_ecore_affinity_mask() -> int:
     """Calculates affinity mask for Intel/AMD Efficient (E) cores or upper core pool."""
-    logical_cpus = os.cpu_count() or 1
-    if logical_cpus >= 16:
-        return 0xFF00
-    elif logical_cpus >= 12:
-        return 0x0F00
-    elif logical_cpus > 4:
-        half = logical_cpus // 2
-        return ((1 << half) - 1) << half
-    else:
-        return (1 << logical_cpus) - 1
+    return get_background_affinity_mask()
 
 
 def disable_thread_power_throttling(thread_handle: int | None = None) -> bool:
@@ -313,10 +593,10 @@ def elevate_to_pro_audio_mmcss(task_name: str = "Pro Audio") -> int | None:
 
 
 def elevate_audio_thread_mmcss(task_name: str = "Pro Audio") -> int | None:
-    """Alias for elevate_to_pro_audio_mmcss with Alder Lake P-Core 0 pinning."""
+    """Alias for elevate_to_pro_audio_mmcss with dynamic Physical Core 0 pinning."""
     if sys.platform != "win32":
         return None
-    pin_current_thread_to_mask(MASK_PCORE_AUDIO_ISOLATED, THREAD_PRIORITY_TIME_CRITICAL)
+    pin_current_thread_to_mask(get_playback_affinity_mask(), THREAD_PRIORITY_TIME_CRITICAL)
     return elevate_to_pro_audio_mmcss(task_name)
 
 
@@ -410,7 +690,7 @@ def init_speculative_worker_thread() -> None:
 
 def configure_ecore_worker_thread(coinit_sta: bool = False, tag: str = "EcoreWorker") -> None:
     """Initializer for background ThreadPoolExecutor threads to pin them to E-Cores with EcoQoS."""
-    pin_current_thread_to_mask(MASK_ECORE_BACKGROUND, THREAD_PRIORITY_NORMAL, eco_qos=True)
+    pin_current_thread_to_mask(get_background_affinity_mask(), THREAD_PRIORITY_NORMAL, eco_qos=True)
     if coinit_sta and sys.platform == "win32":
         try:
             import ctypes

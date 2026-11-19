@@ -216,6 +216,10 @@ class AntigravityDaemon:
                 import ctypes
                 from ctypes import wintypes
                 kernel32 = ctypes.windll.kernel32
+                kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+                kernel32.OpenProcess.restype = wintypes.HANDLE
+                kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+                kernel32.CloseHandle.restype = wintypes.BOOL
                 SYNCHRONIZE = 0x00100000
                 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
                 h_proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, wintypes.DWORD(pid))
