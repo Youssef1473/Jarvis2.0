@@ -145,18 +145,18 @@ class TestMotorCadenceTrackerSuite(unittest.TestCase):
         u32 = ctypes.windll.user32
 
         # Verify 64-bit argtypes and restype
-        self.assertEqual(k32.GetModuleHandleW.argtypes, [wintypes.LPCWSTR])
+        self.assertEqual(list(k32.GetModuleHandleW.argtypes), [wintypes.LPCWSTR])
         self.assertEqual(k32.GetModuleHandleW.restype, wintypes.HMODULE)
-        self.assertEqual(u32.SetWindowsHookExW.argtypes, [
+        self.assertEqual(list(u32.SetWindowsHookExW.argtypes), [
             ctypes.c_int,
             cadence_tracker.HOOKPROC,
             wintypes.HINSTANCE,
             wintypes.DWORD,
         ])
         self.assertEqual(u32.SetWindowsHookExW.restype, wintypes.HHOOK)
-        self.assertEqual(u32.UnhookWindowsHookEx.argtypes, [wintypes.HHOOK])
+        self.assertEqual(list(u32.UnhookWindowsHookEx.argtypes), [wintypes.HHOOK])
         self.assertEqual(u32.UnhookWindowsHookEx.restype, wintypes.BOOL)
-        self.assertEqual(u32.CallNextHookEx.argtypes, [
+        self.assertEqual(list(u32.CallNextHookEx.argtypes), [
             wintypes.HHOOK,
             ctypes.c_int,
             wintypes.WPARAM,
