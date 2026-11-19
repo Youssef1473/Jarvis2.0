@@ -5066,3 +5066,58 @@ Following independent engineering reviews of the Context B ingestion audit, the 
 - `python -m pytest tests/test_antigravity_integration.py -v` -> **20 passed, 3 skipped in 10.97s (Exit code: 0)**
 - `python -m pytest tests/test_phase1_flow_state.py -v` -> **8 passed in 0.35s (Exit code: 0)**
 - `python -m pytest tests/test_plugin_integrations.py -v` -> **6 passed in 0.52s (Exit code: 0)**
+
+
+---
+
+## Session 2026-11-19.02: MMCSS Handle Teardown Hardening & ENG-OS-03C8 Host Browser Integration Unfreeze
+
+- **Timestamp:** 2026-11-19T12:15:00+01:00 (CET)
+- **Agent Model & Mode:** Gemini 3.8 Flash (High Reasoning) via Antigravity CLI
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Starting Git HEAD SHA:** `7836a4caddf4074be52a266b061d92b0f81ee33d`
+- **Ending Git HEAD SHA:** `acec4c1143c7b88950d244fbe0316492b45cf561`
+- **Active Branch:** `feat/unfreeze-browser-integration-nodes`
+- **Session Objective:** (1) Harden MMCSS thread teardown across all worker lifecycles, eliminate linear `+1 handle/cycle` drift, author unit regression tests, and land follow-up PR #66; (2) Empirically execute and unfreeze all 9 host Chromium/Playwright integration nodes from milestone `ENG-OS-03C8` with zero `--no-sandbox` flags and zero `--remote-allow-origins=*` wildcards; (3) Verify pre-flight SQLite integrity and WAL checkpoint on `data/jarvis_memory.db`.
+
+### Summary of Actions & Deliverables
+1. **MMCSS Worker Lifecycle Teardown Hardening (PR #66):**
+   - **`jarvis/core/win32_affinity.py`:** Added `scoped_mmcss` (aliased to `mmcss_scope`) RAII context manager; implemented thread-local handle deduplication in `elevate_to_pro_audio_mmcss`; guarded `revert_mmcss` and `revert_current_thread_mmcss` against boolean `True` returns (`isinstance(h, bool)`); ensured `_THREAD_LOCAL_MMCSS.handle = None` reset prevents double-reversion on nested/reused threads.
+   - **`jarvis/audio/tts.py`:** Top-level import `revert_mmcss`; wrapped `_playback_worker` in `try...finally: if h_mmcss and not isinstance(h_mmcss, bool): revert_mmcss(h_mmcss)`; narrowed exception suppression in `_do_stop()` to `(queue.Full, queue.Empty)`.
+   - **`jarvis/audio/wake_word.py`:** Top-level import `revert_current_thread_mmcss`; wrapped `_worker_loop` in `try...finally: revert_current_thread_mmcss()`.
+   - **`jarvis/audio/speech_capture.py`:** Top-level import `revert_current_thread_mmcss`; wrapped `record_and_process_vad` in `try...finally: revert_current_thread_mmcss()`.
+   - **`jarvis/core/orchestrator.py`:** Top-level import `revert_current_thread_mmcss`; wrapped `_process_audio` in `try...finally: revert_current_thread_mmcss()`.
+   - **`tests/test_tts_lifecycle_hardening.py`:** Added unit tests verifying normal worker exit revert, exception-path worker revert, and boolean `True` guard.
+   - **`data/test_classification_manifest.json`:** Re-exported manifest to account for all 2,354 test nodes with 0 unclassified and 0 orphans.
+   - **PR #66:** Committed (`e557751`), pushed, PR created, CI passed (Fast Parallel Suite + Security Gate), and merged via `gh pr merge 66 --merge --delete-branch` to `main` at `acec4c1`.
+2. **ENG-OS-03C8 Host Browser Integration Unfreeze (9 Nodes):**
+   - **Playwright Node Driver Diagnosis & Restoration:** Investigated host `FileNotFoundError` during Playwright initialization. Discovered that the external virtual environment (`C:\Users\Youssef\Projects\.venv\Lib\site-packages\playwright\driver`) was missing the bundled `node.exe` executable required by `compute_driver_executable()`. Restored `node.exe` from system Node.js (`v26.13.1` at `C:\Program Files\nodejs\node.exe`) directly into `playwright\driver\node.exe`. Documented this operational dependency for future virtualenv rebuilds (or configuring `PLAYWRIGHT_NODEJS_PATH`).
+   - Empirically executed all 9 live host Chromium/Playwright integration nodes (`TestBrowserAgentLiveChromiumSSRF` 3/3 nodes, `TestLiveChromiumNetworkGuards` 6/6 nodes) on host Medium integrity:
+     - 3 Playwright SSRF nodes passed in 3.99s with `chromium_sandbox=True` (zero `--no-sandbox` flags).
+     - 6 CDP network boundary nodes passed in 3.08s with `--remote-debugging-address=127.0.0.1` and explicit loopback origins (zero `--remote-allow-origins=*` wildcards).
+     - Full browser test surface (52/52 tests across `test_browser_agent.py` and `test_browser_network_boundaries.py`) passed cleanly in 8.40s.
+3. **Database Pre-Flight Verification (`data/jarvis_memory.db`):**
+   - Verified `PRAGMA integrity_check` -> `ok`.
+   - Verified size: `10,424,320` bytes (~10.4 MB).
+   - Verified `PRAGMA foreign_key_check` -> `0` violations.
+   - Verified `PRAGMA wal_checkpoint(PASSIVE)` -> `(0, 0, 0)` (fully checkpointed, zero backlogged frames).
+4. **Live Daemon Startup Diagnostics & Win32 Hook ABI Hardening:**
+   - Evaluated live daemon startup output on host hardware: 11-second clean boot, `MicRouterWorker` active on affinity `0x54` with `MMCSS=True` and `EcoQoSDisabled=True` (confirming Physical Core 0 isolation on Alder Lake i5-12500H), CUDA `faster-whisper` (`small.en`, `int8_float16`) loaded on RTX 3050, `bge-small-en-v1.5` INT8 embeddings online on CPU, and Holographic HUD WebSocket online on loopback port `20129`.
+   - Diagnosed Win32 Error 126 (`ERROR_MOD_NOT_FOUND`) during `SetWindowsHookExW(WH_KEYBOARD_LL)` in `jarvis/core/cognition/cadence_tracker.py`. Root cause: 64-bit truncated module handle returned by `GetModuleHandleW(None)` due to missing `ctypes` function prototypes.
+   - Fixed `jarvis/core/cognition/cadence_tracker.py` by declaring explicit 64-bit `ctypes` prototypes (`wintypes.HMODULE`, `wintypes.HHOOK`, `wintypes.HINSTANCE`, `wintypes.WPARAM`, `wintypes.LPARAM`) for `GetModuleHandleW`, `SetWindowsHookExW`, `UnhookWindowsHookEx`, `CallNextHookEx`, and `PostThreadMessageW`.
+   - Wrapped message loop in `try...finally` ensuring deterministic `UnhookWindowsHookEx` cleanup.
+   - Added unit test in `tests/test_motor_cadence.py` (`test_win32_64bit_abi_prototypes_and_hook_lifecycle`) and verified live host hook installation and teardown with zero errors (`hook: 841090369`, `err: 0`).
+   - Re-exported test classification manifest to register all `2,355` test nodes (1,452 Tier 1) with 0 unclassified and 0 orphans.
+5. **HUD Port Documentation Correction & Deferred Turn Walkthrough Note:**
+   - Corrected stale `port 8000` documentation in `docs/architecture/PROJECT_MAP.md` (lines 12 and 60) to canonical loopback port `20129`.
+   - Explicitly recorded that interactive spoken turns (Turns 1–4) were deferred for Option B autonomous completion and PR closure.
+
+### Verification Commands & Exact Outputs
+- `python tools/lint.py check tools/ jarvis/ tests/` -> **Exit code: 0** (All checks passed)
+- `python tools/diagnostics.py check jarvis/ tools/` -> **Exit code: 0** (ALL DIAGNOSTICS PASSED)
+- `python tools/test_classifier.py --check-orphaned` -> **PASSED: Manifest integrity confirmed. 0 orphans, 0 duplicates, 2355 nodes verified. Exit code: 0**
+- `python tools/run_fast_tests.py --security` -> **Passed: 207, Failed: 0, Errors: 0, Skipped: 1 (Exit code: 0)**
+- `python -m pytest tests/test_motor_cadence.py -v` -> **8 passed in 0.14s (Exit code: 0)**
+- `python -m pytest tests/test_browser_agent.py tests/test_browser_network_boundaries.py -k "TestBrowserAgentLiveChromiumSSRF or TestLiveChromiumNetworkGuards" -v` -> **9 passed, 43 deselected in 5.97s (Exit code: 0)**
+- `python -m pytest tests/test_browser_agent.py tests/test_browser_network_boundaries.py -v` -> **52 passed in 8.40s (Exit code: 0)**
+- `python -c "import sqlite3, os; c=sqlite3.connect('data/jarvis_memory.db'); print('integrity:', c.execute('PRAGMA integrity_check').fetchone()[0], 'bytes:', os.path.getsize('data/jarvis_memory.db'), 'fk_violations:', len(c.execute('PRAGMA foreign_key_check').fetchall()), 'wal:', c.execute('PRAGMA wal_checkpoint(PASSIVE)').fetchone())"` -> **integrity: ok bytes: 10424320 fk_violations: 0 wal: (0, 0, 0) (Exit code: 0)**

@@ -56,6 +56,45 @@ if sys.platform == "win32":
         wintypes.WPARAM,
         wintypes.LPARAM,
     )
+
+    def _setup_cadence_win32_abi() -> None:
+        """Configures explicit 64-bit ctypes prototypes for Win32 hook and module APIs."""
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+        kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+        kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+        kernel32.GetLastError.restype = wintypes.DWORD
+
+        user32.SetWindowsHookExW.argtypes = [
+            ctypes.c_int,
+            HOOKPROC,
+            wintypes.HINSTANCE,
+            wintypes.DWORD,
+        ]
+        user32.SetWindowsHookExW.restype = wintypes.HHOOK
+
+        user32.CallNextHookEx.argtypes = [
+            wintypes.HHOOK,
+            ctypes.c_int,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        user32.CallNextHookEx.restype = wintypes.LPARAM
+
+        user32.UnhookWindowsHookEx.argtypes = [wintypes.HHOOK]
+        user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+
+        user32.PostThreadMessageW.argtypes = [
+            wintypes.DWORD,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        user32.PostThreadMessageW.restype = wintypes.BOOL
+
+    _setup_cadence_win32_abi()
 else:
     class KBDLLHOOKSTRUCT:  # type: ignore[no-redef]
         pass
@@ -116,13 +155,6 @@ class MotorCadenceTracker:
         """Unhooks the low-level keyboard hook and cleanly terminates the message loop."""
         self._running = False
         if sys.platform == "win32":
-            if self._hook:
-                try:
-                    ctypes.windll.user32.UnhookWindowsHookEx(self._hook)
-                except (OSError, RuntimeError, AttributeError) as e:
-                    logger.debug("UnhookWindowsHookEx error: %s", e)
-                self._hook = None
-
             if self._thread_id:
                 try:
                     ctypes.windll.user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
@@ -130,8 +162,16 @@ class MotorCadenceTracker:
                     logger.debug("PostThreadMessageW WM_QUIT error: %s", e)
                 self._thread_id = None
 
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+            if self._hook:
+                try:
+                    ctypes.windll.user32.UnhookWindowsHookEx(self._hook)
+                except (OSError, RuntimeError, AttributeError) as e:
+                    logger.debug("UnhookWindowsHookEx error: %s", e)
+                self._hook = None
+
+        if self._thread:
+            if self._thread.is_alive():
+                self._thread.join(timeout=1.0)
             self._thread = None
 
         self._held_keys.clear()
@@ -226,10 +266,11 @@ class MotorCadenceTracker:
         self._thread_id = kernel32.GetCurrentThreadId()
         self._hook_proc = HOOKPROC(self._low_level_proc)
 
+        h_mod = kernel32.GetModuleHandleW(None)
         self._hook = user32.SetWindowsHookExW(
             WH_KEYBOARD_LL,
             self._hook_proc,
-            kernel32.GetModuleHandleW(None),
+            h_mod,
             0,
         )
 
@@ -240,19 +281,23 @@ class MotorCadenceTracker:
             self._hook_ready.set()
             return
 
-        msg = wintypes.MSG()
-        # Force message queue initialization before signaling readiness
-        user32.PeekMessageW(ctypes.byref(msg), 0, 0, 0, 0)
-        self._hook_ready.set()
+        try:
+            msg = wintypes.MSG()
+            # Force message queue initialization before signaling readiness
+            user32.PeekMessageW(ctypes.byref(msg), 0, 0, 0, 0)
+            self._hook_ready.set()
 
-        logger.info("MotorCadenceTracker WH_KEYBOARD_LL hook online on E-Cores.")
-        while self._running:
-            ret = user32.GetMessageW(ctypes.byref(msg), 0, 0, 0)
-            if ret <= 0:
-                break
-            user32.TranslateMessage(ctypes.byref(msg))
-            user32.DispatchMessageW(ctypes.byref(msg))
-
-        if self._hook:
-            user32.UnhookWindowsHookEx(self._hook)
-            self._hook = None
+            logger.info("MotorCadenceTracker WH_KEYBOARD_LL hook online on E-Cores.")
+            while self._running:
+                ret = user32.GetMessageW(ctypes.byref(msg), 0, 0, 0)
+                if ret <= 0:
+                    break
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+        finally:
+            if self._hook:
+                try:
+                    user32.UnhookWindowsHookEx(self._hook)
+                except (OSError, RuntimeError, AttributeError) as e:
+                    logger.debug("UnhookWindowsHookEx in message loop cleanup notice: %s", e)
+                self._hook = None

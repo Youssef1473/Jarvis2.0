@@ -140,12 +140,14 @@ def _evaluate_system_health() -> list[str]:
 
     # 4. GPU Thermals
     gpu = _query_gpu_telemetry()
-    if gpu and gpu.get("temp_c", 0) >= 86:
-        if now - _last_alerts["gpu"] > _ALERT_COOLDOWN_SECONDS:
-            warnings.append(f"GPU temperature has reached {gpu['temp_c']}°C on {gpu['name']}.")
-            _last_alerts["gpu"] = now
-    elif gpu and gpu.get("temp_c", 0) < 75:
-        _last_alerts["gpu"] = 0.0
+    temp_c = gpu.get("temp_c") if gpu else None
+    if temp_c is not None:
+        if temp_c >= 86:
+            if now - _last_alerts["gpu"] > _ALERT_COOLDOWN_SECONDS:
+                warnings.append(f"GPU temperature has reached {temp_c}°C on {gpu['name']}.")
+                _last_alerts["gpu"] = now
+        elif temp_c < 75:
+            _last_alerts["gpu"] = 0.0
 
     return warnings
 
@@ -159,7 +161,7 @@ def _watchdog_loop(interval_sec: int):
             for w in warnings:
                 logger.warning("Watchdog trigger: %s", w)
                 _speak_watchdog_alert(w)
-        except (psutil.Error, OSError, RuntimeError, ValueError, AttributeError) as e:
+        except (psutil.Error, OSError, RuntimeError, ValueError, AttributeError, TypeError) as e:
             logger.debug("Watchdog cycle error: %s", e)
 
         # Sleep in small increments for rapid stop response

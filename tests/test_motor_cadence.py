@@ -130,6 +130,49 @@ class TestMotorCadenceTrackerSuite(unittest.TestCase):
             # Should not record injected key
             self.assertEqual(len(self.tracker._events), 0)
 
+    def test_win32_64bit_abi_prototypes_and_hook_lifecycle(self):
+        """Verifies 64-bit ctypes prototypes for WH_KEYBOARD_LL hook APIs and clean teardown."""
+        import ctypes
+        import sys
+        from ctypes import wintypes
+
+        from jarvis.core.cognition import cadence_tracker
+
+        if sys.platform != "win32":
+            self.skipTest("Win32-only hook ABI test")
+
+        k32 = ctypes.windll.kernel32
+        u32 = ctypes.windll.user32
+
+        # Verify 64-bit argtypes and restype
+        self.assertEqual(list(k32.GetModuleHandleW.argtypes), [wintypes.LPCWSTR])
+        self.assertEqual(k32.GetModuleHandleW.restype, wintypes.HMODULE)
+        self.assertEqual(list(u32.SetWindowsHookExW.argtypes), [
+            ctypes.c_int,
+            cadence_tracker.HOOKPROC,
+            wintypes.HINSTANCE,
+            wintypes.DWORD,
+        ])
+        self.assertEqual(u32.SetWindowsHookExW.restype, wintypes.HHOOK)
+        self.assertEqual(list(u32.UnhookWindowsHookEx.argtypes), [wintypes.HHOOK])
+        self.assertEqual(u32.UnhookWindowsHookEx.restype, wintypes.BOOL)
+        self.assertEqual(list(u32.CallNextHookEx.argtypes), [
+            wintypes.HHOOK,
+            ctypes.c_int,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ])
+        self.assertEqual(u32.CallNextHookEx.restype, wintypes.LPARAM)
+
+        # Live Windows hook installation and clean unhooking
+        t = cadence_tracker.MotorCadenceTracker()
+        started = t.start()
+        self.assertTrue(started)
+        self.assertIsNotNone(t._hook)
+        t.stop()
+        self.assertIsNone(t._hook)
+        self.assertIsNone(t._thread)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,18 +14,35 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-19T01:15:00+01:00 (CET)
-- **Active Git Branch:** `main`
-- **Recorded HEAD Commit SHA:** `7836a4caddf4074be52a266b061d92b0f81ee33d`
-- **HEAD Commit Subject:** `refactor(skills): excise unused mcp_manager shim and canonicalize internal audio/provider imports`
-- **Milestone State:** **Architectural Review & Hardening Sprint (Gemini 4 Neon Plan) — Batches 1–6 Completed & Verified; 2,351 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics; ADR-001 through ADR-006 ACCEPTED; Single-Writer Invariant 100% Enforced**
-- **Active Milestone:** **Architectural Review & Hardening Sprint (Batches 1–6 Complete & Verified)**
+- **Validation Timestamp:** 2026-11-19T12:12:00+01:00 (CET)
+- **Active Git Branch:** `feat/unfreeze-browser-integration-nodes`
+- **Recorded HEAD Commit SHA:** `acec4c13e6f278ad3c7b78cd65ea5b187535c8de`
+- **HEAD Commit Subject:** `Merge pull request #66 from Youssef1473/fix/audio-mmcss-lifecycle-revert`
+- **Milestone State:** **Architectural Review & Hardening Sprint (Gemini 4 Neon Plan) — PR #65 & PR #66 Merged; MMCSS Teardown Hardened (+0 Handle Drift Across 10 Cycles); ENG-OS-03C8 Browser Integration Surface Verified (9 Host Chromium/Playwright Nodes 100% Green); CadenceTracker 64-bit Hook ABI Fixed (Error 126 Eliminated); 2,355 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics; ADR-001 through ADR-006 ACCEPTED**
+- **Active Milestone:** **ENG-OS-03C8 — Unfreeze & Verify Host Browser Integration Nodes (Complete & Verified)**
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Architectural Review & Hardening Sprint (Batches 1–6 Complete & Verified)`
+- **Active Milestone:** `ENG-OS-03C8 — Unfreeze & Verify Host Browser Integration Nodes (Complete & Verified)`
 - **Completed Work:**
-  - **Gemini 4 Neon Architectural Hardening Sprint (Batches 1–6 COMPLETED & VERIFIED):**
+  - **CadenceTracker Win32 64-bit Hook ABI Fix:**
+    - Declared explicit 64-bit `ctypes` prototypes (`wintypes.HMODULE`, `wintypes.HHOOK`, `wintypes.HINSTANCE`, `wintypes.WPARAM`, `wintypes.LPARAM`) for `GetModuleHandleW`, `SetWindowsHookExW`, `UnhookWindowsHookEx`, `CallNextHookEx`, and `PostThreadMessageW` in `jarvis/core/cognition/cadence_tracker.py`.
+    - Eliminated Win32 Error 126 (`ERROR_MOD_NOT_FOUND`) during daemon startup caused by 32-bit truncation of module handles returned by `GetModuleHandleW(None)`.
+    - Added unit test in `tests/test_motor_cadence.py` verifying prototypes and clean teardown; verified live host hook installation (`hook: 841090369`, `err: 0`).
+  - **ENG-OS-03C8 (Host Browser Integration Nodes Unfrozen & Verified 100% Green):**
+    - Empirically verified all 9 live host Chromium and Playwright integration nodes (`3` Playwright SSRF tests in `tests/test_browser_agent.py` and `6` CDP network boundary tests in `tests/test_browser_network_boundaries.py`) on host Medium integrity.
+    - Verified strict conformance to `ADR-006` and security invariants: explicit `chromium_sandbox=True` everywhere (zero `--no-sandbox` flags), explicit loopback origins with `--remote-debugging-address=127.0.0.1` (zero wildcard `--remote-allow-origins=*`).
+    - Entire browser test surface (`52/52` tests across both files) passing cleanly in 8.40s.
+  - **HUD Documentation Port Alignment:**
+    - Corrected stale `port 8000` documentation in `docs/architecture/PROJECT_MAP.md` (lines 12 and 60) to canonical loopback port `20129`.
+  - **MMCSS Worker Lifecycle Teardown Hardening (PR #66 Merged):**
+    - Implemented `scoped_mmcss` (aliased to `mmcss_scope`) RAII context manager in `jarvis/core/win32_affinity.py`.
+    - Added thread-local deduplication check in `elevate_to_pro_audio_mmcss` to prevent redundant registration on the same thread.
+    - Guarded `revert_mmcss` and `revert_current_thread_mmcss` against boolean `True` returns (`isinstance(h, bool)`).
+    - Integrated deterministic MMCSS teardown across worker lifecycles in `tts.py`, `wake_word.py`, `speech_capture.py`, and `orchestrator.py` via module top-level imports and `try...finally` blocks.
+    - Proved in-process 10-cycle host handle probe achieves exact `+0` handle drift (`383` flat across cycles 1–10) and `0` thread drift.
+    - Re-exported test classification manifest to register all `2,355` test nodes with 0 unclassified and 0 orphans.
+  - **Gemini 4 Neon Architectural Hardening Sprint (Batches 1–6 COMPLETED & VERIFIED — PR #65 Merged):**
     - **Batch 1 (SQLite Single-Writer & Bounded Read-Pool Migration):**
       - Migrated `photo_manager.py` to route all write mutations through `SingleWriterActor.execute_write(...)` and read queries through `ReadOnlyConnectionPool` with `bounded_ro_connection`. Closed the last remaining `ADR-001` write-path bypass.
       - Migrated `habit_graph.py` to check out read connections through `ReadOnlyConnectionPool` with `bounded_ro_connection` (2,000ms deadline + automatic read snapshot rollback). Migrated exponential decay writes to `SingleWriterActor`.

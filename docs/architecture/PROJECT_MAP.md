@@ -9,7 +9,7 @@ This document provides a concise, ground-truth reference for developers and agen
 | Entry Point | Path | Role |
 | :--- | :--- | :--- |
 | **Daemon Entry Point** | [`run.py`](../../run.py) | CLI bootstrap, service lifecycle, argument parser (`--stealth`, `--omniroute`, `--check-health`). |
-| **Web HUD & Telemetry Server** | [`jarvis/ui/server.py`](../../jarvis/ui/server.py) | FastAPI / Starlette server for the Holographic Web HUD (port 8000) and WebSocket feeds. |
+| **Web HUD & Telemetry Server** | [`jarvis/ui/server.py`](../../jarvis/ui/server.py) | FastAPI / Starlette server for the Holographic Web HUD (port 20129) and WebSocket feeds. |
 | **Antigravity Sidecar Worker** | [`jarvis/core/antigravity_bridge.py`](../../jarvis/core/antigravity_bridge.py) | Persistent warm `agy.exe` child process in `data/agy_runtime_workspace` using `--input-format stream-json`. |
 | **Fast Test Runner** | [`tools/run_fast_tests.py`](../../tools/run_fast_tests.py) | Two-tier test runner (fast parallel pytest suite + isolated serial hardware suite). |
 | **Lint & Diagnostics** | [`tools/lint.py`](../../tools/lint.py), [`tools/diagnostics.py`](../../tools/diagnostics.py) | Sub-20ms ruff lint runner and AST structural invariant scanning. |
@@ -57,7 +57,7 @@ The following modules represent the authoritative canonical implementations for 
 | **Wake-Word Capture & Audio Routing** | [`jarvis/audio/wake_word.py`](../../jarvis/audio/wake_word.py) | Dedicated `MicRouterWorker` loop, openWakeWord neural inference, physical P-core affinity (`0x0054`) with MMCSS Pro Audio. | [ADR-005](../adr/ADR-005-win32-hardware-core-affinity.md) |
 | **Browser & CDP Automation** | [`jarvis/skills/browser_cdp.py`](../../jarvis/skills/browser_cdp.py) | Sub-5ms Chrome DevTools Protocol (CDP) WebSocket automation for Chromium browsers, loopback port confinement, silent tab navigation. | [ADR-006](../adr/ADR-006-egress-validation-ip-pinning.md) |
 | **Auxiliary Background Daemons** | [`jarvis/vision/window_hook_daemon.py`](../../jarvis/vision/window_hook_daemon.py)<br>[`jarvis/vision/dhash_monitor.py`](../../jarvis/vision/dhash_monitor.py)<br>[`jarvis/core/cognition/cadence_tracker.py`](../../jarvis/core/cognition/cadence_tracker.py) | Background maintenance workers executing on Efficiency Cores (`MASK_ECORE_BACKGROUND = 0xFF00`) with Windows EcoQoS enabled: window event hooks, perceptual hashing, cadence tracking. | [ADR-005](../adr/ADR-005-win32-hardware-core-affinity.md) |
-| **UI HUD & Telemetry Server** | [`jarvis/ui/server.py`](../../jarvis/ui/server.py) | FastAPI / Starlette asynchronous server for the Holographic HUD (port 8000), real-time WebSocket feeds, system health telemetry. | [ADR-004](../adr/ADR-004-dual-key-tool-authorization-turn-taint.md) |
+| **UI HUD & Telemetry Server** | [`jarvis/ui/server.py`](../../jarvis/ui/server.py) | FastAPI / Starlette asynchronous server for the Holographic HUD (port 20129), real-time WebSocket feeds, system health telemetry. | [ADR-004](../adr/ADR-004-dual-key-tool-authorization-turn-taint.md) |
 | **Developer & Verification Tooling** | [`tools/run_fast_tests.py`](../../tools/run_fast_tests.py)<br>[`tools/lint.py`](../../tools/lint.py)<br>[`tools/diagnostics.py`](../../tools/diagnostics.py)<br>[`tools/agy_context_slicer.py`](../../tools/agy_context_slicer.py) | Test execution runners, static linting, AST structural invariant checks, and token-bounded context recovery utilities. | [INDEX.md](INDEX.md) |
 
 ---
