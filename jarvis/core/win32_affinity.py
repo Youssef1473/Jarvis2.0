@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import threading
+from typing import Any
 
 logger = logging.getLogger("Jarvis.Hardware.Affinity")
 
@@ -258,28 +259,34 @@ def get_current_thread_mmcss_handle() -> int | None:
 def revert_current_thread_mmcss() -> bool:
     """Reverts MMCSS registration on the calling thread if active."""
     h = getattr(_THREAD_LOCAL_MMCSS, "handle", None)
-    if h:
-        res = revert_mmcss(h)
+    if h and not isinstance(h, bool):
         _THREAD_LOCAL_MMCSS.handle = None
-        return res
+        return revert_mmcss(h)
     return False
 
 
 @contextlib.contextmanager
-def mmcss_scope(task_name: str = "Pro Audio"):
+def scoped_mmcss(task_name: str = "Pro Audio"):
     """Context manager guaranteeing MMCSS elevation is cleanly reverted on exit."""
     h_task = elevate_to_pro_audio_mmcss(task_name)
     try:
         yield h_task
     finally:
-        if h_task:
+        if h_task and not isinstance(h_task, bool):
             revert_mmcss(h_task)
+
+
+mmcss_scope = scoped_mmcss
 
 
 def elevate_to_pro_audio_mmcss(task_name: str = "Pro Audio") -> int | None:
     """Elevates calling thread to Windows Multimedia Class Scheduler Service (MMCSS)."""
     if sys.platform != "win32":
         return None
+
+    existing_h = getattr(_THREAD_LOCAL_MMCSS, "handle", None)
+    if existing_h and not isinstance(existing_h, bool):
+        return existing_h
 
     try:
         import ctypes
@@ -313,9 +320,9 @@ def elevate_audio_thread_mmcss(task_name: str = "Pro Audio") -> int | None:
     return elevate_to_pro_audio_mmcss(task_name)
 
 
-def revert_mmcss(h_task: int) -> bool:
+def revert_mmcss(h_task: int | Any) -> bool:
     """Reverts MMCSS registration on thread termination."""
-    if sys.platform != "win32" or not h_task:
+    if sys.platform != "win32" or not h_task or isinstance(h_task, bool):
         return False
 
     try:

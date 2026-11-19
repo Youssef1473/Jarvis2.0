@@ -32,6 +32,10 @@ from jarvis.core.orchestrator_lifecycle import (
 )
 from jarvis.core.safety import SafetyGate
 from jarvis.core.services import ManagedServiceManager
+from jarvis.core.win32_affinity import (
+    pin_and_elevate_current_thread,
+    revert_current_thread_mmcss,
+)
 from jarvis.ui.hud import JarvisHUD
 
 logger = logging.getLogger("Jarvis.Orchestrator")
@@ -374,27 +378,28 @@ class JarvisOrchestrator:
     def _process_audio(self, audio_array: np.ndarray) -> None:
         """Transcribes audio, sends to brain, and delivers spoken output."""
         try:
-            from jarvis.core.win32_affinity import pin_and_elevate_current_thread
-
             pin_and_elevate_current_thread(tag="OrchestratorAudioWorker")
-        except (ImportError, AttributeError, OSError) as exc:
+        except (AttributeError, OSError) as exc:
             logger.debug("Audio worker affinity elevation notice: %s", exc)
 
-        self.set_state("thinking")
-        self.sfx.play_think()
-        text = self.stt.transcribe(audio_array, sample_rate=self.sample_rate)
-        if not text or len(text.strip()) < 2:
-            logger.info("Audio was unintelligible or empty.")
-            self.set_state("idle")
-            return
-
-        print(f"\n[Sir]: {text}")
         try:
-            self.handle_command(text)
-        except Exception:
-            logger.exception("Error handling voice command '%s'", text)
-            self.set_state("idle")
-            self.sfx.play_done()
+            self.set_state("thinking")
+            self.sfx.play_think()
+            text = self.stt.transcribe(audio_array, sample_rate=self.sample_rate)
+            if not text or len(text.strip()) < 2:
+                logger.info("Audio was unintelligible or empty.")
+                self.set_state("idle")
+                return
+
+            print(f"\n[Sir]: {text}")
+            try:
+                self.handle_command(text)
+            except Exception:
+                logger.exception("Error handling voice command '%s'", text)
+                self.set_state("idle")
+                self.sfx.play_done()
+        finally:
+            revert_current_thread_mmcss()
 
     @staticmethod
     def is_shutdown_command(query: str) -> bool:

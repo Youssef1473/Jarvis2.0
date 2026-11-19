@@ -24,6 +24,7 @@ from jarvis.core.win32_affinity import (
     elevate_audio_thread_mmcss,
     pin_and_elevate_current_thread,
     pin_current_thread_to_mask,
+    revert_mmcss,
 )
 
 logger = logging.getLogger("Jarvis.TTS")
@@ -1522,12 +1523,12 @@ class TextToSpeech:
         if getattr(self, "_synth_thread", None) and self._synth_thread.is_alive():
             try:
                 self._sentence_queue.put_nowait(None)
-            except (queue.Full, Exception):  # noqa: BLE001, S110
+            except (queue.Full, queue.Empty):
                 pass
         if getattr(self, "_playback_thread", None) and self._playback_thread.is_alive():
             try:
                 self._audio_queue.put_nowait(None)
-            except (queue.Full, Exception):  # noqa: BLE001, S110
+            except (queue.Full, queue.Empty):
                 pass
 
         # Immediately preempt sounddevice playback so any active sd.wait() in speak_sync unblocks
@@ -2317,60 +2318,66 @@ class TextToSpeech:
                         self._spoken_clauses.append(sentence)
 
             def _playback_worker():
+                h_mmcss = None
                 if sys.platform == "win32":
-                    if not elevate_audio_thread_mmcss("Pro Audio"):
+                    h_mmcss = elevate_audio_thread_mmcss("Pro Audio")
+                    if not h_mmcss:
                         _set_thread_realtime_priority("WASAPIPlaybackWorker")
                 else:
                     _set_thread_realtime_priority("WASAPIPlaybackWorker")
-                stream_startup_done.wait(timeout=3.0)
-                while (
-                    self._stream_active
-                    and not self._stop_event.is_set()
-                    and (worker_gen is None or self._session_generation == worker_gen)
-                ):
-                    try:
-                        item = self._audio_queue.get(timeout=0.05)
-                    except queue.Empty:
-                        continue
-
-                    if (
-                        item is None
-                        or self._stop_event.is_set()
-                        or (worker_gen is not None and self._session_generation != worker_gen)
+                try:
+                    stream_startup_done.wait(timeout=3.0)
+                    while (
+                        self._stream_active
+                        and not self._stop_event.is_set()
+                        and (worker_gen is None or self._session_generation == worker_gen)
                     ):
-                        break
+                        try:
+                            item = self._audio_queue.get(timeout=0.05)
+                        except queue.Empty:
+                            continue
+
+                        if (
+                            item is None
+                            or self._stop_event.is_set()
+                            or (worker_gen is not None and self._session_generation != worker_gen)
+                        ):
+                            break
+
+                        if not use_stream_callback:
+                            samples, sr = item
+                            started_play = False
+                            try:
+                                with self._sd_playback_lock:
+                                    if (
+                                        self._stop_event.is_set()
+                                        or getattr(self, "_closing", False)
+                                        or getattr(self, "_closed", False)
+                                        or getattr(self, "_default_stop_pending", False)
+                                        or (worker_gen is not None and self._session_generation != worker_gen)
+                                    ):
+                                        break
+                                    sd.play(samples, sr)
+                                    started_play = True
+                                    try:
+                                        if hasattr(sd, "get_stream"):
+                                            with self._stream_claim_lock:
+                                                self._default_stream = sd.get_stream()
+                                    except Exception:  # noqa: BLE001, S110
+                                        pass
+                                if started_play:
+                                    sd.wait()
+                            except Exception as e:  # noqa: BLE001
+                                logger.error("Playback error: %s", e)
+                            finally:
+                                with self._stream_claim_lock:
+                                    self._default_stream = None
 
                     if not use_stream_callback:
-                        samples, sr = item
-                        started_play = False
-                        try:
-                            with self._sd_playback_lock:
-                                if (
-                                    self._stop_event.is_set()
-                                    or getattr(self, "_closing", False)
-                                    or getattr(self, "_closed", False)
-                                    or getattr(self, "_default_stop_pending", False)
-                                    or (worker_gen is not None and self._session_generation != worker_gen)
-                                ):
-                                    break
-                                sd.play(samples, sr)
-                                started_play = True
-                                try:
-                                    if hasattr(sd, "get_stream"):
-                                        with self._stream_claim_lock:
-                                            self._default_stream = sd.get_stream()
-                                except Exception:  # noqa: BLE001, S110
-                                    pass
-                            if started_play:
-                                sd.wait()
-                        except Exception as e:  # noqa: BLE001
-                            logger.error("Playback error: %s", e)
-                        finally:
-                            with self._stream_claim_lock:
-                                self._default_stream = None
-
-                if not use_stream_callback:
-                    self._is_speaking = False
+                        self._is_speaking = False
+                finally:
+                    if h_mmcss and not isinstance(h_mmcss, bool):
+                        revert_mmcss(h_mmcss)
 
             use_stream_callback = True
             self._synth_thread = threading.Thread(target=_synth_worker, daemon=True, name="Jarvis-TTS-Synth")

@@ -2642,6 +2642,63 @@ class TestTtsLifecycleHardening(unittest.TestCase):
         alive_count = sum(1 for r in stream_refs if r() is not None)
         self.assertEqual(alive_count, 0)
 
+    def test_playback_worker_reverts_mmcss_on_normal_exit(self):
+        """Verifies _playback_worker reverts MMCSS registration on clean termination."""
+        self.tts.engine = "kokoro"
+        self.tts._kokoro = MagicMock()
+
+        revert_called = threading.Event()
+        reverted_handle: list[int] = []
+
+        def _mock_revert(h):
+            reverted_handle.append(h)
+            revert_called.set()
+            return True
+
+        with (
+            patch("jarvis.audio.tts.elevate_audio_thread_mmcss", return_value=12345),
+            patch("jarvis.audio.tts.revert_mmcss", side_effect=_mock_revert),
+            patch("sounddevice.OutputStream", return_value=MagicMock()),
+        ):
+            started = self.tts.start_streaming_session()
+            self.assertTrue(started)
+            self.tts.stop(stop_timeout=0.1)
+            self.assertTrue(revert_called.wait(timeout=1.0))
+            self.assertEqual(reverted_handle, [12345])
+
+    def test_playback_worker_reverts_mmcss_on_worker_exception(self):
+        """Verifies _playback_worker reverts MMCSS registration if an exception is raised in the worker loop."""
+        self.tts.engine = "kokoro"
+        self.tts._kokoro = MagicMock()
+
+        revert_called = threading.Event()
+        reverted_handle: list[int] = []
+
+        def _mock_revert(h):
+            reverted_handle.append(h)
+            revert_called.set()
+            return True
+
+        with (
+            patch("jarvis.audio.tts.elevate_audio_thread_mmcss", return_value=54321),
+            patch("jarvis.audio.tts.revert_mmcss", side_effect=_mock_revert),
+            patch("sounddevice.OutputStream", return_value=MagicMock()),
+            patch.object(self.tts._audio_queue, "get", side_effect=RuntimeError("Worker loop crash")),
+        ):
+            started = self.tts.start_streaming_session()
+            self.assertTrue(started)
+            self.assertTrue(revert_called.wait(timeout=1.0))
+            self.assertEqual(reverted_handle, [54321])
+            self.tts.stop(stop_timeout=0.1)
+
+    def test_revert_mmcss_guards_against_mocked_boolean_true(self):
+        """Verifies revert_mmcss returns False when given a bool True instead of an integer task handle."""
+        from jarvis.core.win32_affinity import revert_mmcss
+        self.assertFalse(revert_mmcss(True))
+        self.assertFalse(revert_mmcss(False))
+        self.assertFalse(revert_mmcss(None))
+        self.assertFalse(revert_mmcss(0))
+
 
 if __name__ == "__main__":
     unittest.main()
