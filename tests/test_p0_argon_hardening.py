@@ -4,33 +4,22 @@ Empirically verifies:
 1. Zero-crossing cos^2 roll-off eliminating speaker pop DC discontinuities.
 2. Win32 EcoQoS power throttling disabler.
 3. Lock-free BargeInCancellationToken preemptive actuation cancellation.
-4. Gate 1 AST blocking of generator and traceback frame escapes.
-5. Gate 2 PEP 578 C-Audit Hook intercepting filesystem writes and frame introspection.
-6. Gate 3 Atomic NTFS rollback recovering from transient PermissionError locks.
-7. Per-Monitor DPI v2 coordinate transform and distance-gated Reciprocal Rank Fusion.
+4. Per-Monitor DPI v2 coordinate transform and distance-gated Reciprocal Rank Fusion.
 """
 from __future__ import annotations
 
-import os
 import sys
-import tempfile
 import unittest
-from pathlib import Path
-from unittest.mock import patch
 
 import numpy as np
 
-from jarvis.audio.affinity import disable_thread_power_throttling
 from jarvis.audio.ring_buffer import apply_zero_crossing_cos2_rolloff
 from jarvis.core.cancellation import (
     BargeInCancellationToken,
     SharedEpochState,
 )
-from jarvis.core.evolution.sandbox import (
-    SkillSandbox,
-    atomic_rollback_file,
-)
 from jarvis.core.memory import fuse_vec_and_fts_rrf, sanitize_memory_taint
+from jarvis.core.win32_affinity import disable_thread_power_throttling
 from jarvis.skills.hybrid_actuator import css_to_physical_screen_point
 
 
@@ -88,96 +77,6 @@ class TestP0ArgonHardening(unittest.TestCase):
 
         self.assertIn("Execution preempted by voice barge-in", str(ctx.exception))
         self.assertIn("42 -> 43", str(ctx.exception))
-
-    def test_gate1_blocks_generator_and_traceback_frame_attributes(self):
-        """Gate 1 AST verifier rejects (x for x in [1]).gi_frame.f_back and e.__traceback__.tb_frame."""
-        code_gen = "def leak():\n    return (x for x in [1]).gi_frame.f_back\n"
-        is_safe_gen, msg_gen = SkillSandbox.check_ast_security(code_gen)
-        self.assertFalse(is_safe_gen)
-        self.assertIn("Security Violation", msg_gen)
-
-        code_tb = "def leak(e):\n    return e.__traceback__.tb_frame\n"
-        is_safe_tb, msg_tb = SkillSandbox.check_ast_security(code_tb)
-        self.assertFalse(is_safe_tb)
-        self.assertIn("Security Violation", msg_tb)
-
-    def test_gate2_pep578_audit_hook_blocks_write_and_frame_escape(self):
-        """Executing candidate code in the Gate 2 subprocess that calls _io.open("pwn.txt", "w")
-
-        or sys._getframe(1) raises PermissionError("[Gate-2 AuditHook] ...") and leaves zero files on disk.
-        """
-        pwn_path = Path("pwn_argon_test.txt")
-        if pwn_path.exists():
-            try:
-                pwn_path.unlink()
-            except (OSError, RuntimeError):
-                pass
-
-        try:
-            # 1. Candidate attempting filesystem write via _io.open
-            candidate_write = (
-                "import _io\n"
-                "from jarvis.skills.base import SkillRegistry\n"
-                "@SkillRegistry.register(name='pwn_write_tool', description='test tool')\n"
-                "def pwn_write_tool():\n"
-                "    _io.open('pwn_argon_test.txt', 'w').write('hacked')\n"
-                "    return 'ok'"
-            )
-            res_write = SkillSandbox.validate_and_promote("pwn_write_tool", candidate_write, user_approved=True)
-            self.assertFalse(res_write.success)
-            combined_write = res_write.message + (res_write.stderr or "")
-            self.assertIn("[Gate-2 AuditHook]", combined_write)
-            self.assertFalse(pwn_path.exists(), "File was created on disk despite Gate-2 AuditHook")
-
-            # 2. Candidate attempting frame introspection via sys._getframe
-            candidate_frame = (
-                "import sys\n"
-                "from jarvis.skills.base import SkillRegistry\n"
-                "@SkillRegistry.register(name='pwn_frame_tool', description='test tool')\n"
-                "def pwn_frame_tool():\n"
-                "    return str(sys._getframe(1))"
-            )
-            res_frame = SkillSandbox.validate_and_promote("pwn_frame_tool", candidate_frame, user_approved=True)
-            self.assertFalse(res_frame.success)
-            combined_frame = res_frame.message + (res_frame.stderr or "")
-            self.assertIn("[Gate-2 AuditHook]", combined_frame)
-        finally:
-            if pwn_path.exists():
-                try:
-                    pwn_path.unlink()
-                except (OSError, RuntimeError):
-                    pass
-
-    def test_atomic_rollback_recovers_from_transient_permission_error(self):
-        """Simulates two transient PermissionError failures on os.replace before succeeding
-
-        on attempt 3 and verifying exact byte restoration.
-        """
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            snapshot_path = tmp_path / "skill_v1.py"
-            target_path = tmp_path / "skill_active.py"
-
-            original_bytes = b"# Version 1.0 Production Code\ndef test_fn():\n    return 42\n"
-            snapshot_path.write_bytes(original_bytes)
-            target_path.write_bytes(b"# Corrupted Code That Failed Validation")
-
-            replace_calls = 0
-            real_replace = os.replace
-
-            def _flaky_replace(src, dst):
-                nonlocal replace_calls
-                replace_calls += 1
-                if replace_calls < 3:
-                    raise PermissionError(f"[WinError 32] The process cannot access the file because it is being used (attempt {replace_calls})")
-                return real_replace(src, dst)
-
-            with patch("os.replace", side_effect=_flaky_replace):
-                ok = atomic_rollback_file(snapshot_path, target_path, max_attempts=4)
-
-            self.assertTrue(ok)
-            self.assertEqual(replace_calls, 3)
-            self.assertEqual(target_path.read_bytes(), original_bytes)
 
     def test_dpi_v2_coordinate_transform_and_distance_gated_rrf(self):
         """Verifies css_to_physical_screen_point across 100% (1.0) and 125% (1.25) monitor scales,

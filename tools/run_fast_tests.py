@@ -338,13 +338,16 @@ class FourTierTestRunner:
         else:
             pytest_args.append("-q")
 
+        targets = self._build_tier_targets(nodes, manifest)
+        run_id = f"tier1_{int(time.time())}"
         print(f"\n[Tier 1] Launching Hermetic Unit suite ({total_collected} tests across {len(t1_files)} files, {workers} workers)...")
         result = self.supervisor.run_pytest(
-            targets=t1_files,
+            targets=targets,
             pytest_args=pytest_args,
             timeout_sec=timeout_sec,
-            run_id="tier1_hermetic_unit",
+            run_id=run_id,
             record_junit=True,
+            tee=verbose,
         )
 
         if result.timed_out:

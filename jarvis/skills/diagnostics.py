@@ -1,6 +1,7 @@
 """Runtime diagnostic and profiling tools for Jarvis 2.0.
 Leverages py-spy sampling profiler and tracemalloc to diagnose latency, thread stalls, and memory leaks.
 """
+import json
 import logging
 import os
 import shutil
@@ -210,5 +211,69 @@ def jarvis_doctor(verbose: bool = True) -> str:
 def run_system_troubleshooting(verbose: bool = True) -> str:
     """Alias for jarvis_doctor."""
     return jarvis_doctor(verbose=verbose)
+
+
+_reflex_engine_instance: Any = None
+
+
+def set_reflex_engine(engine: Any) -> None:
+    """Binds dynamic reflex engine instance for habit audits."""
+    global _reflex_engine_instance
+    _reflex_engine_instance = engine
+
+
+def _get_reflex_engine() -> Any:
+    global _reflex_engine_instance
+    if _reflex_engine_instance is None:
+        from jarvis.core.reflex_engine import DynamicReflexEngine
+        _reflex_engine_instance = DynamicReflexEngine()
+    return _reflex_engine_instance
+
+
+@SkillRegistry.register(
+    name="verify_learned_habits",
+    description=(
+        "Audits and inspects all dynamically learned reflexes and habits. "
+        "Verifies adaptation speed, comparing Turn 1 cloud reasoning latency vs Turn 2 instant local reflex execution."
+    ),
+)
+def verify_learned_habits() -> str:
+    """Returns an auditable verification report of all habits Jarvis has learned."""
+    engine = _get_reflex_engine()
+    habits = engine.list_learned_habits()
+    if not habits:
+        return (
+            "I have not yet cataloged any dynamic habits, Sir. Whenever you ask me to perform a new action, "
+            "I will learn the sequence and promote it to instant reflex memory for subsequent turns."
+        )
+
+    lines = [f"### Dynamic Reflex & Habit Audit ({len(habits)} Learned Behaviors)\n"]
+    for i, h in enumerate(habits, start=1):
+        phrase = h["trigger_phrase"]
+        skill = h["skill_name"]
+        kwargs = h["skill_kwargs"]
+        hits = h["hit_count"]
+        t1 = h["turn1_latency_ms"]
+        refl = h["reflex_latency_ms"]
+        refl_str = f"{refl:.1f}ms" if refl > 0 else "<15ms"
+        if skill == "__compound__" and isinstance(kwargs, list):
+            step_strs = [f"{s.get('skill_name')}()" for s in kwargs]
+            action_desc = f"Compound Pipeline ({' ➔ '.join(step_strs)})"
+        else:
+            action_desc = f"`{skill}({json.dumps(kwargs)})`"
+
+        lines.append(
+            f"**{i}. \"{phrase}\"**\n"
+            f"   • Action: {action_desc}\n"
+            f"   • Hit Count: {hits} times\n"
+            f"   • Adaptation Benchmark: Turn 1 ({t1:.0f}ms cloud reasoning) ➔ Turn 2 ({refl_str} local reflex)"
+        )
+
+    from jarvis.core.security_boundaries import TurnTaintTracker
+    TurnTaintTracker.get_instance().mark_tainted(
+        source="persistent_memory:learned_habits",
+        metadata={"count": len(habits)},
+    )
+    return "\n\n".join(lines)
 
 

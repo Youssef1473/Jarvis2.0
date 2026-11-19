@@ -326,6 +326,7 @@ class TestAntigravityJobContainmentMocked(unittest.TestCase):
     def test_lru_pool_eviction_terminates_evicted_job(self):
         """11. LRU daemon pool eviction cleans up the evicted daemon's Job Object tree."""
         bridge = AntigravityBridge(agy_path="mock_agy.exe")
+        bridge.agy_path = "mock_agy.exe"
         bridge.use_daemon = True
         bridge.max_warm_daemons = 2
 
@@ -347,7 +348,8 @@ class TestAntigravityJobContainmentMocked(unittest.TestCase):
         bridge._daemon_pool[("model1", "")] = d1
         bridge._daemon_pool[("model2", "")] = d2
 
-        with mock.patch("jarvis.skills.job_object_sandbox.terminate_and_close_job") as mock_close_job, \
+        with mock.patch.object(bridge, "is_available", return_value=True), \
+             mock.patch("jarvis.skills.job_object_sandbox.terminate_and_close_job") as mock_close_job, \
              mock.patch.object(d3, "start", return_value=True), \
              mock.patch.object(d3, "is_alive", return_value=True), \
              mock.patch("jarvis.core.antigravity_bridge.AntigravityDaemon", return_value=d3):

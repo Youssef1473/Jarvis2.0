@@ -12,6 +12,7 @@ import logging
 import sqlite3
 import struct
 import threading
+import time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -20,6 +21,54 @@ from typing import Any, Self
 logger = logging.getLogger("Jarvis.Memory.ROPool")
 
 DEFAULT_DB_PATH = Path("data/jarvis_memory.db")
+DEFAULT_RO_QUERY_TIMEOUT_MS: int = 2000
+DEFAULT_RO_QUERY_TIMEOUT_SECONDS: float = 2.0
+
+
+@contextlib.contextmanager
+def bounded_ro_connection(
+    conn: sqlite3.Connection,
+    timeout_ms: int = DEFAULT_RO_QUERY_TIMEOUT_MS,
+    close_on_exit: bool = False,
+) -> Generator[sqlite3.Connection, None, None]:
+    """Wraps a read-only SQLite connection in an execution context with progress-handler timeout.
+
+    Installs conn.set_progress_handler with a timeout_ms deadline (default 2,000ms),
+    raising sqlite3.OperationalError: query interrupted if query evaluation exceeds the deadline.
+    On exit, uninstalls the progress handler, rolls back active read snapshots to avoid pinning
+    WAL frames, and optionally closes temporary connections.
+    """
+    start_time = time.monotonic()
+    timeout_s = (timeout_ms / 1000.0) if timeout_ms is not None else DEFAULT_RO_QUERY_TIMEOUT_SECONDS
+    timed_out = [False]
+
+    def _progress_handler() -> int:
+        if time.monotonic() - start_time > timeout_s:
+            timed_out[0] = True
+            return 1
+        return 0
+
+    conn.set_progress_handler(_progress_handler, 100)
+    try:
+        yield conn
+    except sqlite3.OperationalError as e:
+        if timed_out[0] or "interrupted" in str(e).lower():
+            raise sqlite3.OperationalError("query interrupted") from e
+        raise
+    finally:
+        try:
+            conn.set_progress_handler(None, 0)
+        except (sqlite3.Error, OSError) as exc:
+            logger.debug("RO pool progress handler uninstall notice: %s", exc)
+        try:
+            conn.rollback()
+        except (sqlite3.Error, OSError) as exc:
+            logger.debug("RO pool rollback notice: %s", exc)
+        if close_on_exit:
+            try:
+                conn.close()
+            except (sqlite3.Error, OSError) as exc:
+                logger.debug("RO pool conn close notice: %s", exc)
 
 
 class VectorMemoryPool:
@@ -147,6 +196,10 @@ class VectorMemoryPool:
             except (sqlite3.Error, OSError) as exc:
                 logger.debug("Vector pool conn close notice: %s", exc)
             return
+        try:
+            conn.rollback()
+        except (sqlite3.Error, OSError) as exc:
+            logger.debug("Vector pool conn rollback notice: %s", exc)
         pool = self._get_queue()
         try:
             pool.put_nowait(conn)
@@ -208,33 +261,34 @@ class VectorMemoryPool:
         }.get(table, "id")
         cols = f"{pk} AS id, {pk}, distance" if pk != "id" else "id, distance"
 
-        try:
-            cursor = conn.execute(
-                f"""
-                SELECT {cols}
-                FROM {table}
-                WHERE embedding MATCH ?
-                ORDER BY distance
-                LIMIT ?
-                """,
-                (vector_blob, limit),
-            )
-            return [dict(row) for row in cursor.fetchall()]
-        except sqlite3.Error as e:
+        with bounded_ro_connection(conn, timeout_ms=DEFAULT_RO_QUERY_TIMEOUT_MS, close_on_exit=False):
             try:
                 cursor = conn.execute(
                     f"""
                     SELECT {cols}
                     FROM {table}
-                    WHERE embedding MATCH ? AND k = ?
-                    ORDER BY distance ASC
+                    WHERE embedding MATCH ?
+                    ORDER BY distance
+                    LIMIT ?
                     """,
                     (vector_blob, limit),
                 )
                 return [dict(row) for row in cursor.fetchall()]
-            except sqlite3.Error:
-                logger.error("Vector traversal failed on table '%s': %s", table, e)
-                return []
+            except sqlite3.Error as e:
+                try:
+                    cursor = conn.execute(
+                        f"""
+                        SELECT {cols}
+                        FROM {table}
+                        WHERE embedding MATCH ? AND k = ?
+                        ORDER BY distance ASC
+                        """,
+                        (vector_blob, limit),
+                    )
+                    return [dict(row) for row in cursor.fetchall()]
+                except sqlite3.Error:
+                    logger.error("Vector traversal failed on table '%s': %s", table, e)
+                    return []
 
     async def execute_query(
         self, sql: str, params: tuple = ()
@@ -256,8 +310,9 @@ class VectorMemoryPool:
     def _sync_query(
         self, conn: sqlite3.Connection, sql: str, params: tuple
     ) -> list[dict[str, Any]]:
-        cursor = conn.execute(sql, params)
-        return [dict(row) for row in cursor.fetchall()]
+        with bounded_ro_connection(conn, timeout_ms=DEFAULT_RO_QUERY_TIMEOUT_MS, close_on_exit=False):
+            cursor = conn.execute(sql, params)
+            return [dict(row) for row in cursor.fetchall()]
 
     async def execute_read_async(
         self, func: Callable[[sqlite3.Connection], Any]
@@ -347,6 +402,11 @@ class ReadOnlyConnectionPool:
                 cls._instance.default_db_path = Path(default_db_path)
             return cls._instance
 
+    @classmethod
+    def get_or_create(cls, default_db_path: Path | str | None = None) -> ReadOnlyConnectionPool:
+        """Alias for get_instance to provide consistent singleton retrieval across actors and pools."""
+        return cls.get_instance(default_db_path)
+
     def _create_connection(self, db_path: Path) -> sqlite3.Connection:
         resolved = db_path.resolve()
         if not resolved.exists():
@@ -377,7 +437,11 @@ class ReadOnlyConnectionPool:
         return conn
 
     @contextlib.contextmanager
-    def connection(self, db_path: Path | str | None = None) -> Generator[sqlite3.Connection, None, None]:
+    def connection(
+        self,
+        db_path: Path | str | None = None,
+        timeout_ms: int = DEFAULT_RO_QUERY_TIMEOUT_MS,
+    ) -> Generator[sqlite3.Connection, None, None]:
         target = Path(db_path or self.default_db_path)
         connections: dict[str, sqlite3.Connection] = getattr(self._local, "connections", None)
         if connections is None:
@@ -388,17 +452,8 @@ class ReadOnlyConnectionPool:
         is_temp = "tmp" in key.lower() or "temp" in key.lower() or target.name.startswith("test_")
         if is_temp:
             conn = self._create_connection(target)
-            try:
-                yield conn
-            finally:
-                try:
-                    conn.commit()
-                except (sqlite3.Error, OSError) as exc:
-                    logger.debug("RO pool temp commit-release notice: %s", exc)
-                try:
-                    conn.close()
-                except (sqlite3.Error, OSError) as exc:
-                    logger.debug("RO pool temp conn close notice: %s", exc)
+            with bounded_ro_connection(conn, timeout_ms=timeout_ms, close_on_exit=True) as bounded_conn:
+                yield bounded_conn
             return
 
         conn = connections.get(key)
@@ -406,14 +461,8 @@ class ReadOnlyConnectionPool:
             conn = self._create_connection(target)
             connections[key] = conn
 
-        try:
-            yield conn
-        finally:
-            try:
-                # Release historical WAL read-mark to avoid pinning frames during checkpoint(TRUNCATE)
-                conn.commit()
-            except (sqlite3.Error, OSError) as exc:
-                logger.debug("RO pool commit-release notice: %s", exc)
+        with bounded_ro_connection(conn, timeout_ms=timeout_ms, close_on_exit=False) as bounded_conn:
+            yield bounded_conn
 
     def close_current_thread(self) -> None:
         """Closes all connections owned by calling thread."""
@@ -448,6 +497,9 @@ class ReadOnlyConnectionPool:
                 cls._instance = None
 
 
-def get_ro_connection(db_path: Path | str | None = None):
+def get_ro_connection(
+    db_path: Path | str | None = None,
+    timeout_ms: int = DEFAULT_RO_QUERY_TIMEOUT_MS,
+):
     """Convenience context manager returning thread-local read-only connection."""
-    return ReadOnlyConnectionPool.get_instance().connection(db_path)
+    return ReadOnlyConnectionPool.get_instance().connection(db_path, timeout_ms=timeout_ms)

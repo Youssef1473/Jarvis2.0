@@ -114,6 +114,19 @@ class TestScreenVisionSkill(unittest.TestCase):
         self.assertTrue(Path(saved_path).exists())
         self.assertEqual(Path(saved_path).read_bytes(), test_bytes)
 
+    @patch("win32process.GetWindowThreadProcessId")
+    @patch("win32gui.GetWindowText")
+    @patch("win32gui.GetForegroundWindow")
+    def test_get_active_window_details_invalid_pid_graceful(self, mock_fg, mock_text, mock_pid):
+        """When Win32 returns an invalid TID or negative stack-garbage PID, return empty proc gracefully."""
+        mock_fg.return_value = 12345
+        mock_text.return_value = "Test Window"
+        # Simulate Win32 returning failure tid=0 and negative PID stack garbage
+        mock_pid.return_value = (0, -1433621104)
+        title, proc = screen_vision._get_active_window_details()
+        self.assertEqual(title, "Test Window")
+        self.assertEqual(proc, "")
+
 
 if __name__ == "__main__":
     unittest.main()

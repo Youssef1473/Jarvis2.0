@@ -10,7 +10,6 @@ Verifies:
 """
 from __future__ import annotations
 
-import json
 import tempfile
 import threading
 import unittest
@@ -18,107 +17,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from jarvis.core.memory import MemoryManager, SingleWriterActor
-from jarvis.core.memory.sleep_consolidator import SleepPhaseConsolidator
-
-
-class TestMilestone2SleepConsolidatorCanonicalSchema(unittest.TestCase):
-    """Verifies C-05: SleepPhaseConsolidator operates on canonical knowledge_edges schema."""
-
-    def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.temp_dir.name) / "test_prod_sleep.db"
-        # Initialize full production schema
-        config = {
-            "memory": {"db_path": str(self.db_path.name)},
-            "_base_dir": str(self.temp_dir.name),
-        }
-        self.mgr = MemoryManager(config)
-        self.consolidator = SleepPhaseConsolidator(
-            db_path=self.db_path,
-            vector_engine=self.mgr.vector_engine,
-            idle_threshold_sec=300.0,
-        )
-
-    def tearDown(self):
-        self.mgr.close()
-        self.temp_dir.cleanup()
-
-    def test_pass_a_runs_cleanly_on_production_knowledge_edges_schema(self):
-        """Pass A must promote subject.predicate facts into canonical knowledge_edges columns
-
-        (edge_id, subject, predicate, object) without no such column: id or source_entity errors.
-        """
-        # Insert duplicate and structured facts
-        self.mgr.remember_fact("user.favorite_editor", "VS Code", category="preference")
-        self.mgr.remember_fact("user.favorite_editor_dup", "VS Code", category="preference")
-        self.mgr.remember_fact("user.favorite_shell", "PowerShell 7", category="preference")
-
-        rw_conn = self.consolidator._connect(read_only=False)
-        try:
-            _dupes_merged, edges_promoted = self.consolidator.run_pass_a_entity_deduplication(rw_conn)
-            rw_conn.commit()
-        finally:
-            rw_conn.close()
-
-        # Edges should be promoted
-        self.assertGreaterEqual(edges_promoted, 1)
-
-        # Inspect canonical columns on knowledge_edges
-        ro_conn = self.consolidator._connect(read_only=True)
-        try:
-            cursor = ro_conn.cursor()
-            cursor.execute("SELECT edge_id, subject, predicate, object, source_context FROM knowledge_edges")
-            rows = cursor.fetchall()
-            self.assertGreaterEqual(len(rows), 1)
-            row_dict = dict(rows[0])
-            self.assertIn("edge_id", row_dict)
-            self.assertIn("subject", row_dict)
-            self.assertIn("predicate", row_dict)
-            self.assertIn("object", row_dict)
-            self.assertEqual(row_dict["subject"].lower(), "user")
-        finally:
-            ro_conn.close()
-
-    def test_pass_b_compiles_safe_macros_and_rejects_mutating_tools(self):
-        """Pass B compiles 3-step sequences of safe tools and rejects mutating tools (risk >= 2)."""
-        safe_seq = [
-            {"name": "list_directory"},
-            {"name": "read_file"},
-            {"name": "inspect_screen"},
-        ]
-        forbidden_seq = [
-            {"name": "list_directory"},
-            {"name": "execute_powershell"},
-            {"name": "inspect_screen"},
-        ]
-
-        # Log safe sequence 3 times
-        for _ in range(3):
-            self.mgr.log_interaction("check files", "done", json.dumps(safe_seq))
-
-        # Log forbidden sequence 3 times
-        for _ in range(3):
-            self.mgr.log_interaction("run danger", "done", json.dumps(forbidden_seq))
-
-        rw_conn = self.consolidator._connect(read_only=False)
-        try:
-            compiled = self.consolidator.run_pass_b_workflow_distillation(rw_conn)
-            rw_conn.commit()
-        finally:
-            rw_conn.close()
-
-        self.assertEqual(compiled, 1)
-
-        ro_conn = self.consolidator._connect(read_only=True)
-        try:
-            cursor = ro_conn.cursor()
-            cursor.execute("SELECT macro_id, tool_sequence FROM compiled_reflex_macros")
-            macros = cursor.fetchall()
-            self.assertEqual(len(macros), 1)
-            self.assertIn("list_directory->read_file->inspect_screen", macros[0]["tool_sequence"])
-            self.assertNotIn("execute_powershell", macros[0]["tool_sequence"])
-        finally:
-            ro_conn.close()
 
 
 class TestMilestone2SingleWriterActorRouting(unittest.TestCase):

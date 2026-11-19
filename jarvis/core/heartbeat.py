@@ -847,42 +847,6 @@ class JarvisHeartbeat:
                         "event": "user_idle",
                         "idle_duration_s": round(idle_sec, 1),
                     })
-                # Trigger zero-contention sleep-phase memory consolidation on WAL snapshot
-                if not self._sleep_consolidation_done:
-                    self._sleep_consolidation_done = True
-                    if hasattr(self.orchestrator, "memory") and hasattr(self.orchestrator.memory, "consolidate_sleep_phase"):
-                        raw_ws = getattr(self.orchestrator, "active_workspace_id", "ws_default")
-                        clean_ws = str(raw_ws).strip() if raw_ws else "ws_default"
-                        if clean_ws.lower() == "unscoped":
-                            logger.warning("Sleep-phase consolidation skipped: 'unscoped' workspace is prohibited.")
-                        else:
-                            try:
-                                res = self.orchestrator.memory.consolidate_sleep_phase(
-                                    is_user_active_fn=lambda: self.get_idle_seconds() < self.idle_threshold_seconds,
-                                    workspace_id=clean_ws,
-                                )
-                                if hasattr(self.orchestrator, "broadcast_ambient_telemetry") and res:
-                                    dist = res.get("distillation", {})
-                                    dupes = res.get("duplicates_merged", 0)
-                                    edges = res.get("edges_promoted", 0)
-                                    macros = res.get("reflex_macros_compiled", 0)
-                                    if dupes > 0 or edges > 0 or macros > 0:
-                                        self.orchestrator.broadcast_ambient_telemetry({
-                                            "event": "sleep_consolidation_complete",
-                                            "duplicates_merged": dupes,
-                                            "edges_promoted": edges,
-                                            "reflex_macros_compiled": macros,
-                                            "wal_pages_checkpointed": res.get("wal_pages_checkpointed", 0),
-                                        })
-                                    elif dist.get("traits_extracted", 0) > 0 or res.get("facts_pruned", 0) > 0:
-                                        self.orchestrator.broadcast_ambient_telemetry({
-                                            "event": "memory_consolidated",
-                                            "traits_extracted": dist.get("traits_extracted", 0),
-                                            "facts_pruned": res.get("facts_pruned", 0),
-                                            "decayed_habits": res.get("decayed_habits", 0),
-                                        })
-                            except Exception as c_err:  # noqa: BLE001
-                                logger.debug(f"Sleep-phase consolidation notice: {c_err}")
         elif self._is_user_idle and idle_sec < 15.0:
             # 2. User Return Detection (User resumed activity after >idle_threshold_seconds)
             self._is_user_idle = False

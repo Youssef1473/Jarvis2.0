@@ -14,42 +14,96 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-17T11:45:00+01:00 (CET)
-- **Active Git Branch:** `perf/low-latency-voice-and-memory-optimization`
-- **Recorded HEAD Commit SHA:** `2e37191`
-- **HEAD Commit Subject:** `Merge pull request #63 from Youssef1473/feat/hud-patch-approval-and-live-diff-viewer`
-- **Milestone State:** **Track F Completed: Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration (Plan 046 Verified); 2,535 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics**
-- **Active Milestone:** **Track F: Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration (Plan 046 Completed)**
-- **Staged Modifications:** `0 files` (clean staging index)
-- **Unstaged Tracked Modifications:**
-  - `data/test_classification_manifest.json` (test manifest accounting updated to 2,535 nodes, 1,555 Tier 1)
-  - `jarvis/__main__.py` (Package CLI entry point forwarder)
-  - `jarvis/audio/speech_capture.py` (Conversational fast-path VAD 0.65s silence cutoff)
-  - `jarvis/audio/tts.py` (Kokoro ONNX Zero-VRAM CPUExecutionProvider isolation, P-core 0x00FC affinity, pipelined lookahead synthesis, elastic 85ms pre-buffer cushion)
-  - `jarvis/core/cognition/cognitive_router.py` (Zero-tool prompt pruning on casual turns)
-  - `jarvis/core/cognition/intent_acknowledgments.py` (Conversational acoustic reflex bridge <10ms for casual dialogue)
-  - `jarvis/core/orchestrator.py` (Greeting prefix stripping for delivered reflex bridges)
-  - `jarvis/core/pipeline/interim_bridge.py` (Minimum clause floor preventing tiny 1-2 word fragment starvation)
-  - `tools/profile_voice_turn.py` (Standalone voice turn stage latency profiler and telemetry diagnostic)
-  - `tools/test_classifier.py` (Nargs-optional export target defaulting to canonical manifest path)
-  - `tests/test_low_latency_voice_pipeline.py` (9 hermetic unit and integration tests)
-  - `docs/agent/PROJECT_STATE.md`
-  - `docs/agent/SESSION_LOG.md`
-
-- **Untracked Items (8 items):**
-  1. `data/agy_112_nodes.json` (Diagnostic node map)
-  2. `data/agy_112_pytest_nodes.json` (Remediation test inventory)
-  3. `data/execution_evidence/` (Audit evidence directory)
-  4. `data/learning_candidates/` (Candidate learning records)
-  5. `data/learning_events/` (Persisted learning events)
-  6. `data/regression_scorecard.json` (Test regression metrics)
-  7. `data/supplemental_test_manifest.json` (Auxiliary test map)
-  8. `scratch/` (Temporary scratch directory)
+- **Validation Timestamp:** 2026-11-19T01:15:00+01:00 (CET)
+- **Active Git Branch:** `main`
+- **Recorded HEAD Commit SHA:** `7836a4caddf4074be52a266b061d92b0f81ee33d`
+- **HEAD Commit Subject:** `refactor(skills): excise unused mcp_manager shim and canonicalize internal audio/provider imports`
+- **Milestone State:** **Architectural Review & Hardening Sprint (Gemini 4 Neon Plan) — Batches 1–6 Completed & Verified; 2,351 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics; ADR-001 through ADR-006 ACCEPTED; Single-Writer Invariant 100% Enforced**
+- **Active Milestone:** **Architectural Review & Hardening Sprint (Batches 1–6 Complete & Verified)**
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Track F: Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration (Plan 046 Completed)`
+- **Active Milestone:** `Architectural Review & Hardening Sprint (Batches 1–6 Complete & Verified)`
 - **Completed Work:**
+  - **Gemini 4 Neon Architectural Hardening Sprint (Batches 1–6 COMPLETED & VERIFIED):**
+    - **Batch 1 (SQLite Single-Writer & Bounded Read-Pool Migration):**
+      - Migrated `photo_manager.py` to route all write mutations through `SingleWriterActor.execute_write(...)` and read queries through `ReadOnlyConnectionPool` with `bounded_ro_connection`. Closed the last remaining `ADR-001` write-path bypass.
+      - Migrated `habit_graph.py` to check out read connections through `ReadOnlyConnectionPool` with `bounded_ro_connection` (2,000ms deadline + automatic read snapshot rollback). Migrated exponential decay writes to `SingleWriterActor`.
+      - Added `ReadOnlyConnectionPool.get_or_create` classmethod alias.
+      - Authored hermetic test suite `tests/test_sqlite_writer_ownership.py` asserting zero direct `sqlite3.connect` write calls via monkeypatched traps.
+    - **Batch 2 (Audio DSP Continuity, Epoch Thread Safety & Hung-Window Guard):**
+      - Upgraded `SharedEpochState` in `jarvis/core/cancellation.py` from GIL-only to mutex-guarded using `_EPOCH_LOCK = threading.Lock()`. Added atomic bump methods (`bump_barge_in_epoch()`, `bump_epoch()`, `bump_tool_epoch()`) while preserving backward-compatible `@property` getter/setter.
+      - Verified `StatefulPolyphaseUpsampler` in `jarvis/audio/tts.py` (32-sample lookbehind tail) and `.reset()` integration across session start and barge-in epochs.
+      - Verified `safe_set_foreground_window` in `jarvis/skills/os_control.py` probes `user32.IsHungAppWindow(wintypes.HWND(fg_hwnd))` before `AttachThreadInput` with synthetic Alt-key fallback.
+      - Added unit tests in `tests/test_audio_streaming_pipeline.py` verifying zero boundary notch error and concurrent thread-safe epoch bumping across 8 threads.
+    - **Batch 3 (Incremental UTF-8 Pipe Decoding, CDP Discovery & Flow State Tests):**
+      - Verified `_iter_unbuffered_lines` in `jarvis/core/antigravity_bridge.py` uses `codecs.getincrementaldecoder("utf-8")(errors="replace")`.
+      - Added `chrome-win64` discovery paths in `jarvis/skills/browser_cdp.py`. Preserved loopback port confinement.
+      - Added `test_iter_unbuffered_lines_multibyte_utf8_split` in `tests/test_antigravity_integration.py` and `test_process_packet_tampered_and_malformed_rejected` in `tests/test_phase1_flow_state.py`.
+    - **Batch 4 (Residual Compatibility Shim Audit & Pruning):**
+      - Confirmed `jarvis.audio.cancellation` and `jarvis.audio.chunker` are actively imported/patched by test suites and retained them strictly as minimal re-export shims.
+      - Excised unused `jarvis/skills/mcp_manager.py` (0 callers). Repointed internal imports in `tts.py`, `wake_word.py`, `ollama.py`, and `openrouter.py` to canonical modules.
+      - Fixed `tests/test_plugin_integrations.py` tool registry import.
+    - **Batch 5 (Security, Epistemic Qualification & Memory Authorization Backlog Closure):**
+      - Updated context headers in `context_orchestrator.py` and `interaction_memory.py` to qualify historical memory as `[Directly Relevant Knowledge to Current Context - Reference / Historical]`.
+      - Upgraded fixture database path containment assertion in `tests/test_memory_authorization_audit.py` to strict `is_relative_to`.
+      - Graduated `test_11_contradictory_stale_memory_not_presented_as_unqualified_truth` from strict xfail to active passing assertion (20/20 tests passing).
+    - **Batch 6 (Documentation & Manifest Reconciliation):**
+      - Re-exported `data/test_classification_manifest.json` (`2,351` total test nodes: `1,451` Tier 1 hermetic unit, `281` Tier 2a async safe, `170` Tier 2b loopback IPC, `164` Tier 3 Windows integration, `265` Tier 4 hardware integration, `20` Tier browser integration) with 0 unclassified and 0 orphans.
+      - Verified manifest integrity with `tools/test_classifier.py --check-orphaned` and verified `test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed 100%.
+      - Reconciled `docs/architecture/PROJECT_MAP.md`, `docs/architecture/INDEX.md`, and `docs/agent/PROJECT_STATE.md`.
+  - **Plan 005 (COMPLETED & VERIFIED): Deduplicate Core Modules, Consolidate CDP Browser Skills, Upgrade TurnTaintTracker to Argument-Level Provenance, and Promote ADRs:**
+    - **Batch 1 (Affinity & Memory `ro_pool` Consolidation):**
+      - Consolidated Win32 thread affinity into canonical `jarvis/core/win32_affinity.py` (preserving `MASK_PCORE_WAKEWORD = 0x0054` and `get_wakeword_affinity_mask()`); repointed all imports across `jarvis/` and `tests/`; deleted legacy shims jarvis/audio/affinity.py and jarvis/core/thread_affinity.py; updated `.agents/rules/audio_threading.md` to reflect `0x0054`.
+      - Consolidated read-only connection pooling into canonical `jarvis/core/memory/ro_pool.py` (preserving `DEFAULT_RO_QUERY_TIMEOUT_MS = 2000`, `DEFAULT_RO_QUERY_TIMEOUT_SECONDS = 2.0`, and `bounded_ro_connection`); repointed all callers across `jarvis/` and `tests/`; deleted jarvis/core/ro_pool.py and jarvis/memory/ro_pool.py.
+    - **Batch 2 (Streaming Tool Parsers & CDP Browser Consolidation):**
+      - Merged `stream_tool_parser.py` and `streaming_tool_parser.py` into canonical `jarvis/core/pipeline/streaming_tool_parser.py`; repointed all imports in `gemini.py`, `tests/test_streaming_tool_parser.py`, and `benchmark_streaming_parser.py`; deleted root duplicate files.
+      - Consolidated `cdp_page_extractor.py`, `cdp_tabs.py`, `cdp_transport.py`, and `chrome_devtools.py` into canonical `jarvis/skills/browser_cdp.py`; preserved all public symbols imported by `browser_agent.py` and unit tests; repointed all imports; deleted the 4 fragmented legacy CDP files.
+    - **Batch 3 (Upgrade `TurnTaintTracker` to Argument-Level Provenance):**
+      - Extended `TurnTaintTracker` and `_TurnTaintState` in `jarvis/core/security_boundaries.py` with value/digest provenance (`track_tainted_value`), argument inspection (`is_argument_tainted`), and parameter-independent benign local control pass-through (`BENIGN_LOCAL_CONTROL_TOOLS`).
+      - Integrated automatic argument tainting in `ToolOrchestrator` (`jarvis/core/pipeline/tool_orchestrator.py`) across synchronous and asynchronous execution paths.
+      - Added positive and negative regression tests in `tests/test_security_boundaries.py` verifying both tainted-argument escalation and benign local control pass-through.
+    - **Batch 4 (ADR Promotion & Test Manifest Reconciliation):**
+      - Aligned constants and promoted `docs/adr/ADR-001` through `ADR-006` from `PROPOSED` to `ACCEPTED`. Updated `docs/adr/README.md`.
+      - Re-exported `data/test_classification_manifest.json` (`2,333` total test nodes: `1,435` Tier 1 hermetic unit, `281` Tier 2a async safe, `170` Tier 2b loopback IPC, `164` Tier 3 Windows integration, `263` Tier 4 hardware integration, `20` Tier browser integration) with 0 unclassified and 0 orphans.
+    - **Verification Suite Clean Sweep:**
+      - Gate 1: `python tools/lint.py check tools/ jarvis/ tests/` -> PASSED (0 errors, Exit code 0)
+      - Gate 2: `python tools/diagnostics.py check jarvis/ tools/` -> PASSED (0 diagnostics, Exit code 0)
+      - Gate 3: `python tools/run_fast_tests.py --security` -> PASSED (207 passed, 1 skipped in 53.00s, Exit code 0)
+      - Gate 4: `python tools/run_fast_tests.py --fast -w 8 -v --timeout 720` -> PASSED (1,425 passed, 9 skipped, 1 xfailed in 170.68s / 2m50s, Exit code 0)
+      - Gate 5: `git diff --check` -> PASSED (0 whitespace errors, Exit code 0)
+  - **Plan 004 (COMPLETED & VERIFIED): Excise Self-Evolution, AppContainer, and Governance Bloat:**
+    - **Dead Code & Production Modules Excised:** Deleted autonomous self-evolution, AST patch proposal, macro compiler, experimental AppContainer sandbox, dead memory syncers, and Win32 restart manager/USN journal radar modules:
+      - jarvis/skills/self_evolution.py
+      - jarvis/skills/ast_code_surgeon.py
+      - jarvis/skills/reflex_macro_compiler.py
+      - jarvis/core/evolution/ (__init__.py, appcontainer.py, isolated_runner.py, sandbox.py)
+      - jarvis/ui/routes/evolution.py
+      - data/evolution_scratch/
+      - data/evolution_snapshots/
+      - jarvis/core/memory/obsidian_sync.py
+      - jarvis/core/memory/sleep_consolidator.py
+      - jarvis/skills/rstrtmgr_lock_surgeon.py
+      - jarvis/skills/usn_journal_delta_radar.py
+    - **Router, Heartbeat & Subsystem Detachment:** Detached `EvolutionRoutesMixin` and `/api/evolution/*` route mounts from `jarvis/ui/server.py` and `jarvis/ui/routes/__init__.py`; detached `obsidian_sync` and `sleep_consolidator` from `jarvis/core/memory/__init__.py` and `jarvis/core/heartbeat.py`; detached `self_evolution` references from `jarvis/core/orchestrator.py`; re-homed `verify_learned_habits` and reflex engine binding into `jarvis/skills/diagnostics.py`; detached excised modules from `jarvis/skills/base.py` and `jarvis/skills/__init__.py`; updated `tools/context_router.py` to remove excised modules.
+    - **Scratch Binaries & Dead Test Purge:** Purged experimental compiled binaries and probe scripts in `scratch/`, ensured `scratch/*` and `!scratch/.gitkeep` in `.gitignore`. Deleted 13 orphaned test files exclusively testing excised modules (tests/test_self_evolution.py, tests/test_self_evolution_sandbox.py, tests/test_ast_code_surgeon_pillar3.py, tests/test_appcontainer_sandbox.py, tests/test_obsidian_sync.py, tests/test_sleep_consolidation_wal.py, tests/test_sleep_consolidator_pillar1.py, tests/test_rstrtmgr_lock_surgeon.py, tests/test_usn_journal_delta_radar.py, tests/test_reflex_macro_compiler.py, tests/test_autonomous_patch_verify.py, tests/test_hud_patch_approval.py, tests/test_stage1_security_hardening.py). Decoupled and cleaned shared test suites.
+    - **Test Manifest Accounting:** Reconciled `data/test_classification_manifest.json` from 2,549 to 2,328 test nodes (1,446 Tier 1 hermetic unit tests, 275 Tier 2a async safe, 160 Tier 2b loopback IPC, 164 Tier 3 Windows integration, 263 Tier 4 hardware integration, 20 Tier browser integration) with 0 unclassified and 0 orphans.
+    - **Full Verification Suite:** Static linter passed (0 errors), AST-Grep passed (0 errors), Security suite passed (207 passed, 0 failed, 1 skipped in 57.98s), Tier 1 fast suite passed (1,435 passed, 0 failed, 11 skipped in 383.97s), `git diff --check` clean (exit code 0).
+  - **Plan 003 (COMPLETED & VERIFIED): Enforce Query Timeouts on `ro_pool` & Periodic WAL Checkpointing:**
+    - **Bounded Read-Only Checkout Connections (jarvis/memory/ro_pool.py, jarvis/core/ro_pool.py):** Added `DEFAULT_RO_QUERY_TIMEOUT_MS = 2000` and `DEFAULT_RO_QUERY_TIMEOUT_SECONDS = 2.0`. Implemented `bounded_ro_connection(conn, timeout_ms, close_on_exit)` context manager installing `conn.set_progress_handler` with 2,000ms deadline (raising `sqlite3.OperationalError: query interrupted`), automatically rolling back active read snapshots (`conn.rollback()`) to avoid pinning WAL read marks, and uninstalling the progress handler on exit. Applied bounded checkout across all `ReadOnlyConnectionPool.connection(...)` calls and `VectorMemoryPool` background queries. Re-exported canonical pool timeout constants and helpers in jarvis/core/ro_pool.py.
+    - **SingleWriterActor Periodic Passive WAL Checkpointing & Clean Shutdown Truncate (`jarvis/core/memory/sqlite_base.py`):** Added `_committed_write_count` and `committed_write_count` property tracking committed transactions. Executed `PRAGMA wal_checkpoint(PASSIVE);` every 100 transactions on committed transactions, and triggered `PRAGMA wal_checkpoint(TRUNCATE);` on clean actor shutdown (`stop()`).
+    - **Hermetic Test Suite & Concurrency Stress (`tests/test_ro_pool.py`):** Added `TestReadOnlyConnectionPoolAndWALSuite` covering: 50ms progress handler query interruption; read snapshot rollback releasing WAL read marks; 100-transaction passive checkpointing; clean shutdown WAL truncation to 0 bytes; and 4-reader concurrent stress with 250 writes verifying zero `sqlite3.OperationalError: database is locked` and clean shutdown truncation.
+    - **Test Accounting & Classifier:** Expanded test manifest from 2,544 to 2,549 collected nodes (1,562 Tier 1 nodes) with 0 orphans, 0 unclassified, and 100% accounting compliance.
+  - **Plan 002 (COMPLETED & VERIFIED): Replace `PeekNamedPipe` Sleep-Polling with Async Proactor I/O & Teardown Hardening:**
+    - **Event-Driven Subprocess Wait (`jarvis/core/antigravity_bridge.py`):** Replaced 10ms `time.sleep(0.01)` polling loop with event-driven wait on `proc._handle` using `kernel32.WaitForSingleObject(int(proc_handle), 1)` (1ms max slice, waking instantly upon child exit). Ensured available buffer lines are read and yielded without sleeping. Added `_iter_unbuffered_lines_async` with coroutine support and epoch invalidation; added `execute_turn_async` and `generate_response_async`.
+    - **Deterministic Pipe Handle Closure (`jarvis/core/antigravity_bridge.py`):** Guaranteed deterministic closure of `proc.stdin`, `proc.stdout`, and `proc.stderr` inside `finally` blocks of `_generate_streaming` and `execute_turn` upon broken pipes (`BrokenPipeError`), cancellations, or exceptions.
+    - **Async Datagram Endpoint & Fast Polling (`jarvis/context/bridges/pipe_listener.py`):** Extracted `process_packet(data)` with HMAC verification; added `_FlowStateDatagramProtocol` and `start_async(loop)` for non-blocking event-driven packet ingestion; reduced synchronous socket timeout from 0.5s to 0.1s with clean transport and socket closure in `stop()`.
+    - **Hermetic Tests & Manifest Accounting:** Added 7 new test nodes across `tests/test_antigravity_integration.py` and `tests/test_phase1_flow_state.py`. Re-exported test manifest to 2,544 total nodes (1,562 Tier 1) with 0 orphans, 0 unclassified, and 100% accounting.
+  - **Plan 001 (COMPLETED & VERIFIED): Fix P-Core 0 Affinity Collision & PortAudio Stream Leak:**
+    - **Physical Core 0 Isolation (`jarvis/core/win32_affinity.py`, `jarvis/audio/wake_word.py`, jarvis/audio/affinity.py):** Introduced `MASK_PCORE_WAKEWORD = 0x0054` (Logical CPUs 2, 4, 6) and `get_wakeword_affinity_mask()`, eliminating scheduling collision on Logical CPU 0 (`0x0003 & 0x0055 = 0x0001`) and reserving Physical Core 0 exclusively for `WASAPIPlaybackWorker` (`0x0003`). Added dynamic `mask` parameter support to `pin_and_elevate_current_thread`.
+    - **PortAudio Stream Teardown & Zero Leak (`jarvis/audio/tts.py`, `tests/test_tts_lifecycle_hardening.py`, `tests/test_audio_streaming_pipeline.py`):** Eliminated `_retained_streams` collection, allowing closed OS audio stream handles to finalize immediately upon callback drain. Verified handle collection across 50 consecutive start/stop cycles with zero alive weak references. Updated timeout blocked assertions to `_unresolved_streams`.
+    - **Dynamic Ring Buffer Sample Rate Reconciliation (`jarvis/audio/tts.py`):** Initialized `_stream_sample_rate` to 48,000 Hz with 120-sample (2.5ms) fade ramp matching WASAPI defaults, and added dynamic capacity/ramp reconciliation in `start_streaming_session` for 24kHz / 48kHz hardware modes.
+    - **Hermetic Tests & Manifest Reconciliation:** Authored new regression tests in `tests/test_audio_affinity.py` and `tests/test_tts_lifecycle_hardening.py`. Test manifest updated to 2,537 collected nodes (1,555 Tier 1) with 0 drift and 0 orphans.
   - **Track F (Plan 046 COMPLETED & VERIFIED): Low-Latency Voice Pipeline & VRAM-Decoupled Audio Orchestration:**
     - **Stage Latency Profiler (`tools/profile_voice_turn.py`):** Standalone CLI profiler measuring stage latencies (`t_vad`, `t_stt`, `t_route`, `t_ttft`, `t_synth1`, `t_play1`, `t_gap`, `t_play2`), process RSS, and DXGI/NVML telemetry with `--mock-query` and `--dry-run` modes, asserting $t_{\text{gap}} < 350\text{ ms}$ and Zero-VRAM Kokoro invariants.
     - **Kokoro-82M P-Core Affinity & Zero-VRAM CPU Isolation (`jarvis/audio/tts.py`):** Hard-configured Kokoro ONNX exclusively to `CPUExecutionProvider` (`intra_op_num_threads=4`, `inter_op_num_threads=1`, `execution_mode=ORT_SEQUENTIAL`, Intel i5-12500H P-core affinity `0x00FC` on Windows), eliminating the 2GB CUDA VRAM request and protecting 100% of the RTX 3050's `3,367.7 MiB` WDDM budget exclusively for Faster-Whisper and local Ollama inference.
@@ -59,11 +113,11 @@
     - **Hermetic Test Suite (`tests/test_low_latency_voice_pipeline.py`):** Authored 9 hermetic unit and integration tests covering zero-VRAM Kokoro CPU provider configuration, pipelined lookahead synthesis overlap ($t_{\text{gap}} < 350\text{ ms}$), conversational fast-path 0.65s VAD cutoff, casual greeting reflex bridges (<10ms), tool schema pruning (`tools=None`), $< 1\mu\text{s}$ epoch barge-in invalidation, elastic 2,048-sample pre-buffer cushion, `jarvis.__main__` importability, and CLI profiler dry-run execution.
     - **Test Accounting & Classifier:** Expanded test manifest from 2,526 to 2,535 collected nodes (1,555 Tier 1 nodes) with 0 orphans, 0 duplicates, and 100% classification compliance.
   - **Track E (Plan 045 COMPLETED & VERIFIED): HUD Patch Approval Drawer & Live Unified Diff Viewer:**
-    - **Patch Proposal Lifecycle & Thread-Safe Registry (`jarvis/skills/ast_code_surgeon.py`):** Implemented `PatchProposal` and `PatchProposalRegistry` (`max_proposals=50`, `ttl_seconds=900.0`, thread-safe `threading.Lock()`, automatic expired/resolved pruning, `sha256_before` optimistic concurrency guard returning `409 Conflict` on live file drift, `DualKeyApprovalManager` audit grant, and atomic `promote_verified_patch` execution).
-    - **Self-Evolution Skills Integration (`jarvis/skills/self_evolution.py`):** Wired `propose_and_verify_code_patch` to automatically register AppContainer verified candidate patches into `PatchProposalRegistry` and broadcast `patch_proposal_ready` via WebSocket telemetry.
-    - **Evolution UI Routes & Mixin (`jarvis/ui/routes/evolution.py`, `jarvis/ui/routes/__init__.py`, `jarvis/ui/server.py`):** Built and composed `EvolutionRoutesMixin` exposing `GET /api/evolution/proposals` (filtered, paginated, pending count), `POST /api/evolution/proposals/{proposal_id}/approve` (authenticated, host/origin validated, TTL checked, sha256_before conflict guarded, DualKeyApprovalManager audited, and `patch_proposal_resolved` broadcasted), and `POST /api/evolution/proposals/{proposal_id}/reject` (operator rationale recording).
+    - **Patch Proposal Lifecycle & Thread-Safe Registry (`ast_code_surgeon.py`):** Implemented `PatchProposal` and `PatchProposalRegistry` (`max_proposals=50`, `ttl_seconds=900.0`, thread-safe `threading.Lock()`, automatic expired/resolved pruning, `sha256_before` optimistic concurrency guard returning `409 Conflict` on live file drift, `DualKeyApprovalManager` audit grant, and atomic `promote_verified_patch` execution).
+    - **Self-Evolution Skills Integration (`self_evolution.py`):** Wired `propose_and_verify_code_patch` to automatically register AppContainer verified candidate patches into `PatchProposalRegistry` and broadcast `patch_proposal_ready` via WebSocket telemetry.
+    - **Evolution UI Routes & Mixin (ui/routes/evolution.py [excised in Plan 004], `jarvis/ui/routes/__init__.py`, `jarvis/ui/server.py`):** Built and composed `EvolutionRoutesMixin` exposing `GET /api/evolution/proposals` (filtered, paginated, pending count), `POST /api/evolution/proposals/{proposal_id}/approve` (authenticated, host/origin validated, TTL checked, sha256_before conflict guarded, DualKeyApprovalManager audited, and `patch_proposal_resolved` broadcasted), and `POST /api/evolution/proposals/{proposal_id}/reject` (operator rationale recording).
     - **Zero-CLS Holographic HUD Integration (`jarvis/ui/templates/hud.html`):** Added fixed-geometry `#evolutionPendingBadge` to top pill, dedicated `PATCHES (<span id="drawerPatchesCount">0</span>)` drawer tab, JetBrains Mono syntax-highlighted unified diff viewer (`+` emerald, `-` crimson, `@@` cyan), 3-stage verification status badges (`RUFF 0`, `DIAG 0`, `TEST PASS`), and armed two-step Approve/Reject actions via delegated `data-action` attributes (zero inline event handlers).
-    - **Hermetic Test Suite (`tests/test_hud_patch_approval.py`):** Authored 10 isolated unit and integration tests covering proposal registration, TTL expiration, capacity eviction, unauthenticated 401 rejection, CSRF/origin 403 rejection, live atomic promotion with DualKeyApprovalManager audit, optimistic concurrency 409 conflict detection, operator rejection, forbidden module guard, Zero-CLS HTML invariants, and WebSocket event broadcasting.
+    - **Hermetic Test Suite (`test_hud_patch_approval.py`):** Authored 10 isolated unit and integration tests covering proposal registration, TTL expiration, capacity eviction, unauthenticated 401 rejection, CSRF/origin 403 rejection, live atomic promotion with DualKeyApprovalManager audit, optimistic concurrency 409 conflict detection, operator rejection, forbidden module guard, Zero-CLS HTML invariants, and WebSocket event broadcasting.
     - **Test Accounting & Classifier:** Expanded test manifest from 2,516 to 2,526 collected nodes (1,546 Tier 1 nodes) with 0 orphans, 0 duplicates, and 100% classification compliance.
   - **Track D (Plan 044 COMPLETED & VERIFIED): Dynamic VRAM-Aware Local Model Routing & Adaptive Context/Offload Scaling:**
     - **VRAM-Calibrated Inference Profile Governor (`jarvis/routing/vram_profile.py`):** Pre-dispatch governor querying `nvml_dxgi_vram_arbiter` to dynamically scale local LLM runtime parameters across 5 pressure tiers (`NOMINAL`: 8k ctx, -1 GPU; `ELEVATED`: 4k ctx, -1 GPU + Stage 1 shed; `CRITICAL`: 2k ctx, <=12 layers + Stage 2 shed or cloud failover; `OOM_GUARD`: 2k ctx, 0 GPU fail-closed barrier + cloud failover or CPU-only; `UNAVAILABLE`: safe CI/non-NVIDIA CPU defaults).
@@ -78,9 +132,9 @@
     - **Hermetic Test Suite (`tests/test_nvml_vram_arbiter.py`):** Expanded suite to 15 tests covering effective headroom math, all 4 watermark tier transitions, Stage 1/2 shedding execution, fail-closed `OOM_GUARD` rejection, cross-platform Linux/non-NVIDIA graceful fallback, COM failure resiliency, and additive HUD metrics.
     - **Test Accounting & Classifier:** Expanded test manifest from 2,492 to 2,502 collected nodes (1,522 Tier 1 nodes) with 0 orphans, 0 duplicates, and 100% classification compliance.
   - **Track B (Plan 042 COMPLETED & VERIFIED): Autonomous AppContainer Code-Patch & Sandboxed Verify Loop:**
-    - **AST Code Surgeon (`jarvis/skills/ast_code_surgeon.py`):** Added `FORBIDDEN_PATCH_MODULES` and path traversal safety checks (`validate_target_patch_path`), built ephemeral shadow staging (`create_shadow_patch`), created 3-stage AppContainer / Job Object verification runner (`verify_patch_in_appcontainer`), and added `DualKeyApprovalManager` gated promotion (`promote_verified_patch`).
-    - **Self-Evolution Skills (`jarvis/skills/self_evolution.py`):** Registered `propose_and_verify_code_patch` with deterministic shadow cleanup.
-    - **Hermetic Test Suite (`tests/test_autonomous_patch_verify.py`):** Implemented 10 tests verifying path traversal boundaries, syntax error rejection, AST security checks, unified diff generation without live file mutation, Ruff lint failure detection, test failure detection, end-to-end green verification, and human approval gating.
+    - **AST Code Surgeon (`ast_code_surgeon.py` [excised]):** Added `FORBIDDEN_PATCH_MODULES` and path traversal safety checks (`validate_target_patch_path`), built ephemeral shadow staging (`create_shadow_patch`), created 3-stage AppContainer / Job Object verification runner (`verify_patch_in_appcontainer`), and added `DualKeyApprovalManager` gated promotion (`promote_verified_patch`).
+    - **Self-Evolution Skills (`self_evolution.py` [excised]):** Registered `propose_and_verify_code_patch` with deterministic shadow cleanup.
+    - **Hermetic Test Suite (`test_autonomous_patch_verify.py` [excised]):** Implemented 10 tests verifying path traversal boundaries, syntax error rejection, AST security checks, unified diff generation without live file mutation, Ruff lint failure detection, test failure detection, end-to-end green verification, and human approval gating.
     - **Test Accounting & Classifier:** Expanded test manifest from 2,482 to 2,492 collected nodes with 0 orphans and 100% classification compliance.
   - **Track A (Plan 041 COMPLETED & VERIFIED): Multi-Workspace HUD & Quarantined Fact Promotion:**
     - **Backend Routes & Mixin (`jarvis/ui/server.py`, `jarvis/ui/routes/memory.py`):** Added `POST /api/workspaces/select` alias, exposed `quarantined_count` on `GET /api/workspaces`, and implemented authenticated `GET /api/memory/quarantined` (paginated list with category/search filters), `POST /api/memory/quarantined/promote` (single-writer transactional promotion with vector sync), and `POST /api/memory/quarantined/purge` (defense-in-depth quarantined purge).
@@ -101,7 +155,7 @@
     - **Test Accounting Invariant:** 2,472 collected nodes accounted for (0 drift) via `test_17_accurate_total_test_accounting` and `tools/test_classifier.py --check-orphaned`.
     - **Database Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
   - **`/improve` Modernization & Refactoring Queue — Batch 6 (Plans 025–029 COMPLETED & SEALED):**
-    - **Plan 025 (Evolution Sandbox Containment Hardening — PR #44, `5bd01ef`, merged `49d9392`):** Eliminates all 33 Ruff diagnostics in `jarvis/core/evolution/sandbox.py`, adding `ClassVar` annotations for blocked AST call sets, fixing re-raise syntax (`TRY201`), and typing AppContainer/Job Object containment and canary validation exceptions.
+    - **Plan 025 (Evolution Sandbox Containment Hardening — PR #44, `5bd01ef`, merged `49d9392`):** Eliminates all 33 Ruff diagnostics in evolution sandbox (`sandbox.py` [excised in Plan 004]), adding `ClassVar` annotations for blocked AST call sets, fixing re-raise syntax (`TRY201`), and typing AppContainer/Job Object containment and canary validation exceptions.
     - **Plan 026 (MCP Manager Lifecycle Hardening — PR #45, `fbe3a56`, merged `1e9428b`):** Eliminates all 22 Ruff diagnostics in `jarvis/core/mcp_manager.py`, merging string prefix checks (`PIE810`) and typing stdio/SSE process lifecycle and JSON-RPC transport exceptions.
     - **Plan 027 (Task Manager & OpenAI Brain Error Transparency — PR #45, `e9ceb27`, merged `1e9428b`):** Eliminates all 38 Ruff diagnostics across `jarvis/core/task_manager.py` (19) and `jarvis/core/brain_openai.py` (19), typing background worker Job Object termination and multi-provider LLM initializations.
     - **Plan 028 (Antigravity Bridge IPC Hardening — PR #46, `f8f8218`, merged `5f53b2f`):** Eliminates all 89 Ruff diagnostics in `jarvis/core/antigravity_bridge.py`, optimizing dict iteration (`PERF102`), simplifying integer casts (`RUF046`), and typing Win32 named mutex and streaming JSON IPC errors.
@@ -132,7 +186,7 @@
     - **Database Parity & Integrity:** `data/jarvis_memory.db` verified clean with `PRAGMA integrity_check` = `ok`, `PRAGMA foreign_key_check` = 0 violations, `facts` = 238 rows (234 quarantined unscoped, 4 ws_default), and `facts_vec` = 238 rows.
   - **`/improve` Modernization & Refactoring Queue — Batch 3 (Plans 010–014 COMPLETED & SEALED):**
     - **Plan 010 (CI Phase 3 Consecutive-Turns E2E Smoke Gate — PR #31, `14af094`, merged `042dd35`):** Wires `python tools/verify_consecutive_turns.py --headless` into `.github/workflows/ci.yml` under `Test Governance & Security Regression Gate`, executing the full 4-turn Phase 3 sequence (workspace isolation, single-use tool execution, audio barge-in latency budget, 6-phase teardown) on every pull request in under 2 seconds without test manifest drift (`2,472` nodes intact).
-    - **Plan 011 (Memory Pool Teardown Hardening & Connection Logging — PR #32, `8a854ef`, merged `bf75693`):** Hardened connection teardown in `jarvis/memory/ro_pool.py` and `jarvis/core/memory/sqlite_base.py`. Added comprehensive error logging during connection closure, protected against interpreter shutdown module teardown (`ImportError` on `sys.meta_path`), and eliminated silent WAL frame pinning and connection lock leak hazards.
+    - **Plan 011 (Memory Pool Teardown Hardening & Connection Logging — PR #32, `8a854ef`, merged `bf75693`):** Hardened connection teardown in legacy ro_pool (consolidated in Plan 005) and `jarvis/core/memory/sqlite_base.py`. Added comprehensive error logging during connection closure, protected against interpreter shutdown module teardown (`ImportError` on `sys.meta_path`), and eliminated silent WAL frame pinning and connection lock leak hazards.
     - **Plan 012 (Audio Error Transparency & ClassVar Type Safety — PR #32, `b9fc6c9`, merged `bf75693`):** Eliminated all 54 Ruff diagnostics across `jarvis/audio/` (`hotkey_listener.py`, `dsp_tap.py`, `audio_bridge.py`, `playback.py`, `stt.py`, `wake_word.py`). Annotated mutable class-level attributes with `typing.ClassVar` (`RUF012`) and replaced blind `except Exception: pass` catches (`BLE001`, `S110`) with typed audio exceptions, surfacing real driver/endpoint errors before live hardware testing.
     - **Plan 013 (Live Audio Hardware Barge-In Validation — PR #33, `274ccc8`, merged `7446239`):** Implemented host hardware `--live-audio` execution path in `tools/verify_consecutive_turns.py` against `KokoroSynthWorker` and `WASAPIPlaybackWorker`. Empirically verified physical Windows 11 WASAPI barge-in interruption latency at $L_1 = 1.95$ ms and $L_2 = 0.00$ ms with TTFB = $20.6$ ms and RTF = $0.3500$ (>25x faster than the 50.0 ms SLA), utilizing instant PortAudio buffer abort (`st.abort()`).
     - **Plan 014 (Skills Subsystem Typed Error Reporting — PR #34, `2a86bd0`, `e828dab`, merged `177c6b6`):** Resolved all 96 Ruff diagnostics across `jarvis/skills/os_control.py` (69 `BLE001`, 20 `S110`, 3 `S112`, 1 `PLW0602`, 1 `PLW1510`, 1 `SIM102`, 1 `RUF059`). Replaced blind exception catches with narrow Win32/OS/subprocess/psutil exception handling and structured diagnostic logging. Handled headless runner `_COMError` from `pycaw.pycaw.AudioUtilities.GetSpeakers()` with seamless fallback to Win32 virtual keys, preserving all `@SkillRegistry.register` return type contracts and passing Phase 2 security regression.
@@ -365,7 +419,7 @@
 - `Tier 1: Hermetic Unit Suite` (1,237 Nodes across 113 Files via Supervisor): **1,228 passed, 0 failed, 9 skipped in 95.28s** (Exit code: 0; `data/pytest_tmp/tier1_hermetic_unit/junit.xml`). 100.0% pass rate among runnable unit tests! Zero failures, zero errors, zero timeouts!
 - `tools/verify_runner_dispatch.py`: **8 passed in 0.060s** (Exit code: 0; split-file dispatch and Win32 CLI safety verification).
 - `tests/test_flagship_features.py`: **1 passed** (`test_project_manager` with `os.startfile` patch).
-- `tests/test_self_evolution.py`: **3 passed in 4.05s** (`TestSelfEvolution` with DPAPI HMAC key and CI process isolation).
+- historical test_self_evolution.py: **3 passed in 4.05s** (`TestSelfEvolution` with DPAPI HMAC key and CI process isolation; excised in Plan 004).
 - `tests/test_lint_tool.py`: **22 passed in 1.11s** (includes `test_resolve_untrusted_env_var_falls_through_to_next_tier` with `Path.is_file` mock).
 - `tests/test_plugin_integrations.py`: **6 passed in 1.03s** (includes `test_gemini_docs_mcp_sse_parsing` with destination mock).
 - `tests/test_new_skills.py`: **1 passed in 1.47s** (step 4 webpage reading isolated via `patch.dict`).
@@ -427,30 +481,30 @@ TOTALS                                          2206   1657     33     22       
 
 ## 4. Architectural Invariants Under Guard
 
-All engineering work must comply with canonical subsystem rules and Architecture Decision Records (ADRs). ADRs currently hold `PROPOSED` status and represent documented technical proposals awaiting formal developer acceptance:
+All engineering work must comply with canonical subsystem rules and Architecture Decision Records (ADRs). ADRs hold `ACCEPTED` status and represent binding architectural contracts:
 
 1. **Persistence & Concurrency Serialization:**
    - Canonical Rule: `.agents/rules/persistence_sqlite.md`
-   - Decision Record: [`docs/adr/ADR-001-sqlite-single-writer-wal.md`](../adr/ADR-001-sqlite-single-writer-wal.md) (`PROPOSED`)
+   - Decision Record: [`docs/adr/ADR-001-sqlite-single-writer-wal.md`](../adr/ADR-001-sqlite-single-writer-wal.md) (`ACCEPTED`)
    - Invariant: Core database write mutations serialize strictly through `SingleWriterActor` with `PRAGMA journal_mode=WAL` and `PRAGMA synchronous=NORMAL`.
 2. **Win32 Job Object Process Containment:**
-   - Decision Record: [`docs/adr/ADR-002-win32-job-object-containment.md`](../adr/ADR-002-win32-job-object-containment.md) (`PROPOSED`)
+   - Decision Record: [`docs/adr/ADR-002-win32-job-object-containment.md`](../adr/ADR-002-win32-job-object-containment.md) (`ACCEPTED`)
    - Invariant: Child processes must be spawned suspended (`CREATE_SUSPENDED`), assigned to a Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and only then resumed. Fail closed on any failure.
 3. **Preemptive Audio Barge-In Cancellation:**
    - Canonical Rule: `.agents/rules/audio_threading.md`
-   - Decision Record: [`docs/adr/ADR-003-epoch-based-audio-cancellation.md`](../adr/ADR-003-epoch-based-audio-cancellation.md) (`PROPOSED`)
-   - Invariant: Audio playback and synthesis threads must never execute blocking disk/network I/O or LLM inference. Stale work invalidates cooperatively via `GLOBAL_EPOCH_STATE`.
+   - Decision Record: [`docs/adr/ADR-003-epoch-based-audio-cancellation.md`](../adr/ADR-003-epoch-based-audio-cancellation.md) (`ACCEPTED`)
+   - Invariant: Audio playback and synthesis threads must never execute blocking disk/network I/O or LLM inference. Stale work invalidates cooperatively via mutex-synchronized `GLOBAL_EPOCH_STATE` with atomic epoch bumping.
 4. **Mutating Tool Authorization & Provenance Tracking:**
    - Canonical Rule: `.agents/rules/security_boundaries.md`
-   - Decision Record: [`docs/adr/ADR-004-dual-key-tool-authorization-turn-taint.md`](../adr/ADR-004-dual-key-tool-authorization-turn-taint.md) (`PROPOSED`)
+   - Decision Record: [`docs/adr/ADR-004-dual-key-tool-authorization-turn-taint.md`](../adr/ADR-004-dual-key-tool-authorization-turn-taint.md) (`ACCEPTED`)
    - Invariant: All mutating tool operations route through `DualKeyApprovalManager`. Telemetry and external data are marked untrusted via `TurnTaintTracker`.
 5. **Windows Hardware Affinity & MMCSS Priority:**
    - Canonical Rule: `.agents/rules/audio_threading.md`
-   - Decision Record: [`docs/adr/ADR-005-win32-hardware-core-affinity.md`](../adr/ADR-005-win32-hardware-core-affinity.md) (`PROPOSED`)
-   - Invariant: WASAPI playback pinned to Logical CPUs 0–1 (`0x0003`) with MMCSS Pro Audio; wake-word pinned via physical P-core mask (`0x0055`); compute on P-cores (`0x00FC`); background on E-cores (`0xFF00`) with EcoQoS. Overlap on Logical CPU 0 represents affinity partitioning, not exclusive hardware isolation.
+   - Decision Record: [`docs/adr/ADR-005-win32-hardware-core-affinity.md`](../adr/ADR-005-win32-hardware-core-affinity.md) (`ACCEPTED`)
+   - Invariant: WASAPI playback pinned to Logical CPUs 0–1 (`0x0003`) with MMCSS Pro Audio; wake-word pinned via dedicated physical P-core mask (`0x0054`, Logical CPUs 2, 4, 6) isolating Physical Core 0 exclusively for audio playback; compute on P-cores (`0x00FC`); background on E-cores (`0xFF00`) with EcoQoS.
 6. **Network Egress Validation & SSRF Defense:**
    - Canonical Rule: `.agents/rules/security_boundaries.md`
-   - Decision Record: [`docs/adr/ADR-006-egress-validation-ip-pinning.md`](../adr/ADR-006-egress-validation-ip-pinning.md) (`PROPOSED`)
+   - Decision Record: [`docs/adr/ADR-006-egress-validation-ip-pinning.md`](../adr/ADR-006-egress-validation-ip-pinning.md) (`ACCEPTED`)
    - Invariant: Outbound URLs must be pre-validated with `validate_egress_url` and pinned at socket connect to prevent DNS rebinding.
 
 ---
@@ -467,10 +521,12 @@ All engineering work must comply with canonical subsystem rules and Architecture
    - 5 occurrences in `jarvis/core/memory/temporal_graph.py`: added `import sqlite3`.
    - 1 occurrence in `jarvis/desktop/uia_delta_worker.py`: added `from typing import Optional`.
    - Status: Completely resolved; verified 0 F821 diagnostics repository-wide.
-3. **SQLite Writer Ownership vs. Reader Connection Debt:**
-   - Direct Write Bypass Paths (2 remaining modules): `photo_manager.py` (3 connections) and `reflex_macro_compiler.py` (6 connections) open uncoordinated direct connections and execute write transactions bypassing `SingleWriterActor`. (`sleep_consolidator.py` was migrated to `SingleWriterActor` in Plan 006 — PR #25, `ed74210`).
-   - Direct Read Connection Ownership (1 module): `habit_graph.py` opens direct connection for reads, while writes serialize properly through `SingleWriterActor`. Under SQLite WAL mode, readers do not block writers; direct reads are technically valid under WAL concurrency, though connection pooling would be architectural best practice.
-   - Status: Migration design fully specified in [`docs/architecture/SQLITE_WRITER_OWNERSHIP_DESIGN.md`](../architecture/SQLITE_WRITER_OWNERSHIP_DESIGN.md); remaining paths tracked for future maintenance.
+3. **SQLite Writer Ownership vs. Reader Connection Debt (RESOLVED in Gemini 4 Neon Review Sprint):**
+   - `photo_manager.py`: Removed all 3 direct SQLite write connections; writes route through `SingleWriterActor.execute_write(...)` and reads checkout through `ReadOnlyConnectionPool.connection(timeout_ms=DEFAULT_RO_QUERY_TIMEOUT_MS)` with `bounded_ro_connection`.
+   - `reflex_macro_compiler.py`: Excised in Plan 004.
+   - `habit_graph.py`: Migrated reads to `ReadOnlyConnectionPool` with `bounded_ro_connection` and write operations to `SingleWriterActor`.
+   - Hermetic validation: `tests/test_sqlite_writer_ownership.py` asserts 0 direct write bypasses via monkeypatched traps.
+   - Status: Completely resolved. Zero direct SQLite write bypasses across the entire repository.
 4. **Master Blueprint Commit Staleness:**
    - Line 5 of `JARVIS_2.0_MASTER_ARCHITECTURAL_BLUEPRINT.txt` references historical commit `0697eb51...`.
    - Status: Clarified as historical baseline.
@@ -481,35 +537,5 @@ All engineering work must comply with canonical subsystem rules and Architecture
 
 ## 6. Immediate Next Action
 
-- **Milestone Status:**
-  - `ENG-OS-01: Engineering Agent Reliability & Persistent Intelligence` formally closed with verdict **ACCEPTED WITH LIMITATIONS**.
-  - `ENG-OS-02: Adaptive Engineering Intelligence & Continuous Learning` formally closed with verdict **ACCEPTED WITH LIMITATIONS**.
-  - `ENG-OS-03B1: Independent Crash Consistency & Transactional Persistence Audit` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03B1_CRASH_CONSISTENCY_AUDIT.md`).
-  - `ENG-OS-03B2: Authoritative SQLite Persistence & Crash-Safe Candidate Recovery` formally completed and empirically verified (`docs/agent/ENG_OS_03B2_AUTHORITATIVE_PERSISTENCE.md`).
-  - `ENG-OS-03B3: Independent Authoritative Persistence Acceptance Audit` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03B3_FINAL_ACCEPTANCE_AUDIT.md`).
-  - `ENG-OS-03B2R: Receipt Canonical Payload & Safe Candidate Bootstrap` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03B2R_REMEDIATION.md`). Milestone `ENG-OS-03B` formally closed.
-  - `ENG-OS-03C1: Test Infrastructure Modernization & Four-Tier Runner Architecture` formally implemented (`tools/test_classifier.py`, `tools/test_supervisor.py`, `data/test_classification_manifest.json`).
-  - `ENG-OS-03C2: Independent Tier Execution & Supervisor Acceptance` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C2_ACCEPTANCE_AUDIT.md`).
-  - `ENG-OS-03C3: Independent Regression Scorecard Integrity & Test Classification Audit` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C3_SCORECARD_AUDIT.md`).
-  - `ENG-OS-03C3R: Node-Level Classification Evidence Closure` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C3R_CLASSIFICATION_CLOSURE.md`).
-  - `ENG-OS-03C3R1: Final Node-Level Accounting and Classification Reconciliation` formally completed with verdict **ACCEPTED** (`docs/agent/ENG_OS_03C3R1_FINAL_RECONCILIATION.md`).
-  - `ENG-OS-03C3R2: Exclusive Failure Taxonomy and Timeout Evidence Closure` formally completed with verdict **ACCEPTED** (`docs/agent/ENG_OS_03C3R2_FAILURE_TAXONOMY_CLOSURE.md`).
-  - `ENG-OS-03C3R2-C: Evidence Terminology and Final Scorecard Correction` formally completed with verdict **ACCEPTED** (`docs/agent/ENG_OS_03C3R2_FAILURE_TAXONOMY_CLOSURE.md`).
-- `ENG-OS-03C4: Test Hermeticity & External Dependency Isolation` formally completed and empirically verified (`docs/agent/ENG_OS_03C4_TEST_HERMETICITY_REPORT.md`).
-- `ENG-OS-03C4R: Independent Test Hermeticity Remediation Acceptance Audit` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C4R_ACCEPTANCE_AUDIT.md`).
-- `ENG-OS-03C4R1: Regression Manifest Registration & Final Verification` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C4R1_FINAL_ACCEPTANCE.md`).
-- `ENG-OS-03C4R2: Final Evidence and Documentation Closure` formally closed with verdict **ACCEPTED** (`docs/agent/ENG_OS_03C4R2_CLOSURE.md`).
-- `ENG-OS-03C5: TTS Streaming Lifecycle & Restart Reliability` formally completed and empirically verified (`docs/agent/ENG_OS_03C5_TTS_LIFECYCLE_REPORT.md`).
-- `ENG-OS-03C6: Hermetic Tier 1 Recovery & Classification Normalization` formally completed and empirically verified (`docs/agent/ENG_OS_03C6_HERMETIC_TIER1_REPORT.md`).
-- `ENG-OS-03C6R: Tier 1 Hermeticity Audit & AppContainer Classification` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C6R_CLASSIFICATION_INTEGRITY_REPORT.md`).
-- `ENG-OS-03C6R1: Final Hermeticity Acceptance & Self-Evolution Split` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C6R1_FINAL_HERMETICITY_ACCEPTANCE.md`).
-- `ENG-OS-03C6R2: Final Execution Accounting & Timeout Evidence Closure` formally completed with verdict **ACCEPTED** (`docs/agent/ENG_OS_03C6R2_FINAL_EXECUTION_ACCOUNTING.md`). Milestone `ENG-OS-03C6` formally closed.
-- `ENG-OS-03C2R: Test Runner Split-File Dispatch Integrity Audit & Win32 CLI Hardening` formally completed with verdict **ACCEPTED WITHOUT LIMITATIONS** (`docs/agent/ENG_OS_03C2R_RUNNER_DISPATCH_AUDIT.md`). Milestone `ENG-OS-03C2R` formally closed.
-- `ENG-OS-03C7 Phase 1: Windows Integration Execution Reliability & Timeout Granularity Profile` formally completed (`docs/agent/ENG_OS_03C7_PHASE1_EXECUTION_PROFILE.md`).
-- `ENG-OS-03C7: Windows Integration Execution Reliability & Timeout Granularity` formally closed with verdict **ACCEPTED** (`docs/agent/ENG_OS_03C7_PHASE2_RECOVERY_REPORT.md`).
-- `ENG-OS-03C8 Phase 1: Integration Environment Capability Probing & Failure Scoping` formally completed and empirically verified (`docs/agent/ENG_OS_03C8_PHASE1_ENVIRONMENT_CAPABILITY_REPORT.md`).
-- `ENG-OS-03C8 Phase 2: Controlled Execution-Context Comparison & Remediation Architecture` formally completed; evidence audit corrected per independent engineering review (`docs/agent/ENG_OS_03C8_PHASE2_CONTROLLED_COMPARISON_AND_ARCHITECTURE.md`).
-- `ENG-OS-03C8 Context B Ingestion & Controlled Comparison:` Raw host telemetry ingested from `data/execution_evidence/env_probe_context_b.json`, validated across all 5 gates with verdict **ACCEPTED** (`tools/validate_context_b_gates.py` exit code 0). Comparative report `docs/agent/ENG_OS_03C8_CONTEXT_B_COMPARISON_REPORT.md` confirms 518 of 527 blocked/failing nodes are sandbox environment artifacts.
-- `ENG-OS-03C8 Phase 3S Dual-Profile Architecture Precision Audit:` Architectural deliverable refined (`docs/agent/ENG_OS_03C8_PHASE3_DUAL_PROFILE_ARCHITECTURE.md`). Integrated all five final precision refinements: 526-candidate population accounting, controlled SSRF test infrastructure, real Chromium CDP endpoint verification, scoped production Job Object containment, and immutable execution receipts via EvidenceStore. Complete per-node mapping of all 527 investigated nodes preserved.
-- `ENG-OS-03C8 Stage 1: Bounded Chromium & Playwright Capability Investigation:` Stage 1 authorized, executed, and compared across both contexts. Implemented `tools/probe_chromium_capabilities.py`. Context A (AppContainer): Experiment A timed out (15.0s event loop deadlock); Experiment B exited in 0.51s (`STATUS_BREAKPOINT 0x80000003` from Crashpad `0x6D` named pipe error). Context B (Host Medium-Integrity): Experiment A passed in 2.72s with `chromium_sandbox=True` (zero `--no-sandbox`), establishing that native Playwright works on host Windows; Experiment B timed out at 10.0s waiting for `DevToolsActivePort`, diagnosing Chrome for Testing flag requirements (`--remote-allow-origins=*`, `--remote-debugging-address=127.0.0.1`) and `chrome-win64` path resolution in `tests/test_browser_network_boundaries.py`. Full comparative findings documented in `docs/agent/ENG_OS_03C8_STAGE1_CHROMIUM_CAPABILITY_REPORT.md`. All 9 browser nodes remain strictly frozen (`CONDITIONALLY_BLOCKED`).
-- **Next Action:** Await independent engineering review of the Stage 1 report and authorization for subsequent stages. Do not modify production code or test runners until authorized.
+- **Milestone Status:** Architectural Review & Hardening Sprint (Batches 1–6) complete and verified across all 6 gates. Test accounting reconciled to 2,351 nodes with 0 orphans and 0 drift.
+- **Next Action:** Conduct final verification sweep across the verification gates, verify working tree cleanliness, and prepare the final technical report for the user.

@@ -449,7 +449,9 @@ class AntigravityProviderMixin:
                 logger.info("Antigravity turn cancelled by user interrupt after generation.")
                 return "Command cancelled, Sir."
 
-            from jarvis.core.streaming_tool_parser import extract_tool_call_json
+            from jarvis.core.pipeline.streaming_tool_parser import (
+                extract_tool_call_json,
+            )
 
             tool_call_info = extract_tool_call_json(reply_text)
             if not tool_call_info:

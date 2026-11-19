@@ -37,12 +37,8 @@ class TestMilestone6ResidualHardening(unittest.TestCase):
     # R-01: SingleWriterActor.get_or_create & Auxiliary Daemon Serialization
     # -------------------------------------------------------------------------
     def test_r01_single_writer_actor_registry_and_auxiliary_daemons(self):
-        """Verifies SingleWriterActor.get_or_create registry and actor writes across all 4 daemons."""
+        """Verifies SingleWriterActor.get_or_create registry and actor writes across daemons."""
         from jarvis.core.cognition.habit_graph import TemporalHabitGraph
-        from jarvis.core.memory.obsidian_sync import (
-            ObsidianChunk,
-            ObsidianContextSyncEngine,
-        )
         from jarvis.core.memory.sqlite_base import SingleWriterActor
         from jarvis.core.memory.transcript_distiller import TranscriptDistiller
         from jarvis.core.reflex_engine import DynamicReflexEngine
@@ -67,29 +63,6 @@ class TestMilestone6ResidualHardening(unittest.TestCase):
         self.assertTrue(promoted)
         self.assertEqual(len(reflex_engine.list_learned_habits()), 1)
 
-        # 4. ObsidianContextSyncEngine uses SingleWriterActor
-        vault_dir = Path(self.tmp_dir.name) / "vault"
-        vault_dir.mkdir(parents=True, exist_ok=True)
-        sync_engine = ObsidianContextSyncEngine(vault_path=str(vault_dir), db_path=str(self.db_path))
-        chunk = ObsidianChunk(
-            file_path="notes/arch.md",
-            note_title="Architecture",
-            breadcrumb="Top > Architecture",
-            content="Jarvis system architecture",
-            tags=["core"],
-            wiki_links=["design"],
-            frontmatter={"author": "Luna"},
-            chunk_index=0,
-        )
-        sync_engine._db_queue.put({
-            "action": "UPSERT_NOTE",
-            "file_path": "notes/arch.md",
-            "file_hash": "abcd1234hash",
-            "mtime": time.time(),
-            "chunks": [chunk],
-        })
-        sync_engine._flush_pending_db_queue()
-
         # Verify all writes persisted in database via read-only connection
         ro_conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
         ro_conn.row_factory = sqlite3.Row
@@ -105,67 +78,8 @@ class TestMilestone6ResidualHardening(unittest.TestCase):
             # Check learned_habits
             row_learn = ro_conn.execute("SELECT skill_name FROM learned_habits WHERE trigger_phrase = 'open browser'").fetchone()
             self.assertEqual(row_learn["skill_name"], "open_browser_tab")
-
-            # Check obsidian_chunks
-            row_obs = ro_conn.execute("SELECT note_title FROM obsidian_chunks WHERE file_path = 'notes/arch.md'").fetchone()
-            self.assertEqual(row_obs["note_title"], "Architecture")
         finally:
             ro_conn.close()
-
-    # -------------------------------------------------------------------------
-    # R-02: Reflex Macro Table Schema Unification
-    # -------------------------------------------------------------------------
-    def test_r02_reflex_macro_schema_unification(self):
-        """Verifies compiled_reflex_macros accommodates both canonical and backward-compatible queries."""
-        from jarvis.core.memory.sleep_consolidator import SleepPhaseConsolidator
-        from jarvis.core.reflex_engine import DynamicReflexEngine
-
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
-        try:
-            # Create interactions with contiguous repeated sequences
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS interactions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_input TEXT,
-                    jarvis_reply TEXT,
-                    tool_calls TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            seq_json = json.dumps([
-                {"name": "list_directory"},
-                {"name": "read_file"},
-                {"name": "inspect_screen"},
-            ])
-            for _ in range(4):
-                conn.execute("INSERT INTO interactions (tool_calls) VALUES (?)", (seq_json,))
-            conn.commit()
-
-            consolidator = SleepPhaseConsolidator(db_path=self.db_path, vector_engine=MagicMock())
-            compiled_count = consolidator.run_pass_b_workflow_distillation(conn)
-            conn.commit()
-            self.assertEqual(compiled_count, 1)
-        finally:
-            conn.close()
-
-        # 1. Canonical query expected by DynamicReflexEngine
-        reflex_engine = DynamicReflexEngine(db_path=self.db_path)
-        self.assertEqual(len(reflex_engine._macro_cache), 1)
-
-        # 2. Compatibility query expected by tests/test_milestone2_memory_hardening.py
-        conn2 = sqlite3.connect(str(self.db_path))
-        conn2.row_factory = sqlite3.Row
-        try:
-            cursor = conn2.cursor()
-            cursor.execute("SELECT macro_id, tool_sequence, occurrence_count FROM compiled_reflex_macros")
-            row = cursor.fetchone()
-            self.assertIsNotNone(row)
-            self.assertIn("list_directory->read_file->inspect_screen", row["tool_sequence"])
-            self.assertEqual(row["occurrence_count"], 4)
-            self.assertTrue(row["macro_id"].startswith("macro_"))
-        finally:
-            conn2.close()
 
     # -------------------------------------------------------------------------
     # R-03: WinEvent Hook Async Callback Offloading & SPSC Condition Variable

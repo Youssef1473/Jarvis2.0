@@ -8,16 +8,16 @@ Verifies:
 4. Expired grant rejection: Grants with expired TTL are rejected at the execution boundary.
 5. Parameter tampering / payload modification defense: Modifying arguments produces a different action hash and is rejected.
 6. Safe tool isolation: Non-critical tools execute without triggering approval before or after execution.
+7. WebSocket approval response unblocks execution.
 """
-import json
 import sys
 import threading
 import time
 import unittest
-import urllib.error
-import urllib.request
 from pathlib import Path
 from unittest import mock
+
+from starlette.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -27,7 +27,7 @@ from jarvis.core.security_boundaries import (
     TurnTaintTracker,
     compute_action_hash,
 )
-from jarvis.skills.self_evolution import CUSTOM_SKILLS_DIR
+from jarvis.skills.base import SkillRegistry
 from jarvis.ui.server import JarvisUIService, get_hud_session_token
 
 
@@ -37,68 +37,64 @@ class TestUIApprovalWorkflow(unittest.TestCase):
         self.tracker.reset_turn()
         self.approval_mgr = DualKeyApprovalManager.get_instance()
         self.approval_mgr.reset()
-        self.port = 20149
-        self.service = JarvisUIService(orchestrator=None, host="127.0.0.1", port=self.port)
-        self.service.start()
-        time.sleep(0.4)
+
+        # Register test privileged tool (risk_level=2) and safe read tool (risk_level=0)
+        @SkillRegistry.register(
+            name="test_privileged_mutation_tool",
+            description="Test Privileged Mutation Tool",
+            risk_level=2,
+            origin="custom",
+        )
+        def _mock_priv(arg_x: str = "default", **kwargs):
+            return f"Privileged execution success: {arg_x}"
+
+        @SkillRegistry.register(
+            name="test_safe_read_tool",
+            description="Test Safe Read Tool",
+            risk_level=0,
+            origin="custom",
+            read_only=True,
+        )
+        def _mock_safe(**kwargs):
+            return "Safe tool output"
+
+        SkillRegistry.certify_test_read_only_tool("test_safe_read_tool")
+
+        self.service = JarvisUIService(orchestrator=None, host="127.0.0.1", port=20149)
+        self.app = self.service._create_app()
+        self.client = TestClient(self.app, base_url="http://127.0.0.1:20149")
 
     def tearDown(self):
-        self.service.stop()
         self.approval_mgr.reset()
         self.tracker.reset_turn()
-        time.sleep(0.2)
+        SkillRegistry.unregister("test_privileged_mutation_tool")
+        SkillRegistry.unregister("test_safe_read_tool")
+        SkillRegistry.decertify_test_read_only_tool("test_safe_read_tool")
 
     def _http_get(self, path: str) -> dict:
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}{path}",
-            headers={"X-Jarvis-Token": get_hud_session_token()}
+        resp = self.client.get(
+            path,
+            headers={"X-Jarvis-Token": get_hud_session_token()},
         )
-        with urllib.request.urlopen(req, timeout=3.0) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        return resp.json()
 
     def _http_post(self, path: str, body: dict) -> dict:
-        data = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}{path}",
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "X-Jarvis-Token": get_hud_session_token(),
-            }
+        resp = self.client.post(
+            path,
+            json=body,
+            headers={"X-Jarvis-Token": get_hud_session_token()},
         )
-        with urllib.request.urlopen(req, timeout=3.0) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        return resp.json()
 
     def test_end_to_end_ui_approval_grants_execution(self):
         """Proof: Interactive approval flow via UI presents summary and permits execution upon approval."""
-        clean_name = "test_e2e_approved_skill"
-        valid_code = f"""
-from jarvis.skills.base import SkillRegistry
-
-@SkillRegistry.register(name="{clean_name}", description="E2E test")
-def {clean_name}():
-    return "executed_ok"
-"""
-        tool_args = {
-            "skill_name": clean_name,
-            "python_code": valid_code,
-            "description": "A dynamic capability",
-        }
-
+        tool_args = {"arg_x": "run_authorized"}
         execution_result = {}
-        fake_canary = mock.MagicMock(
-            success=True,
-            skill_name=clean_name,
-            message="Successfully engineered and hot-reloaded capability 'test_e2e_approved_skill', Sir!",
-            target_path=CUSTOM_SKILLS_DIR / f"{clean_name}.py",
-        )
 
         def _run_tool():
-            with mock.patch("jarvis.core.evolution.sandbox.SkillSandbox.validate_and_promote", return_value=fake_canary) as mock_promote:
-                orch = ToolOrchestrator()
-                res = orch.execute_step("create_or_update_custom_skill", tool_args)
-                execution_result["result"] = res
-                execution_result["called_user_approved"] = mock_promote.call_args[1].get("user_approved")
+            orch = ToolOrchestrator()
+            res = orch.execute_step("test_privileged_mutation_tool", tool_args)
+            execution_result["result"] = res
 
         t = threading.Thread(target=_run_tool, daemon=True)
         t.start()
@@ -106,7 +102,7 @@ def {clean_name}():
         # Poll for pending approval request in UI
         pending_item = None
         for _ in range(30):
-            time.sleep(0.1)
+            time.sleep(0.05)
             pending_resp = self._http_get("/api/approval/pending")
             items = pending_resp.get("pending", [])
             if items:
@@ -114,12 +110,11 @@ def {clean_name}():
                 break
 
         self.assertIsNotNone(pending_item, "Approval request should appear in pending list")
-        self.assertEqual(pending_item["tool_name"], "create_or_update_custom_skill")
-        self.assertIn("Autonomous Self-Building", pending_item["summary"])
-        self.assertEqual(pending_item["arguments"]["skill_name"], clean_name)
+        self.assertEqual(pending_item["tool_name"], "test_privileged_mutation_tool")
+        self.assertEqual(pending_item["arguments"]["arg_x"], "run_authorized")
 
         action_hash = pending_item["action_hash"]
-        self.assertEqual(action_hash, compute_action_hash("create_or_update_custom_skill", tool_args))
+        self.assertEqual(action_hash, compute_action_hash("test_privileged_mutation_tool", tool_args))
 
         # Human operator approves the request via UI
         resp = self._http_post("/api/approval/respond", {"action_hash": action_hash, "decision": "approve"})
@@ -128,30 +123,16 @@ def {clean_name}():
 
         t.join(timeout=3.0)
         self.assertFalse(t.is_alive(), "Tool thread should complete after user approval")
-        self.assertIn("Successfully engineered and hot-reloaded", str(execution_result.get("result")))
-        self.assertTrue(execution_result.get("called_user_approved"), "Sandbox promotion must receive user_approved=True")
+        self.assertIn("Privileged execution success: run_authorized", str(execution_result.get("result")))
 
     def test_end_to_end_ui_rejection_denies_execution(self):
         """Proof: Interactive rejection via UI denies execution and fails closed before tool runs."""
-        clean_name = "test_e2e_denied_skill"
-        valid_code = f"""
-from jarvis.skills.base import SkillRegistry
-
-@SkillRegistry.register(name="{clean_name}", description="Denied test")
-def {clean_name}():
-    return "should_not_run"
-"""
-        tool_args = {
-            "skill_name": clean_name,
-            "python_code": valid_code,
-            "description": "Denied capability",
-        }
-
+        tool_args = {"arg_x": "run_denied"}
         execution_result = {}
 
         def _run_tool():
             orch = ToolOrchestrator()
-            res = orch.execute_step("create_or_update_custom_skill", tool_args)
+            res = orch.execute_step("test_privileged_mutation_tool", tool_args)
             execution_result["result"] = res
 
         t = threading.Thread(target=_run_tool, daemon=True)
@@ -160,7 +141,7 @@ def {clean_name}():
         # Poll for pending approval request
         pending_item = None
         for _ in range(30):
-            time.sleep(0.1)
+            time.sleep(0.05)
             pending_resp = self._http_get("/api/approval/pending")
             items = pending_resp.get("pending", [])
             if items:
@@ -178,43 +159,35 @@ def {clean_name}():
         t.join(timeout=3.0)
         self.assertFalse(t.is_alive())
         self.assertIn("Critical Authorization Gate", str(execution_result.get("result")))
-        target_path = CUSTOM_SKILLS_DIR / f"{clean_name}.py"
-        self.assertFalse(target_path.exists(), "Denied skill must never be written to custom directory")
 
     def test_replay_prevention_rejects_second_execution(self):
         """Proof: A granted authorization is single-use; subsequent execution is blocked."""
-        clean_name = "test_replay_prevention_skill"
-        valid_code = "def dummy(): pass"
-        tool_args = {"skill_name": clean_name, "python_code": valid_code}
+        tool_args = {"arg_x": "replay_arg"}
 
         # Issue pre-grant via REST API
         grant_resp = self._http_post("/api/approval/grant", {
-            "tool_name": "create_or_update_custom_skill",
+            "tool_name": "test_privileged_mutation_tool",
             "arguments": tool_args,
             "ttl_seconds": 60.0,
         })
         self.assertEqual(grant_resp.get("status"), "granted")
 
-        fake_canary = mock.MagicMock(success=True, skill_name=clean_name, message="First execution success")
-        with mock.patch("jarvis.core.evolution.sandbox.SkillSandbox.validate_and_promote", return_value=fake_canary):
-            orch = ToolOrchestrator()
-            res1 = orch.execute_step("create_or_update_custom_skill", tool_args)
-            self.assertIn("First execution success", str(res1))
+        orch = ToolOrchestrator()
+        res1 = orch.execute_step("test_privileged_mutation_tool", tool_args)
+        self.assertIn("Privileged execution success: replay_arg", str(res1))
 
-            # Second execution with identical arguments must fail closed (grant consumed)
-            # Set approval handler to deny immediately to simulate human rejection
-            self.approval_mgr.set_approval_handler(lambda req: False)
-            res2 = orch.execute_step("create_or_update_custom_skill", tool_args)
-            self.assertIn("Critical Authorization Gate", str(res2))
+        # Second execution with identical arguments must fail closed (grant consumed)
+        self.approval_mgr.set_approval_handler(lambda req: False)
+        res2 = orch.execute_step("test_privileged_mutation_tool", tool_args)
+        self.assertIn("Critical Authorization Gate", str(res2))
 
     def test_expired_grant_rejection(self):
         """Proof: An expired grant cannot authorize execution."""
-        clean_name = "test_expired_grant_skill"
-        tool_args = {"skill_name": clean_name, "python_code": "def dummy(): pass"}
+        tool_args = {"arg_x": "expired_arg"}
 
         # Issue grant with very short TTL (0.1s)
         self._http_post("/api/approval/grant", {
-            "tool_name": "create_or_update_custom_skill",
+            "tool_name": "test_privileged_mutation_tool",
             "arguments": tool_args,
             "ttl_seconds": 0.1,
         })
@@ -225,17 +198,17 @@ def {clean_name}():
         # Set approval handler to deny to verify expired grant fails
         self.approval_mgr.set_approval_handler(lambda req: False)
         orch = ToolOrchestrator()
-        res = orch.execute_step("create_or_update_custom_skill", tool_args)
+        res = orch.execute_step("test_privileged_mutation_tool", tool_args)
         self.assertIn("Critical Authorization Gate", str(res))
 
     def test_modified_payload_tampering_prevention(self):
         """Proof: An authorization grant bound to payload A cannot authorize modified payload B."""
-        approved_args = {"skill_name": "target_skill", "python_code": "def safe_code(): return 1"}
-        tampered_args = {"skill_name": "target_skill", "python_code": "def malicious_code(): return 2"}
+        approved_args = {"arg_x": "safe_arg"}
+        tampered_args = {"arg_x": "malicious_arg"}
 
         # Grant approval for approved_args
         self._http_post("/api/approval/grant", {
-            "tool_name": "create_or_update_custom_skill",
+            "tool_name": "test_privileged_mutation_tool",
             "arguments": approved_args,
             "ttl_seconds": 60.0,
         })
@@ -243,7 +216,7 @@ def {clean_name}():
         # Attempt execution with tampered_args (handler denies if queried)
         self.approval_mgr.set_approval_handler(lambda req: False)
         orch = ToolOrchestrator()
-        res = orch.execute_step("create_or_update_custom_skill", tampered_args)
+        res = orch.execute_step("test_privileged_mutation_tool", tampered_args)
         self.assertIn("Critical Authorization Gate", str(res))
 
     def test_safe_tools_bypass_approval_without_post_execution_interference(self):
@@ -251,8 +224,8 @@ def {clean_name}():
         orch = ToolOrchestrator()
         mock_handler = mock.MagicMock(return_value=False)
         self.approval_mgr.set_approval_handler(mock_handler)
-        res = orch.execute_step("list_custom_skills", {})
-        self.assertIsInstance(res, str)
+        res = orch.execute_step("test_safe_read_tool", {})
+        self.assertIn("Safe tool output", str(res))
         mock_handler.assert_not_called()
 
         # Verify no pending approval was created
@@ -261,18 +234,13 @@ def {clean_name}():
 
     def test_websocket_approval_response_unblocks_tool(self):
         """Proof: Submitting approval_response via submit_approval_decision (used by WebSocket) unblocks tool."""
-        clean_name = "test_ws_approved_skill"
-        valid_code = "def ws_code(): return 42"
-        tool_args = {"skill_name": clean_name, "python_code": valid_code}
-
-        fake_canary = mock.MagicMock(success=True, skill_name=clean_name, message="WS approval success")
+        tool_args = {"arg_x": "ws_arg"}
         execution_result = {}
 
         def _run_tool():
-            with mock.patch("jarvis.core.evolution.sandbox.SkillSandbox.validate_and_promote", return_value=fake_canary):
-                orch = ToolOrchestrator()
-                res = orch.execute_step("create_or_update_custom_skill", tool_args)
-                execution_result["result"] = res
+            orch = ToolOrchestrator()
+            res = orch.execute_step("test_privileged_mutation_tool", tool_args)
+            execution_result["result"] = res
 
         t = threading.Thread(target=_run_tool, daemon=True)
         t.start()
@@ -280,7 +248,7 @@ def {clean_name}():
         # Wait for pending request
         action_hash = None
         for _ in range(30):
-            time.sleep(0.1)
+            time.sleep(0.05)
             pending_resp = self._http_get("/api/approval/pending")
             items = pending_resp.get("pending", [])
             if items:
@@ -294,7 +262,7 @@ def {clean_name}():
 
         t.join(timeout=3.0)
         self.assertFalse(t.is_alive())
-        self.assertIn("WS approval success", str(execution_result.get("result")))
+        self.assertIn("Privileged execution success: ws_arg", str(execution_result.get("result")))
 
 
 if __name__ == "__main__":

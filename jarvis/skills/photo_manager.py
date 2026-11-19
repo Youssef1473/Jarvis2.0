@@ -20,6 +20,11 @@ from typing import Any
 
 from PIL import Image, ImageGrab
 
+from jarvis.core.memory.ro_pool import (
+    DEFAULT_RO_QUERY_TIMEOUT_MS,
+    ReadOnlyConnectionPool,
+)
+from jarvis.core.memory.sqlite_base import SingleWriterActor
 from jarvis.skills.base import SkillRegistry
 
 logger = logging.getLogger("Jarvis.PhotoManager")
@@ -40,8 +45,6 @@ _db_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
 
 def _init_photos_table(conn: sqlite3.Connection):
     """Ensures photos table and index exist in SQLite database."""
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS photos (
             photo_id TEXT PRIMARY KEY,
@@ -54,7 +57,31 @@ def _init_photos_table(conn: sqlite3.Connection):
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_photos_created_at ON photos(created_at DESC)")
-    conn.commit()
+
+
+def _apply_photo_db_action(conn: sqlite3.Connection, item: dict[str, Any]) -> None:
+    """Executes a single photo record insertion or update within an actor-managed transaction."""
+    _init_photos_table(conn)
+    action = item.get("action")
+    if action == "INSERT":
+        conn.execute("""
+            INSERT INTO photos (photo_id, file_path, file_name, file_size, dimensions, caption)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(photo_id) DO UPDATE SET
+                caption = COALESCE(excluded.caption, photos.caption)
+        """, (
+            item["photo_id"],
+            item["file_path"],
+            item["file_name"],
+            item["file_size"],
+            item["dimensions"],
+            item.get("caption"),
+        ))
+    elif action == "UPDATE_CAPTION":
+        conn.execute(
+            "UPDATE photos SET caption = ? WHERE photo_id = ?",
+            (item["caption"], item["photo_id"]),
+        )
 
 
 def _db_worker_loop():
@@ -67,33 +94,12 @@ def _db_worker_loop():
                 break
 
             target_db = str(DB_PATH)
-            conn = None
             try:
-                conn = sqlite3.connect(target_db, check_same_thread=False)
-                _init_photos_table(conn)
-
-                action = item.get("action")
-                if action == "INSERT":
-                    conn.execute("""
-                        INSERT INTO photos (photo_id, file_path, file_name, file_size, dimensions, caption)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(photo_id) DO UPDATE SET
-                            caption = COALESCE(excluded.caption, photos.caption)
-                    """, (
-                        item["photo_id"],
-                        item["file_path"],
-                        item["file_name"],
-                        item["file_size"],
-                        item["dimensions"],
-                        item.get("caption"),
-                    ))
-                    conn.commit()
-                elif action == "UPDATE_CAPTION":
-                    conn.execute("UPDATE photos SET caption = ? WHERE photo_id = ?", (item["caption"], item["photo_id"]))
-                    conn.commit()
+                task_item = item
+                SingleWriterActor.get_or_create(target_db).execute_write(
+                    lambda conn, ti=task_item: _apply_photo_db_action(conn, ti)
+                )
             finally:
-                if conn:
-                    conn.close()
                 _db_queue.task_done()
         except (sqlite3.Error, OSError, ValueError, RuntimeError) as e:
             logger.error("Async SQLite photo worker error: %s", e)
@@ -263,10 +269,9 @@ def save_clipboard_photo() -> str:
 def list_photos(limit: int = 10) -> str:
     """Returns a formatted list of recently archived photos from SQLite."""
     try:
-        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-        try:
+        ro_pool = ReadOnlyConnectionPool.get_or_create(DB_PATH)
+        with ro_pool.connection(timeout_ms=DEFAULT_RO_QUERY_TIMEOUT_MS) as conn:
             conn.row_factory = sqlite3.Row
-            _init_photos_table(conn)
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT photo_id, file_name, dimensions, file_size, caption, created_at
@@ -275,8 +280,6 @@ def list_photos(limit: int = 10) -> str:
                 LIMIT ?
             """, (max(1, min(limit, 50)),))
             rows = cursor.fetchall()
-        finally:
-            conn.close()
 
         if not rows:
             return "No photos are currently archived in your gallery, Sir."
@@ -288,6 +291,11 @@ def list_photos(limit: int = 10) -> str:
             lines.append(f"• ID: {r['photo_id']} | {r['dimensions']} | {size_kb} KB | {r['created_at']}{cap}")
 
         return "\n".join(lines)
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e).lower():
+            return "No photos are currently archived in your gallery, Sir."
+        logger.error("Failed to list photos: %s", e)
+        return f"Error retrieving photo gallery: {e}"
     except (sqlite3.Error, OSError, ValueError) as e:
         logger.error("Failed to list photos: %s", e)
         return f"Error retrieving photo gallery: {e}"
@@ -303,16 +311,14 @@ def describe_photo(photo_id: str) -> str:
 
     target_path = None
     try:
-        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-        try:
+        ro_pool = ReadOnlyConnectionPool.get_or_create(DB_PATH)
+        with ro_pool.connection(timeout_ms=DEFAULT_RO_QUERY_TIMEOUT_MS) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("SELECT file_path FROM photos WHERE photo_id = ? OR file_name = ?", (clean_id, clean_id))
             row = cursor.fetchone()
             if row:
                 target_path = Path(row["file_path"])
-        finally:
-            conn.close()
     except (sqlite3.Error, OSError) as e:
         logger.debug("Error inspecting photo database: %s", e)
 

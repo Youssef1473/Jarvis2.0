@@ -1,7 +1,7 @@
 # ADR-002: Win32 Job Object Process Containment and Orphan Reaping
 
 ## Status
-PROPOSED
+ACCEPTED
 
 ## Date
 2026-11-02

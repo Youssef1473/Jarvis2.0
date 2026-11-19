@@ -226,7 +226,7 @@ class ProcessHandleRegistry:
     def _prune_expired(cls) -> None:
         with cls._lock:
             now = time.monotonic()
-            expired = [hid for hid, e in cls._handles.items() if (now + 0.005) >= e["expires_at"]]
+            expired = [hid for hid, e in cls._handles.items() if now >= e["expires_at"]]
             for hid in expired:
                 entry = cls._handles.pop(hid)
                 entry["invalidated"] = True
@@ -238,9 +238,10 @@ class ProcessHandleRegistry:
                     entry["closed"] = True
                     _close_process_handle(entry["handle"])
 
+            curr_thread = threading.current_thread()
             for entry in cls._handles.values():
                 timer = entry.get("timer")
-                if timer and not timer.is_alive():
+                if timer and (not timer.is_alive() or timer is curr_thread):
                     remaining = max(0.01, entry["expires_at"] - now)
                     new_timer = threading.Timer(remaining, cls._prune_expired)
                     new_timer.daemon = True

@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jarvis.core.memory.document_vault import DocumentVaultMixin
-from jarvis.core.stream_tool_parser import NonceGuardedStreamParser
+from jarvis.core.pipeline.streaming_tool_parser import NonceGuardedStreamParser
 
 
 class DummyDocumentVault(DocumentVaultMixin):

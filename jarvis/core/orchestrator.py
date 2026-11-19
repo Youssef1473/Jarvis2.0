@@ -83,14 +83,6 @@ class JarvisOrchestrator:
         except (ImportError, AttributeError) as exc:
             logger.debug("Productivity skills memory binding notice: %s", exc)
 
-        try:
-            import jarvis.skills.self_evolution as evo_skills
-
-            evo_skills.set_memory_manager(self.memory)
-            evo_skills.init_custom_skills()
-        except (ImportError, AttributeError, RuntimeError) as exc:
-            logger.warning("Failed to initialize custom skills: %s", exc)
-
         self.safety = SafetyGate(config)
         self.stt = SpeechToText(config)
         self.tts = TextToSpeech(config)
@@ -382,7 +374,7 @@ class JarvisOrchestrator:
     def _process_audio(self, audio_array: np.ndarray) -> None:
         """Transcribes audio, sends to brain, and delivers spoken output."""
         try:
-            from jarvis.audio.affinity import pin_and_elevate_current_thread
+            from jarvis.core.win32_affinity import pin_and_elevate_current_thread
 
             pin_and_elevate_current_thread(tag="OrchestratorAudioWorker")
         except (ImportError, AttributeError, OSError) as exc:

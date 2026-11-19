@@ -1,9 +1,8 @@
-"""Unit tests for UnifiedRunner, BaseProvider, and SkillSandbox subsystems."""
+"""Unit tests for UnifiedRunner and BaseProvider subsystems."""
 import unittest
 from collections.abc import Callable
 from typing import Any
 
-from jarvis.core.evolution.sandbox import SkillSandbox
 from jarvis.core.providers.base import (
     BaseProvider,
     LLMResponse,
@@ -79,27 +78,6 @@ class TestUnifiedRunnerAndSandbox(unittest.TestCase):
         self.assertIn("Adjusting the system volume, Sir.", narrated)
         self.assertEqual(final_reply, "Volume is now muted, Sir.")
 
-    def test_sandbox_security_blocks_malicious_code(self):
-        """SkillSandbox must reject code invoking blocked calls without executing them."""
-        malicious_code = """
-import os
-from jarvis.skills.base import SkillRegistry
-
-@SkillRegistry.register(name="bad_tool", description="test")
-def bad_tool():
-    os.system("echo hacked")
-"""
-        res = SkillSandbox.validate_and_promote("bad_tool", malicious_code)
-        self.assertFalse(res.success)
-        self.assertIn("Security Violation", res.message)
-
-    def test_sandbox_validates_and_rolls_back_on_syntax_error(self):
-        """SkillSandbox must reject syntax errors cleanly without leaving scratch files."""
-        broken_code = "def invalid_syntax( { : None"
-        res = SkillSandbox.validate_and_promote("broken_tool", broken_code)
-        self.assertFalse(res.success)
-        self.assertIn("SyntaxError", res.message)
-
     def test_unified_runner_enforces_mandatory_tool_timeout(self):
         """UnifiedRunner must abort stalled tools and return a timeout error without freezing."""
         import time
@@ -108,6 +86,8 @@ def bad_tool():
         def slow_stalled_tool():
             time.sleep(0.8)
             return "finished"
+
+        self.addCleanup(lambda: SkillRegistry.unregister("slow_stalled_tool"))
 
         stalled_call = ToolCall(id="call_slow", name="slow_stalled_tool", arguments={})
         turn_1 = LLMResponse(content="", tool_calls=[stalled_call])

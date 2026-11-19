@@ -20,8 +20,6 @@ import sqlite3
 import tempfile
 import unittest
 
-import pytest
-
 from jarvis.context.context_orchestrator import ContextOrchestrator
 from jarvis.core.memory import MemoryManager
 from jarvis.core.security_boundaries import (
@@ -48,9 +46,10 @@ class TestMemoryAuthorizationAudit(unittest.TestCase):
         self.mem = MemoryManager(self.config)
 
         # Invariant: Each test's MemoryManager must resolve strictly inside its dedicated temp directory
-        resolved_db = os.path.abspath(str(self.mem.db_path))
-        resolved_temp = os.path.abspath(self.test_dir)
-        assert resolved_db.startswith(resolved_temp), (
+        from pathlib import Path
+        resolved_db = Path(self.mem.db_path).resolve()
+        resolved_temp = Path(self.test_dir).resolve()
+        assert resolved_db.is_relative_to(resolved_temp), (
             f"Hermetic isolation invariant failed: db_path {resolved_db} is outside temporary directory {resolved_temp}"
         )
 
@@ -321,11 +320,6 @@ class TestMemoryAuthorizationAudit(unittest.TestCase):
             "omits source provenance attributes, presenting external data without provenance.",
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="Deferred architectural requirement: W3-05 Epistemic conflict resolution and contradictory memory qualification not yet implemented",
-    )
     def test_11_contradictory_stale_memory_not_presented_as_unqualified_truth(self) -> None:
         """W3-05: Stale or historical memory must not be framed under unqualified
 

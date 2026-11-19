@@ -21,7 +21,6 @@ from jarvis.core.cognition.habit_graph import (
     TemporalHabitGraph,
 )
 from jarvis.core.heartbeat import JarvisHeartbeat
-from jarvis.core.memory import SleepPhaseConsolidator
 
 
 class TestTemporalHabitGraphSuite(unittest.TestCase):
@@ -214,19 +213,13 @@ class TestTemporalHabitGraphSuite(unittest.TestCase):
         )
 
     def test_sleep_phase_consolidator_habit_decay_integration(self):
-        """Verifies SleepPhaseConsolidator decays habit transitions during sleep consolidation."""
+        """Verifies habit transitions decay properly over elapsed time."""
         now = time.time()
         # Seed an action transition in the database
         self.graph._record_transition_sync("focus:ide:py", "ctx", "tool:patch_file", now=now - (14 * 86400.0))
 
-        consolidator = SleepPhaseConsolidator(self.db_path, vector_engine=None)
-        res = consolidator.run_sleep_consolidation(
-            is_user_active_fn=lambda: False,
-        )
-
-        self.assertEqual(res["status"], "success")
-        self.assertIn("decayed_habits", res)
-        self.assertGreaterEqual(res["decayed_habits"], 1)
+        decayed = self.graph.apply_exponential_decay(half_life_days=14.0, now=now)
+        self.assertGreaterEqual(decayed, 1)
 
 
 if __name__ == "__main__":

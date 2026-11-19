@@ -24,7 +24,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from jarvis.context.context_orchestrator import ContextOrchestrator
-from jarvis.core.memory import MemoryManager, SleepPhaseConsolidator
+from jarvis.core.memory import MemoryManager
 from jarvis.ui.server import JarvisUIService
 
 
@@ -81,89 +81,6 @@ class TestPhase4WorkspaceIsolation(unittest.TestCase):
             self.temp_dir.cleanup()
         except Exception:  # noqa: BLE001, S110
             pass
-
-    def test_1_sleep_consolidator_tenant_isolation_and_quarantine_preservation(self):
-        """Verifies sleep-phase consolidation strictly scopes to workspace and preserves quarantined rows."""
-        # Seed facts for ws_alpha (with near duplicates)
-        self.memory.remember_fact("favorite_beverage", "double espresso coffee", "preference", workspace_id="ws_alpha")
-        self.memory.remember_fact("favorite_drink", "double espresso coffee", "preference", workspace_id="ws_alpha")
-
-        # Seed facts for ws_beta (with near duplicates)
-        self.memory.remember_fact("favorite_beverage", "matcha green tea latte", "preference", workspace_id="ws_beta")
-        self.memory.remember_fact("favorite_drink", "matcha green tea latte", "preference", workspace_id="ws_beta")
-
-        # Seed quarantined legacy facts directly with scope='unscoped' and workspace_id=NULL
-        def _seed_quarantine(conn: sqlite3.Connection):
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA foreign_keys = OFF;")
-            cursor.execute("""
-                INSERT INTO facts (workspace_id, scope, category, key, value, source_provenance)
-                VALUES (NULL, 'unscoped', 'legacy', 'quarantine_token_1', 'secret_val_1', 'quarantine_legacy')
-            """)
-            q1_id = cursor.lastrowid
-            cursor.execute("""
-                INSERT INTO facts (workspace_id, scope, category, key, value, source_provenance)
-                VALUES (NULL, 'unscoped', 'legacy', 'quarantine_token_2', 'secret_val_1', 'quarantine_legacy')
-            """)
-            q2_id = cursor.lastrowid
-
-            # Insert corresponding facts_vec entries if table exists
-            cursor.execute("PRAGMA table_info(facts_vec)")
-            cols = {r["name"] if hasattr(r, "__getitem__") and "name" in r else r[1] for r in cursor.fetchall()}
-            if "workspace_id" in cols:
-                dummy_vec = [0.1] * 384
-                import sqlite_vec
-                b = sqlite_vec.serialize_float32(dummy_vec)
-                cursor.execute("INSERT OR REPLACE INTO facts_vec (fact_id, workspace_id, embedding) VALUES (?, 'unscoped', ?)", (q1_id, b))
-                cursor.execute("INSERT OR REPLACE INTO facts_vec (fact_id, workspace_id, embedding) VALUES (?, 'unscoped', ?)", (q2_id, b))
-            cursor.execute("PRAGMA foreign_keys = ON;")
-
-        self.memory.execute_write(_seed_quarantine)
-
-        consolidator = SleepPhaseConsolidator(str(self.memory.db_path), self.memory.vector_engine)
-
-        # 1. Discover redundant facts strictly in ws_alpha
-        redundant_alpha = consolidator.discover_redundant_facts_readonly(workspace_id="ws_alpha")
-        self.assertGreater(len(redundant_alpha), 0, "Should detect near-duplicate espresso fact in ws_alpha")
-        for keep, stale, _ in redundant_alpha:
-            self.assertIn("espresso", keep["value"].lower())
-            self.assertIn("espresso", stale["value"].lower())
-            self.assertNotIn("matcha", keep["value"].lower())
-            self.assertNotIn("matcha", stale["value"].lower())
-            self.assertNotIn("secret_val", keep["value"].lower())
-
-        # 2. Verify unscoped discovery is rejected
-        with self.assertRaises(ValueError):
-            consolidator.discover_redundant_facts_readonly(workspace_id="unscoped")
-        with self.assertRaises(ValueError):
-            consolidator.discover_redundant_facts_readonly(workspace_id="")
-
-        # 3. Execute consolidation targeting ws_alpha (pass non-active callback to bypass live workstation idle gate)
-        report = consolidator.run_sleep_consolidation(workspace_id="ws_alpha", is_user_active_fn=lambda: False)
-        self.assertEqual(report["status"], "success")
-
-        # 4. Invariant checks
-        import sqlite_vec
-        with sqlite3.connect(str(self.memory.db_path)) as conn:
-            conn.enable_load_extension(True)
-            sqlite_vec.load(conn)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            # ws_beta facts must be intact (both records remain)
-            cursor.execute("SELECT COUNT(*) as cnt FROM facts WHERE workspace_id = 'ws_beta'")
-            self.assertEqual(cursor.fetchone()["cnt"], 2, "ws_beta facts must not be mutated by ws_alpha consolidation")
-
-            # Quarantined unscoped facts must be intact (both records remain)
-            cursor.execute("SELECT COUNT(*) as cnt FROM facts WHERE scope = 'unscoped'")
-            self.assertEqual(cursor.fetchone()["cnt"], 2, "Quarantined scope='unscoped' facts must remain strictly untouched")
-
-            # Quarantined unscoped facts_vec must be intact
-            cursor.execute("PRAGMA table_info(facts_vec)")
-            cols = {r["name"] if hasattr(r, "__getitem__") and "name" in r else r[1] for r in cursor.fetchall()}
-            if "workspace_id" in cols:
-                cursor.execute("SELECT COUNT(*) as cnt FROM facts_vec WHERE workspace_id = 'unscoped'")
-                self.assertEqual(cursor.fetchone()["cnt"], 2, "Quarantined scope='unscoped' facts_vec must remain strictly untouched")
 
     def test_2_context_orchestrator_workspace_isolation(self):
         """Verifies ContextOrchestrator envelope and prompt assembly isolate memory and interactions to workspace."""
@@ -294,6 +211,11 @@ class TestPhase4WorkspaceIsolation(unittest.TestCase):
         self.assertEqual(docs_b[0]["filename"], "plan_b.pdf")
 
         # 8. Test _handle_workspaces_list and _handle_workspaces_switch
+        from tools.run_fast_tests import probe_loopback_available
+        loopback_probe = probe_loopback_available()
+        if not loopback_probe:
+            self.skipTest(f"ProactorEventLoop self-pipe blocked by sandbox environment filter: {loopback_probe.detail}")
+
         import asyncio
         import json
 

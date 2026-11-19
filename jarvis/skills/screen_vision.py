@@ -17,6 +17,7 @@ try:
         OSError,
         RuntimeError,
         AttributeError,
+        ValueError,
     )
 except ImportError:
     psutil = None  # type: ignore[assignment]
@@ -24,6 +25,7 @@ except ImportError:
         OSError,
         RuntimeError,
         AttributeError,
+        ValueError,
     )
 
 try:
@@ -91,7 +93,9 @@ def _get_active_window_details() -> tuple[str, str]:
         if not hwnd:
             return ("", "")
         title = win32gui.GetWindowText(hwnd).strip()
-        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        tid, pid = win32process.GetWindowThreadProcessId(hwnd)
+        if not tid or pid <= 0:
+            return (title, "")
         proc_name = ""
         try:
             if psutil is not None:

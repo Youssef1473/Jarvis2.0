@@ -509,7 +509,7 @@ class InteractionMemoryMixin:
             matched = self.hybrid_search_facts(query, top_k=4, max_l2_distance=0.95, workspace_id=ws_id)
             if matched:
                 lines = [f"• {m['key'].replace('_', ' ').capitalize()}: {m['value']}" for m in matched]
-                semantic_section = "[Directly Relevant Knowledge to Current Context]\n" + "\n".join(lines) + "\n\n"
+                semantic_section = "[Directly Relevant Knowledge to Current Context] - Reference / Historical\n" + "\n".join(lines) + "\n\n"
 
         by_cat = {}
         for f in facts:

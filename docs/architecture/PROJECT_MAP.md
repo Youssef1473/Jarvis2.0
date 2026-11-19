@@ -26,7 +26,6 @@ Jarvis_2.0/
 │   ├── conversation/          # LIFO ReasoningBookmarkStack for barge-in thought resumption
 │   ├── core/                  # Brain, orchestrator, cognitive router, reflex engines, memory, security
 │   │   ├── cognition/         # CognitiveRouter: tier classification, thinking budgets, failover, cadence tracker
-│   │   ├── evolution/         # Self-evolution AST validation, canary testing, and AppContainer isolation
 │   │   ├── memory/            # 4-tier SQLite WAL + sqlite-vec memory subsystem (mixins & SingleWriterActor)
 │   │   └── pipeline/          # ToolOrchestrator, streaming tool parser, interim speech, profiler
 │   ├── routing/               # ONNX intent router for fast CPU-side neural intent classification
@@ -55,9 +54,9 @@ The following modules represent the authoritative canonical implementations for 
 | **Preemptive Cancellation** | [`jarvis/core/cancellation.py`](../../jarvis/core/cancellation.py) | Shared mutable epoch counter (`GLOBAL_EPOCH_STATE`) for cooperative worker invalidation during user barge-in interrupts across audio and LLM pipelines. | [ADR-003](../adr/ADR-003-epoch-based-audio-cancellation.md) |
 | **Win32 CPU Affinity & MMCSS** | [`jarvis/core/win32_affinity.py`](../../jarvis/core/win32_affinity.py) | Hardware core affinity partitioning (Intel Alder Lake 4P+8E), MMCSS Pro Audio elevation, and EcoQoS power throttling. | [ADR-005](../adr/ADR-005-win32-hardware-core-affinity.md) |
 | **Audio Playback & Neural TTS** | [`jarvis/audio/tts.py`](../../jarvis/audio/tts.py) | Real-time WASAPI audio playback loop (Logical CPUs 0–1 via `0x0003`), Kokoro-82M neural style blending on compute P-cores (`0x00FC`), zero-copy SHM transport. | [ADR-003](../adr/ADR-003-epoch-based-audio-cancellation.md), [ADR-005](../adr/ADR-005-win32-hardware-core-affinity.md) |
-| **Wake-Word Capture & Audio Routing** | [`jarvis/audio/wake_word.py`](../../jarvis/audio/wake_word.py) | Dedicated `MicRouterWorker` loop, openWakeWord neural inference, physical P-core affinity (`0x0055`) with MMCSS Pro Audio. | [ADR-005](../adr/ADR-005-win32-hardware-core-affinity.md) |
+| **Wake-Word Capture & Audio Routing** | [`jarvis/audio/wake_word.py`](../../jarvis/audio/wake_word.py) | Dedicated `MicRouterWorker` loop, openWakeWord neural inference, physical P-core affinity (`0x0054`) with MMCSS Pro Audio. | [ADR-005](../adr/ADR-005-win32-hardware-core-affinity.md) |
 | **Browser & CDP Automation** | [`jarvis/skills/browser_cdp.py`](../../jarvis/skills/browser_cdp.py) | Sub-5ms Chrome DevTools Protocol (CDP) WebSocket automation for Chromium browsers, loopback port confinement, silent tab navigation. | [ADR-006](../adr/ADR-006-egress-validation-ip-pinning.md) |
-| **Auxiliary Background Daemons** | [`jarvis/vision/window_hook_daemon.py`](../../jarvis/vision/window_hook_daemon.py)<br>[`jarvis/vision/dhash_monitor.py`](../../jarvis/vision/dhash_monitor.py)<br>[`jarvis/core/memory/sleep_consolidator.py`](../../jarvis/core/memory/sleep_consolidator.py)<br>[`jarvis/core/cognition/cadence_tracker.py`](../../jarvis/core/cognition/cadence_tracker.py) | Background maintenance workers executing on Efficiency Cores (`MASK_ECORE_BACKGROUND = 0xFF00`) with Windows EcoQoS enabled: window event hooks, perceptual hashing, memory sleep consolidation, cadence tracking. | [ADR-005](../adr/ADR-005-win32-hardware-core-affinity.md) |
+| **Auxiliary Background Daemons** | [`jarvis/vision/window_hook_daemon.py`](../../jarvis/vision/window_hook_daemon.py)<br>[`jarvis/vision/dhash_monitor.py`](../../jarvis/vision/dhash_monitor.py)<br>[`jarvis/core/cognition/cadence_tracker.py`](../../jarvis/core/cognition/cadence_tracker.py) | Background maintenance workers executing on Efficiency Cores (`MASK_ECORE_BACKGROUND = 0xFF00`) with Windows EcoQoS enabled: window event hooks, perceptual hashing, cadence tracking. | [ADR-005](../adr/ADR-005-win32-hardware-core-affinity.md) |
 | **UI HUD & Telemetry Server** | [`jarvis/ui/server.py`](../../jarvis/ui/server.py) | FastAPI / Starlette asynchronous server for the Holographic HUD (port 8000), real-time WebSocket feeds, system health telemetry. | [ADR-004](../adr/ADR-004-dual-key-tool-authorization-turn-taint.md) |
 | **Developer & Verification Tooling** | [`tools/run_fast_tests.py`](../../tools/run_fast_tests.py)<br>[`tools/lint.py`](../../tools/lint.py)<br>[`tools/diagnostics.py`](../../tools/diagnostics.py)<br>[`tools/agy_context_slicer.py`](../../tools/agy_context_slicer.py) | Test execution runners, static linting, AST structural invariant checks, and token-bounded context recovery utilities. | [INDEX.md](INDEX.md) |
 
@@ -71,7 +70,7 @@ The following modules represent the authoritative canonical implementations for 
        │
        ▼
 1. Mic Stream Capture & Wake Word (`jarvis/audio/wake_word.py`)
-       │ Physical P-Core Affinity (0x0055) & MMCSS Pro Audio (`jarvis/core/win32_affinity.py`)
+       │ Physical P-Core Affinity (0x0054) & MMCSS Pro Audio (`jarvis/core/win32_affinity.py`)
        ▼
 2. Speech-to-Text (`jarvis/audio/stt.py`)
        │ faster-whisper CUDA INT8 + VRAM Arbiter
@@ -84,7 +83,7 @@ The following modules represent the authoritative canonical implementations for 
        │ Tier 1: Local ONNX Intent Router (CPUExecutionProvider)
        │ Tier 2/3: AntigravityBridge (Gemini 3.8 / Claude Sonnet) or Gemini Cloud Fallback
        ▼
-5. Incremental Stream Parsing (`jarvis/core/streaming_tool_parser.py`)
+5. Incremental Stream Parsing (`jarvis/core/pipeline/streaming_tool_parser.py`)
        │ Yields text tokens -> ProsodicChunker (`jarvis/audio/prosodic_chunker.py`)
        │ Yields tool call chunks -> ToolOrchestrator (`jarvis/core/pipeline/tool_orchestrator.py`)
        ▼
@@ -113,7 +112,6 @@ Streaming Tool Call
        ▼
 3. Sandboxed Execution & Tool Actuation
        │ Sandboxed commands: Win32 Job Object containment (`jarvis/skills/job_object_sandbox.py`, ADR-002)
-       │ Self-evolution AST gate: dynamic validation sandbox (`jarvis/core/evolution/sandbox.py`)
        │ In-process tools: SkillRegistry dispatch in `jarvis/skills/<module>.py`
        ▼
 4. Output Feedback to Brain Context
@@ -137,13 +135,12 @@ When authoring new features or refactoring, always import from the canonical mod
 
 | Domain | Canonical Module | Compatibility Shims | Purpose |
 | :--- | :--- | :--- | :--- |
-| **Win32 Affinity & Scheduling** | `jarvis.core.win32_affinity` | `jarvis.audio.affinity`<br>`jarvis.core.thread_affinity` | MMCSS Pro Audio, P-Core (`0x0003`, `0x0055`, `0x00FC`) / E-Core (`0xFF00`) bitmasks |
-| **Preemptive Cancellation** | `jarvis.core.cancellation` | `jarvis.audio.cancellation` | Shared mutable `GLOBAL_EPOCH_STATE` for cooperative worker invalidation |
-| **Streaming Tool Parser** | `jarvis.core.streaming_tool_parser` | `jarvis.core.stream_tool_parser` | Incremental streaming JSON tool tokenizer |
+| **Win32 Affinity & Scheduling** | `jarvis.core.win32_affinity` | — *(excised in Plan 005)* | MMCSS Pro Audio, P-Core (`0x0003`, `0x0054`, `0x00FC`) / E-Core (`0xFF00`) bitmasks |
+| **Preemptive Cancellation** | `jarvis.core.cancellation` | `jarvis.audio.cancellation` | Mutex-guarded `GLOBAL_EPOCH_STATE` with atomic epoch bumping |
+| **Streaming Tool Parser** | `jarvis.core.pipeline.streaming_tool_parser` | — *(excised in Plan 005)* | Incremental streaming JSON tool tokenizer |
 | **Prosodic Clause Chunker** | `jarvis.audio.prosodic_chunker` | `jarvis.audio.chunker` | Natural punctuation pause chunking for Kokoro TTS |
-| **MCP Process Manager** | `jarvis.core.mcp_manager` | `jarvis.skills.mcp_manager` | Process lifecycle manager for external Model Context Protocol (MCP) servers |
+| **MCP Process Manager** | `jarvis.core.mcp_manager` | — *(excised in Batch 4)* | Process lifecycle manager for external Model Context Protocol (MCP) servers |
 | **Win32 Process Containment** | `jarvis.skills.job_object_sandbox` | — | Canonical Win32 Job Object kernel containment, suspended process spawn, orphan reaping |
-| **Self-Evolution AST Gate** | `jarvis.core.evolution.sandbox` | — | AST loop detection, canary watchdog, and snapshot rollback for dynamically generated code |
 
 ---
 

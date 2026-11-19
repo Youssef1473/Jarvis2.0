@@ -30,6 +30,13 @@ class MockOrchestrator:
 class TestHudWorkspaceAndQuarantine(unittest.TestCase):
     """Hermetic tests covering multi-workspace listing, switching, quarantined fact review, and promotion."""
 
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from tools.run_fast_tests import probe_loopback_available
+        if not probe_loopback_available():
+            raise unittest.SkipTest("Localhost loopback TCP is blocked in sandbox environment")
+
     def setUp(self):
         super().setUp()
         self.test_dir = WORKSPACE_ROOT / "scratch" / "test_quarantine_sandbox"

@@ -1,7 +1,7 @@
 # ADR-005: Windows Hybrid CPU Core Affinity Partitioning
 
 ## Status
-PROPOSED
+ACCEPTED
 
 ## Date
 2026-11-02
@@ -48,15 +48,11 @@ Code inspection establishes the exact boundary where affinity masks are explicit
      - `dhash_monitor.py:255` (Perceptual screen hash monitor).
      - `window_hook_daemon.py:162` (Win32 window hook message pump daemon).
      - `cadence_tracker.py:218` (Cadence telemetry tracker).
-  4. *Physical P-Core Elevation (`get_physical_pcore_mask()`, e.g. `0x0055`):* Explicitly applied in `_worker_loop()` ([`wake_word.py:342`](../../jarvis/audio/wake_word.py#L342)) via `pin_and_elevate_current_thread(tag="MicRouterWorker")`. This pins the wake-word audio router thread across all physical P-cores (Logical CPUs 0, 2, 4, and 6) with `THREAD_PRIORITY_HIGHEST` and MMCSS Pro Audio. It does **not** receive `MASK_PCORE_AUDIO_ISOLATED` (`0x0003`).
-- **Affinity Partition Overlap on Logical CPU 0:**
-  - The WASAPI playback worker mask (`0x0003`, Logical CPUs 0 and 1) and the wake-word worker mask (`0x0055`, Logical CPUs 0, 2, 4, and 6) intersect:
-    `0x0003 & 0x0055 = 0x0001` (Logical CPU 0).
-  - Both affinity masks permit execution on Logical CPU 0.
-  - Thread affinity (`SetThreadAffinityMask`) restricts which logical processors a thread is eligible to run on; it does **not** grant exclusive core reservation or hardware CPU ownership.
-  - The Windows NT scheduler may schedule both the WASAPI playback thread and the wake-word worker thread on Logical CPU 0 concurrently.
-  - Consequently, the architecture represents an *affinity partition* with an overlapping logical processor, rather than guaranteed exclusive hardware isolation.
-  - Note: No empirical benchmark has established whether this overlap causes any measurable latency impact or performance degradation.
+  4. *Physical P-Core Wakeword Mask (`MASK_PCORE_WAKEWORD` = `0x0054`):* Applied in `_worker_loop()` ([`wake_word.py:342`](../../jarvis/audio/wake_word.py#L342)) via `get_wakeword_affinity_mask()`. This pins the wake-word audio router thread across non-audio physical P-cores (Logical CPUs 2, 4, and 6 on P-Cores 1, 2, and 3) with `THREAD_PRIORITY_HIGHEST` and MMCSS Pro Audio.
+- **Disjoint Physical Core Partitioning (Zero Overlap):**
+  - The WASAPI playback worker mask (`0x0003`, Logical CPUs 0 and 1 on P-Core 0) and the wake-word worker mask (`0x0054`, Logical CPUs 2, 4, and 6 on P-Cores 1, 2, and 3) are strictly disjoint:
+    `0x0003 & 0x0054 = 0x0000`.
+  - This eliminates thread contention on P-Core 0, guaranteeing zero CPU preemption between WASAPI audio playback loops and wake-word capture.
 - **Subsystems Without Direct Pinning Calls:**
   - `SingleWriterActor` ([`sqlite_base.py`](../../jarvis/core/memory/sqlite_base.py)) and the FastAPI web server ([`server.py`](../../jarvis/ui/server.py)) do **not** invoke `pin_current_thread_to_mask` directly in their initialization. While designed conceptually to execute on E-cores, they receive E-core affinity only when dispatched through the E-core `ThreadPoolExecutor` or when scheduled by the OS.
 

@@ -467,6 +467,155 @@ class TestAntigravityIntegration(unittest.TestCase):
             )
             self.assertIsNone(res)
 
+    def test_iter_unbuffered_lines_barge_in_epoch_abort(self):
+        """Verifies _iter_unbuffered_lines immediately aborts when GLOBAL_EPOCH_STATE is incremented."""
+        from jarvis.core.antigravity_bridge import AntigravityDaemon
+        from jarvis.core.cancellation import GLOBAL_EPOCH_STATE
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = MagicMock()
+        mock_proc.stdout.fileno.side_effect = OSError("No fileno")
+        mock_proc.stdout.readline.return_value = '{"event": "step_update"}\n'
+
+        initial_epoch = int(GLOBAL_EPOCH_STATE.barge_in_epoch)
+        GLOBAL_EPOCH_STATE.barge_in_epoch += 1
+
+        lines = list(AntigravityDaemon._iter_unbuffered_lines(mock_proc, timeout=5.0, initial_epoch=initial_epoch))
+        self.assertEqual(len(lines), 0)
+
+    def test_iter_unbuffered_lines_async_stream(self):
+        """Verifies _iter_unbuffered_lines_async consumes async readline coroutines with epoch checks."""
+        from jarvis.core.antigravity_bridge import AntigravityDaemon
+        from jarvis.core.cancellation import GLOBAL_EPOCH_STATE
+
+        class AsyncStdout:
+            def __init__(self, data):
+                self._data = list(data)
+
+            async def readline(self):
+                if self._data:
+                    return self._data.pop(0)
+                return ""
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = AsyncStdout(['{"event": "init"}\n', '{"event": "result"}\n'])
+        mock_proc.returncode = None
+
+        epoch = int(GLOBAL_EPOCH_STATE.barge_in_epoch)
+        agen = AntigravityDaemon._iter_unbuffered_lines_async(mock_proc, initial_epoch=epoch)
+        self.assertTrue(hasattr(agen, "__anext__"))
+
+        collected = []
+        try:
+            while True:
+                co = agen.__anext__()
+                while True:
+                    try:
+                        co.send(None)
+                    except StopIteration as stop_err:
+                        collected.append(stop_err.value)
+                        break
+        except StopAsyncIteration:
+            pass
+
+        self.assertEqual(len(collected), 2)
+        self.assertIn('"event": "init"', collected[0])
+
+    def test_iter_unbuffered_lines_multibyte_utf8_split(self):
+        """Verifies _iter_unbuffered_lines decodes multibyte UTF-8 split across read chunks without replacement."""
+        from unittest.mock import MagicMock, patch
+
+        from jarvis.core.antigravity_bridge import AntigravityDaemon
+
+        # 4-byte UTF-8 rocket emoji 🚀 is b"\xf0\x9f\x9a\x80"
+        # Split across two read chunks: b"\xf0\x9f" and b"\x9a\x80\n"
+        chunks = [b'{"text": "\xf0\x9f', b'\x9a\x80"}\n']
+        chunk_idx = [0]
+
+        def fake_read(fd, n):
+            if chunk_idx[0] < len(chunks):
+                c = chunks[chunk_idx[0]]
+                chunk_idx[0] += 1
+                return c
+            return b""
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = MagicMock()
+        mock_proc.stdout.fileno.return_value = 42
+        mock_proc.poll.return_value = None
+
+        with patch("os.read", side_effect=fake_read), \
+             patch("sys.platform", "linux"):
+            lines = list(AntigravityDaemon._iter_unbuffered_lines(mock_proc, timeout=2.0))
+
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0], '{"text": "🚀"}\n')
+        self.assertNotIn("\ufffd", lines[0])
+
+    def test_execute_turn_async_and_generate_response_async(self):
+        """Verifies execute_turn_async and generate_response_async schedule on running event loops."""
+        from jarvis.core.antigravity_bridge import AntigravityDaemon
+
+        class DummyAwaitable:
+            def __await__(self):
+                if False:
+                    yield
+                return {"status": "SUCCESS"}
+
+        mock_loop = MagicMock()
+        mock_loop.run_in_executor.side_effect = lambda *args, **kwargs: DummyAwaitable()
+
+        daemon = AntigravityDaemon("mock_agy.exe", "gemini-3.8-flash-low")
+        with patch("asyncio.get_running_loop", return_value=mock_loop):
+            coro1 = daemon.execute_turn_async("test prompt", "gemini-3.8-flash-low")
+            try:
+                coro1.send(None)
+            except StopIteration:
+                pass
+            mock_loop.run_in_executor.assert_called_with(
+                None,
+                daemon.execute_turn,
+                "test prompt",
+                "gemini-3.8-flash-low",
+                None,
+                None,
+                90.0,
+                None,
+                None,
+            )
+            coro2 = self.bridge.generate_response_async("test prompt", "gemini-3.8-flash-low")
+            try:
+                coro2.send(None)
+            except StopIteration:
+                pass
+            self.assertEqual(mock_loop.run_in_executor.call_count, 2)
+
+    def test_generate_streaming_deterministic_pipe_cleanup_on_exception(self):
+        """Verifies that _generate_streaming deterministically closes stdin/stdout/stderr pipes in finally."""
+        mock_proc = MagicMock()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stdout = MagicMock()
+        mock_proc.stderr = MagicMock()
+        mock_proc.stdin.closed = False
+        mock_proc.stdout.closed = False
+        mock_proc.stderr.closed = False
+
+        mock_sandboxed = MagicMock()
+        mock_sandboxed.start.return_value = mock_proc
+        mock_sandboxed.terminate_tree.return_value = True
+
+        with patch("jarvis.skills.job_object_sandbox.SandboxedProcess", return_value=mock_sandboxed), \
+             patch.object(self.bridge, "is_available", return_value=True), \
+             patch("jarvis.core.antigravity_bridge.AntigravityDaemon._iter_unbuffered_lines", side_effect=BrokenPipeError("Pipe broken test")):
+            res = self.bridge._generate_streaming(
+                prompt="test broken pipe",
+                model="gemini-3.8-flash-low",
+                sentence_callback=lambda s: None,
+            )
+            self.assertEqual(res.get("status"), "ERROR")
+            mock_proc.stdout.close.assert_called()
+            mock_sandboxed.terminate_tree.assert_called()
+
 
 if __name__ == "__main__":
     unittest.main()

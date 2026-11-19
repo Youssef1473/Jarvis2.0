@@ -19,12 +19,59 @@ from typing import Any
 logger = logging.getLogger("Jarvis.Core.Cancellation")
 
 
+_EPOCH_LOCK = threading.Lock()
+
+
 class SharedEpochState(ctypes.Structure):
-    """Lock-free atomic C-structure tracking monotonic epochs across subsystems."""
+    """Mutex-guarded monotonic epoch state tracking epochs across subsystems."""
     _fields_ = [
-        ("barge_in_epoch", ctypes.c_uint64),
-        ("active_tool_epoch", ctypes.c_uint64),
+        ("_barge_in_epoch", ctypes.c_uint64),
+        ("_active_tool_epoch", ctypes.c_uint64),
     ]
+
+    def __init__(self, barge_in: int = 0, tool_epoch: int = 0, **kwargs: Any) -> None:
+        barge_val = kwargs.get("barge_in_epoch", kwargs.get("_barge_in_epoch", barge_in))
+        tool_val = kwargs.get("active_tool_epoch", kwargs.get("_active_tool_epoch", tool_epoch))
+        super().__init__(_barge_in_epoch=barge_val, _active_tool_epoch=tool_val)
+        self._lock = threading.Lock()
+
+    @property
+    def barge_in_epoch(self) -> int:
+        return int(self._barge_in_epoch)
+
+    @barge_in_epoch.setter
+    def barge_in_epoch(self, val: int) -> None:
+        lock = getattr(self, "_lock", _EPOCH_LOCK)
+        with lock:
+            self._barge_in_epoch = val
+
+    @property
+    def active_tool_epoch(self) -> int:
+        return int(self._active_tool_epoch)
+
+    @active_tool_epoch.setter
+    def active_tool_epoch(self, val: int) -> None:
+        lock = getattr(self, "_lock", _EPOCH_LOCK)
+        with lock:
+            self._active_tool_epoch = val
+
+    def bump_barge_in_epoch(self) -> int:
+        """Atomically increments and returns the new barge-in epoch under mutex lock."""
+        lock = getattr(self, "_lock", _EPOCH_LOCK)
+        with lock:
+            self._barge_in_epoch += 1
+            return int(self._barge_in_epoch)
+
+    def bump_epoch(self) -> int:
+        """Alias for bump_barge_in_epoch."""
+        return self.bump_barge_in_epoch()
+
+    def bump_tool_epoch(self) -> int:
+        """Atomically increments and returns the new tool epoch under mutex lock."""
+        lock = getattr(self, "_lock", _EPOCH_LOCK)
+        with lock:
+            self._active_tool_epoch += 1
+            return int(self._active_tool_epoch)
 
 
 # Process-wide shared singleton state
@@ -242,18 +289,18 @@ def get_global_cancellation_token() -> BargeInCancellationToken:
 
 
 def signal_global_barge_in(async_callbacks: bool = True, exclude: Any = None) -> int:
-    """Atomically advances the global barge-in epoch, invalidating all outstanding tokens in <10ns.
+    """Advances the global barge-in epoch under mutex lock, invalidating all outstanding tokens.
 
     Args:
         async_callbacks: When True, dispatches registered flush callbacks on a background daemon
                          thread so the caller's real-time critical path is not blocked by slow callbacks.
-                         Defaults to True to guarantee non-blocking <10ns execution on real-time threads.
+                         Defaults to True to guarantee non-blocking execution on real-time threads.
         exclude: Optional callback or object to exclude from this dispatch round (e.g. self-invoked flush).
     """
     global _BARGE_IN_ACTIVE
     _BARGE_IN_ACTIVE = True
-    GLOBAL_EPOCH_STATE.barge_in_epoch += 1
-    logger.debug("Signaled global barge-in: epoch -> %d", GLOBAL_EPOCH_STATE.barge_in_epoch)
+    new_epoch = GLOBAL_EPOCH_STATE.bump_barge_in_epoch()
+    logger.debug("Signaled global barge-in: epoch -> %d", new_epoch)
     if async_callbacks:
         threading.Thread(
             target=_run_flush_callbacks,
@@ -263,7 +310,7 @@ def signal_global_barge_in(async_callbacks: bool = True, exclude: Any = None) ->
         ).start()
     else:
         _run_flush_callbacks(exclude=exclude)
-    return int(GLOBAL_EPOCH_STATE.barge_in_epoch)
+    return new_epoch
 
 
 def signal_execution_abort() -> int:
@@ -273,16 +320,15 @@ def signal_execution_abort() -> int:
 
 def trigger_speech_barge_in() -> int:
     """Invoked when user speech or wake word is detected while audio is active.
-    Advances the monotonic barge-in epoch in <10ns and dispatches flush callbacks asynchronously
+    Advances the monotonic barge-in epoch under mutex lock and dispatches flush callbacks asynchronously
     to eliminate stalls on the real-time audio input callback thread.
     """
     return signal_global_barge_in(async_callbacks=True)
 
 
 def advance_active_tool_epoch() -> int:
-    """Advances the active tool epoch counter."""
-    GLOBAL_EPOCH_STATE.active_tool_epoch += 1
-    return int(GLOBAL_EPOCH_STATE.active_tool_epoch)
+    """Advances the active tool epoch counter under mutex lock."""
+    return GLOBAL_EPOCH_STATE.bump_tool_epoch()
 
 
 @dataclass

@@ -434,7 +434,7 @@ class ContextOrchestrator:
                                         lines.append(f"• {k_fmt}: {v_raw}{meta_str}")
                                     else:
                                         lines.append(f"• {k_fmt}: {v_raw}")
-                                rel_text = "[Directly Relevant Knowledge to Current Context]\n" + "\n".join(lines)
+                                rel_text = "[Directly Relevant Knowledge to Current Context] - Reference / Historical\n" + "\n".join(lines)
                                 escaped_summary = html.escape(rel_text)
                                 memory_part = f"<jit_recalled_memory>\n{escaped_summary}\n</jit_recalled_memory>"
                     else:

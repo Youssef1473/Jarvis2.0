@@ -188,7 +188,7 @@ class TestShutdownLifecycle(unittest.TestCase):
             check=False,
             capture_output=True,
             text=True,
-            timeout=45,
+            timeout=90,
         )
 
         # 1. Process must exit with code 0

@@ -28,7 +28,7 @@ from jarvis.core.security_boundaries import (
     SecurityBoundaryViolation,
     TurnTaintTracker,
 )
-from jarvis.core.thread_affinity import init_speculative_worker_thread
+from jarvis.core.win32_affinity import init_speculative_worker_thread
 from jarvis.skills.base import SkillMetadata, SkillRegistry, SpeculationForbiddenError
 
 logger = logging.getLogger("Jarvis.Speculative.Engine")

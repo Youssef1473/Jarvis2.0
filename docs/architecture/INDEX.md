@@ -54,7 +54,7 @@ Autonomous agents must adhere to strict epistemic discipline when making technic
    - `SUPERSEDED`: Replaced by a newer accepted ADR. Preserved immutably for historical lineage.
    - `DEPRECATED`: Retired architectural pattern without direct replacement.
 6. **Concurrency Realism (Audio Cancellation Invariant):**  
-   The cancellation mechanism in `jarvis/core/cancellation.py` (`GLOBAL_EPOCH_STATE.barge_in_epoch += 1`) operates across multiple potential writer threads (wake-word detection, TTS stop routines, UI abort commands) without explicit mutex locks. It is managed under the CPython Global Interpreter Lock (GIL). It must be documented strictly as **shared mutable epoch-based cancellation with cooperative worker invalidation**, never as "guaranteed lock-free" or "hardware atomic."
+   The cancellation mechanism in `jarvis/core/cancellation.py` (`GLOBAL_EPOCH_STATE.bump_barge_in_epoch()`, `bump_epoch()`, `bump_tool_epoch()`) operates across multiple writer threads (wake-word detection, TTS stop routines, UI abort commands) guarded by a dedicated `threading.Lock()` with mutex-synchronized property getters/setters. It is documented strictly as **mutex-synchronized epoch-based cancellation with cooperative worker invalidation**.
 7. **Source Code & AST ≠ Universal Runtime Behavior:**  
    Source code AST establishes what is implemented structurally. It does not prove what executes under varying host configurations, runtime environments, or sandbox boundaries. Runtime behavior must be confirmed through observable execution evidence.
 8. **Project State Snapshot ≠ Ground Truth:**  
@@ -73,7 +73,7 @@ To eliminate fragmented context, the repository strictly maintains a non-redunda
 - [`docs/agent/LESSONS.md`](../agent/LESSONS.md): Evidence-backed post-mortem registry of verified engineering failures and prevention rules.
 - [`docs/milestones/MILESTONES.md`](../milestones/MILESTONES.md): Verified historical register of software milestones (M-01 through M-06), Git merge commits, and test baselines.
 - [`docs/adr/README.md`](../adr/README.md): Canonical Architectural Decision Record index, schema, and lifecycle rules.
-- `docs/adr/ADR-*.md`: Individual architectural decision records (Status: `PROPOSED`).
+- `docs/adr/ADR-*.md`: Individual architectural decision records (Status: `ACCEPTED`).
 - [`ROADMAP.md`](../../ROADMAP.md): Forward-looking development roadmap and upcoming release milestones.
 - `docs/handoffs/historical/`: Archived past session handoffs.
 - `docs/handoffs/ACTIVE_HANDOFF.md`: Transient handoff document used exclusively when an in-flight multi-turn task spans session boundaries. *(Must not exist when no task is active).*

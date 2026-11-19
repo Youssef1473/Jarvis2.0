@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from jarvis.core.evolution.sandbox import SkillSandbox
 from jarvis.core.orchestrator import JarvisOrchestrator
 from jarvis.core.providers.base import (
     BaseProvider,
@@ -195,88 +194,7 @@ class TestResidualSecurityBoundaries(unittest.TestCase):
         self.assertEqual(res, "mocked orchestrator response")
         mock_orch.execute_step.assert_called_once_with("custom_tool", {"arg": 123}, step_index=1, dual_key_confirmed=False)
 
-    # =========================================================================
-    # 2. SEC-04H-02: Canary Execution Suspended Spawn & Fail-Closed
-    # =========================================================================
-
-    def test_canary_spawns_suspended_on_windows(self):
-        """On Windows, canary subprocess MUST be spawned with CREATE_SUSPENDED."""
-        clean_name = "test_probe_canary_suspended"
-        valid_code = (
-            "from jarvis.skills.base import SkillRegistry\n\n"
-            "@SkillRegistry.register(name='test_probe_canary_suspended', description='test')\n"
-            "def test_probe_canary_suspended():\n"
-            "    return 'ok'\n"
-        )
-        with patch("sys.platform", "win32"), \
-             patch("subprocess.Popen") as mock_popen, \
-             patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=True), \
-             patch("jarvis.skills.job_object_sandbox.resume_process", return_value=True):
-
-            mock_proc = MagicMock()
-            mock_proc.communicate.return_value = ("CANARY_VERIFICATION_SUCCESS\nSANDBOX_LOAD_SUCCESS", "")
-            mock_proc.returncode = 0
-            mock_popen.return_value = mock_proc
-
-            try:
-                from jarvis.skills.job_object_sandbox import CREATE_SUSPENDED
-                _res = SkillSandbox.validate_and_promote(clean_name, valid_code, user_approved=True)
-
-                self.assertTrue(mock_popen.called)
-                called_flags = mock_popen.call_args[1].get("creationflags", 0)
-                self.assertTrue(
-                    bool(called_flags & CREATE_SUSPENDED),
-                    "FAIL: Canary process was NOT spawned with CREATE_SUSPENDED!",
-                )
-            finally:
-                SkillSandbox.rollback_snapshot(clean_name, None)
-
-    def test_canary_assignment_failure_terminates_child_and_fails_closed(self):
-        """If Job Object assignment fails, child must be killed immediately without execution."""
-        clean_name = "test_probe_canary_assign_fail"
-        valid_code = (
-            "from jarvis.skills.base import SkillRegistry\n\n"
-            "@SkillRegistry.register(name='test_probe_canary_assign_fail', description='test')\n"
-            "def test_probe_canary_assign_fail():\n"
-            "    return 'ok'\n"
-        )
-        with patch("sys.platform", "win32"), \
-             patch("subprocess.Popen") as mock_popen, \
-             patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=False):
-
-            mock_proc = MagicMock()
-            mock_popen.return_value = mock_proc
-
-            res = SkillSandbox.validate_and_promote(clean_name, valid_code, user_approved=True)
-
-            self.assertFalse(res.success)
-            self.assertIn("Security failure: Win32 Job Object assignment failed", res.message)
-            self.assertTrue(mock_proc.kill.called, "Unassigned suspended child was not killed!")
-
-    def test_canary_resumption_failure_terminates_child_and_fails_closed(self):
-        """If process resumption fails, child must be killed immediately and fail closed."""
-        clean_name = "test_probe_canary_resume_fail"
-        valid_code = (
-            "from jarvis.skills.base import SkillRegistry\n\n"
-            "@SkillRegistry.register(name='test_probe_canary_resume_fail', description='test')\n"
-            "def test_probe_canary_resume_fail():\n"
-            "    return 'ok'\n"
-        )
-        with patch("sys.platform", "win32"), \
-             patch("subprocess.Popen") as mock_popen, \
-             patch("jarvis.skills.job_object_sandbox.assign_process_to_job", return_value=True), \
-             patch("jarvis.skills.job_object_sandbox.resume_process", return_value=False):
-
-            mock_proc = MagicMock()
-            mock_popen.return_value = mock_proc
-
-            res = SkillSandbox.validate_and_promote(clean_name, valid_code, user_approved=True)
-
-            self.assertFalse(res.success)
-            self.assertIn("Failed to resume suspended canary process", res.message)
-            self.assertTrue(mock_proc.kill.called)
-
-    def test_canary_preserves_resource_limits(self):
+    def test_job_object_preserves_resource_limits(self):
         """create_process_job_object in sandbox preserves 4-process and 1 GiB limits."""
         with (
             patch("sys.platform", "win32"),

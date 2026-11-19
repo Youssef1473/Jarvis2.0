@@ -3,6 +3,7 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
+import jarvis.skills.browser_cdp  # noqa: F401
 import jarvis.skills.gemini_intelligence as gemini_intel
 from jarvis.core.mcp_manager import (
     MCPClientSession,

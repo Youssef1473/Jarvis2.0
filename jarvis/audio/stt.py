@@ -10,7 +10,7 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from jarvis.audio.affinity import pin_and_elevate_current_thread
+from jarvis.core.win32_affinity import pin_and_elevate_current_thread
 
 logger = logging.getLogger("Jarvis.STT")
 

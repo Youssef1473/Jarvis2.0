@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jarvis.core.memory import (
     MemoryManager,
-    SleepPhaseConsolidator,
     TranscriptDistiller,
 )
 from jarvis.core.memory.transcript_distiller import (
@@ -234,37 +233,6 @@ class TestTranscriptDistillerSuite(unittest.TestCase):
         )
         self.assertEqual(res["status"], "yielded_idle")
         self.assertEqual(self.distiller.get_last_distilled_id(), 0)
-
-    def test_sleep_consolidator_step1_integration(self):
-        """Verifies SleepPhaseConsolidator executes Step 1 distillation first and deduplicates in Steps 2 & 3."""
-        # 1. Existing fact in memory
-        self.memory.remember_fact("favorite_editor", "Neovim", category="tools")
-
-        # 2. Add interaction with duplicate fact
-        self.memory.log_interaction("I always use Neovim as my editor.", "Noted, Sir.")
-
-        mock_extracted = {
-            "core_preferences": [],
-            "knowledge_edges": [],
-            "atomic_facts": [
-                # Identical duplicate fact extracted from conversation
-                {"category": "tools", "key": "favorite_editor_duplicate", "value": "Neovim"}
-            ],
-        }
-
-        # Run sleep consolidation with Step 1 executing distillation directly
-        consolidator = SleepPhaseConsolidator(self.db_path, self.memory.vector_engine)
-        summary = consolidator.run_sleep_consolidation(
-            is_user_active_fn=lambda: False,
-            extractor_fn=lambda _t: mock_extracted,
-        )
-
-        self.assertEqual(summary["status"], "success")
-        self.assertIn("distillation", summary)
-        self.assertEqual(summary["distillation"]["traits_extracted"], 1)
-        # Verify redundant facts found and pruned in the same sleep pass
-        self.assertGreaterEqual(summary["redundant_pairs_found"], 1)
-        self.assertGreaterEqual(summary["facts_pruned"], 1)
 
 
 if __name__ == "__main__":

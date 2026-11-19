@@ -2,6 +2,7 @@
 Leverages authenticated Google Antigravity CLI sessions to tap into Google AI Pro
 (Gemini 3.8 Flash High/Medium/Low, Claude Sonnet 4.6, Claude Opus 4.6, and staged Gemini 4 Argon) with zero API keys.
 """
+import asyncio
 import codecs
 import contextlib
 import hashlib
@@ -15,12 +16,15 @@ import sys
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Generator
+from collections.abc import AsyncGenerator, Callable, Generator
 from pathlib import Path
 from typing import Any, ClassVar
 
 from jarvis.audio.prosodic_chunker import TwoGearProsodicChunker
-from jarvis.core.stream_tool_parser import NonceGuardedStreamParser, ParsedToolCall
+from jarvis.core.pipeline.streaming_tool_parser import (
+    NonceGuardedStreamParser,
+    ParsedToolCall,
+)
 
 try:
     import jarvis.skills.job_object_sandbox as job_sandbox
@@ -731,71 +735,141 @@ class AntigravityDaemon:
             deadline = (time.perf_counter() + timeout) if timeout and timeout > 0 else None
             buf = ""
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            proc_handle = getattr(proc, "_handle", None)
 
-            while True:
-                if initial_epoch is not None and int(GLOBAL_EPOCH_STATE.barge_in_epoch) != initial_epoch:
-                    logger.info("Antigravity unbuffered pipe read aborted by barge-in epoch increment.")
-                    break
-                if deadline is not None and time.perf_counter() > deadline:
-                    logger.warning("Antigravity unbuffered pipe read timed out after %.1fs", timeout)
-                    break
+            try:
+                while True:
+                    if initial_epoch is not None and int(GLOBAL_EPOCH_STATE.barge_in_epoch) != initial_epoch:
+                        logger.info("Antigravity unbuffered pipe read aborted by barge-in epoch increment.")
+                        break
+                    if deadline is not None and time.perf_counter() > deadline:
+                        logger.warning("Antigravity unbuffered pipe read timed out after %.1fs", timeout)
+                        break
 
-                res = kernel32.PeekNamedPipe(pipe_handle, None, 0, None, ctypes.byref(avail_bytes), None)
-                if not res:
-                    buf += decoder.decode(b"", final=True)
-                    if buf:
-                        yield buf
-                    break
+                    res = kernel32.PeekNamedPipe(pipe_handle, None, 0, None, ctypes.byref(avail_bytes), None)
+                    if not res:
+                        break
 
-                n_avail = avail_bytes.value
-                if n_avail > 0:
+                    n_avail = avail_bytes.value
+                    if n_avail > 0:
+                        try:
+                            chunk = os.read(raw_fd, min(4096, n_avail))
+                            if not chunk:
+                                break
+                            buf += decoder.decode(chunk)
+                            while "\n" in buf:
+                                line, buf = buf.split("\n", 1)
+                                yield line + "\n"
+                        except (OSError, ValueError):
+                            break
+                    else:
+                        if proc.poll() is not None:
+                            break
+                        if proc_handle:
+                            # Event-driven wait on process handle (1ms slice) to wake instantly on child exit
+                            kernel32.WaitForSingleObject(int(proc_handle), 1)
+                        else:
+                            time.sleep(0.001)
+            except GeneratorExit:
+                return
+
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                buf += tail
+            if buf:
+                yield buf
+
+        elif raw_fd is not None:
+            buf = ""
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            try:
+                while True:
                     try:
-                        chunk = os.read(raw_fd, min(4096, n_avail))
+                        chunk = os.read(raw_fd, 4096)
                         if not chunk:
-                            buf += decoder.decode(b"", final=True)
-                            if buf:
-                                yield buf
                             break
                         buf += decoder.decode(chunk)
                         while "\n" in buf:
                             line, buf = buf.split("\n", 1)
                             yield line + "\n"
                     except (OSError, ValueError):
-                        buf += decoder.decode(b"", final=True)
-                        if buf:
-                            yield buf
                         break
-                else:
-                    if proc.poll() is not None:
-                        buf += decoder.decode(b"", final=True)
-                        if buf:
-                            yield buf
-                        break
-                    time.sleep(0.01)
+            except GeneratorExit:
+                return
 
-        elif raw_fd is not None:
-            buf = ""
-            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-            while True:
-                try:
-                    chunk = os.read(raw_fd, 4096)
-                    if not chunk:
-                        buf += decoder.decode(b"", final=True)
-                        if buf:
-                            yield buf
-                        break
-                    buf += decoder.decode(chunk)
-                    while "\n" in buf:
-                        line, buf = buf.split("\n", 1)
-                        yield line + "\n"
-                except (OSError, ValueError):
-                    buf += decoder.decode(b"", final=True)
-                    if buf:
-                        yield buf
-                    break
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                buf += tail
+            if buf:
+                yield buf
         else:
-            for line in iter(proc.stdout.readline, ""):
+            from jarvis.core.cancellation import GLOBAL_EPOCH_STATE
+            deadline = (time.perf_counter() + timeout) if timeout and timeout > 0 else None
+            try:
+                while True:
+                    if initial_epoch is not None and int(GLOBAL_EPOCH_STATE.barge_in_epoch) != initial_epoch:
+                        logger.info("Antigravity unbuffered pipe read aborted by barge-in epoch increment.")
+                        break
+                    if deadline is not None and time.perf_counter() > deadline:
+                        logger.warning("Antigravity unbuffered pipe read timed out after %.1fs", timeout)
+                        break
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    yield line
+            except GeneratorExit:
+                return
+
+    @classmethod
+    async def _iter_unbuffered_lines_async(
+        cls,
+        proc: subprocess.Popen | Any,
+        timeout: float | None = None,
+        initial_epoch: int | None = None,
+    ) -> AsyncGenerator[str, None]:
+        """Yields lines from proc.stdout asynchronously with bounded timeouts and epoch cancellation."""
+        from jarvis.core.cancellation import GLOBAL_EPOCH_STATE
+
+        deadline = (time.perf_counter() + timeout) if timeout and timeout > 0 else None
+        stdout = getattr(proc, "stdout", None)
+        if stdout is None:
+            return
+
+        if asyncio.iscoroutinefunction(getattr(stdout, "readline", None)):
+            try:
+                while True:
+                    if initial_epoch is not None and int(GLOBAL_EPOCH_STATE.barge_in_epoch) != initial_epoch:
+                        logger.info("Antigravity async pipe read aborted by barge-in epoch increment.")
+                        break
+                    if deadline is not None and time.perf_counter() > deadline:
+                        logger.warning("Antigravity async pipe read timed out after %.1fs", timeout)
+                        break
+
+                    rem = (deadline - time.perf_counter()) if deadline is not None else 1.0
+                    wait_sec = max(0.01, min(1.0, rem))
+                    try:
+                        if timeout is not None:
+                            line_data = await asyncio.wait_for(stdout.readline(), timeout=wait_sec)
+                        else:
+                            line_data = await stdout.readline()
+                        if not line_data:
+                            break
+                        if isinstance(line_data, bytes):
+                            yield line_data.decode("utf-8", errors="replace")
+                        else:
+                            yield str(line_data)
+                    except TimeoutError:
+                        if hasattr(proc, "returncode") and proc.returncode is not None:
+                            break
+                        continue
+                    except (OSError, ValueError):
+                        break
+            except GeneratorExit:
+                return
+        else:
+            for line in cls._iter_unbuffered_lines(proc, timeout=timeout, initial_epoch=initial_epoch):
                 yield line
+                await asyncio.sleep(0)
 
     def is_alive(self) -> bool:
         """Returns True if the daemon child process is currently alive and responsive."""
@@ -1211,6 +1285,30 @@ class AntigravityDaemon:
                 "warm_daemon": True,
                 "tool_calls": parsed_tools,
             }
+
+    async def execute_turn_async(
+        self,
+        prompt: str,
+        model: str,
+        effort: str | None = None,
+        sentence_callback: Callable[[str], None] | None = None,
+        timeout: float = 90.0,
+        turn_nonce: str | None = None,
+        on_tool_call: Callable[[Any], None] | None = None,
+    ) -> dict[str, Any] | None:
+        """Asynchronously executes query turn against the persistent worker."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            self.execute_turn,
+            prompt,
+            model,
+            effort,
+            sentence_callback,
+            timeout,
+            turn_nonce,
+            on_tool_call,
+        )
 
 
 class AntigravityBridge:
@@ -2077,6 +2175,34 @@ class AntigravityBridge:
             "usage": {},
         }
 
+    async def generate_response_async(
+        self,
+        prompt: str,
+        model: str | None = None,
+        system_instruction: str = "",
+        sentence_callback: Callable[[str], None] | None = None,
+        timeout: float = 90.0,
+        conversation_id: str | None = None,
+        candidates: list[str] | None = None,
+        turn_nonce: str | None = None,
+        on_tool_call: Callable[[Any], None] | None = None,
+    ) -> dict[str, Any]:
+        """Asynchronously generates an LLM response using Antigravity CLI."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            self.generate_response,
+            prompt,
+            model,
+            system_instruction,
+            sentence_callback,
+            timeout,
+            conversation_id,
+            candidates,
+            turn_nonce,
+            on_tool_call,
+        )
+
     def _generate_batch(
         self,
         prompt: str,
@@ -2344,6 +2470,13 @@ class AntigravityBridge:
         finally:
             with self._pool_lock:
                 self._active_oneshot_sandboxes.discard(sandboxed)
+            if proc is not None:
+                for pipe in (getattr(proc, "stdin", None), getattr(proc, "stdout", None), getattr(proc, "stderr", None)):
+                    if pipe and not getattr(pipe, "closed", True):
+                        try:
+                            pipe.close()
+                        except OSError as e:
+                            logger.debug("Error closing pipe in finally: %s", e)
             if sandboxed:
                 try:
                     sandboxed.terminate_tree()

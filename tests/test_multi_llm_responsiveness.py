@@ -14,15 +14,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jarvis.audio.prosodic_chunker import TwoGearProsodicChunker
 from jarvis.core.antigravity_bridge import AntigravityBridge, AntigravityDaemon
 from jarvis.core.github_bridge import GitHubCopilotBridge
+from jarvis.core.pipeline.streaming_tool_parser import (
+    NonceGuardedStreamParser,
+)
 from jarvis.core.prompt_layout import (
     build_canonical_4zone_prompt,
     format_compact_typescript_tools,
     verify_prefix_stability,
 )
 from jarvis.core.providers.openrouter import OpenRouterProvider
-from jarvis.core.stream_tool_parser import (
-    NonceGuardedStreamParser,
-)
 
 
 class TestTwoGearProsodicChunker(unittest.TestCase):

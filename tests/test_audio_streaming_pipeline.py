@@ -468,7 +468,8 @@ class TestPlaybackReliabilityAndRingAllocation(unittest.TestCase):
         self.assertLess(elapsed, 0.150)
         self.assertTrue(self.tts._stream_shutdown_timed_out)
         self.assertIsNone(self.tts._output_stream)
-        self.assertIn(mock_stream, self.tts._retained_streams)
+        self.assertIn(mock_stream, self.tts._unresolved_streams)
+        self.assertFalse(hasattr(self.tts, "_retained_streams"))
 
         # CRITICAL SAFETY INVARIANT: abort() must NOT be called concurrently on the stalled handle
         mock_stream.abort.assert_not_called()
@@ -498,7 +499,8 @@ class TestPlaybackReliabilityAndRingAllocation(unittest.TestCase):
         self.assertLess(elapsed, 0.150)
         self.assertTrue(self.tts._stream_shutdown_timed_out)
         self.assertIsNone(self.tts._output_stream)
-        self.assertIn(mock_stream, self.tts._retained_streams)
+        self.assertIn(mock_stream, self.tts._unresolved_streams)
+        self.assertFalse(hasattr(self.tts, "_retained_streams"))
 
         # Active worker exists and is still waiting on stop_gate
         active_worker = self.tts._shutdown_worker
@@ -635,6 +637,74 @@ class TestPlaybackReliabilityAndRingAllocation(unittest.TestCase):
             mock_sd_output.assert_not_called()
             self.assertEqual(self.tts._last_shutdown_outcome, "UNCLEAN_FAILED")
             self.assertTrue(self.tts._stream_cleanup_uncertain)
+
+
+class TestStatefulPolyphaseUpsamplerSuite(unittest.TestCase):
+    """Verifies StatefulPolyphaseUpsampler continuity, notch elimination, and reset lifecycle."""
+
+    def test_chunk_continuity_and_reset(self):
+        from jarvis.audio.tts import StatefulPolyphaseUpsampler
+
+        upsampler = StatefulPolyphaseUpsampler(up=2, down=1, pad_samples=32)
+        # Create a smooth 24kHz sine wave
+        t = np.linspace(0, 0.1, 2400, endpoint=False, dtype=np.float32)
+        sine = np.sin(2 * np.pi * 440 * t)
+
+        # Chunk into 3 pieces
+        chunk1 = sine[:800]
+        chunk2 = sine[800:1600]
+        chunk3 = sine[1600:]
+
+        out1 = upsampler.process(chunk1)
+        out2 = upsampler.process(chunk2)
+        out3 = upsampler.process(chunk3)
+
+        self.assertEqual(len(out1), 1600)
+        self.assertEqual(len(out2), 1600)
+        self.assertEqual(len(out3), 1600)
+
+        concatenated = np.concatenate((out1, out2, out3))
+        self.assertEqual(len(concatenated), 4800)
+
+        # Verify that chunk 2 exhibits zero start notch error compared to continuous full-signal resampling
+        from scipy.signal import resample_poly
+        full = resample_poly(sine, 2, 1)
+        notch_error = float(np.max(np.abs(out2[:50] - full[1600:1650])))
+        self.assertAlmostEqual(notch_error, 0.0, places=4)
+
+        # Stateless resampling exhibits an artificial boundary notch at chunk onset
+        stateless_chunk2 = resample_poly(chunk2, 2, 1)
+        stateless_notch_error = float(np.max(np.abs(stateless_chunk2[:50] - full[1600:1650])))
+        self.assertGreater(stateless_notch_error, 0.05)
+
+        # Reset flushes tail state
+        upsampler.reset()
+        self.assertIsNone(upsampler._tail_24k)
+
+
+class TestGlobalEpochStateConcurrencySuite(unittest.TestCase):
+    """Verifies mutex-guarded GLOBAL_EPOCH_STATE thread safety under concurrent contention."""
+
+    def test_concurrent_epoch_bumps_zero_lost_updates(self):
+        import concurrent.futures
+
+        from jarvis.core.cancellation import GLOBAL_EPOCH_STATE
+
+        initial = int(GLOBAL_EPOCH_STATE.barge_in_epoch)
+        thread_count = 8
+        bumps_per_thread = 100
+
+        def worker():
+            for _ in range(bumps_per_thread):
+                GLOBAL_EPOCH_STATE.bump_epoch()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=thread_count) as executor:
+            futures = [executor.submit(worker) for _ in range(thread_count)]
+            for f in futures:
+                f.result()
+
+        final = int(GLOBAL_EPOCH_STATE.barge_in_epoch)
+        self.assertEqual(final, initial + (thread_count * bumps_per_thread))
 
 
 if __name__ == "__main__":

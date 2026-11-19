@@ -18,7 +18,7 @@ try:
 except ImportError:
     OpenAI = None  # type: ignore
 
-from jarvis.audio.chunker import StreamingSentenceChunker
+from jarvis.audio.prosodic_chunker import StreamingSentenceChunker
 from jarvis.core.providers.base import BaseProvider, LLMResponse, ToolCall
 
 logger = logging.getLogger("Jarvis.Provider.OpenRouter")

@@ -1,7 +1,7 @@
 # ADR-004: Dual-Key Mutating Tool Authorization and Turn-Taint Tracking
 
 ## Status
-PROPOSED
+ACCEPTED
 
 ## Date
 2026-11-02
@@ -26,13 +26,15 @@ Implement a two-tier defense combining single-use cryptographic authorization no
    - Invoking a mutating tool requires a cryptographically random authorization nonce generated via `secrets.token_urlsafe()`.
    - **Single-Use Semantics:** Nonces are bound to a specific tool and action, carry a bounded time-to-live (`ttl`, default 60s), and are **immediately consumed and purged from memory** (`pop()`) upon validation.
    - Replaying a previously used nonce or presenting an expired nonce fails closed with a `SecurityBoundaryViolation`.
-2. **Turn-Taint Propagation (`TurnTaintTracker`):**
+2. **Turn-Taint & Argument-Level Provenance Propagation (`TurnTaintTracker`):**
    - Conversational turns begin in an untainted state when direct user input is received.
-   - Any registered ingestion tool classified as `KNOWN_UNTRUSTED` or `UNKNOWN` (e.g. web search, URL fetching, reading unconfined files, clipboard queries) immediately marks the active conversational turn as **tainted** (`turn_tainted = True`) via `record_ingestion()`.
+   - Any registered ingestion tool classified as `KNOWN_UNTRUSTED` or `UNKNOWN` (e.g. web search, URL fetching, reading unconfined files, clipboard queries) immediately marks the active conversational turn as **tainted** (`turn_tainted = True`) via `record_ingestion()`, and records tainted output value digests via `record_tainted_value()`.
    - Execution Gateway Behavior (`evaluate_tool_execution`):
      - **Critical Risk (Level 2 — `CRITICAL_PRIVILEGE_TOOLS`):** Modifies the host environment or live Python runtime. Requires explicit user confirmation nonce **unconditionally**, regardless of turn taint state.
-     - **High Privilege (Level 1 — `HIGH_PRIVILEGE_MUTATION_TOOLS`):** Requires an authorization nonce **if the turn is tainted** (`is_tainted_mutation`).
-     - **Read-Only (Level 0 — `KNOWN_READ_ONLY_TOOLS`):** Allowed without a human authorization nonce.
+     - **High Privilege / Arbitrary Execution (Level 1 — `HIGH_PRIVILEGE_MUTATION_TOOLS`):** Requires an authorization nonce **if the turn is tainted** (`is_tainted_mutation`).
+     - **Tainted Argument Escalation:** Any tool whose arguments contain tainted external values or substrings (`check_arguments_taint()`) unconditionally requires Dual-Key authorization escalation.
+     - **Benign Local Controls (`BENIGN_LOCAL_CONTROL_TOOLS`):** Parameter-independent local controls (e.g. volume, media, timer controls) execute on tainted turns without authorization escalation provided their arguments contain no tainted external values.
+     - **Read-Only (Level 0 — `KNOWN_READ_ONLY_TOOLS`):** Allowed without a human authorization nonce when arguments are clean.
 3. **Turn-Taint Reset Boundary:**
    - Turn taint state is strictly scoped to the active user interaction and is reset (`reset_turn()`) only when the orchestrator transitions to a brand-new turn initiated by direct, verified user speech or UI input.
 4. **End-to-End Data Provenance Invariant (Hardened in `be8d39f`):**

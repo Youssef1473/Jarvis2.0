@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import jarvis.skills.self_evolution as self_evo
+import jarvis.skills.diagnostics as self_evo
 from jarvis.core.brain import JarvisBrain
 from jarvis.core.memory import MemoryManager
 from jarvis.core.reflex_engine import (

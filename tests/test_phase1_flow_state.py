@@ -1,8 +1,14 @@
 """Unit tests for Phase 1: Active IDE & Terminal Flow-State Mirroring."""
+import json
 import os
 import tempfile
 import unittest
+from unittest.mock import MagicMock
 
+from jarvis.context.bridges.pipe_listener import (
+    FlowStateBridgeListener,
+    _FlowStateDatagramProtocol,
+)
 from jarvis.context.flow_state_mirror import (
     EnvironmentEpochTracker,
     FlowStateMirror,
@@ -110,6 +116,72 @@ class TestPhase1FlowStateMirror(unittest.TestCase):
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+
+class TestFlowStateBridgeListener(unittest.TestCase):
+    def setUp(self):
+        EnvironmentEpochTracker.reset()
+        self.listener = FlowStateBridgeListener(port=31499, auth_token="test_secret_token_1234567890abcdef")
+
+    def tearDown(self):
+        self.listener.stop()
+        EnvironmentEpochTracker.reset()
+
+    def test_process_packet_hmac_authentication(self):
+        # Unauthenticated packet rejected
+        raw_bad = json.dumps({"type": "ide_state", "file": "foo.py", "line": 10}).encode("utf-8")
+        self.assertFalse(self.listener.process_packet(raw_bad))
+
+        # Signed packet accepted
+        payload = {"type": "ide_state", "file": "foo.py", "line": 10}
+        signed = self.listener.sign_payload(payload)
+        self.assertTrue(self.listener.process_packet(json.dumps(signed).encode("utf-8")))
+
+        # Packet with token accepted
+        token_payload = {"type": "ide_state", "file": "bar.py", "line": 20, "token": self.listener.auth_token}
+        self.assertTrue(self.listener.process_packet(json.dumps(token_payload).encode("utf-8")))
+
+    def test_process_packet_tampered_and_malformed_rejected(self):
+        """Verifies tampered HMAC signature, invalid token, and non-JSON bytes are rejected."""
+        # Non-JSON garbage rejected
+        self.assertFalse(self.listener.process_packet(b"INVALID_NON_JSON_BYTES_12345"))
+
+        # Tampered HMAC rejected
+        payload = {"type": "ide_state", "file": "safe.py", "line": 1}
+        signed = self.listener.sign_payload(payload)
+        signed["file"] = "tampered.py"
+        self.assertFalse(self.listener.process_packet(json.dumps(signed).encode("utf-8")))
+
+        # Invalid token rejected
+        bad_token_payload = {"type": "ide_state", "file": "safe.py", "line": 1, "token": "invalid_wrong_token"}
+        self.assertFalse(self.listener.process_packet(json.dumps(bad_token_payload).encode("utf-8")))
+
+    def test_process_packet_terminal_state_updates_mirror(self):
+        payload = {
+            "type": "terminal_state",
+            "cmd": "pytest -v",
+            "exit_code": 0,
+            "stderr": "",
+        }
+        signed = self.listener.sign_payload(payload)
+        res = self.listener.process_packet(json.dumps(signed).encode("utf-8"))
+        self.assertTrue(res)
+        snap = FlowStateMirror.get_instance().get_snapshot()
+        self.assertEqual(snap.last_terminal_cmd, "pytest -v")
+
+    def test_datagram_protocol_routes_to_listener(self):
+        proto = _FlowStateDatagramProtocol(self.listener)
+        mock_transport = MagicMock()
+        proto.connection_made(mock_transport)
+        self.assertIs(proto.transport, mock_transport)
+
+        signed = self.listener.sign_payload({"type": "ide_state", "file": "active.py", "line": 5})
+        proto.datagram_received(json.dumps(signed).encode("utf-8"), ("127.0.0.1", 31499))
+        snap = FlowStateMirror.get_instance().get_snapshot()
+        self.assertEqual(snap.active_file_path, "active.py")
+
+        proto.connection_lost(None)
+        self.assertIsNone(proto.transport)
 
 
 if __name__ == "__main__":

@@ -15,14 +15,14 @@ from typing import Any, ClassVar
 import numpy as np
 import sounddevice as sd
 
-from jarvis.audio.affinity import pin_and_elevate_current_thread
-from jarvis.audio.chunker import StreamingSentenceChunker
+from jarvis.audio.prosodic_chunker import StreamingSentenceChunker
 from jarvis.audio.ring_buffer import AudioRingBuffer, apply_cinematic_jarvis_dsp
 from jarvis.core.cancellation import GLOBAL_EPOCH_STATE, is_in_cancellation_flush
 from jarvis.core.win32_affinity import (
     MASK_PCORE_COMPUTE,
     THREAD_PRIORITY_ABOVE_NORMAL,
     elevate_audio_thread_mmcss,
+    pin_and_elevate_current_thread,
     pin_current_thread_to_mask,
 )
 
@@ -490,7 +490,6 @@ class TextToSpeech:
         self._stream_active = False
         self._session_word_count = 0
         self._underrun_count: int = 0
-        self._retained_streams: deque = deque(maxlen=8)
         self._stream_shutdown_timed_out: bool = False
         self._stream_cleanup_uncertain: bool = False
         self._last_shutdown_outcome: str = "NONE"
@@ -503,7 +502,7 @@ class TextToSpeech:
         self._chunker = StreamingSentenceChunker()
         self._ring_buffer = AudioRingBuffer(capacity_samples=48000 * 120, ramp_samples=120)
         self._stream_device: int | None = None
-        self._stream_sample_rate: int = 24000
+        self._stream_sample_rate: int = 48000
         self._synth_has_started: bool = False
         self._resampler = StatefulPolyphaseUpsampler(up=2, down=1, pad_samples=32)
 
@@ -865,9 +864,6 @@ class TextToSpeech:
         """Safely stops and closes a PortAudio hardware stream on a dedicated control thread."""
         if stream is None:
             return True
-
-        if hasattr(self, "_retained_streams"):
-            self._retained_streams.append(stream)
 
         worker_to_join = None
         prior_worker_to_join = None
@@ -1411,7 +1407,7 @@ class TextToSpeech:
             self._is_speaking = False
             AudioTelemetry.active_playback = False
             try:
-                from jarvis.core.cancellation import signal_global_barge_in
+                from jarvis.audio.cancellation import signal_global_barge_in
                 signal_global_barge_in(async_callbacks=True, exclude=self.on_barge_in_flush)
             except Exception:  # noqa: BLE001, S110
                 pass
@@ -1523,6 +1519,17 @@ class TextToSpeech:
             except Exception:  # noqa: BLE001
                 break
 
+        if getattr(self, "_synth_thread", None) and self._synth_thread.is_alive():
+            try:
+                self._sentence_queue.put_nowait(None)
+            except (queue.Full, Exception):  # noqa: BLE001, S110
+                pass
+        if getattr(self, "_playback_thread", None) and self._playback_thread.is_alive():
+            try:
+                self._audio_queue.put_nowait(None)
+            except (queue.Full, Exception):  # noqa: BLE001, S110
+                pass
+
         # Immediately preempt sounddevice playback so any active sd.wait() in speak_sync unblocks
         if not self._safe_sd_stop(timeout=min(0.05, _calc_rem(stop_timeout))):
             clean_stop = False
@@ -1607,15 +1614,26 @@ class TextToSpeech:
 
         synth = getattr(self, "_synth_thread", None)
         if synth and synth.is_alive():
-            synth.join(timeout=_calc_rem(0.02))
+            synth.join(timeout=_calc_rem(0.05))
             if synth.is_alive():
                 clean_stop = False
 
         play = getattr(self, "_playback_thread", None)
         if play and play.is_alive():
-            play.join(timeout=_calc_rem(0.02))
+            play.join(timeout=_calc_rem(0.05))
             if play.is_alive():
                 clean_stop = False
+
+        while not self._sentence_queue.empty():
+            try:
+                self._sentence_queue.get_nowait()
+            except Exception:  # noqa: BLE001
+                break
+        while not self._audio_queue.empty():
+            try:
+                self._audio_queue.get_nowait()
+            except Exception:  # noqa: BLE001
+                break
 
         if (
             getattr(self, "_stream_cleanup_uncertain", False)
@@ -1766,8 +1784,8 @@ class TextToSpeech:
         """Normalizes times, numbers, dates, units, and formatting for natural spoken delivery."""
         if not text:
             return ""
-        from jarvis.audio.chunker import sanitize_clause_for_ear
         from jarvis.audio.normalizer import SpeechNormalizer
+        from jarvis.audio.prosodic_chunker import sanitize_clause_for_ear
         text_ear = sanitize_clause_for_ear(text)
         cleaned = SpeechNormalizer.normalize(text_ear)
         if not re.search(r"[a-zA-Z0-9]", cleaned):
@@ -2106,6 +2124,14 @@ class TextToSpeech:
             self._ring_buffer.clear()
 
         self._stream_device, self._stream_sample_rate = self._resolve_output_stream_params()
+
+        expected_capacity = self._stream_sample_rate * 120
+        expected_ramp = 120 if self._stream_sample_rate == 48000 else 60
+        if hasattr(self, "_ring_buffer") and (
+            self._ring_buffer.capacity != expected_capacity
+            or self._ring_buffer.ramp_samples != expected_ramp
+        ):
+            self._ring_buffer = AudioRingBuffer(capacity_samples=expected_capacity, ramp_samples=expected_ramp)
 
         if self.engine == "kokoro":
             if not self._kokoro:

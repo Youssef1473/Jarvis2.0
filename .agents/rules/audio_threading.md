@@ -15,10 +15,10 @@ These invariants govern audio capture, synthesis, playback, and preemptive cance
 ## 2. Windows CPU Affinity Partitioning & MMCSS
 - On Intel 12th Gen Alder Lake i5-12500H topology, partition threads across performance (P) and efficiency (E) cores via `jarvis.core.win32_affinity`:
   - **WASAPI Playback Worker:** Pinned to `MASK_PCORE_AUDIO_ISOLATED = 0x0003` (Logical CPUs 0 and 1) with `THREAD_PRIORITY_TIME_CRITICAL` and MMCSS Pro Audio.
-  - **Wake-Word Router Worker:** Pinned across physical P-cores via `get_physical_pcore_mask()` (`0x0055` — Logical CPUs 0, 2, 4, 6) with `THREAD_PRIORITY_HIGHEST` and MMCSS Pro Audio.
+  - **Wake-Word Router Worker:** Pinned across physical P-cores via `get_wakeword_affinity_mask()` (`MASK_PCORE_WAKEWORD = 0x0054` — Logical CPUs 2, 4, 6) with `THREAD_PRIORITY_HIGHEST` and MMCSS Pro Audio, eliminating scheduling collisions on Logical CPU 0.
   - **Compute P-Cores:** `MASK_PCORE_COMPUTE = 0x00FC` (Logical CPUs 2–7) for neural workloads (Kokoro ONNX TTS, Whisper STT).
   - **Background E-Cores:** `MASK_ECORE_BACKGROUND = 0xFF00` (Logical CPUs 8–15) with EcoQoS for background maintenance, I/O, and worker threads.
-- **Affinity Partition Overlap:** The WASAPI playback mask (`0x0003`) and wake-word worker mask (`0x0055`) intersect on Logical CPU 0 (`0x0003 & 0x0055 = 0x0001`). Thread affinity restricts eligible cores but does not grant exclusive processor ownership; Windows may schedule both threads on CPU 0. These affinity masks are specific to the declared host topology and require dynamic fallback on non-Alder Lake processors.
+- **Affinity Partition Isolation:** The WASAPI playback mask (`0x0003`) and wake-word worker mask (`0x0054`) are strictly disjoint (`0x0003 & 0x0054 = 0x0000`), guaranteeing that WASAPI playback on Physical Core 0 (Logical CPUs 0–1) is completely isolated from wake-word capture. These affinity masks are specific to the declared host topology and dynamically fall back on non-Alder Lake processors.
 
 ## 3. Preemptive Barge-In Cancellation
 - Use the epoch-based cancellation mechanism through `GLOBAL_EPOCH_STATE` (in `jarvis.core.cancellation`) to invalidate stale work. Do not assume a fixed cancellation latency; performance targets require reproducible benchmarks.

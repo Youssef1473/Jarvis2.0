@@ -12,7 +12,6 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import jarvis.skills.self_evolution as self_evo
 from jarvis.core.brain import JarvisBrain
 from jarvis.core.memory import MemoryManager
 from jarvis.core.safety import SafetyGate
@@ -30,10 +29,8 @@ class TestEpisodicReflectionSuite(unittest.TestCase):
         }
         self.memory = MemoryManager(self.config)
         self.safety = SafetyGate(self.config)
-        self_evo.set_memory_manager(self.memory)
 
     def tearDown(self):
-        self_evo.set_memory_manager(None)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_record_and_deduplicate_episodic_lesson(self):
@@ -140,19 +137,6 @@ class TestEpisodicReflectionSuite(unittest.TestCase):
         # Unrelated query should not trigger this lesson
         prompt_unrelated = brain._get_system_instruction(user_text="What is the weather today?")
         self.assertNotIn("Past Episodic Lessons", prompt_unrelated)
-
-    def test_self_evolution_skills_episodic_reflection(self):
-        """Verifies the recall_episodic_lessons and record_episodic_lesson skills work as expected."""
-        rec_res = self_evo.record_episodic_lesson(
-            tool_name="browse_and_read_webpage",
-            failure_signature="Failed to connect to invalid://site",
-            lesson="Ensure URL has a valid http/https scheme and is reachable.",
-        )
-        self.assertIn("successfully cataloged", rec_res)
-
-        recall_res = self_evo.recall_episodic_lessons(query="browse website")
-        self.assertIn("browse_and_read_webpage", recall_res)
-        self.assertIn("Ensure URL has a valid http/https", recall_res)
 
 
 if __name__ == "__main__":

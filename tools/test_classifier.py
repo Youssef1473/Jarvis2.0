@@ -92,8 +92,8 @@ NODE_RULES: dict[str, str] = {
     # Async coroutines in hardware test files
     "tests/test_onnx_embeddings.py::TestOnnxEmbeddingEngine::test_async_embedding_event_loop": TIER_2A_ASYNC_SAFE,
     "tests/test_semantic_endpointing.py::test_adaptive_tripwire_trigger": TIER_2A_ASYNC_SAFE,
-    # Self-evolution out-of-process canary and dynamic execution under Win32 Job Object
-    "tests/test_self_evolution.py::TestSelfEvolution::test_dynamic_skill_creation_and_hot_reload": TIER_3_WINDOWS_INTEGRATION,
+    # UI server workspace routing invoking asyncio.run / asyncio.to_thread
+    "tests/test_phase4_workspace_isolation.py::TestPhase4WorkspaceIsolation::test_3_ui_server_workspace_scoping_and_fail_closed_validation": TIER_2A_ASYNC_SAFE,
 }
 
 # Suites containing hardware / audio / GPU dependencies (serial)
@@ -144,6 +144,7 @@ LOOPBACK_IPC_FILES = {
     "tests/test_live_telemetry_stream.py",
     "tests/test_hud_calendar_integration.py",
     "tests/test_hud_security_dsp.py",
+    "tests/test_hud_workspace_and_quarantine.py",
     "tests/test_egress_proxy.py",
     "tests/test_live_rebinding_and_browser_bypass.py",
     "tests/test_exception_hardening.py",
