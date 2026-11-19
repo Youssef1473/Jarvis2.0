@@ -169,8 +169,9 @@ class MotorCadenceTracker:
                     logger.debug("UnhookWindowsHookEx error: %s", e)
                 self._hook = None
 
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+        if self._thread:
+            if self._thread.is_alive():
+                self._thread.join(timeout=1.0)
             self._thread = None
 
         self._held_keys.clear()
