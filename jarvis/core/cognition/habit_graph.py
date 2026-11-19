@@ -16,6 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from jarvis.core.memory.ro_pool import (
+    DEFAULT_RO_QUERY_TIMEOUT_MS,
+    ReadOnlyConnectionPool,
+)
 from jarvis.core.memory.sqlite_base import SingleWriterActor
 
 logger = logging.getLogger("Jarvis.Cognition.HabitGraph")
@@ -251,91 +255,93 @@ class TemporalHabitGraph:
         Gates proactive candidates at P >= 0.65 and N >= 3.
         """
         curr_time = now if now is not None else time.time()
-        conn = self._get_connection()
+        ro_pool = ReadOnlyConnectionPool.get_or_create(self.db_path)
         try:
-            cursor = conn.cursor()
+            with ro_pool.connection(timeout_ms=DEFAULT_RO_QUERY_TIMEOUT_MS) as conn:
+                cursor = conn.cursor()
 
-            candidates: list[dict[str, Any]] = []
-            context_used = context_state or "marginal"
+                candidates: list[dict[str, Any]] = []
+                context_used = context_state or "marginal"
 
-            # 1. Attempt exact context query
-            if context_state:
-                cursor.execute("""
-                    SELECT target_action, transition_count, last_decay_ts, weight
-                    FROM action_transitions
-                    WHERE source_action = ? AND context_state = ?
-                """, (current_action, context_state))
-                rows = cursor.fetchall()
+                # 1. Attempt exact context query
+                if context_state:
+                    cursor.execute("""
+                        SELECT target_action, transition_count, last_decay_ts, weight
+                        FROM action_transitions
+                        WHERE source_action = ? AND context_state = ?
+                    """, (current_action, context_state))
+                    rows = cursor.fetchall()
 
-                # Calculate decayed weights for exact context
-                total_context_weight = 0.0
-                exact_candidates = []
-                for r in rows:
-                    elapsed = max(0.0, curr_time - r["last_decay_ts"])
-                    decayed_w = r["weight"] * (2.0 ** (-elapsed / HABIT_HALF_LIFE_SECONDS))
-                    total_context_weight += decayed_w
-                    exact_candidates.append({
-                        "target_action": r["target_action"],
-                        "transition_count": r["transition_count"],
-                        "weight": decayed_w,
-                    })
+                    # Calculate decayed weights for exact context
+                    total_context_weight = 0.0
+                    exact_candidates = []
+                    for r in rows:
+                        elapsed = max(0.0, curr_time - r["last_decay_ts"])
+                        decayed_w = r["weight"] * (2.0 ** (-elapsed / HABIT_HALF_LIFE_SECONDS))
+                        total_context_weight += decayed_w
+                        exact_candidates.append({
+                            "target_action": r["target_action"],
+                            "transition_count": r["transition_count"],
+                            "weight": decayed_w,
+                        })
 
-                # Adjustment 3: Fall back to marginal prior if total exact context weight < 2.0
-                if total_context_weight >= 2.0:
-                    candidates = exact_candidates
-                    context_used = context_state
+                    # Adjustment 3: Fall back to marginal prior if total exact context weight < 2.0
+                    if total_context_weight >= 2.0:
+                        candidates = exact_candidates
+                        context_used = context_state
 
-            # 2. Marginal Context Fallback
-            if not candidates:
-                cursor.execute("""
-                    SELECT target_action, SUM(transition_count) as total_count,
-                           SUM(weight) as total_weight, MAX(last_decay_ts) as max_decay_ts
-                    FROM action_transitions
-                    WHERE source_action = ?
-                    GROUP BY target_action
-                """, (current_action,))
-                marginal_rows = cursor.fetchall()
+                # 2. Marginal Context Fallback
+                if not candidates:
+                    cursor.execute("""
+                        SELECT target_action, SUM(transition_count) as total_count,
+                               SUM(weight) as total_weight, MAX(last_decay_ts) as max_decay_ts
+                        FROM action_transitions
+                        WHERE source_action = ?
+                        GROUP BY target_action
+                    """, (current_action,))
+                    marginal_rows = cursor.fetchall()
 
-                for r in marginal_rows:
-                    elapsed = max(0.0, curr_time - (r["max_decay_ts"] or curr_time))
-                    decayed_w = r["total_weight"] * (2.0 ** (-elapsed / HABIT_HALF_LIFE_SECONDS))
-                    candidates.append({
-                        "target_action": r["target_action"],
-                        "transition_count": r["total_count"],
-                        "weight": decayed_w,
-                    })
-                context_used = "marginal"
+                    for r in marginal_rows:
+                        elapsed = max(0.0, curr_time - (r["max_decay_ts"] or curr_time))
+                        decayed_w = r["total_weight"] * (2.0 ** (-elapsed / HABIT_HALF_LIFE_SECONDS))
+                        candidates.append({
+                            "target_action": r["target_action"],
+                            "transition_count": r["total_count"],
+                            "weight": decayed_w,
+                        })
+                    context_used = "marginal"
 
-            if not candidates:
-                return None
+                if not candidates:
+                    return None
 
-            # 3. Laplace Smoothing Inference
-            # Effective candidate vocabulary size
-            v_size = max(4, len(candidates))
-            total_w = sum(c["weight"] for c in candidates)
-            denominator = total_w + (alpha * v_size)
+                # 3. Laplace Smoothing Inference
+                # Effective candidate vocabulary size
+                v_size = max(4, len(candidates))
+                total_w = sum(c["weight"] for c in candidates)
+                denominator = total_w + (alpha * v_size)
 
-            scored = []
-            for c in candidates:
-                prob = (c["weight"] + alpha) / denominator
-                scored.append((prob, c["transition_count"], c["target_action"]))
+                scored = []
+                for c in candidates:
+                    prob = (c["weight"] + alpha) / denominator
+                    scored.append((prob, c["transition_count"], c["target_action"]))
 
-            scored.sort(key=lambda x: x[0], reverse=True)
-            top_prob, top_count, top_target = scored[0]
+                scored.sort(key=lambda x: x[0], reverse=True)
+                top_prob, top_count, top_target = scored[0]
 
-            # Gating: High confidence proactive candidate requires P >= 0.65 and N >= 3
-            is_proactive = (top_prob >= 0.65 and top_count >= 3)
+                # Gating: High confidence proactive candidate requires P >= 0.65 and N >= 3
+                is_proactive = (top_prob >= 0.65 and top_count >= 3)
 
-            return HabitPrediction(
-                target_action=top_target,
-                probability=round(top_prob, 3),
-                confidence=round(min(1.0, top_count / 5.0) * top_prob, 3),
-                transition_count=top_count,
-                is_proactive_candidate=is_proactive,
-                context_used=context_used,
-            )
-        finally:
-            conn.close()
+                return HabitPrediction(
+                    target_action=top_target,
+                    probability=round(top_prob, 3),
+                    confidence=round(min(1.0, top_count / 5.0) * top_prob, 3),
+                    transition_count=top_count,
+                    is_proactive_candidate=is_proactive,
+                    context_used=context_used,
+                )
+        except sqlite3.OperationalError as e:
+            logger.debug("HabitGraph predict_next_action read notice: %s", e)
+            return None
 
     def apply_exponential_decay(
         self,
@@ -351,51 +357,53 @@ class TemporalHabitGraph:
         curr_time = now if now is not None else time.time()
         half_life_seconds = max(86400.0, half_life_days * 86400.0)
 
-        conn = self._get_connection()
-        total_updated = 0
-        total_pruned = 0
+        def _decay_tx(conn: sqlite3.Connection) -> tuple[int, int]:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT source_action, context_state, target_action,
+                       last_transition_ts, last_decay_ts, weight
+                FROM action_transitions
+            """)
+            rows = cursor.fetchall()
+            updated = 0
+            pruned = 0
+            for r in rows:
+                last_decay_ts = r["last_decay_ts"]
+                elapsed = max(0.0, curr_time - last_decay_ts)
+                # Only apply decay if at least 10 minutes have elapsed since last decay
+                if elapsed < 600.0:
+                    continue
+
+                decay_factor = 2.0 ** (-elapsed / half_life_seconds)
+                new_weight = r["weight"] * decay_factor
+
+                # Prune if weight dropped below threshold and inactive for >30 days
+                if new_weight < prune_threshold and (curr_time - r["last_transition_ts"] > 30 * 86400.0):
+                    cursor.execute("""
+                        DELETE FROM action_transitions
+                        WHERE source_action = ? AND context_state = ? AND target_action = ?
+                    """, (r["source_action"], r["context_state"], r["target_action"]))
+                    pruned += 1
+                else:
+                    cursor.execute("""
+                        UPDATE action_transitions
+                        SET weight = ?, last_decay_ts = ?
+                        WHERE source_action = ? AND context_state = ? AND target_action = ?
+                    """, (new_weight, curr_time, r["source_action"], r["context_state"], r["target_action"]))
+                    updated += 1
+            return updated, pruned
+
         try:
-            with conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT source_action, context_state, target_action,
-                           last_transition_ts, last_decay_ts, weight
-                    FROM action_transitions
-                """)
-                rows = cursor.fetchall()
+            total_updated, total_pruned = SingleWriterActor.get_or_create(self.db_path).execute_write(_decay_tx)
+        except (sqlite3.Error, RuntimeError, TimeoutError) as e:
+            logger.debug("Error applying habit decay via actor: %s", e)
+            return 0
 
-                for r in rows:
-                    last_decay_ts = r["last_decay_ts"]
-                    elapsed = max(0.0, curr_time - last_decay_ts)
-                    # Only apply decay if at least 10 minutes have elapsed since last decay
-                    if elapsed < 600.0:
-                        continue
-
-                    decay_factor = 2.0 ** (-elapsed / half_life_seconds)
-                    new_weight = r["weight"] * decay_factor
-
-                    # Prune if weight dropped below threshold and inactive for >30 days
-                    if new_weight < prune_threshold and (curr_time - r["last_transition_ts"] > 30 * 86400.0):
-                        cursor.execute("""
-                            DELETE FROM action_transitions
-                            WHERE source_action = ? AND context_state = ? AND target_action = ?
-                        """, (r["source_action"], r["context_state"], r["target_action"]))
-                        total_pruned += 1
-                    else:
-                        cursor.execute("""
-                            UPDATE action_transitions
-                            SET weight = ?, last_decay_ts = ?
-                            WHERE source_action = ? AND context_state = ? AND target_action = ?
-                        """, (new_weight, curr_time, r["source_action"], r["context_state"], r["target_action"]))
-                        total_updated += 1
-
-            logger.info(
-                "Habit decay complete: %d weights decayed, %d abandoned transitions pruned.",
-                total_updated, total_pruned
-            )
-            return total_updated + total_pruned
-        finally:
-            conn.close()
+        logger.info(
+            "Habit decay complete: %d weights decayed, %d abandoned transitions pruned.",
+            total_updated, total_pruned
+        )
+        return total_updated + total_pruned
 
     def flush(self, timeout: float = 2.0) -> None:
         """Flushes pending async writes from the queue."""

@@ -402,6 +402,11 @@ class ReadOnlyConnectionPool:
                 cls._instance.default_db_path = Path(default_db_path)
             return cls._instance
 
+    @classmethod
+    def get_or_create(cls, default_db_path: Path | str | None = None) -> ReadOnlyConnectionPool:
+        """Alias for get_instance to provide consistent singleton retrieval across actors and pools."""
+        return cls.get_instance(default_db_path)
+
     def _create_connection(self, db_path: Path) -> sqlite3.Connection:
         resolved = db_path.resolve()
         if not resolved.exists():

@@ -15,7 +15,7 @@ from typing import Any, ClassVar
 import numpy as np
 import sounddevice as sd
 
-from jarvis.audio.chunker import StreamingSentenceChunker
+from jarvis.audio.prosodic_chunker import StreamingSentenceChunker
 from jarvis.audio.ring_buffer import AudioRingBuffer, apply_cinematic_jarvis_dsp
 from jarvis.core.cancellation import GLOBAL_EPOCH_STATE, is_in_cancellation_flush
 from jarvis.core.win32_affinity import (
@@ -527,7 +527,7 @@ class TextToSpeech:
 
         # Register audio flush callback for immediate barge-in interruption
         try:
-            from jarvis.audio.cancellation import register_audio_flush_callback
+            from jarvis.core.cancellation import register_audio_flush_callback
             register_audio_flush_callback(self.on_barge_in_flush)
             self._session_activation_epoch = int(GLOBAL_EPOCH_STATE.barge_in_epoch)
         except Exception as e:
@@ -1762,8 +1762,8 @@ class TextToSpeech:
         """Normalizes times, numbers, dates, units, and formatting for natural spoken delivery."""
         if not text:
             return ""
-        from jarvis.audio.chunker import sanitize_clause_for_ear
         from jarvis.audio.normalizer import SpeechNormalizer
+        from jarvis.audio.prosodic_chunker import sanitize_clause_for_ear
         text_ear = sanitize_clause_for_ear(text)
         cleaned = SpeechNormalizer.normalize(text_ear)
         if not re.search(r"[a-zA-Z0-9]", cleaned):

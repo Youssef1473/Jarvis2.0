@@ -141,6 +141,21 @@ class TestFlowStateBridgeListener(unittest.TestCase):
         token_payload = {"type": "ide_state", "file": "bar.py", "line": 20, "token": self.listener.auth_token}
         self.assertTrue(self.listener.process_packet(json.dumps(token_payload).encode("utf-8")))
 
+    def test_process_packet_tampered_and_malformed_rejected(self):
+        """Verifies tampered HMAC signature, invalid token, and non-JSON bytes are rejected."""
+        # Non-JSON garbage rejected
+        self.assertFalse(self.listener.process_packet(b"INVALID_NON_JSON_BYTES_12345"))
+
+        # Tampered HMAC rejected
+        payload = {"type": "ide_state", "file": "safe.py", "line": 1}
+        signed = self.listener.sign_payload(payload)
+        signed["file"] = "tampered.py"
+        self.assertFalse(self.listener.process_packet(json.dumps(signed).encode("utf-8")))
+
+        # Invalid token rejected
+        bad_token_payload = {"type": "ide_state", "file": "safe.py", "line": 1, "token": "invalid_wrong_token"}
+        self.assertFalse(self.listener.process_packet(json.dumps(bad_token_payload).encode("utf-8")))
+
     def test_process_packet_terminal_state_updates_mirror(self):
         payload = {
             "type": "terminal_state",

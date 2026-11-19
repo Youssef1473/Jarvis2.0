@@ -226,7 +226,7 @@ class ProcessHandleRegistry:
     def _prune_expired(cls) -> None:
         with cls._lock:
             now = time.monotonic()
-            expired = [hid for hid, e in cls._handles.items() if (now + 0.015) >= e["expires_at"]]
+            expired = [hid for hid, e in cls._handles.items() if now >= e["expires_at"]]
             for hid in expired:
                 entry = cls._handles.pop(hid)
                 entry["invalidated"] = True

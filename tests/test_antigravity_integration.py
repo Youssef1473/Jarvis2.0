@@ -521,6 +521,37 @@ class TestAntigravityIntegration(unittest.TestCase):
         self.assertEqual(len(collected), 2)
         self.assertIn('"event": "init"', collected[0])
 
+    def test_iter_unbuffered_lines_multibyte_utf8_split(self):
+        """Verifies _iter_unbuffered_lines decodes multibyte UTF-8 split across read chunks without replacement."""
+        from unittest.mock import MagicMock, patch
+
+        from jarvis.core.antigravity_bridge import AntigravityDaemon
+
+        # 4-byte UTF-8 rocket emoji 🚀 is b"\xf0\x9f\x9a\x80"
+        # Split across two read chunks: b"\xf0\x9f" and b"\x9a\x80\n"
+        chunks = [b'{"text": "\xf0\x9f', b'\x9a\x80"}\n']
+        chunk_idx = [0]
+
+        def fake_read(fd, n):
+            if chunk_idx[0] < len(chunks):
+                c = chunks[chunk_idx[0]]
+                chunk_idx[0] += 1
+                return c
+            return b""
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = MagicMock()
+        mock_proc.stdout.fileno.return_value = 42
+        mock_proc.poll.return_value = None
+
+        with patch("os.read", side_effect=fake_read), \
+             patch("sys.platform", "linux"):
+            lines = list(AntigravityDaemon._iter_unbuffered_lines(mock_proc, timeout=2.0))
+
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0], '{"text": "🚀"}\n')
+        self.assertNotIn("\ufffd", lines[0])
+
     def test_execute_turn_async_and_generate_response_async(self):
         """Verifies execute_turn_async and generate_response_async schedule on running event loops."""
         from jarvis.core.antigravity_bridge import AntigravityDaemon
