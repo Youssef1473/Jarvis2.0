@@ -441,7 +441,7 @@ class WakeWordDetector:
                         # Signal interruption if Jarvis is currently speaking (from worker thread!)
                         if is_speaking:
                             try:
-                                from jarvis.audio.cancellation import (
+                                from jarvis.core.cancellation import (
                                     trigger_speech_barge_in,
                                 )
                                 trigger_speech_barge_in()

@@ -353,7 +353,6 @@ class SkillRegistry:
                 "gemini_intelligence",
                 "hybrid_actuator",
                 "job_object_sandbox",
-                "mcp_manager",
                 "media_dj",
                 "modern_web",
                 "notes",
