@@ -57,6 +57,8 @@ class WorkspaceFilesystemWatcher:
         try:
             from ctypes import wintypes
             k32 = ctypes.windll.kernel32
+            k32.CloseHandle.argtypes = [wintypes.HANDLE]
+            k32.CloseHandle.restype = wintypes.BOOL
 
             h_dir = k32.CreateFileW(
                 str(self.workspace_root),

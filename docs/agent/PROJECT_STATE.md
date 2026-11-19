@@ -14,27 +14,61 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-19T12:12:00+01:00 (CET)
-- **Active Git Branch:** `feat/unfreeze-browser-integration-nodes`
-- **Recorded HEAD Commit SHA:** `acec4c13e6f278ad3c7b78cd65ea5b187535c8de`
-- **HEAD Commit Subject:** `Merge pull request #66 from Youssef1473/fix/audio-mmcss-lifecycle-revert`
-- **Milestone State:** **Architectural Review & Hardening Sprint (Gemini 4 Neon Plan) — PR #65 & PR #66 Merged; MMCSS Teardown Hardened (+0 Handle Drift Across 10 Cycles); ENG-OS-03C8 Browser Integration Surface Verified (9 Host Chromium/Playwright Nodes 100% Green); CadenceTracker 64-bit Hook ABI Fixed (Error 126 Eliminated); 2,355 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics; ADR-001 through ADR-006 ACCEPTED**
-- **Active Milestone:** **ENG-OS-03C8 — Unfreeze & Verify Host Browser Integration Nodes (Complete & Verified)**
+- **Validation Timestamp:** 2026-11-19T22:30:00+01:00 (CET)
+- **Active Git Branch:** `feat/dim1-hardware-abi-architecture`
+- **Recorded HEAD Commit SHA:** `d705c2bd76d5992e2263901f53502ca43abd1e5d`
+- **HEAD Commit Subject:** `Merge pull request #67 from Youssef1473/feat/unfreeze-browser-integration-nodes`
+- **Milestone State:** **Dimension 1 Hardening Complete & Verified (PR #68 Ready to Merge: Dynamic Win32 CPU Topology Discovery with Alder Lake Parity; Proportional VRAM Watermark & Context Scaling; Compile-Time 64-Bit Win32 ctypes ABI AST Enforcement; 2,372 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics)**
+- **Active Milestone:** **Dimension 1: Core Systems & Hardware Architecture (9.2 -> 10.0) — PR #68**
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `ENG-OS-03C8 — Unfreeze & Verify Host Browser Integration Nodes (Complete & Verified)`
+- **Active Milestone:** `Dimension 1: Core Systems & Hardware Architecture (9.2 -> 10.0)`
 - **Completed Work:**
-  - **CadenceTracker Win32 64-bit Hook ABI Fix:**
-    - Declared explicit 64-bit `ctypes` prototypes (`wintypes.HMODULE`, `wintypes.HHOOK`, `wintypes.HINSTANCE`, `wintypes.WPARAM`, `wintypes.LPARAM`) for `GetModuleHandleW`, `SetWindowsHookExW`, `UnhookWindowsHookEx`, `CallNextHookEx`, and `PostThreadMessageW` in `jarvis/core/cognition/cadence_tracker.py`.
-    - Eliminated Win32 Error 126 (`ERROR_MOD_NOT_FOUND`) during daemon startup caused by 32-bit truncation of module handles returned by `GetModuleHandleW(None)`.
-    - Added unit test in `tests/test_motor_cadence.py` verifying prototypes and clean teardown; verified live host hook installation (`hook: 841090369`, `err: 0`).
-  - **ENG-OS-03C8 (Host Browser Integration Nodes Unfrozen & Verified 100% Green):**
-    - Empirically verified all 9 live host Chromium and Playwright integration nodes (`3` Playwright SSRF tests in `tests/test_browser_agent.py` and `6` CDP network boundary tests in `tests/test_browser_network_boundaries.py`) on host Medium integrity.
-    - Verified strict conformance to `ADR-006` and security invariants: explicit `chromium_sandbox=True` everywhere (zero `--no-sandbox` flags), explicit loopback origins with `--remote-debugging-address=127.0.0.1` (zero wildcard `--remote-allow-origins=*`).
-    - Entire browser test surface (`52/52` tests across both files) passing cleanly in 8.40s.
-  - **HUD Documentation Port Alignment:**
-    - Corrected stale `port 8000` documentation in `docs/architecture/PROJECT_MAP.md` (lines 12 and 60) to canonical loopback port `20129`.
+  - **Dimension 1 Hardening (PR #68 — Ready for Review & Merge):**
+    - **Batch 1 (Dynamic Win32 CPU Topology Discovery — `jarvis/core/win32_affinity.py`):**
+      - Implemented `@dataclass(frozen=True, slots=True)` `CpuTopologyProfile` (`is_hybrid`, `logical_cpu_count`, `playback_mask`, `wakeword_mask`, `compute_mask`, `background_mask`, `source`).
+      - Implemented `discover_cpu_topology(force_refresh: bool = False)` using `kernel32.GetLogicalProcessorInformationEx` (`RelationProcessorCore = 0`) with 64-bit `ctypes` prototypes (`wintypes.BOOL`, `ctypes.c_void_p`, `ctypes.POINTER(ctypes.c_size_t)`).
+      - Implemented pure topology solver `compute_topology_from_cores()` partitioning hybrid cores into exclusive Physical Core 0 SMT playback, primary remaining P-cores wakeword, remaining P-cores compute, and E-cores background.
+      - Mathematically and live-empirically verified bit-for-bit exact parity on Alder Lake 4P+8E i5-12500H (`0x0003`, `0x0054`, `0x00FC`, `0xFF00`).
+      - Provided graceful fallbacks for homogeneous CPUs (AMD Ryzen 8C/16T, 1-2 core VMs, non-Windows).
+      - Wired internal default-mask pinning helpers (`elevate_audio_thread_mmcss`, `demote_to_ecore_background`, `configure_ecore_worker_thread`, `get_ecore_affinity_mask`) to dynamic getters (`get_playback_affinity_mask()`, `get_background_affinity_mask()`).
+      - Added 11 comprehensive unit tests in `tests/test_audio_affinity.py` (`11/11` passing).
+    - **Batch 2 (Proportional VRAM Watermarks & Inference Scaling):**
+      - Implemented `resolve_pressure_watermarks(budget_mb: float)` in `jarvis/skills/nvml_dxgi_vram_arbiter.py` strictly preserving exact 4GB thresholds (`1200.0 / 700.0 / 350.0 MiB`) for `<= 4096.0 MiB` and scaling proportionally (`0.293 / 0.171 / 0.085` ratios) for 8GB–24GB GPUs.
+      - Updated `classify_pressure_tier()` with optional `total_budget_mb` parameter.
+      - Implemented `derive_nominal_context()` in `jarvis/routing/vram_profile.py` supporting 16k context for `>= 12GB` with `>= 6144 MiB` headroom and 32k for `>= 24GB` with `>= 10240 MiB` headroom while preserving 8k default and fail-closed OOM guards.
+      - Added 18 tests in `tests/test_nvml_vram_arbiter.py` (`18/18` passing) and 17 tests in `tests/test_vram_aware_routing.py` (`17/17` passing).
+    - **Batch 3 (Compile-Time 64-Bit Win32 ctypes ABI AST Enforcement — `tools/diagnostics.py`):**
+      - Created `WIN32_64BIT_ABI_PROTOTYPE` rule in `tools/diagnostics.py` targeting 14 critical handle-returning Win32 APIs across `kernel32`, `user32`, `advapi32`, and `avrt`.
+      - Prohibited unprototyped calls, requiring explicit `.restype` and `.argtypes` declarations.
+      - Remediated 7 latent unprototyped 64-bit Win32 calls across 4 core modules:
+        - `jarvis/audio/dsp_process.py`: `GetCurrentProcess` prototype.
+        - `jarvis/context/bridges/fs_watcher.py`: `CloseHandle` prototype.
+        - `jarvis/core/antigravity_bridge.py`: `OpenProcess` & `CloseHandle` prototypes.
+        - `jarvis/skills/os_control.py`: `OpenProcess`, `CloseHandle`, `OpenDesktopW`, `SetThreadDesktop` prototypes.
+      - Authored `tests/test_diagnostics_win32_abi.py` with 7 positive/negative AST fixture tests (`7/7` passing).
+    - **Batch 4 (Verification, Manifest Sync & Tier 1 Suite Clearance):**
+      - Re-exported `data/test_classification_manifest.json` accounting for all 2,372 test nodes (0 unclassified, 0 orphans).
+      - Verified full Tier 1 Hermetic suite: 1,453 passed, 9 skipped, 0 failed, 0 errors in 232.41s.
+      - Verified security suite: 207/207 passed in 101.36s.
+      - Verified repository static hygiene: 0 Ruff diagnostics, 0 AST-Grep diagnostics, 0 Win32 ABI diagnostics.
+  - **PR #67 Merged to Main (`d705c2b`):**
+    - **CadenceTracker Win32 64-bit Hook ABI Fix & Fast-Exit Thread Teardown:**
+      - Declared explicit 64-bit `ctypes` prototypes (`wintypes.HMODULE`, `wintypes.HHOOK`, `wintypes.HINSTANCE`, `wintypes.WPARAM`, `wintypes.LPARAM`) for `GetModuleHandleW`, `SetWindowsHookExW`, `UnhookWindowsHookEx`, `CallNextHookEx`, and `PostThreadMessageW` in `jarvis/core/cognition/cadence_tracker.py`.
+      - Eliminated Win32 Error 126 (`ERROR_MOD_NOT_FOUND`) during daemon startup caused by 32-bit truncation of module handles returned by `GetModuleHandleW(None)`.
+      - Resolved thread cleanup race by ensuring `self._thread = None` is unconditionally reset upon tracker stop even if the worker thread already terminated following `WM_QUIT`.
+      - Added unit test in `tests/test_motor_cadence.py` verifying 64-bit prototype compliance and lifecycle (`8/8` passing).
+    - **Watchdog Partial Telemetry Guard (`jarvis/skills/system_watchdog.py`):**
+      - Guarded `temp_c = gpu.get("temp_c") if gpu else None` against `None` before numeric comparison to prevent `TypeError: '>=' not supported between instances of 'NoneType' and 'int'` on driver resets, headless CI runners, or virtualized environments.
+    - **ENG-OS-03C8 (Host Browser Integration Nodes Unfrozen & Verified 100% Green):**
+      - Empirically verified all 9 live host Chromium and Playwright integration nodes (`3` Playwright SSRF tests in `tests/test_browser_agent.py` and `6` CDP network boundary tests in `tests/test_browser_network_boundaries.py`) on host Medium integrity.
+      - Verified strict conformance to `ADR-006` and security invariants: explicit `chromium_sandbox=True` everywhere (zero `--no-sandbox` flags), explicit loopback origins with `--remote-debugging-address=127.0.0.1` (zero wildcard `--remote-allow-origins=*`).
+      - Entire browser test surface (`52/52` tests across both files) passing cleanly in 8.40s.
+    - **HUD Documentation Port Alignment:**
+      - Corrected stale `port 8000` documentation in `docs/architecture/PROJECT_MAP.md` (lines 12 and 60) to canonical loopback port `20129`.
+    - **Reconciled Test Classification Manifest:**
+      - Re-exported `data/test_classification_manifest.json` to account for all `2,355` test nodes with 0 unclassified and 0 orphans.
   - **MMCSS Worker Lifecycle Teardown Hardening (PR #66 Merged):**
     - Implemented `scoped_mmcss` (aliased to `mmcss_scope`) RAII context manager in `jarvis/core/win32_affinity.py`.
     - Added thread-local deduplication check in `elevate_to_pro_audio_mmcss` to prevent redundant registration on the same thread.
@@ -59,7 +93,7 @@
       - Added `test_iter_unbuffered_lines_multibyte_utf8_split` in `tests/test_antigravity_integration.py` and `test_process_packet_tampered_and_malformed_rejected` in `tests/test_phase1_flow_state.py`.
     - **Batch 4 (Residual Compatibility Shim Audit & Pruning):**
       - Confirmed `jarvis.audio.cancellation` and `jarvis.audio.chunker` are actively imported/patched by test suites and retained them strictly as minimal re-export shims.
-      - Excised unused `jarvis/skills/mcp_manager.py` (0 callers). Repointed internal imports in `tts.py`, `wake_word.py`, `ollama.py`, and `openrouter.py` to canonical modules.
+      - Excised unused legacy `jarvis/skills/mcp_manager` shim (0 callers; file removed). Repointed internal imports in `tts.py`, `wake_word.py`, `ollama.py`, and `openrouter.py` to canonical modules.
       - Fixed `tests/test_plugin_integrations.py` tool registry import.
     - **Batch 5 (Security, Epistemic Qualification & Memory Authorization Backlog Closure):**
       - Updated context headers in `context_orchestrator.py` and `interaction_memory.py` to qualify historical memory as `[Directly Relevant Knowledge to Current Context - Reference / Historical]`.

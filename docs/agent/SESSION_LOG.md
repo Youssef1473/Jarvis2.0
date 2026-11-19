@@ -5121,3 +5121,82 @@ Following independent engineering reviews of the Context B ingestion audit, the 
 - `python -m pytest tests/test_browser_agent.py tests/test_browser_network_boundaries.py -k "TestBrowserAgentLiveChromiumSSRF or TestLiveChromiumNetworkGuards" -v` -> **9 passed, 43 deselected in 5.97s (Exit code: 0)**
 - `python -m pytest tests/test_browser_agent.py tests/test_browser_network_boundaries.py -v` -> **52 passed in 8.40s (Exit code: 0)**
 - `python -c "import sqlite3, os; c=sqlite3.connect('data/jarvis_memory.db'); print('integrity:', c.execute('PRAGMA integrity_check').fetchone()[0], 'bytes:', os.path.getsize('data/jarvis_memory.db'), 'fk_violations:', len(c.execute('PRAGMA foreign_key_check').fetchall()), 'wal:', c.execute('PRAGMA wal_checkpoint(PASSIVE)').fetchone())"` -> **integrity: ok bytes: 10424320 fk_violations: 0 wal: (0, 0, 0) (Exit code: 0)**
+
+
+---
+
+## Session 2026-11-19.03: PR #67 CI Hardening, Fast Parallel Test Suite Gate Pass & Main Merge
+
+- **Timestamp:** 2026-11-19T14:55:00+01:00 (CET)
+- **Agent Model & Mode:** Gemini 3.8 Flash (High Reasoning) via Antigravity CLI
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Starting Git HEAD SHA:** `acec4c13e6f278ad3c7b78cd65ea5b187535c8de`
+- **Ending Git HEAD SHA:** `d705c2bd76d5992e2263901f53502ca43abd1e5d`
+- **Active Branch:** `main`
+- **Session Objective:** Address GitHub Actions CI edge-case failures on PR #67, verify full non-hardware parallel test suite pass, merge PR #67 into `main`, delete remote branch, and reconcile local git baseline.
+
+### Summary of Actions & Deliverables
+1. **`ctypes` Storage Assertion Fix (`tests/test_motor_cadence.py`):**
+   - Diagnosed CI `AssertionError: (<class ...>,) != [<class ...>]`. `ctypes` converts and stores function `argtypes` as an immutable tuple.
+   - Wrapped comparisons with `list(func.argtypes)` across all `k32` and `u32` prototype checks.
+2. **`NoneType` GPU Telemetry Guard (`jarvis/skills/system_watchdog.py`):**
+   - Diagnosed worker thread warning `TypeError: '>=' not supported between instances of 'NoneType' and 'int'`. On headless CI runners and virtualized GPUs, NVML returns partial telemetry with `"temp_c": None`.
+   - Extracted `temp_c = gpu.get("temp_c") if gpu else None` and checked `if temp_c is not None:` before numerical comparison.
+   - Added `TypeError` to caught exception types in `_watchdog_loop`.
+3. **Deterministic Thread Teardown Reset (`jarvis/core/cognition/cadence_tracker.py`):**
+   - Diagnosed CI `AssertionError: <Thread(...)> is not None`. When `stop()` posted `WM_QUIT`, the worker thread exited immediately, rendering `is_alive() == False` before entering `self._thread = None`.
+   - Restructured cleanup to unconditionally reset `self._thread = None` after joining if alive.
+4. **GitHub Actions CI Gate Clearance & Merge:**
+   - Authored commits `ae67c0c` and `12d5be9` on `feat/unfreeze-browser-integration-nodes`.
+   - GitHub Actions CI run `44535124643`:
+     - `Test Governance & Security Regression Gate`: **PASS** (2m 25s)
+     - `Fast Parallel Test Suite`: **PASS** (3m 52s, 1,439 passed, 0 failed, 13 skipped)
+   - Merged PR #67 into `main` at `d705c2b` via `gh pr merge 67 --merge --delete-branch`.
+   - Synchronized local `main` to `d705c2b`.
+
+### Verification Commands & Exact Outputs
+- `python tools/lint.py check tools/ jarvis/ tests/` -> **Exit code: 0** (All checks passed)
+- `python tools/diagnostics.py check jarvis/ tools/` -> **Exit code: 0** (ALL DIAGNOSTICS PASSED)
+- `python tools/test_classifier.py --check-orphaned` -> **PASSED: Manifest integrity confirmed. 0 orphans, 0 duplicates, 2355 nodes verified. Exit code: 0**
+- `python tools/run_fast_tests.py tests/test_motor_cadence.py` -> **Passed: 8, Failed: 0, Errors: 0, Skipped: 0 in 2.44s (Exit code: 0)**
+- `pytest tests/test_browser_agent.py tests/test_browser_network_boundaries.py` -> **52 passed in 14.09s (Exit code: 0)**
+- `git status --short` -> **Clean (0 tracked modifications)**
+
+---
+
+## Session 2026-11-19.04: Dimension 1 Hardening — Dynamic CPU Topology, Proportional VRAM Scaling & 64-Bit Win32 ABI Enforcement (PR #68)
+
+- **Timestamp:** 2026-11-19T22:30:00+01:00 (CET)
+- **Agent Model & Mode:** Gemini 3.8 Flash (High Reasoning) via Antigravity CLI
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Starting Git HEAD SHA:** `d705c2bd76d5992e2263901f53502ca43abd1e5d` on `main`
+- **Active Branch:** `feat/dim1-hardware-abi-architecture`
+- **Session Objective:** Execute Dimension 1 Hardening across 4 focused batches to bring Core Systems & Hardware Architecture from 9.2 to 10.0, verifying Alder Lake parity, proportional VRAM scaling, and compile-time Win32 64-bit ctypes prototype enforcement.
+
+### Summary of Actions & Deliverables
+1. **Dynamic Win32 CPU Topology Discovery (`jarvis/core/win32_affinity.py`):**
+   - Added `CpuTopologyProfile` frozen dataclass with slots.
+   - Implemented `discover_cpu_topology()` calling `kernel32.GetLogicalProcessorInformationEx` (`RelationProcessorCore`) with 64-bit prototypes.
+   - Implemented `compute_topology_from_cores()` and fallback topology helpers.
+   - Verified live host Intel i5-12500H topology discovery: `playback=0x0003`, `wakeword=0x0054`, `compute=0x00FC`, `background=0xFF00` with `source='win32_topology'`.
+   - Wired internal pinning helpers to dynamic getters. Added hermetic unit tests in `tests/test_audio_affinity.py` (`11/11` passing).
+2. **Proportional VRAM Watermark & Inference Scaling:**
+   - Implemented `resolve_pressure_watermarks()` in `jarvis/skills/nvml_dxgi_vram_arbiter.py` preserving exact 4GB thresholds (`1200.0, 700.0, 350.0 MiB`) and scaling for 8GB–24GB.
+   - Implemented `derive_nominal_context()` in `jarvis/routing/vram_profile.py` supporting 16k and 32k contexts on higher VRAM tiers.
+   - Added unit tests in `tests/test_nvml_vram_arbiter.py` (`18/18` passing) and `tests/test_vram_aware_routing.py` (`17/17` passing).
+3. **Compile-Time 64-Bit Win32 ctypes ABI AST Rule (`tools/diagnostics.py`):**
+   - Implemented `WIN32_64BIT_ABI_PROTOTYPE` AST rule covering 14 critical Win32 APIs across 4 DLLs.
+   - Discovered and fixed 7 unprototyped 64-bit handle calls across `dsp_process.py`, `fs_watcher.py`, `antigravity_bridge.py`, and `os_control.py`.
+   - Authored `tests/test_diagnostics_win32_abi.py` (`7/7` passing).
+4. **Verification & Test Manifest Synchronization:**
+   - Re-exported `data/test_classification_manifest.json` (2,372 total collected nodes, 0 unclassified, 0 orphans).
+   - Executed Tier 1 Hermetic Suite: 1,453 passed, 9 skipped, 0 failed, 0 errors in 232.41s.
+   - Executed Security Regression Suite: 207 passed, 0 failed in 101.36s.
+   - Verified 0 Ruff and 0 AST diagnostics repository-wide.
+
+### Verification Commands & Exact Outputs
+- `python tools/lint.py check tools/ jarvis/ tests/` -> **Exit code: 0** (All checks passed)
+- `python tools/diagnostics.py check jarvis/ tools/` -> **Exit code: 0** (ALL DIAGNOSTICS PASSED)
+- `python tools/test_classifier.py --check-orphaned` -> **PASSED: Manifest integrity confirmed. 0 orphans, 0 duplicates, 2372 nodes verified. Exit code: 0**
+- `python tools/run_fast_tests.py --fast -w 4 -v --timeout 720` -> **Passed: 1453, Failed: 0, Errors: 0, Skipped: 9 in 232.41s (Exit code: 0)**
+- `python tools/run_fast_tests.py --security` -> **Passed: 207, Failed: 0, Errors: 0, Skipped: 0 in 101.36s (Exit code: 0)**

@@ -12,6 +12,7 @@ Provides:
 """
 from __future__ import annotations
 
+import ast
 import os
 import shutil
 import subprocess
@@ -285,12 +286,138 @@ def _is_safe_workspace_path(path_str: str) -> bool:
     return False
 
 
+CRITICAL_WIN32_64BIT_APIS: frozenset[str] = frozenset({
+    "GetModuleHandleW",
+    "SetWindowsHookExW",
+    "UnhookWindowsHookEx",
+    "CallNextHookEx",
+    "OpenProcess",
+    "GetCurrentProcess",
+    "CreateEventW",
+    "CloseHandle",
+    "OpenDesktopW",
+    "CloseDesktop",
+    "SetThreadDesktop",
+    "GetLogicalProcessorInformationEx",
+    "AvSetMmThreadCharacteristicsW",
+    "AvRevertMmThreadCharacteristics",
+})
+
+
+def check_win32_abi_source(source: str | bytes, filename: str = "<unknown>") -> list[str]:
+    """Scans Python source for WIN32_64BIT_ABI_PROTOTYPE structural violations."""
+    try:
+        if isinstance(source, str) and source.startswith("\ufeff"):
+            source = source[1:]
+        tree = ast.parse(source, filename=filename)
+    except SyntaxError as e:
+        return [f"{filename}:{e.lineno}: SyntaxError while parsing AST: {e.msg}"]
+
+    calls: list[tuple[str, int, int]] = []
+    declared_restypes: set[str] = set()
+    declared_argtypes: set[str] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Attribute) and t.attr in ("restype", "argtypes"):
+                    api = None
+                    if isinstance(t.value, ast.Attribute):
+                        api = t.value.attr
+                    elif isinstance(t.value, ast.Name):
+                        api = t.value.id
+                    elif isinstance(t.value, ast.Subscript) and isinstance(t.value.slice, ast.Constant):
+                        api = str(t.value.slice.value)
+
+                    if api and api in CRITICAL_WIN32_64BIT_APIS:
+                        if t.attr == "restype":
+                            declared_restypes.add(api)
+                        elif t.attr == "argtypes":
+                            declared_argtypes.add(api)
+
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in CRITICAL_WIN32_64BIT_APIS
+        ):
+            calls.append((node.func.attr, node.lineno, len(node.args) + len(node.keywords)))
+
+    violations: list[str] = []
+    for api, lineno, arg_count in calls:
+        missing: list[str] = []
+        if api not in declared_restypes:
+            missing.append(".restype")
+        if arg_count > 0 and api not in declared_argtypes:
+            missing.append(".argtypes")
+        if missing:
+            msg = ", ".join(missing)
+            violations.append(
+                f"{filename}:{lineno}: [WIN32_64BIT_ABI_PROTOTYPE] Call to 64-bit Win32 API '{api}' missing prototype: {msg}"
+            )
+
+    return violations
+
+
+def check_win32_abi_file(file_path: Path | str) -> list[str]:
+    """Scans a Python file for WIN32_64BIT_ABI_PROTOTYPE violations."""
+    p = Path(file_path)
+    if not p.is_file() or p.suffix != ".py":
+        return []
+    try:
+        content = p.read_bytes()
+    except OSError as e:
+        return [f"{p}: OSError reading file: {e}"]
+    return check_win32_abi_source(content, filename=str(p))
+
+
+def run_win32_abi_check(paths: list[str] | None = None) -> int:
+    """Scans target paths in jarvis/ for WIN32_64BIT_ABI_PROTOTYPE violations."""
+    target_paths = paths if paths else ["jarvis"]
+    all_violations: list[str] = []
+
+    for path_str in target_paths:
+        p = Path(path_str)
+        if not p.is_absolute():
+            p = (WORKSPACE_ROOT / p).resolve()
+        else:
+            p = p.resolve()
+
+        if not p.exists():
+            continue
+
+        if p.is_file():
+            violations = check_win32_abi_file(p)
+            all_violations.extend(violations)
+        elif p.is_dir():
+            jarvis_dir = WORKSPACE_ROOT / "jarvis"
+            if p == WORKSPACE_ROOT:
+                scan_dir = jarvis_dir
+            elif p.is_relative_to(jarvis_dir) or p == jarvis_dir:
+                scan_dir = p
+            else:
+                continue
+
+            for py_file in sorted(scan_dir.rglob("*.py")):
+                violations = check_win32_abi_file(py_file)
+                all_violations.extend(violations)
+
+    if all_violations:
+        sys.stderr.write(f"Found {len(all_violations)} WIN32_64BIT_ABI_PROTOTYPE violation(s):\n")
+        for v in all_violations:
+            sys.stderr.write(f"  {v}\n")
+        return 1
+
+    print("All Win32 64-bit ABI prototype invariants passed!")
+    return 0
+
+
 def run_combined_check(paths: list[str] | None = None) -> int:
-    """Runs combined static analysis: Ruff linter + AST-Grep rule scan.
+    """Runs combined static analysis: Ruff linter + AST-Grep rule scan + Win32 ABI check.
 
     1. Executes Ruff check on target paths.
     2. Executes AST-Grep scan for architectural invariants on target paths.
-    3. Prints clear, visually separated sections and aggregated exit summary.
+    3. Executes Win32 64-bit ABI prototype check on jarvis/ modules.
+    4. Prints clear, visually separated sections and aggregated exit summary.
 
     Returns:
         0 if all checks pass; non-zero exit code if any check reports violations.
@@ -298,7 +425,7 @@ def run_combined_check(paths: list[str] | None = None) -> int:
     target_paths = paths if paths else ["."]
 
     print("=" * 64)
-    print(" [1/2] Ruff Linter Diagnostics (tools/lint.py check)")
+    print(" [1/3] Ruff Linter Diagnostics (tools/lint.py check)")
     print("=" * 64)
     sys.stdout.flush()
 
@@ -307,7 +434,7 @@ def run_combined_check(paths: list[str] | None = None) -> int:
 
     print()
     print("=" * 64)
-    print(" [2/2] AST-Grep Structural Invariants (.agents/rules/ast-grep)")
+    print(" [2/3] AST-Grep Structural Invariants (.agents/rules/ast-grep)")
     print("=" * 64)
     sys.stdout.flush()
 
@@ -339,18 +466,27 @@ def run_combined_check(paths: list[str] | None = None) -> int:
 
     print()
     print("=" * 64)
+    print(" [3/3] Win32 64-Bit ABI Invariants (WIN32_64BIT_ABI_PROTOTYPE)")
+    print("=" * 64)
+    sys.stdout.flush()
+
+    win32_code = run_win32_abi_check(target_paths)
+
+    print()
+    print("=" * 64)
     print(" Diagnostic Workflow Summary:")
     print(f"   • Ruff Linter:     {'PASSED (exit 0)' if ruff_code == 0 else f'FAILED (exit {ruff_code})'}")
     print(f"   • AST-Grep Rules:  {'PASSED (exit 0)' if ast_code == 0 else f'FAILED (exit {ast_code})'}")
+    print(f"   • Win32 64-Bit ABI: {'PASSED (exit 0)' if win32_code == 0 else f'FAILED (exit {win32_code})'}")
 
-    if ruff_code == 0 and ast_code == 0:
+    if ruff_code == 0 and ast_code == 0 and win32_code == 0:
         print("   Result: ALL DIAGNOSTICS PASSED")
         print("=" * 64)
         return 0
     else:
         print("   Result: DIAGNOSTIC VIOLATIONS DETECTED")
         print("=" * 64)
-        return max(ruff_code, ast_code) if (ruff_code != 0 and ast_code != 0) else (ruff_code or ast_code)
+        return max(ruff_code, ast_code, win32_code) if (ruff_code != 0 and ast_code != 0 and win32_code != 0) else (ruff_code or ast_code or win32_code)
 
 
 def print_wrapper_help() -> None:

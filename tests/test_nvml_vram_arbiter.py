@@ -261,6 +261,52 @@ class TestNvmlVramArbiter(unittest.TestCase):
         self.assertIn("vram_used_mb", vitals)
         self.assertIn("vram_total_mb", vitals)
 
+    def test_resolve_pressure_watermarks_4gb_exact_parity(self) -> None:
+        """Verifies exact 4GB RTX 3050 watermark parity for 3367.7 and <=4096 budgets."""
+        from jarvis.skills.nvml_dxgi_vram_arbiter import resolve_pressure_watermarks
+
+        self.assertEqual(resolve_pressure_watermarks(3367.7), (1200.0, 700.0, 350.0))
+        self.assertEqual(resolve_pressure_watermarks(4096.0), (1200.0, 700.0, 350.0))
+        self.assertEqual(resolve_pressure_watermarks(2048.0), (1200.0, 700.0, 350.0))
+
+    def test_resolve_pressure_watermarks_proportional_scaling_8gb_12gb_24gb(self) -> None:
+        """Verifies proportional watermark scaling on 8GB, 12GB, and 24GB GPUs."""
+        from jarvis.skills.nvml_dxgi_vram_arbiter import resolve_pressure_watermarks
+
+        # 8GB GPU (8192 MiB)
+        nom_8, ele_8, crit_8 = resolve_pressure_watermarks(8192.0)
+        self.assertEqual(nom_8, 2048.0)
+        self.assertAlmostEqual(ele_8, 1146.88, places=2)
+        self.assertAlmostEqual(crit_8, 573.44, places=2)
+
+        # 12GB GPU (12288 MiB)
+        nom_12, ele_12, crit_12 = resolve_pressure_watermarks(12288.0)
+        self.assertEqual(nom_12, 3072.0)
+        self.assertEqual(ele_12, 1536.0)
+        self.assertEqual(crit_12, 768.0)
+
+        # 24GB GPU (24576 MiB)
+        nom_24, ele_24, crit_24 = resolve_pressure_watermarks(24576.0)
+        self.assertEqual(nom_24, 3072.0)
+        self.assertEqual(ele_24, 1536.0)
+        self.assertEqual(crit_24, 768.0)
+
+    def test_proportional_tier_classification_and_fail_closed_oom_guard(self) -> None:
+        """Verifies proportional tier classification and fail-closed OOM_GUARD across GPU budgets."""
+        # 8GB GPU
+        self.assertEqual(classify_pressure_tier(2100.0, total_budget_mb=8192.0), VramPressureTier.NOMINAL)
+        self.assertEqual(classify_pressure_tier(1500.0, total_budget_mb=8192.0), VramPressureTier.ELEVATED)
+        self.assertEqual(classify_pressure_tier(800.0, total_budget_mb=8192.0), VramPressureTier.CRITICAL)
+        self.assertEqual(classify_pressure_tier(500.0, total_budget_mb=8192.0), VramPressureTier.OOM_GUARD)
+        self.assertEqual(classify_pressure_tier(0.0, total_budget_mb=8192.0), VramPressureTier.OOM_GUARD)
+
+        # 24GB GPU
+        self.assertEqual(classify_pressure_tier(3200.0, total_budget_mb=24576.0), VramPressureTier.NOMINAL)
+        self.assertEqual(classify_pressure_tier(2000.0, total_budget_mb=24576.0), VramPressureTier.ELEVATED)
+        self.assertEqual(classify_pressure_tier(1000.0, total_budget_mb=24576.0), VramPressureTier.CRITICAL)
+        self.assertEqual(classify_pressure_tier(700.0, total_budget_mb=24576.0), VramPressureTier.OOM_GUARD)
+        self.assertEqual(classify_pressure_tier(0.0, total_budget_mb=24576.0), VramPressureTier.OOM_GUARD)
+
 
 if __name__ == "__main__":
     unittest.main()

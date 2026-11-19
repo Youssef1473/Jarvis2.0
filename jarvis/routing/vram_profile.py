@@ -45,6 +45,23 @@ class VramInferenceProfile:
     reason: str
 
 
+def derive_nominal_context(budget_mb: float, headroom_mb: float) -> tuple[int, str]:
+    """Derives context window size and descriptive label for NOMINAL tier based on VRAM capacity.
+
+    For budget_mb <= 4096.0 (or headroom < 6144.0): returns (8192, "8k context").
+    For budget_mb >= 12288.0 and headroom_mb >= 6144.0: returns (16384, "16k expanded context").
+    For budget_mb >= 20480.0 and headroom_mb >= 10240.0: returns (32768, "32k expanded context").
+    """
+    if budget_mb >= 20480.0 and headroom_mb >= 10240.0:
+        return 32768, "32k expanded context"
+    if budget_mb >= 12288.0 and headroom_mb >= 6144.0:
+        return 16384, "16k expanded context"
+    return 8192, "8k context"
+
+
+_derive_nominal_context = derive_nominal_context
+
+
 def resolve_vram_inference_profile(
     cloud_fallback_enabled: bool = True,
     preferred_cloud_provider: str = "gemini",
@@ -75,15 +92,17 @@ def resolve_vram_inference_profile(
 
     # Pressure Tier NOMINAL: >= 1200 MiB
     if telemetry.pressure_tier == VramPressureTier.NOMINAL:
+        budget_mb = max(telemetry.total_mb, telemetry.dxgi_budget_mb)
+        num_ctx, ctx_desc = _derive_nominal_context(budget_mb, telemetry.headroom_mb)
         return VramInferenceProfile(
             tier=VramPressureTier.NOMINAL,
             headroom_mb=telemetry.headroom_mb,
-            num_ctx=8192,
+            num_ctx=num_ctx,
             num_gpu=-1,
             allow_gpu=True,
             cloud_failover=False,
             recommended_provider="ollama",
-            reason=f"Sufficient VRAM headroom ({telemetry.headroom_mb:.1f} MiB); granting full GPU offload and 8k context.",
+            reason=f"Sufficient VRAM headroom ({telemetry.headroom_mb:.1f} MiB); granting full GPU offload and {ctx_desc}.",
         )
 
     # Pressure Tier ELEVATED: 700 - 1199 MiB
@@ -91,10 +110,12 @@ def resolve_vram_inference_profile(
         execute_staged_shedding(stage=1)
         telemetry = get_vram_telemetry()
         if telemetry.pressure_tier == VramPressureTier.NOMINAL:
+            budget_mb = max(telemetry.total_mb, telemetry.dxgi_budget_mb)
+            num_ctx, _ = _derive_nominal_context(budget_mb, telemetry.headroom_mb)
             return VramInferenceProfile(
                 tier=VramPressureTier.NOMINAL,
                 headroom_mb=telemetry.headroom_mb,
-                num_ctx=8192,
+                num_ctx=num_ctx,
                 num_gpu=-1,
                 allow_gpu=True,
                 cloud_failover=False,
@@ -117,10 +138,12 @@ def resolve_vram_inference_profile(
         execute_staged_shedding(stage=2)
         telemetry = get_vram_telemetry()
         if telemetry.pressure_tier == VramPressureTier.NOMINAL:
+            budget_mb = max(telemetry.total_mb, telemetry.dxgi_budget_mb)
+            num_ctx, _ = _derive_nominal_context(budget_mb, telemetry.headroom_mb)
             return VramInferenceProfile(
                 tier=VramPressureTier.NOMINAL,
                 headroom_mb=telemetry.headroom_mb,
-                num_ctx=8192,
+                num_ctx=num_ctx,
                 num_gpu=-1,
                 allow_gpu=True,
                 cloud_failover=False,
@@ -153,10 +176,12 @@ def resolve_vram_inference_profile(
     execute_staged_shedding(stage=2)
     telemetry = get_vram_telemetry()
     if telemetry.pressure_tier == VramPressureTier.NOMINAL:
+        budget_mb = max(telemetry.total_mb, telemetry.dxgi_budget_mb)
+        num_ctx, _ = _derive_nominal_context(budget_mb, telemetry.headroom_mb)
         return VramInferenceProfile(
             tier=VramPressureTier.NOMINAL,
             headroom_mb=telemetry.headroom_mb,
-            num_ctx=8192,
+            num_ctx=num_ctx,
             num_gpu=-1,
             allow_gpu=True,
             cloud_failover=False,
@@ -193,6 +218,7 @@ def register_ollama_vram_shed_hook(
 __all__ = [
     "VramInferenceProfile",
     "VramInferenceTier",
+    "derive_nominal_context",
     "register_ollama_vram_shed_hook",
     "resolve_vram_inference_profile",
 ]

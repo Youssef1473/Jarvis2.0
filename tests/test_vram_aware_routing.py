@@ -325,6 +325,116 @@ class TestVramAwareRouting(unittest.TestCase):
         )
         self.assertEqual(route, "ollama_os")
 
+    def test_derive_nominal_context_expansion_math(self) -> None:
+        """Verifies context scaling rules: 8k baseline, 16k for >=12GB, 32k for >=24GB."""
+        from jarvis.routing.vram_profile import derive_nominal_context
+
+        # 4GB RTX 3050 Laptop
+        ctx, desc = derive_nominal_context(3367.7, 2500.0)
+        self.assertEqual(ctx, 8192)
+        self.assertIn("8k", desc)
+
+        ctx, desc = derive_nominal_context(4096.0, 3000.0)
+        self.assertEqual(ctx, 8192)
+
+        # 8GB GPU
+        ctx, desc = derive_nominal_context(8192.0, 5000.0)
+        self.assertEqual(ctx, 8192)
+
+        # 12GB GPU (>= 12288 MiB and >= 6144 MiB headroom)
+        ctx, desc = derive_nominal_context(12288.0, 7000.0)
+        self.assertEqual(ctx, 16384)
+        self.assertIn("16k", desc)
+
+        # 12GB GPU with constrained headroom (< 6144 MiB) stays at 8k
+        ctx, desc = derive_nominal_context(12288.0, 5000.0)
+        self.assertEqual(ctx, 8192)
+
+        # 24GB GPU (>= 20480 MiB and >= 10240 MiB headroom)
+        ctx, desc = derive_nominal_context(24576.0, 15000.0)
+        self.assertEqual(ctx, 32768)
+        self.assertIn("32k", desc)
+
+        # 24GB GPU with moderate headroom (>= 6144 but < 10240) gets 16k
+        ctx, desc = derive_nominal_context(24576.0, 8000.0)
+        self.assertEqual(ctx, 16384)
+
+    @patch("jarvis.routing.vram_profile.get_vram_telemetry")
+    def test_resolve_vram_inference_profile_high_vram_expansion(self, mock_telemetry: MagicMock) -> None:
+        """Verifies resolve_vram_inference_profile scales context on high-VRAM GPUs."""
+        # 24GB GPU
+        telem_24gb = VramPressureTelemetry(
+            status="ok",
+            total_mb=24576.0,
+            used_mb=8576.0,
+            free_mb=16000.0,
+            dxgi_budget_mb=24000.0,
+            dxgi_current_usage_mb=8000.0,
+            headroom_mb=16000.0,
+            pressure_tier=VramPressureTier.NOMINAL,
+            gpu_temp_c=50,
+            compute_processes=[],
+            shed_events_count=0,
+            reclaimed_action=None,
+        )
+        mock_telemetry.return_value = telem_24gb
+        prof_24 = resolve_vram_inference_profile()
+        self.assertEqual(prof_24.tier, VramPressureTier.NOMINAL)
+        self.assertEqual(prof_24.num_ctx, 32768)
+        self.assertTrue(prof_24.allow_gpu)
+        self.assertEqual(prof_24.num_gpu, -1)
+
+        # 12GB GPU
+        telem_12gb = VramPressureTelemetry(
+            status="ok",
+            total_mb=12288.0,
+            used_mb=4288.0,
+            free_mb=8000.0,
+            dxgi_budget_mb=12000.0,
+            dxgi_current_usage_mb=4000.0,
+            headroom_mb=8000.0,
+            pressure_tier=VramPressureTier.NOMINAL,
+            gpu_temp_c=52,
+            compute_processes=[],
+            shed_events_count=0,
+            reclaimed_action=None,
+        )
+        mock_telemetry.return_value = telem_12gb
+        prof_12 = resolve_vram_inference_profile()
+        self.assertEqual(prof_12.tier, VramPressureTier.NOMINAL)
+        self.assertEqual(prof_12.num_ctx, 16384)
+        self.assertTrue(prof_12.allow_gpu)
+        self.assertEqual(prof_12.num_gpu, -1)
+
+    @patch("jarvis.routing.vram_profile.execute_staged_shedding")
+    @patch("jarvis.routing.vram_profile.get_vram_telemetry")
+    def test_fail_closed_oom_guard_invariant_on_high_vram(
+        self, mock_telemetry: MagicMock, mock_shed: MagicMock
+    ) -> None:
+        """Verifies fail-closed OOM_GUARD behavior is immutable even on 24GB GPUs."""
+        telem_oom_24gb = VramPressureTelemetry(
+            status="ok",
+            total_mb=24576.0,
+            used_mb=24376.0,
+            free_mb=200.0,
+            dxgi_budget_mb=24000.0,
+            dxgi_current_usage_mb=23800.0,
+            headroom_mb=200.0,
+            pressure_tier=VramPressureTier.OOM_GUARD,
+            gpu_temp_c=80,
+            compute_processes=[],
+            shed_events_count=0,
+            reclaimed_action=None,
+        )
+        mock_telemetry.return_value = telem_oom_24gb
+        prof = resolve_vram_inference_profile(cloud_fallback_enabled=True)
+
+        self.assertEqual(prof.tier, VramPressureTier.OOM_GUARD)
+        self.assertEqual(prof.num_ctx, 2048)
+        self.assertEqual(prof.num_gpu, 0)
+        self.assertFalse(prof.allow_gpu)
+        self.assertTrue(prof.cloud_failover)
+
 
 if __name__ == "__main__":
     unittest.main()
