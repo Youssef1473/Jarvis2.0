@@ -10,6 +10,12 @@ from typing import Any
 import numpy as np
 import sounddevice as sd
 
+from jarvis.core.win32_affinity import (
+    get_wakeword_affinity_mask,
+    pin_and_elevate_current_thread,
+    revert_current_thread_mmcss,
+)
+
 logger = logging.getLogger("Jarvis.WakeWord")
 
 
@@ -338,51 +344,50 @@ class WakeWordDetector:
     def _worker_loop(self):
         """Dedicated background worker thread for processing raw audio frames and routing."""
         try:
-            from jarvis.core.win32_affinity import (
-                get_wakeword_affinity_mask,
-                pin_and_elevate_current_thread,
-            )
             pin_and_elevate_current_thread(tag="MicRouterWorker", mask=get_wakeword_affinity_mask())
         except Exception:  # noqa: BLE001, S110
             pass
 
-        while self._is_running:
-            with self._state_lock:
-                mode = self._mode
-                vad_q = self._vad_queue
-                ptt_list = self._ptt_chunks
+        try:
+            while self._is_running:
+                with self._state_lock:
+                    mode = self._mode
+                    vad_q = self._vad_queue
+                    ptt_list = self._ptt_chunks
 
-            if mode == CaptureMode.WAKE:
-                # Latency budget guard: wake detection must process real-time audio.
-                # If worker thread fell behind, discard stale chunks exceeding 4 frames (320ms budget)
-                # before reading so that wake and barge-in response processes only fresh audio.
-                while self._frame_buffer.occupancy > 4:
-                    stale = self._frame_buffer.read_frame(timeout=0.0)
-                    if stale is None:
-                        break
-                    self._frame_buffer.dropped_wake_frames += 1
+                if mode == CaptureMode.WAKE:
+                    # Latency budget guard: wake detection must process real-time audio.
+                    # If worker thread fell behind, discard stale chunks exceeding 4 frames (320ms budget)
+                    # before reading so that wake and barge-in response processes only fresh audio.
+                    while self._frame_buffer.occupancy > 4:
+                        stale = self._frame_buffer.read_frame(timeout=0.0)
+                        if stale is None:
+                            break
+                        self._frame_buffer.dropped_wake_frames += 1
 
-            chunk = self._frame_buffer.read_frame(timeout=0.1)
-            if chunk is None:
-                continue
+                chunk = self._frame_buffer.read_frame(timeout=0.1)
+                if chunk is None:
+                    continue
 
-            if mode == CaptureMode.MUTED:
-                continue
+                if mode == CaptureMode.MUTED:
+                    continue
 
-            if mode == CaptureMode.VAD and vad_q is not None:
-                try:
-                    vad_q.put_nowait(chunk)
-                except queue.Full:
-                    self.queue_overflow_count += 1
-                    self.recording_overflow_detected = True
-                continue
+                if mode == CaptureMode.VAD and vad_q is not None:
+                    try:
+                        vad_q.put_nowait(chunk)
+                    except queue.Full:
+                        self.queue_overflow_count += 1
+                        self.recording_overflow_detected = True
+                    continue
 
-            if mode == CaptureMode.PTT and ptt_list is not None:
-                ptt_list.append(chunk)
-                continue
+                if mode == CaptureMode.PTT and ptt_list is not None:
+                    ptt_list.append(chunk)
+                    continue
 
-            if mode == CaptureMode.WAKE:
-                self._process_wake_chunk(chunk)
+                if mode == CaptureMode.WAKE:
+                    self._process_wake_chunk(chunk)
+        finally:
+            revert_current_thread_mmcss()
 
     def _process_wake_chunk(self, chunk: np.ndarray):
         """Evaluates BLAS energy gate and executes openWakeWord neural inference."""

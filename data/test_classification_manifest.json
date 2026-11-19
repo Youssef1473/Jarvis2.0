@@ -1,11 +1,11 @@
 {
-  "total_collected": 2351,
+  "total_collected": 2354,
   "assigned_by_tier": {
     "tier1_hermetic_unit": 1451,
     "tier2a_async_safe": 281,
     "tier2b_loopback_ipc": 170,
     "tier3_windows_integration": 164,
-    "tier4_hardware_integration": 265,
+    "tier4_hardware_integration": 268,
     "tier_browser_integration": 20
   },
   "node_ids_by_tier": {
@@ -2265,6 +2265,8 @@
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_pending_default_stop_barrier_blocks_session_and_playback_until_complete",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_playback_lock_timeout_in_safe_stop_skips_native_operations_and_marks_uncertain",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_playback_modes_mutually_exclusive",
+      "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_playback_worker_reverts_mmcss_on_normal_exit",
+      "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_playback_worker_reverts_mmcss_on_worker_exception",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_queue_full_default_stop_fallback_clears_default_stop_pending",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_queue_full_stream_fallback_clears_pending_close_streams",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_queue_sentence_never_calls_sapi_directly_when_worker_inactive",
@@ -2273,6 +2275,7 @@
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_reconcile_stream_lifecycle_never_clears_live_worker_even_with_force",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_repeated_non_blocking_stop_detaches_stream_cleanly",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_retained_streams_removed_and_no_leak_across_50_cycles",
+      "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_revert_mmcss_guards_against_mocked_boolean_true",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_ring_buffer_interleaved_barge_in_preserves_consumer_ramp",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_safe_sd_stop_bounds_wait_on_driver_stall",
       "tests/test_tts_lifecycle_hardening.py::TestTtsLifecycleHardening::test_safe_sd_stop_does_not_block_behind_stalled_sd_play",

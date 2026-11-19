@@ -10,6 +10,11 @@ from typing import Any
 
 import numpy as np
 
+from jarvis.core.win32_affinity import (
+    pin_and_elevate_current_thread,
+    revert_current_thread_mmcss,
+)
+
 logger = logging.getLogger("Jarvis.SpeechCapture")
 
 
@@ -132,12 +137,11 @@ class AdaptiveSpeechCapture:
         """Spawns an elevated background worker to capture speech with adaptive silence scaling and hesitation damping."""
         def record_and_process_vad() -> None:
             try:
-                from jarvis.core.win32_affinity import pin_and_elevate_current_thread
-                pin_and_elevate_current_thread(tag="OrchestratorVADCapture")
-            except (ImportError, AttributeError, OSError) as exc:
-                logger.debug("VAD capture thread affinity elevation notice: %s", exc)
+                try:
+                    pin_and_elevate_current_thread(tag="OrchestratorVADCapture")
+                except (AttributeError, OSError) as exc:
+                    logger.debug("VAD capture thread affinity elevation notice: %s", exc)
 
-            try:
                 vad = orchestrator.wake_detector.get_vad()
                 if vad is None:
                     from openwakeword.vad import VAD
@@ -245,5 +249,7 @@ class AdaptiveSpeechCapture:
             except Exception as exc:  # noqa: BLE001
                 logger.error("VAD recording error: %s", exc)
                 orchestrator.set_state("idle")
+            finally:
+                revert_current_thread_mmcss()
 
         threading.Thread(target=record_and_process_vad, daemon=True).start()
