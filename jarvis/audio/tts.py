@@ -527,7 +527,7 @@ class TextToSpeech:
 
         # Register audio flush callback for immediate barge-in interruption
         try:
-            from jarvis.core.cancellation import register_audio_flush_callback
+            from jarvis.audio.cancellation import register_audio_flush_callback
             register_audio_flush_callback(self.on_barge_in_flush)
             self._session_activation_epoch = int(GLOBAL_EPOCH_STATE.barge_in_epoch)
         except Exception as e:
@@ -1407,7 +1407,7 @@ class TextToSpeech:
             self._is_speaking = False
             AudioTelemetry.active_playback = False
             try:
-                from jarvis.core.cancellation import signal_global_barge_in
+                from jarvis.audio.cancellation import signal_global_barge_in
                 signal_global_barge_in(async_callbacks=True, exclude=self.on_barge_in_flush)
             except Exception:  # noqa: BLE001, S110
                 pass
@@ -1519,6 +1519,17 @@ class TextToSpeech:
             except Exception:  # noqa: BLE001
                 break
 
+        if getattr(self, "_synth_thread", None) and self._synth_thread.is_alive():
+            try:
+                self._sentence_queue.put_nowait(None)
+            except (queue.Full, Exception):  # noqa: BLE001, S110
+                pass
+        if getattr(self, "_playback_thread", None) and self._playback_thread.is_alive():
+            try:
+                self._audio_queue.put_nowait(None)
+            except (queue.Full, Exception):  # noqa: BLE001, S110
+                pass
+
         # Immediately preempt sounddevice playback so any active sd.wait() in speak_sync unblocks
         if not self._safe_sd_stop(timeout=min(0.05, _calc_rem(stop_timeout))):
             clean_stop = False
@@ -1603,15 +1614,26 @@ class TextToSpeech:
 
         synth = getattr(self, "_synth_thread", None)
         if synth and synth.is_alive():
-            synth.join(timeout=_calc_rem(0.02))
+            synth.join(timeout=_calc_rem(0.05))
             if synth.is_alive():
                 clean_stop = False
 
         play = getattr(self, "_playback_thread", None)
         if play and play.is_alive():
-            play.join(timeout=_calc_rem(0.02))
+            play.join(timeout=_calc_rem(0.05))
             if play.is_alive():
                 clean_stop = False
+
+        while not self._sentence_queue.empty():
+            try:
+                self._sentence_queue.get_nowait()
+            except Exception:  # noqa: BLE001
+                break
+        while not self._audio_queue.empty():
+            try:
+                self._audio_queue.get_nowait()
+            except Exception:  # noqa: BLE001
+                break
 
         if (
             getattr(self, "_stream_cleanup_uncertain", False)
