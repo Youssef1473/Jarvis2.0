@@ -1,7 +1,7 @@
 {
-  "total_collected": 2354,
+  "total_collected": 2355,
   "assigned_by_tier": {
-    "tier1_hermetic_unit": 1451,
+    "tier1_hermetic_unit": 1452,
     "tier2a_async_safe": 281,
     "tier2b_loopback_ipc": 170,
     "tier3_windows_integration": 164,
@@ -979,6 +979,7 @@
       "tests/test_motor_cadence.py::TestMotorCadenceTrackerSuite::test_kpm_and_backspace_ratio_calculation",
       "tests/test_motor_cadence.py::TestMotorCadenceTrackerSuite::test_strict_privacy_zero_character_storage",
       "tests/test_motor_cadence.py::TestMotorCadenceTrackerSuite::test_synthetic_injected_keys_rejected",
+      "tests/test_motor_cadence.py::TestMotorCadenceTrackerSuite::test_win32_64bit_abi_prototypes_and_hook_lifecycle",
       "tests/test_motor_cadence.py::TestMotorCadenceTrackerSuite::test_window_expiration_purges_old_events",
       "tests/test_motor_cadence.py::TestMotorCadenceTrackerSuite::test_zero_events_returns_zero_cadence",
       "tests/test_multi_llm_responsiveness.py::TestTwoGearProsodicChunker::test_chunker_flush_emits_tail",
