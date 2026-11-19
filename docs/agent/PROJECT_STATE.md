@@ -14,29 +14,44 @@
 
 ## 1. Last Verified Git Baseline
 
-- **Validation Timestamp:** 2026-11-18T22:48:00+01:00 (CET)
+- **Validation Timestamp:** 2026-11-19T01:15:00+01:00 (CET)
 - **Active Git Branch:** `main`
-- **Recorded HEAD Commit SHA:** `d96137aff488570394f312ea33023d693aac8d5c`
-- **HEAD Commit Subject:** `fix(vision): guard against invalid TID and negative stack-garbage PID in active window lookup`
-- **Milestone State:** **Architectural Hardening & Simplification Sprint — Plans 001, 002, 003, 004, and 005 Executed, Verified, and Committed; 2,333 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics; All 5 Verification Gates Passed**
-- **Active Milestone:** **Architectural Hardening & Simplification Sprint (Plans 001–005 Committed & Fully Verified; Ready for Live-Hardware Validation)**
-- **Staged Modifications:** `0 files` (clean staging index)
-- **Unstaged Tracked Modifications:** `0 files` (clean working tree)
-
-- **Untracked Items (8 items):**
-  1. `data/agy_112_nodes.json` (Diagnostic node map)
-  2. `data/agy_112_pytest_nodes.json` (Remediation test inventory)
-  3. `data/execution_evidence/` (Audit evidence directory)
-  4. `data/learning_candidates/` (Candidate learning records)
-  5. `data/learning_events/` (Persisted learning events)
-  6. `data/regression_scorecard.json` (Test regression metrics)
-  7. `data/supplemental_test_manifest.json` (Auxiliary test map)
-  8. `scratch/` (Temporary scratch directory)
+- **Recorded HEAD Commit SHA:** `7836a4caddf4074be52a266b061d92b0f81ee33d`
+- **HEAD Commit Subject:** `refactor(skills): excise unused mcp_manager shim and canonicalize internal audio/provider imports`
+- **Milestone State:** **Architectural Review & Hardening Sprint (Gemini 4 Neon Plan) — Batches 1–6 Completed & Verified; 2,351 Tests Accounted with 0 Drift & 0 Orphans; Repository-Wide 0 Ruff / 0 AST-Grep Diagnostics; ADR-001 through ADR-006 ACCEPTED; Single-Writer Invariant 100% Enforced**
+- **Active Milestone:** **Architectural Review & Hardening Sprint (Batches 1–6 Complete & Verified)**
 
 ## 2. Current Engineering Focus
 
-- **Active Milestone:** `Architectural Hardening & Simplification Sprint (Plans 001–005 Complete & Fully Verified)`
+- **Active Milestone:** `Architectural Review & Hardening Sprint (Batches 1–6 Complete & Verified)`
 - **Completed Work:**
+  - **Gemini 4 Neon Architectural Hardening Sprint (Batches 1–6 COMPLETED & VERIFIED):**
+    - **Batch 1 (SQLite Single-Writer & Bounded Read-Pool Migration):**
+      - Migrated `photo_manager.py` to route all write mutations through `SingleWriterActor.execute_write(...)` and read queries through `ReadOnlyConnectionPool` with `bounded_ro_connection`. Closed the last remaining `ADR-001` write-path bypass.
+      - Migrated `habit_graph.py` to check out read connections through `ReadOnlyConnectionPool` with `bounded_ro_connection` (2,000ms deadline + automatic read snapshot rollback). Migrated exponential decay writes to `SingleWriterActor`.
+      - Added `ReadOnlyConnectionPool.get_or_create` classmethod alias.
+      - Authored hermetic test suite `tests/test_sqlite_writer_ownership.py` asserting zero direct `sqlite3.connect` write calls via monkeypatched traps.
+    - **Batch 2 (Audio DSP Continuity, Epoch Thread Safety & Hung-Window Guard):**
+      - Upgraded `SharedEpochState` in `jarvis/core/cancellation.py` from GIL-only to mutex-guarded using `_EPOCH_LOCK = threading.Lock()`. Added atomic bump methods (`bump_barge_in_epoch()`, `bump_epoch()`, `bump_tool_epoch()`) while preserving backward-compatible `@property` getter/setter.
+      - Verified `StatefulPolyphaseUpsampler` in `jarvis/audio/tts.py` (32-sample lookbehind tail) and `.reset()` integration across session start and barge-in epochs.
+      - Verified `safe_set_foreground_window` in `jarvis/skills/os_control.py` probes `user32.IsHungAppWindow(wintypes.HWND(fg_hwnd))` before `AttachThreadInput` with synthetic Alt-key fallback.
+      - Added unit tests in `tests/test_audio_streaming_pipeline.py` verifying zero boundary notch error and concurrent thread-safe epoch bumping across 8 threads.
+    - **Batch 3 (Incremental UTF-8 Pipe Decoding, CDP Discovery & Flow State Tests):**
+      - Verified `_iter_unbuffered_lines` in `jarvis/core/antigravity_bridge.py` uses `codecs.getincrementaldecoder("utf-8")(errors="replace")`.
+      - Added `chrome-win64` discovery paths in `jarvis/skills/browser_cdp.py`. Preserved loopback port confinement.
+      - Added `test_iter_unbuffered_lines_multibyte_utf8_split` in `tests/test_antigravity_integration.py` and `test_process_packet_tampered_and_malformed_rejected` in `tests/test_phase1_flow_state.py`.
+    - **Batch 4 (Residual Compatibility Shim Audit & Pruning):**
+      - Confirmed `jarvis.audio.cancellation` and `jarvis.audio.chunker` are actively imported/patched by test suites and retained them strictly as minimal re-export shims.
+      - Excised unused `jarvis/skills/mcp_manager.py` (0 callers). Repointed internal imports in `tts.py`, `wake_word.py`, `ollama.py`, and `openrouter.py` to canonical modules.
+      - Fixed `tests/test_plugin_integrations.py` tool registry import.
+    - **Batch 5 (Security, Epistemic Qualification & Memory Authorization Backlog Closure):**
+      - Updated context headers in `context_orchestrator.py` and `interaction_memory.py` to qualify historical memory as `[Directly Relevant Knowledge to Current Context - Reference / Historical]`.
+      - Upgraded fixture database path containment assertion in `tests/test_memory_authorization_audit.py` to strict `is_relative_to`.
+      - Graduated `test_11_contradictory_stale_memory_not_presented_as_unqualified_truth` from strict xfail to active passing assertion (20/20 tests passing).
+    - **Batch 6 (Documentation & Manifest Reconciliation):**
+      - Re-exported `data/test_classification_manifest.json` (`2,351` total test nodes: `1,451` Tier 1 hermetic unit, `281` Tier 2a async safe, `170` Tier 2b loopback IPC, `164` Tier 3 Windows integration, `265` Tier 4 hardware integration, `20` Tier browser integration) with 0 unclassified and 0 orphans.
+      - Verified manifest integrity with `tools/test_classifier.py --check-orphaned` and verified `test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed 100%.
+      - Reconciled `docs/architecture/PROJECT_MAP.md`, `docs/architecture/INDEX.md`, and `docs/agent/PROJECT_STATE.md`.
   - **Plan 005 (COMPLETED & VERIFIED): Deduplicate Core Modules, Consolidate CDP Browser Skills, Upgrade TurnTaintTracker to Argument-Level Provenance, and Promote ADRs:**
     - **Batch 1 (Affinity & Memory `ro_pool` Consolidation):**
       - Consolidated Win32 thread affinity into canonical `jarvis/core/win32_affinity.py` (preserving `MASK_PCORE_WAKEWORD = 0x0054` and `get_wakeword_affinity_mask()`); repointed all imports across `jarvis/` and `tests/`; deleted legacy shims jarvis/audio/affinity.py and jarvis/core/thread_affinity.py; updated `.agents/rules/audio_threading.md` to reflect `0x0054`.
@@ -466,30 +481,30 @@ TOTALS                                          2206   1657     33     22       
 
 ## 4. Architectural Invariants Under Guard
 
-All engineering work must comply with canonical subsystem rules and Architecture Decision Records (ADRs). ADRs currently hold `PROPOSED` status and represent documented technical proposals awaiting formal developer acceptance:
+All engineering work must comply with canonical subsystem rules and Architecture Decision Records (ADRs). ADRs hold `ACCEPTED` status and represent binding architectural contracts:
 
 1. **Persistence & Concurrency Serialization:**
    - Canonical Rule: `.agents/rules/persistence_sqlite.md`
-   - Decision Record: [`docs/adr/ADR-001-sqlite-single-writer-wal.md`](../adr/ADR-001-sqlite-single-writer-wal.md) (`PROPOSED`)
+   - Decision Record: [`docs/adr/ADR-001-sqlite-single-writer-wal.md`](../adr/ADR-001-sqlite-single-writer-wal.md) (`ACCEPTED`)
    - Invariant: Core database write mutations serialize strictly through `SingleWriterActor` with `PRAGMA journal_mode=WAL` and `PRAGMA synchronous=NORMAL`.
 2. **Win32 Job Object Process Containment:**
-   - Decision Record: [`docs/adr/ADR-002-win32-job-object-containment.md`](../adr/ADR-002-win32-job-object-containment.md) (`PROPOSED`)
+   - Decision Record: [`docs/adr/ADR-002-win32-job-object-containment.md`](../adr/ADR-002-win32-job-object-containment.md) (`ACCEPTED`)
    - Invariant: Child processes must be spawned suspended (`CREATE_SUSPENDED`), assigned to a Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and only then resumed. Fail closed on any failure.
 3. **Preemptive Audio Barge-In Cancellation:**
    - Canonical Rule: `.agents/rules/audio_threading.md`
-   - Decision Record: [`docs/adr/ADR-003-epoch-based-audio-cancellation.md`](../adr/ADR-003-epoch-based-audio-cancellation.md) (`PROPOSED`)
-   - Invariant: Audio playback and synthesis threads must never execute blocking disk/network I/O or LLM inference. Stale work invalidates cooperatively via `GLOBAL_EPOCH_STATE`.
+   - Decision Record: [`docs/adr/ADR-003-epoch-based-audio-cancellation.md`](../adr/ADR-003-epoch-based-audio-cancellation.md) (`ACCEPTED`)
+   - Invariant: Audio playback and synthesis threads must never execute blocking disk/network I/O or LLM inference. Stale work invalidates cooperatively via mutex-synchronized `GLOBAL_EPOCH_STATE` with atomic epoch bumping.
 4. **Mutating Tool Authorization & Provenance Tracking:**
    - Canonical Rule: `.agents/rules/security_boundaries.md`
-   - Decision Record: [`docs/adr/ADR-004-dual-key-tool-authorization-turn-taint.md`](../adr/ADR-004-dual-key-tool-authorization-turn-taint.md) (`PROPOSED`)
+   - Decision Record: [`docs/adr/ADR-004-dual-key-tool-authorization-turn-taint.md`](../adr/ADR-004-dual-key-tool-authorization-turn-taint.md) (`ACCEPTED`)
    - Invariant: All mutating tool operations route through `DualKeyApprovalManager`. Telemetry and external data are marked untrusted via `TurnTaintTracker`.
 5. **Windows Hardware Affinity & MMCSS Priority:**
    - Canonical Rule: `.agents/rules/audio_threading.md`
-   - Decision Record: [`docs/adr/ADR-005-win32-hardware-core-affinity.md`](../adr/ADR-005-win32-hardware-core-affinity.md) (`PROPOSED`)
-   - Invariant: WASAPI playback pinned to Logical CPUs 0–1 (`0x0003`) with MMCSS Pro Audio; wake-word pinned via physical P-core mask (`0x0055`); compute on P-cores (`0x00FC`); background on E-cores (`0xFF00`) with EcoQoS. Overlap on Logical CPU 0 represents affinity partitioning, not exclusive hardware isolation.
+   - Decision Record: [`docs/adr/ADR-005-win32-hardware-core-affinity.md`](../adr/ADR-005-win32-hardware-core-affinity.md) (`ACCEPTED`)
+   - Invariant: WASAPI playback pinned to Logical CPUs 0–1 (`0x0003`) with MMCSS Pro Audio; wake-word pinned via dedicated physical P-core mask (`0x0054`, Logical CPUs 2, 4, 6) isolating Physical Core 0 exclusively for audio playback; compute on P-cores (`0x00FC`); background on E-cores (`0xFF00`) with EcoQoS.
 6. **Network Egress Validation & SSRF Defense:**
    - Canonical Rule: `.agents/rules/security_boundaries.md`
-   - Decision Record: [`docs/adr/ADR-006-egress-validation-ip-pinning.md`](../adr/ADR-006-egress-validation-ip-pinning.md) (`PROPOSED`)
+   - Decision Record: [`docs/adr/ADR-006-egress-validation-ip-pinning.md`](../adr/ADR-006-egress-validation-ip-pinning.md) (`ACCEPTED`)
    - Invariant: Outbound URLs must be pre-validated with `validate_egress_url` and pinned at socket connect to prevent DNS rebinding.
 
 ---
@@ -506,10 +521,12 @@ All engineering work must comply with canonical subsystem rules and Architecture
    - 5 occurrences in `jarvis/core/memory/temporal_graph.py`: added `import sqlite3`.
    - 1 occurrence in `jarvis/desktop/uia_delta_worker.py`: added `from typing import Optional`.
    - Status: Completely resolved; verified 0 F821 diagnostics repository-wide.
-3. **SQLite Writer Ownership vs. Reader Connection Debt:**
-   - Direct Write Bypass Paths (2 remaining modules): `photo_manager.py` (3 connections) and `reflex_macro_compiler.py` (6 connections) open uncoordinated direct connections and execute write transactions bypassing `SingleWriterActor`. (`sleep_consolidator.py` was migrated to `SingleWriterActor` in Plan 006 — PR #25, `ed74210`).
-   - Direct Read Connection Ownership (1 module): `habit_graph.py` opens direct connection for reads, while writes serialize properly through `SingleWriterActor`. Under SQLite WAL mode, readers do not block writers; direct reads are technically valid under WAL concurrency, though connection pooling would be architectural best practice.
-   - Status: Migration design fully specified in [`docs/architecture/SQLITE_WRITER_OWNERSHIP_DESIGN.md`](../architecture/SQLITE_WRITER_OWNERSHIP_DESIGN.md); remaining paths tracked for future maintenance.
+3. **SQLite Writer Ownership vs. Reader Connection Debt (RESOLVED in Gemini 4 Neon Review Sprint):**
+   - `photo_manager.py`: Removed all 3 direct SQLite write connections; writes route through `SingleWriterActor.execute_write(...)` and reads checkout through `ReadOnlyConnectionPool.connection(timeout_ms=DEFAULT_RO_QUERY_TIMEOUT_MS)` with `bounded_ro_connection`.
+   - `reflex_macro_compiler.py`: Excised in Plan 004.
+   - `habit_graph.py`: Migrated reads to `ReadOnlyConnectionPool` with `bounded_ro_connection` and write operations to `SingleWriterActor`.
+   - Hermetic validation: `tests/test_sqlite_writer_ownership.py` asserts 0 direct write bypasses via monkeypatched traps.
+   - Status: Completely resolved. Zero direct SQLite write bypasses across the entire repository.
 4. **Master Blueprint Commit Staleness:**
    - Line 5 of `JARVIS_2.0_MASTER_ARCHITECTURAL_BLUEPRINT.txt` references historical commit `0697eb51...`.
    - Status: Clarified as historical baseline.
@@ -520,35 +537,5 @@ All engineering work must comply with canonical subsystem rules and Architecture
 
 ## 6. Immediate Next Action
 
-- **Milestone Status:**
-  - `ENG-OS-01: Engineering Agent Reliability & Persistent Intelligence` formally closed with verdict **ACCEPTED WITH LIMITATIONS**.
-  - `ENG-OS-02: Adaptive Engineering Intelligence & Continuous Learning` formally closed with verdict **ACCEPTED WITH LIMITATIONS**.
-  - `ENG-OS-03B1: Independent Crash Consistency & Transactional Persistence Audit` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03B1_CRASH_CONSISTENCY_AUDIT.md`).
-  - `ENG-OS-03B2: Authoritative SQLite Persistence & Crash-Safe Candidate Recovery` formally completed and empirically verified (`docs/agent/ENG_OS_03B2_AUTHORITATIVE_PERSISTENCE.md`).
-  - `ENG-OS-03B3: Independent Authoritative Persistence Acceptance Audit` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03B3_FINAL_ACCEPTANCE_AUDIT.md`).
-  - `ENG-OS-03B2R: Receipt Canonical Payload & Safe Candidate Bootstrap` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03B2R_REMEDIATION.md`). Milestone `ENG-OS-03B` formally closed.
-  - `ENG-OS-03C1: Test Infrastructure Modernization & Four-Tier Runner Architecture` formally implemented (`tools/test_classifier.py`, `tools/test_supervisor.py`, `data/test_classification_manifest.json`).
-  - `ENG-OS-03C2: Independent Tier Execution & Supervisor Acceptance` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C2_ACCEPTANCE_AUDIT.md`).
-  - `ENG-OS-03C3: Independent Regression Scorecard Integrity & Test Classification Audit` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C3_SCORECARD_AUDIT.md`).
-  - `ENG-OS-03C3R: Node-Level Classification Evidence Closure` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C3R_CLASSIFICATION_CLOSURE.md`).
-  - `ENG-OS-03C3R1: Final Node-Level Accounting and Classification Reconciliation` formally completed with verdict **ACCEPTED** (`docs/agent/ENG_OS_03C3R1_FINAL_RECONCILIATION.md`).
-  - `ENG-OS-03C3R2: Exclusive Failure Taxonomy and Timeout Evidence Closure` formally completed with verdict **ACCEPTED** (`docs/agent/ENG_OS_03C3R2_FAILURE_TAXONOMY_CLOSURE.md`).
-  - `ENG-OS-03C3R2-C: Evidence Terminology and Final Scorecard Correction` formally completed with verdict **ACCEPTED** (`docs/agent/ENG_OS_03C3R2_FAILURE_TAXONOMY_CLOSURE.md`).
-- `ENG-OS-03C4: Test Hermeticity & External Dependency Isolation` formally completed and empirically verified (`docs/agent/ENG_OS_03C4_TEST_HERMETICITY_REPORT.md`).
-- `ENG-OS-03C4R: Independent Test Hermeticity Remediation Acceptance Audit` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C4R_ACCEPTANCE_AUDIT.md`).
-- `ENG-OS-03C4R1: Regression Manifest Registration & Final Verification` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C4R1_FINAL_ACCEPTANCE.md`).
-- `ENG-OS-03C4R2: Final Evidence and Documentation Closure` formally closed with verdict **ACCEPTED** (`docs/agent/ENG_OS_03C4R2_CLOSURE.md`).
-- `ENG-OS-03C5: TTS Streaming Lifecycle & Restart Reliability` formally completed and empirically verified (`docs/agent/ENG_OS_03C5_TTS_LIFECYCLE_REPORT.md`).
-- `ENG-OS-03C6: Hermetic Tier 1 Recovery & Classification Normalization` formally completed and empirically verified (`docs/agent/ENG_OS_03C6_HERMETIC_TIER1_REPORT.md`).
-- `ENG-OS-03C6R: Tier 1 Hermeticity Audit & AppContainer Classification` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C6R_CLASSIFICATION_INTEGRITY_REPORT.md`).
-- `ENG-OS-03C6R1: Final Hermeticity Acceptance & Self-Evolution Split` formally completed with verdict **ACCEPTED WITH LIMITATIONS** (`docs/agent/ENG_OS_03C6R1_FINAL_HERMETICITY_ACCEPTANCE.md`).
-- `ENG-OS-03C6R2: Final Execution Accounting & Timeout Evidence Closure` formally completed with verdict **ACCEPTED** (`docs/agent/ENG_OS_03C6R2_FINAL_EXECUTION_ACCOUNTING.md`). Milestone `ENG-OS-03C6` formally closed.
-- `ENG-OS-03C2R: Test Runner Split-File Dispatch Integrity Audit & Win32 CLI Hardening` formally completed with verdict **ACCEPTED WITHOUT LIMITATIONS** (`docs/agent/ENG_OS_03C2R_RUNNER_DISPATCH_AUDIT.md`). Milestone `ENG-OS-03C2R` formally closed.
-- `ENG-OS-03C7 Phase 1: Windows Integration Execution Reliability & Timeout Granularity Profile` formally completed (`docs/agent/ENG_OS_03C7_PHASE1_EXECUTION_PROFILE.md`).
-- `ENG-OS-03C7: Windows Integration Execution Reliability & Timeout Granularity` formally closed with verdict **ACCEPTED** (`docs/agent/ENG_OS_03C7_PHASE2_RECOVERY_REPORT.md`).
-- `ENG-OS-03C8 Phase 1: Integration Environment Capability Probing & Failure Scoping` formally completed and empirically verified (`docs/agent/ENG_OS_03C8_PHASE1_ENVIRONMENT_CAPABILITY_REPORT.md`).
-- `ENG-OS-03C8 Phase 2: Controlled Execution-Context Comparison & Remediation Architecture` formally completed; evidence audit corrected per independent engineering review (`docs/agent/ENG_OS_03C8_PHASE2_CONTROLLED_COMPARISON_AND_ARCHITECTURE.md`).
-- `ENG-OS-03C8 Context B Ingestion & Controlled Comparison:` Raw host telemetry ingested from `data/execution_evidence/env_probe_context_b.json`, validated across all 5 gates with verdict **ACCEPTED** (`tools/validate_context_b_gates.py` exit code 0). Comparative report `docs/agent/ENG_OS_03C8_CONTEXT_B_COMPARISON_REPORT.md` confirms 518 of 527 blocked/failing nodes are sandbox environment artifacts.
-- `ENG-OS-03C8 Phase 3S Dual-Profile Architecture Precision Audit:` Architectural deliverable refined (`docs/agent/ENG_OS_03C8_PHASE3_DUAL_PROFILE_ARCHITECTURE.md`). Integrated all five final precision refinements: 526-candidate population accounting, controlled SSRF test infrastructure, real Chromium CDP endpoint verification, scoped production Job Object containment, and immutable execution receipts via EvidenceStore. Complete per-node mapping of all 527 investigated nodes preserved.
-- `ENG-OS-03C8 Stage 1: Bounded Chromium & Playwright Capability Investigation:` Stage 1 authorized, executed, and compared across both contexts. Implemented `tools/probe_chromium_capabilities.py`. Context A (AppContainer): Experiment A timed out (15.0s event loop deadlock); Experiment B exited in 0.51s (`STATUS_BREAKPOINT 0x80000003` from Crashpad `0x6D` named pipe error). Context B (Host Medium-Integrity): Experiment A passed in 2.72s with `chromium_sandbox=True` (zero `--no-sandbox`), establishing that native Playwright works on host Windows; Experiment B timed out at 10.0s waiting for `DevToolsActivePort`, diagnosing Chrome for Testing flag requirements (`--remote-allow-origins=*`, `--remote-debugging-address=127.0.0.1`) and `chrome-win64` path resolution in `tests/test_browser_network_boundaries.py`. Full comparative findings documented in `docs/agent/ENG_OS_03C8_STAGE1_CHROMIUM_CAPABILITY_REPORT.md`. All 9 browser nodes remain strictly frozen (`CONDITIONALLY_BLOCKED`).
-- **Next Action:** Await independent engineering review of the Stage 1 report and authorization for subsequent stages. Do not modify production code or test runners until authorized.
+- **Milestone Status:** Architectural Review & Hardening Sprint (Batches 1–6) complete and verified across all 6 gates. Test accounting reconciled to 2,351 nodes with 0 orphans and 0 drift.
+- **Next Action:** Conduct final verification sweep across the verification gates, verify working tree cleanliness, and prepare the final technical report for the user.

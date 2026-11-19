@@ -5010,3 +5010,59 @@ Following independent engineering reviews of the Context B ingestion audit, the 
 - `python tools/run_fast_tests.py --fast -w 8 -v --timeout 720` -> **Passed: 1425, Failed: 0, Errors: 0, Skipped: 9, Expected Failures: 1 (170.68s / 2m50s, Exit code: 0)**
 - `git diff --check` -> **Exit code: 0** (0 whitespace errors)
 - `python tools/test_classifier.py --check-orphaned` -> **PASSED: Manifest integrity confirmed. 0 orphans, 0 duplicates, 2333 nodes verified. Exit code: 0**
+
+
+---
+
+## Session 2026-11-19.01 — Gemini 4 Neon Review Sprint: SQLite Single-Writer, Audio Concurrency & Invariant Verification
+
+- **Session Timestamp:** 2026-11-19T00:15:00+01:00 (CET)
+- **Agent Model & Mode:** Gemini 3.8 Flash (High Reasoning) via Antigravity CLI
+- **Execution Context:** Interactive Developer Session (Host Workspace: `C:\Users\Youssef\Projects\Jarvis_2.0`)
+- **Starting Git HEAD SHA:** `cc86d7b6edee744762e4cee564070aec913a7273`
+- **Ending Git HEAD SHA:** `7836a4caddf4074be52a266b061d92b0f81ee33d`
+- **Active Branch:** `main`
+- **Session Objective:** Ingest and execute the 6-batch architectural review and implementation plan produced by Gemini 4 Neon for Jarvis 2.0: SQLite single-writer serialization, audio DSP continuity and mutex epoch thread-safety, incremental UTF-8 pipe streaming, residual compatibility shim pruning, memory authorization backlog graduation, and test manifest reconciliation.
+
+### Summary of Actions & Deliverables
+1. **Batch 1 (SQLite Single-Writer & Bounded Read-Pool Migration):**
+   - **`jarvis/skills/photo_manager.py`:** Removed all 3 direct `sqlite3.connect()` calls. All table initialization and mutating write transactions (`INSERT`, `UPDATE`) now route through `SingleWriterActor.get_or_create(DB_PATH).execute_write(...)`. Read queries in `list_photos` and `describe_photo` checkout from `ReadOnlyConnectionPool` with `bounded_ro_connection(timeout_ms=DEFAULT_RO_QUERY_TIMEOUT_MS)`.
+   - **`jarvis/core/cognition/habit_graph.py`:** Migrated `predict_next_action` reads to `ReadOnlyConnectionPool` via `bounded_ro_connection` with graceful fallback on query timeout. Migrated `apply_exponential_decay` mutating writes (`DELETE`, `UPDATE`) to `SingleWriterActor.execute_write(...)`.
+   - **`jarvis/core/memory/ro_pool.py`:** Added `@classmethod get_or_create` alias to `ReadOnlyConnectionPool`.
+   - **`tests/test_sqlite_writer_ownership.py`:** Authored 4 hermetic unit tests verifying `photo_manager.py` routes all writes through `SingleWriterActor` (verified via monkeypatched `sqlite3.connect` trap) and `habit_graph.py` read/write pool routing.
+2. **Batch 2 (Audio DSP Continuity, Epoch Thread-Safety & Hung-Window Guard):**
+   - **`jarvis/core/cancellation.py`:** Upgraded `SharedEpochState` from lock-free to mutex-guarded using `_EPOCH_LOCK = threading.Lock()`. Renamed C fields to `_barge_in_epoch` and `_active_tool_epoch`, maintaining backwards-compatible `@property` getter/setter and adding atomic `bump_barge_in_epoch()`, `bump_epoch()`, and `bump_tool_epoch()`.
+   - **`jarvis/audio/tts.py`:** Verified `StatefulPolyphaseUpsampler` (`__slots__`, 32-sample lookbehind tail) and `.reset()` integration across session start and barge-in epochs.
+   - **`jarvis/skills/os_control.py`:** Verified `safe_set_foreground_window` probes `user32.IsHungAppWindow(wintypes.HWND(fg_hwnd))` before `AttachThreadInput` with synthetic Alt-key fallback.
+   - **`tests/test_audio_streaming_pipeline.py`:** Added `TestStatefulPolyphaseUpsamplerSuite` (verifying 0.0 boundary notch error vs. full-signal resampling and clean `.reset()`) and `TestGlobalEpochStateConcurrencySuite` (8 threads, 800 concurrent bumps, 0 lost updates).
+3. **Batch 3 (Incremental UTF-8 Pipe Decoding, CDP Discovery & Flow State Tests):**
+   - **`jarvis/core/antigravity_bridge.py`:** Verified `_iter_unbuffered_lines` uses `codecs.getincrementaldecoder("utf-8")(errors="replace")`.
+   - **`jarvis/skills/browser_cdp.py`:** Added `chrome-win64` candidates (`chromium-*\chrome-win64\chrome.exe`, `chrome-*\chrome-win64\chrome.exe`, `chrome-*\chrome-win\chrome.exe`) to `resolve_browser_executable`. Maintained strict non-wildcard origin whitelist.
+   - **`tests/test_antigravity_integration.py`:** Added `test_iter_unbuffered_lines_multibyte_utf8_split` verifying 4-byte UTF-8 emoji (`\xf0\x9f\x9a\x80`) split across adjacent read chunks decodes cleanly without replacement glyphs.
+   - **`tests/test_phase1_flow_state.py`:** Added `test_process_packet_tampered_and_malformed_rejected` testing tampered HMAC, bad token, and non-JSON payloads.
+4. **Batch 4 (Residual Compatibility Shim Audit & Pruning):**
+   - Audited compatibility shims: `jarvis.audio.cancellation` and `jarvis.audio.chunker` are actively imported/patched by test suites and were strictly preserved as minimal re-export shims.
+   - Excised dead shim `jarvis/skills/mcp_manager.py` (0 callers). Repointed internal imports in `tts.py`, `wake_word.py`, `ollama.py`, and `openrouter.py` to canonical modules.
+   - Fixed `tests/test_plugin_integrations.py` tool registry import.
+5. **Batch 5 (Security, Epistemic Qualification & Memory Authorization Backlog Closure):**
+   - Updated context headers in `context_orchestrator.py` and `interaction_memory.py` to qualify historical memory as `[Directly Relevant Knowledge to Current Context - Reference / Historical]`.
+   - Upgraded fixture database path containment assertion in `tests/test_memory_authorization_audit.py` to strict `is_relative_to`.
+   - Graduated `test_11_contradictory_stale_memory_not_presented_as_unqualified_truth` from strict xfail to active passing assertion (20/20 tests passing).
+   - Diagnosed `tests/test_document_provenance.py` sandbox loopback constraint: `asyncio.run` requires loopback TCP for `socket.socketpair()`, passing 14/14 with `BypassSandbox: true`.
+6. **Batch 6 (Documentation & Manifest Reconciliation):**
+   - Re-exported `data/test_classification_manifest.json` (`2,351` total test nodes: `1,451` Tier 1 hermetic unit, `281` Tier 2a async safe, `170` Tier 2b loopback IPC, `164` Tier 3 Windows integration, `265` Tier 4 hardware integration, `20` Tier browser integration) with 0 unclassified and 0 orphans.
+   - Verified manifest integrity with `tools/test_classifier.py --check-orphaned` (2,351 nodes verified).
+   - Confirmed `test_four_tier_runner.py::test_17_accurate_total_test_accounting` passed 100%.
+   - Reconciled `docs/architecture/PROJECT_MAP.md`, `docs/architecture/INDEX.md`, and `docs/agent/PROJECT_STATE.md`.
+
+### Verification Commands & Exact Outputs
+- `python tools/lint.py check tools/ jarvis/ tests/` -> **Exit code: 0** (All checks passed)
+- `python tools/diagnostics.py check jarvis/ tools/` -> **Exit code: 0** (ALL DIAGNOSTICS PASSED)
+- `python tools/test_classifier.py --check-orphaned` -> **PASSED: Manifest integrity confirmed. 0 orphans, 0 duplicates, 2351 nodes verified. Exit code: 0**
+- `python -m pytest tests/test_four_tier_runner.py -k "test_17" -v` -> **1 passed, 27 deselected in 13.11s (Exit code: 0)**
+- `python -m pytest tests/test_sqlite_writer_ownership.py -v` -> **4 passed in 0.44s (Exit code: 0)**
+- `python -m pytest tests/test_memory_authorization_audit.py -v` -> **20 passed in 1.82s (Exit code: 0)**
+- `python -m pytest tests/test_audio_streaming_pipeline.py -v` -> **28 passed in 1.48s (Exit code: 0)**
+- `python -m pytest tests/test_antigravity_integration.py -v` -> **20 passed, 3 skipped in 10.97s (Exit code: 0)**
+- `python -m pytest tests/test_phase1_flow_state.py -v` -> **8 passed in 0.35s (Exit code: 0)**
+- `python -m pytest tests/test_plugin_integrations.py -v` -> **6 passed in 0.52s (Exit code: 0)**
